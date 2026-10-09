@@ -1,0 +1,13 @@
+node_modules/
+public/monaco-vs/
+.next/
+.env*.local
+next-env.d.ts
+*.tsbuildinfo
+.local/
+.jax-os/
+CLAUDE.md
+AGENTS.md
+.claude/
+__pycache__/
+*.pyc

@@ -1,0 +1,49 @@
+{
+  "runStarted": {
+    "run_id": "bbbbccccdddd",
+    "project": "demo",
+    "role": "builder",
+    "type": "run-started",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "runtime": "opencode-grok",
+      "kind": "build",
+      "target": "feat/x",
+      "caller": "claude",
+      "caller_session": "01234567-89ab-4cde-8f01-23456789abcd",
+      "model": "xai/grok-4.6",
+      "effort": "n/a",
+      "session": "jax-demo-build-bbbbccccdddd",
+      "repo": "/home/rafa/repos/demo",
+      "verify": "true"
+    }
+  },
+  "runFinished": {
+    "run_id": "bbbbccccdddd",
+    "project": "demo",
+    "role": "builder",
+    "type": "run-finished",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "exit_code": 0,
+      "contract_status": "missing",
+      "report_path": "/r.md",
+      "summary": "Report missing",
+      "head_sha": null,
+      "result": "failure",
+      "stage": "runtime",
+      "diagnostic": "APIError 403 xAI spending limit reached for this account"
+    }
+  },
+  "expected": {
+    "outcome": "failure",
+    "stage": "runtime",
+    "diagnostic": "APIError 403 xAI spending limit reached for this account",
+    "contractStatus": "missing",
+    "headSha": null
+  }
+}

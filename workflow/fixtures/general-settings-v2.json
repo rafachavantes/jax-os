@@ -1,0 +1,20 @@
+{
+  "ownerName": "Owner",
+  "locale": "pt-BR",
+  "reposRoot": "/home/rafa/repos",
+  "vaultPath": "/home/rafa/obsidian-vault",
+  "monitoredUnits": {
+    "user": ["hermes-gateway.service"],
+    "system": ["tailscaled.service"]
+  },
+  "integrations": {
+    "linear": true,
+    "ttyd": false,
+    "webhook": true,
+    "hermesTokens": false,
+    "agents": {"claude": true, "codex": true, "opencode": false},
+    "classifier": true,
+    "github": false,
+    "vault": false
+  }
+}

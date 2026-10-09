@@ -1,0 +1,9 @@
+allowBuilds:
+  '@parcel/watcher': false
+  '@swc/core': false
+  better-sqlite3: true
+  sharp: false
+
+overrides:
+  dompurify: "^3.4.16"
+  source-map-js: "^1.2.2"

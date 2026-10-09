@@ -1,0 +1,49 @@
+{
+  "runStarted": {
+    "run_id": "ccccddddeeee",
+    "project": "demo",
+    "role": "builder",
+    "type": "run-started",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "runtime": "opencode-grok",
+      "kind": "build",
+      "target": "feat/x",
+      "caller": "claude",
+      "caller_session": "01234567-89ab-4cde-8f01-23456789abcd",
+      "model": "xai/grok-4.6",
+      "effort": "n/a",
+      "session": "jax-demo-build-ccccddddeeee",
+      "repo": "/home/rafa/repos/demo",
+      "verify": "true"
+    }
+  },
+  "runFinished": {
+    "run_id": "ccccddddeeee",
+    "project": "demo",
+    "role": "builder",
+    "type": "run-finished",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "exit_code": 0,
+      "contract_status": "missing",
+      "report_path": "/r.md",
+      "summary": "Report missing",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "failure",
+      "stage": "verify",
+      "diagnostic": "pytest -q exit 1: 1 failed"
+    }
+  },
+  "expected": {
+    "outcome": "failure",
+    "stage": "verify",
+    "diagnostic": "pytest -q exit 1: 1 failed",
+    "contractStatus": "missing",
+    "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

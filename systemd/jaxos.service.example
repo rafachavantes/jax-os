@@ -1,0 +1,13 @@
+[Unit]
+Description=Jax OS (Next.js) — 127.0.0.1 only
+
+[Service]
+WorkingDirectory=%h/repos/jax-os
+Environment=PORT=3100
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin
+ExecStart=/usr/bin/env pnpm start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

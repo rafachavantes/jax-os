@@ -1,0 +1,6 @@
+[Unit]
+Description=jax-os metrics collector (one sample into jaxos.db)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/repos/jax-os/scripts/collect_metrics.py

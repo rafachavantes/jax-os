@@ -1,0 +1,11 @@
+[Unit]
+Description=jax-os workflow fallback poll tick (2 min)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

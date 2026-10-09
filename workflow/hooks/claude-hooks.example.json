@@ -1,0 +1,45 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "AskUserQuestion", "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-pretool" }
+      ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "AskUserQuestion", "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-posttool" }
+      ] },
+      { "matcher": "Bash", "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-callback", "timeout": 14400, "asyncRewake": true }
+      ] },
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-toolused" }
+      ] }
+    ],
+    "Notification": [
+      { "matcher": "agent_needs_input", "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-notification" }
+      ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-stop", "timeout": 14400, "asyncRewake": true }
+      ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-userprompt" }
+      ] }
+    ],
+    "SubagentStart": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-subagentstart" }
+      ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook claude-subagentstop" }
+      ] }
+    ]
+  }
+}
