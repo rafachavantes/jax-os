@@ -1,0 +1,128 @@
+/* ==========================================================================
+   COLORS — Jax OS design system
+   Warm-dark primary theme. Terracotta + Sage brand palette.
+   Light/cream theme available via [data-theme="light"].
+   ========================================================================== */
+
+:root {
+  /* --- Brand: Terracotta (primary) --- */
+  --coral-50:  #FBEBE5;
+  --coral-100: #F6D2C6;
+  --coral-300: #F0A88E;
+  --coral-400: #EC8A6F;
+  --coral-500: #E46C54;   /* terracotta — brand primary */
+  --coral-600: #C8543D;
+  --coral-700: #A8412D;
+
+  /* --- Brand: Sage (secondary) --- */
+  --sage-50:  #EAEFEA;
+  --sage-100: #D3DDD3;
+  --sage-300: #A6BCA6;
+  --sage-400: #87A887;
+  --sage-500: #6C906C;    /* sage — brand secondary */
+  --sage-600: #557355;
+  --sage-700: #41593F;
+
+  /* --- Warm neutral ramp (brown-tinted greys) --- */
+  --warm-950: #16120F;
+  --warm-900: #1E1915;
+  --warm-850: #251F1A;
+  --warm-800: #2C241E;
+  --warm-700: #3B302A;
+  --warm-600: #4E4138;
+  --warm-500: #6E5E52;
+  --warm-400: #8A7B6F;
+  --warm-300: #AD9F92;
+  --warm-200: #C9BCAF;
+  --warm-100: #E6DDD2;
+  --warm-50:  #F7F1EA;
+  --paper:    #FBF7F1;   /* cream surface for light theme */
+  --white:    #FFFFFF;
+
+  /* --- Extended / data palette (harmonized, warm) ---
+     For charts, project category accents, multi-series viz. */
+  --data-coral: #E46C54;
+  --data-sage:  #6C906C;
+  --data-amber: #E0A458;
+  --data-clay:  #CC5544;
+  --data-teal:  #4E8C82;
+  --data-plum:  #9A6A86;
+  --data-blue:  #5B86A8;
+  --data-gold:  #C99A3F;
+
+  /* ===================== SEMANTIC ALIASES (DARK = default) ===================== */
+
+  /* Surfaces */
+  --bg-base:      var(--warm-950);   /* page background */
+  --surface:      var(--warm-900);   /* cards, panels */
+  --surface-2:    var(--warm-850);   /* nested / inputs */
+  --surface-3:    var(--warm-800);   /* elevated / hover */
+  --surface-inset:var(--warm-950);
+
+  /* Borders / hairlines */
+  --border:        var(--warm-700);
+  --border-strong: var(--warm-600);
+  --border-subtle: rgba(247, 241, 234, 0.06);
+
+  /* Text */
+  --text-strong:   var(--warm-50);    /* headings / high emphasis */
+  --text-body:     var(--warm-200);   /* body copy */
+  --text-muted:    var(--warm-400);   /* captions / meta */
+  --text-on-brand: #FFFFFF;           /* text on coral/sage fills */
+
+  /* Brand semantic */
+  --brand:           var(--coral-500);
+  --brand-hover:     var(--coral-400);
+  --brand-active:    var(--coral-600);
+  --brand-soft:      rgba(228, 108, 84, 0.14);   /* tinted fills */
+  --brand-soft-border: rgba(228, 108, 84, 0.30);
+  --accent:          var(--sage-500);
+  --accent-hover:    var(--sage-400);
+  --accent-soft:     rgba(108, 144, 108, 0.16);
+  --accent-soft-border: rgba(108, 144, 108, 0.32);
+
+  /* Feedback */
+  --success:      #6FA36A;
+  --success-soft: rgba(111, 163, 106, 0.16);
+  --warning:      #E0A458;
+  --warning-soft: rgba(224, 164, 88, 0.16);
+  --danger:       #D85B45;
+  --danger-soft:  rgba(216, 91, 69, 0.16);
+  --info:         #6B97B8;
+  --info-soft:    rgba(107, 151, 184, 0.16);
+
+  /* Focus ring */
+  --focus-ring: rgba(228, 108, 84, 0.55);
+
+  /* Gradients (used sparingly — feature moments only) */
+  --grad-brand: linear-gradient(135deg, var(--coral-500) 0%, var(--sage-500) 100%);
+  --grad-warm:  linear-gradient(135deg, var(--coral-400) 0%, var(--coral-600) 100%);
+}
+
+/* ===================== LIGHT / CREAM THEME ===================== */
+[data-theme="light"] {
+  --bg-base:       var(--paper);
+  --surface:       var(--white);
+  --surface-2:     #F4EEE5;
+  --surface-3:     #EFE7DB;
+  --surface-inset: #F4EEE5;
+
+  --border:        #E6DBCD;
+  --border-strong: #D6C8B6;
+  --border-subtle: rgba(42, 33, 27, 0.08);
+
+  --text-strong:   #241C16;
+  --text-body:     #4C4038;
+  --text-muted:    #8A7B6F;
+  --text-on-brand: #FFFFFF;
+
+  --brand-soft:        rgba(228, 108, 84, 0.12);
+  --brand-soft-border: rgba(228, 108, 84, 0.28);
+  --accent-soft:       rgba(108, 144, 108, 0.14);
+  --accent-soft-border: rgba(108, 144, 108, 0.30);
+
+  --success-soft: rgba(111, 163, 106, 0.14);
+  --warning-soft: rgba(224, 164, 88, 0.18);
+  --danger-soft:  rgba(216, 91, 69, 0.12);
+  --info-soft:    rgba(107, 151, 184, 0.14);
+}

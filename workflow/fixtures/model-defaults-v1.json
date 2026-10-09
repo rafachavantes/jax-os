@@ -1,0 +1,10 @@
+{
+  "reviewers": {
+    "claude": { "model": "sonnet", "effort": "xhigh" },
+    "codex": { "model": "gpt-5.6-luna", "effort": "xhigh" }
+  },
+  "builders": {
+    "default": { "model": "grok-4.6", "effort": "xhigh" },
+    "fallback": { "model": "deepseek/deepseek-v4-flash-0731", "effort": "high" }
+  }
+}

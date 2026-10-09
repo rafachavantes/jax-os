@@ -1,0 +1,11 @@
+[Unit]
+Description=jax-os metrics collector tick (1 min)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

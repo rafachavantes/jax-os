@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook codex-stop", "timeout": 20 }
+      ] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook codex-permission", "timeout": 10 }
+      ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook codex-userprompt", "timeout": 10 }
+      ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook codex-toolused", "timeout": 10 }
+      ] }
+    ],
+    "SubagentStart": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook codex-subagentstart", "timeout": 10 }
+      ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [
+        { "type": "command", "command": "jaxflow-hook codex-subagentstop", "timeout": 10 }
+      ] }
+    ]
+  }
+}

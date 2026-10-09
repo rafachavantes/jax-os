@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      # Lean by design: type checks, static repo rules and the build. The full vitest +
+      # pytest suite (integration tests that need agent CLIs, a real HOME, a specific
+      # filesystem) runs locally and in every jaxflow build's --verify.
+      - name: Static checks
+        run: |
+          pnpm exec vitest run src/messages.test.ts src/hex-scope.test.ts
+          python3 scripts/check_oss_docs.py
+
+      - name: Build
+        run: pnpm build
+
+      - name: No Co-Authored-By trailers (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          commits=$(git log --format=%B "origin/${{ github.event.pull_request.base.ref }}..HEAD") || exit 1
+          echo "$commits" | grep -qi '^Co-Authored-By:' && exit 1 || exit 0

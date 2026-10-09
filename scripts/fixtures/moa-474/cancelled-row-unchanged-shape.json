@@ -1,0 +1,46 @@
+{
+  "runStarted": {
+    "run_id": "111122223333",
+    "project": "demo",
+    "role": "builder",
+    "type": "run-started",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "runtime": "opencode-grok",
+      "kind": "build",
+      "target": "feat/x",
+      "caller": "claude",
+      "caller_session": "01234567-89ab-4cde-8f01-23456789abcd",
+      "model": "xai/grok-4.6",
+      "effort": "n/a",
+      "session": "jax-demo-build-111122223333",
+      "repo": "/home/rafa/repos/demo",
+      "verify": "true"
+    }
+  },
+  "runFinished": {
+    "run_id": "111122223333",
+    "project": "demo",
+    "role": "builder",
+    "type": "run-finished",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "exit_code": null,
+      "contract_status": "cancelled",
+      "report_path": null,
+      "summary": "cancelled by claude at 2026-01-01T00:00:00Z",
+      "head_sha": null
+    }
+  },
+  "expected": {
+    "outcome": null,
+    "stage": null,
+    "diagnostic": null,
+    "contractStatus": "cancelled",
+    "headSha": null
+  }
+}

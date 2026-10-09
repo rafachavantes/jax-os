@@ -1,0 +1,53 @@
+/* ==========================================================================
+   TYPOGRAPHY — Jax OS design system
+   Display: Orbitron (techno-geometric, used sparingly, usually uppercase).
+   Body/UI: Geist. Mono: Geist Mono.
+   ========================================================================== */
+
+:root {
+  /* Families */
+  --font-display: "Orbitron", "Geist", system-ui, sans-serif;
+  --font-logo: "Quicksand", "Varela Round", system-ui, sans-serif;
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Type scale (rem) */
+  --text-display: 4.5rem;   /* 72 — hero */
+  --text-h1: 3.5rem;        /* 56 */
+  --text-h2: 2.5rem;        /* 40 */
+  --text-h3: 1.75rem;       /* 28 */
+  --text-h4: 1.25rem;       /* 20 */
+  --text-lg: 1.125rem;      /* 18 — lead/body-lg */
+  --text-body: 1rem;        /* 16 */
+  --text-sm: 0.875rem;      /* 14 */
+  --text-xs: 0.75rem;       /* 12 — eyebrow / meta */
+
+  /* Line heights */
+  --leading-tight: 1.05;    /* display */
+  --leading-snug: 1.15;     /* headings */
+  --leading-normal: 1.4;
+  --leading-relaxed: 1.65;  /* body copy */
+
+  /* Weights (Geist) */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Letter spacing */
+  --tracking-display: -0.02em;  /* tighten large Geist headings */
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+  --tracking-eyebrow: 0.14em;   /* uppercase eyebrows / Orbitron labels */
+}
+
+/* Responsive display sizing */
+@media (max-width: 768px) {
+  :root {
+    --text-display: 2.75rem;
+    --text-h1: 2.25rem;
+    --text-h2: 1.875rem;
+    --text-h3: 1.5rem;
+  }
+}

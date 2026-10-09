@@ -1,0 +1,6 @@
+[Unit]
+Description=jax-os workflow fallback poll (re-deliver pending events to Hermes)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/repos/jax-os/scripts/workflow_poll.py
