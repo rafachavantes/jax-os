@@ -375,6 +375,14 @@ audit rows, or ref membership. Add `--recheck` to force the `--checks` run even 
     jaxflow merge <branch> --sha <full-40-sha> --phase "<phase title>" \
         --checks "<cmd && cmd>" --target <approved-destination> --from claude
 
+`--checks` runs inside the branch's registered worktree at `~/repos/<project>-<branch-slug>`
+(the slug is the branch name with `/` turned into `-`), never in the control repo. A build
+leaves that worktree behind; a short-path branch has no build, so create it yourself before
+asking for the merge — `git worktree add ~/repos/<project>-<branch-slug> <branch>`, then the
+project setup from its `AGENTS.md` (e.g. `pnpm install --frozen-lockfile`). Without it the
+merge refuses `checks-failed` with `hint: no registered build worktree`. The short path skips
+spec and plan, not the worktree. `jaxflow merge` removes the worktree afterwards as usual.
+
 It runs in the foreground and prints a pass/fail — there is no run id, no tmux session, and
 no `status`/`result` for a merge. It resolves the delivery target from the project's
 `AGENTS.md` Deploy policy, refuses `target-mismatch` if `--target` differs, runs the
