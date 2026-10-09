@@ -59,6 +59,11 @@ official code — treat it as the most restricted action in the workflow.
      Production target; a DISTINCT agreement from the owner (see the production-promotion rule below)
      is required before running `jaxflow merge` on that release branch. `single-branch-pr` has no release step: the merged PR is the delivery. No local git merge
      happens for a PR preset at either step — the merge itself always happens on GitHub.
+   - Checks run in the branch's registered worktree (`~/repos/<project>-<branch-slug>`), never in the
+     control repo. A short-path branch with no build has none: the tech lead creates it
+     (`git worktree add ~/repos/<project>-<branch-slug> <branch>` + the project setup from `AGENTS.md`)
+     before asking for the merge; otherwise `jaxflow merge` refuses `checks-failed`. The short path
+     skips spec and plan, not the worktree.
    - Checks reuse (one rule, both paths). `jaxflow merge` skips its own checks run only when ALL hold:
      the SHA to be tested is the `verify.head_sha` of the branch's most recent diff review; `--checks`
      equals the verify command that build recorded; the build worktree's `tests.txt` holds one frame
