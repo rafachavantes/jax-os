@@ -3895,6 +3895,78 @@ def _prepare_builder_launch(manifest, *, run, env, allowlist_root, manifest_path
     return argv, prompt_path, paths, child_env
 
 
+def _builder_finish_payload(manifest, *, run, paths, run_id, project, phase, worktree,
+                            verify_cmd, build_cmd, child, child_log_text):
+    """Builder contract finalize, jaxflow's OWN post-build verification (both commands run;
+    the build is never skipped because the test failed), outcome derivation and the
+    run-finished payload. Returns `(payload, summary, contract_status, outcome,
+    verify_contradicts)`. The resume checkpoint, delivery, manifest `worker_*` fields and
+    the callback stay with the caller, in that order."""
+    contract_status, summary, report_result = finalize_builder_report(
+        paths, run_id, project, phase, worktree=worktree)
+
+    head_sha = None
+    head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=worktree)
+    if head.returncode == 0 and jr.SHA_RE.match(head.stdout.strip()):
+        head_sha = head.stdout.strip()
+
+    # jaxflow's OWN post-build verification (spec §4.2 step 4) -- distinct from and in
+    # addition to whatever the builder ran per its own handoff's commands. BOTH commands
+    # run; the build is never skipped because the test failed.
+    verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
+    tests_written = _write_verify_tests_file(paths["tests"], verify_frames, worktree=worktree)
+
+    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
+    base_sha = manifest.get("base_sha")
+    is_descendant = (
+        head_sha is not None and isinstance(base_sha, str)
+        and _is_strict_descendant(run, worktree, base_sha, head_sha)
+    )
+    # MOA-474 D5/§7: the last non-empty PHYSICAL line of the redacted child.log --
+    # never the whole stream (criterion 2: a recovered mid-stream error is not
+    # terminal evidence, only the LAST line can ever be).
+    stream_last_line = next(
+        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    )
+    outcome = jr.derive_outcome({
+        "role": "builder", "report_result": report_result,
+        "report_summary": summary, "contract_status": contract_status,
+        "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
+        "verify_frames": verify_frames, "tests_written": tests_written,
+        "head_sha": head_sha, "base_sha": base_sha, "is_descendant": is_descendant,
+        # MOA-474 cold review F4: wires _last_stream_text_line into rows 5/10's
+        # diagnostic (§13) -- without this, evidence.get("last_stream_text") always
+        # defaults to None and the exit/signal diagnostic never has a real cause.
+        "last_stream_text": jr._last_stream_text_line(child_log_text),
+    })
+    payload = {
+        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
+        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
+        "head_sha": head_sha, "result": outcome["result"],
+    }
+    if outcome["stage"] is not None:
+        payload["stage"] = outcome["stage"]
+        payload["diagnostic"] = outcome["diagnostic"]
+    # MOA-470 §4.3: both keys travel together, emitted iff contract_status needed a
+    # diagnosis -- never for "ok" (verify's own result covers that).
+    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
+    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
+    # payload byte ceiling -- drops log_context (then tally, N/A on this branch)
+    # if the combination still overflows it despite the byte-bounded chunks above.
+    jr.cap_payload_bytes(payload)
+    # MOA-455, unaffected by this change: a claimed failure the verify chain did
+    # NOT confirm is flagged on the callback line ONLY, never touching the ledger
+    # `result`. Unlike the pre-MOA-474 code, this note is orthogonal to
+    # derive_outcome's own veto: it only ever fires when the report claimed
+    # failure and jaxflow's own checks disagree (the opposite direction from the
+    # veto, which overrides a claimed SUCCESS).
+    verify_failed_now = any(r.returncode != 0 for _, r in verify_frames)
+    verify_contradicts = (
+        report_result == "failure" and not verify_failed_now and tests_written
+    )
+    return payload, summary, contract_status, outcome, verify_contradicts
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -4046,69 +4118,11 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
         if status == "terminated":
             return 0
 
-        contract_status, summary, report_result = finalize_builder_report(
-            paths, run_id, project, phase, worktree=worktree)
-
-        head_sha = None
-        head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=worktree)
-        if head.returncode == 0 and jr.SHA_RE.match(head.stdout.strip()):
-            head_sha = head.stdout.strip()
-
-        # jaxflow's OWN post-build verification (spec §4.2 step 4) -- distinct from and in
-        # addition to whatever the builder ran per its own handoff's commands. BOTH commands
-        # run; the build is never skipped because the test failed.
-        verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
-        tests_written = _write_verify_tests_file(paths["tests"], verify_frames, worktree=worktree)
-
-        exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
-        base_sha = manifest.get("base_sha")
-        is_descendant = (
-            head_sha is not None and isinstance(base_sha, str)
-            and _is_strict_descendant(run, worktree, base_sha, head_sha)
+        payload, summary, contract_status, outcome, verify_contradicts = _builder_finish_payload(
+            manifest, run=run, paths=paths, run_id=run_id, project=project, phase=phase,
+            worktree=worktree, verify_cmd=verify_cmd, build_cmd=build_cmd,
+            child=child, child_log_text=child_log_text,
         )
-        # MOA-474 D5/§7: the last non-empty PHYSICAL line of the redacted child.log --
-        # never the whole stream (criterion 2: a recovered mid-stream error is not
-        # terminal evidence, only the LAST line can ever be).
-        stream_last_line = next(
-            (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
-        )
-        outcome = jr.derive_outcome({
-            "role": "builder", "report_result": report_result,
-            "report_summary": summary, "contract_status": contract_status,
-            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
-            "verify_frames": verify_frames, "tests_written": tests_written,
-            "head_sha": head_sha, "base_sha": base_sha, "is_descendant": is_descendant,
-            # MOA-474 cold review F4: wires _last_stream_text_line into rows 5/10's
-            # diagnostic (§13) -- without this, evidence.get("last_stream_text") always
-            # defaults to None and the exit/signal diagnostic never has a real cause.
-            "last_stream_text": jr._last_stream_text_line(child_log_text),
-        })
-        payload = {
-            "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
-            "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
-            "head_sha": head_sha, "result": outcome["result"],
-        }
-        if outcome["stage"] is not None:
-            payload["stage"] = outcome["stage"]
-            payload["diagnostic"] = outcome["diagnostic"]
-        # MOA-470 §4.3: both keys travel together, emitted iff contract_status needed a
-        # diagnosis -- never for "ok" (verify's own result covers that).
-        _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
-        # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
-        # payload byte ceiling -- drops log_context (then tally, N/A on this branch)
-        # if the combination still overflows it despite the byte-bounded chunks above.
-        jr.cap_payload_bytes(payload)
-        # MOA-455, unaffected by this change: a claimed failure the verify chain did
-        # NOT confirm is flagged on the callback line ONLY, never touching the ledger
-        # `result`. Unlike the pre-MOA-474 code, this note is orthogonal to
-        # derive_outcome's own veto: it only ever fires when the report claimed
-        # failure and jaxflow's own checks disagree (the opposite direction from the
-        # veto, which overrides a claimed SUCCESS).
-        verify_failed_now = any(r.returncode != 0 for _, r in verify_frames)
-        verify_contradicts = (
-            report_result == "failure" and not verify_failed_now and tests_written
-        )
-
         finished_event = {
             "run_id": run_id, "project": project, "role": "builder", "type": "run-finished",
             "source": "deterministic", "emitter": "wrapper", "payload": payload,
