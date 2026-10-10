@@ -945,3 +945,54 @@ _MODEL_DEFAULTS = json.loads((Path(__file__).resolve().parents[1] / "workflow" /
 
 def test_classifier_model_reads_the_bare_fixture_value_with_no_prefix():
     assert wp.CLASSIFIER_MODEL == _MODEL_DEFAULTS["builders"]["fallback"]["model"]
+
+
+def test_poll_tick_reads_settings_once(monkeypatch):
+    # P3 / lean spec D16: main() reads settings ONCE and hands the same object to both
+    # _forward_pending and _drain_deferred (fresh per tick, never cached across ticks).
+    _forward_ctx(monkeypatch, webhook_on=True, url="http://127.0.0.1:8644/webhooks/jax-workflow", secret="s")
+    reads = []
+
+    def counting_read():
+        reads.append(1)
+        return _settings(True)
+
+    monkeypatch.setattr(general_settings, "read_settings", counting_read)
+
+    def fake_request(url, method="GET", body=None, headers=None):
+        if url == wp.EVENTS_URL:
+            return 200, json.dumps({"ok": True, "data": []}).encode()
+        if url == wp.STALENESS_URL:
+            return 200, json.dumps({"ok": True, "data": {"checked": 0, "alerted": 0, "nullIncarnation": 0}}).encode()
+        return 200, json.dumps({"ok": True, "data": []}).encode()  # deferred queue: empty
+
+    with patch.object(wp, "_request", fake_request):
+        assert wp.main() == 0
+        assert len(reads) == 1, reads
+        reads.clear()
+        assert wp.main() == 0
+        assert len(reads) == 1, reads  # a second tick reads fresh again, still once
+
+
+def test_poll_tick_survives_settings_read_exception(monkeypatch):
+    # P3 guard: the hoisted read in main() must not let a raising read_settings skip
+    # staleness, reap or drain, and main() still returns 0.
+    calls = []
+
+    def exploding_read():
+        raise RuntimeError("settings read exploded")
+
+    def fake_request(url, method="GET", body=None, headers=None):
+        calls.append(url)
+        if url == wp.STALENESS_URL:
+            return 200, json.dumps({"ok": True, "data": {"checked": 0, "alerted": 0, "nullIncarnation": 0}}).encode()
+        return 200, json.dumps({"ok": True, "data": []}).encode()
+
+    monkeypatch.setattr(general_settings, "read_settings", exploding_read)
+    monkeypatch.setattr(wp, "_reap_stale_runs", lambda *a, **k: calls.append("reap"))
+    monkeypatch.setattr(wp, "_drain_deferred", lambda *a, **k: calls.append("drain"))
+    with patch.object(wp, "_request", fake_request):
+        assert wp.main() == 0
+    assert wp.STALENESS_URL in calls  # staleness still ran
+    assert "reap" in calls            # reap still ran
+    assert "drain" in calls           # drain still attempted
