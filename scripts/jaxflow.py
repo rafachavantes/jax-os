@@ -1609,9 +1609,11 @@ def _builder_run_rows(con, run_id):
     return started, finished
 
 
-def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
-                           run, post, env, now, allowlist_root, db_path):
-    db_path = db_path or jr.DB_PATH
+def _resume_rows(db_path, resume_id, latest_of=None):
+    """The builder `run-started`/`run-finished` rows of the run being resumed, as `(started,
+    finished, latest)`; `resume-ineligible` when the DB is unreadable or either row is
+    missing. `latest_of=(project, repo, branch)` also resolves the latest attempt, on the
+    SAME connection and BEFORE the missing-row refusal (the order the inline code had)."""
     try:
         con = _open_ro(db_path)
     except sqlite3.Error as exc:
@@ -1619,10 +1621,18 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
     con.row_factory = sqlite3.Row
     try:
         started, finished = _builder_run_rows(con, resume_id)
+        latest = _latest_builder_attempt(con, *latest_of) if latest_of else None
     finally:
         con.close()
     if not started or not finished:
         raise Refusal("resume-ineligible")
+    return started, finished, latest
+
+
+def _resume_load_prior(repo, resume_id, project, started, finished):
+    """Decode the recorded payloads, read the prior manifest and the resume checkpoint, and
+    refuse `resume-ineligible` unless they all describe ONE finished-failed opencode build of
+    `project`. Returns `(started_payload, finished_payload, prior_path, prior, checkpoint)`."""
     try:
         started_payload = json.loads(started["payload"])
         finished_payload = json.loads(finished["payload"])
@@ -1649,6 +1659,13 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             or checkpoint["run_id"] != resume_id
             or checkpoint["outcome"] not in ("failure", "blocked")):
         raise Refusal("resume-ineligible")
+    return started_payload, finished_payload, prior_path, prior, checkpoint
+
+
+def _resume_locate(repo, project, allowlist_root, started_payload, prior, checkpoint):
+    """`(branch, worktree)` of the run being resumed, refusing `resume-ineligible` unless the
+    recorded repos, branch and worktree agree with the checkpoint and the worktree is the
+    one `build` reserves for that branch, inside the allowlist and still a directory."""
     try:
         if Path(started_payload.get("repo", "")).resolve() != repo:
             raise Refusal("resume-ineligible")
@@ -1674,6 +1691,13 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
     expected = _branch_worktree_path(allowlist_root, project, branch)
     if worktree != expected or not _contained(worktree, allowlist_root) or not worktree.is_dir():
         raise Refusal("resume-ineligible")
+    return branch, worktree
+
+
+def _resume_plan(prior, allowlist_root):
+    """`(whitelist, verify, phase, plan_path)` recorded by the prior attempt, refusing
+    `resume-ineligible` unless they are well-formed and the plan is a canonical, non-secret,
+    readable file (P1a's `_plan_path_defect`)."""
     whitelist = prior.get("whitelist")
     verify = prior.get("verify")
     phase = prior.get("phase")
@@ -1687,17 +1711,26 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise Refusal("resume-ineligible") from exc
     if _plan_path_defect(plan_path, allowlist_root):
         raise Refusal("resume-ineligible")
-    plan_defects = _validate_plan_structure(plan_path.read_text(encoding="utf-8"), plan_path, allowlist_root)
-    if plan_defects:
+    return whitelist, verify, phase, plan_path
+
+
+def _resume_profile_name(args, prior):
+    """The builder profile a resume runs under: `fallback` with `--fallback`, else the one the
+    prior attempt recorded; anything but default/fallback refuses `resume-ineligible`."""
+    profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
+    if profile_name not in ("default", "fallback"):
         raise Refusal("resume-ineligible")
+    return profile_name
+
+
+def _resume_profile(args, prior):
+    """`(runtime, model, effort)` of the resumed builder from the saved settings profile,
+    after the opencode-on and settings-initialized refusals."""
     _require_opencode_on()
     settings = jset.read_settings()
     if settings is None:
         raise Refusal("agent-settings-uninitialized")
-    profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
-    if profile_name not in ("default", "fallback"):
-        raise Refusal("resume-ineligible")
-    profile = settings["builders"][profile_name]
+    profile = settings["builders"][_resume_profile_name(args, prior)]
     runtime = "opencode-builder"
     model = f"{profile['connection']}/{profile['model']}"
     effort = profile["effort"] if profile["effort"] is not None else "n/a"
@@ -1705,95 +1738,106 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise Refusal("model-invalid")
     if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
         raise Refusal("effort-invalid")
+    return runtime, model, effort
+
+
+def _resume_recheck(repo, worktree, branch, resume_id, prior_path, started_now, finished_now):
+    """The re-validation under the worktree claim: re-read the prior manifest and checkpoint
+    and refuse `resume-ineligible` unless every recorded identity still agrees. Returns
+    `(prior, checkpoint, started_payload, base_sha, root_build_run_id)`. The statement order
+    (including `prior.get` BEFORE the `type(prior)` check) is the inline code's."""
+    try:
+        prior = _read_prior_manifest(prior_path)
+        checkpoint = jresume.read_checkpoint(
+            _manifest_dir(repo, resume_id) / "resume-checkpoint.json")
+        started_payload = json.loads(started_now["payload"])
+        finished_now_payload = json.loads(finished_now["payload"])
+        if Path(prior.get("repo", "")).resolve() != repo:
+            raise Refusal("resume-ineligible")
+        if Path(started_payload.get("repo", "")).resolve() != repo:
+            raise Refusal("resume-ineligible")
+        if Path(checkpoint["repo"]).resolve() != repo:
+            raise Refusal("resume-ineligible")
+        if Path(prior["worktree"]).resolve() != worktree:
+            raise Refusal("resume-ineligible")
+        if Path(checkpoint["worktree"]).resolve() != worktree:
+            raise Refusal("resume-ineligible")
+    except Refusal:
+        raise
+    except Exception as exc:
+        raise Refusal("resume-ineligible") from exc
+    base_sha = prior.get("base_sha")
+    root_build_run_id = prior.get("root_build_run_id")
+    if (type(prior) is not dict or prior.get("run_id") != resume_id
+            or finished_now_payload.get("result") not in ("failure", "blocked")
+            or checkpoint["run_id"] != resume_id
+            or checkpoint["outcome"] not in ("failure", "blocked")
+            or checkpoint["outcome"] != finished_now_payload.get("result")
+            or checkpoint["branch"] != branch
+            or (prior.get("branch") or prior.get("target")) != branch
+            or type(base_sha) is not str or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
+            or checkpoint["base"] != base_sha
+            or checkpoint["root_build_run_id"] != root_build_run_id
+            or started_payload.get("root_build_run_id") != root_build_run_id
+            or started_payload.get("requested_profile") not in ("default", "fallback")
+            or prior.get("requested_profile") not in ("default", "fallback")
+            or prior.get("requested_profile") != started_payload.get("requested_profile")):
+        raise Refusal("resume-ineligible")
+    return prior, checkpoint, started_payload, base_sha, root_build_run_id
+
+
+def _resume_git_checks(run, repo, worktree, branch, resume_id, latest, started_payload,
+                       base_sha, plan_path, checkpoint):
+    """The live-state checks of a resume, in order: this IS the latest attempt, its tmux
+    session is gone, repo and worktree share one git common dir and the worktree is
+    registered on `branch`, HEAD is attached and descends from the recorded base, and the
+    work state and plan revision still match the checkpoint."""
+    if latest != resume_id:
+        raise _refuse("resume-ineligible", f"hint: latest attempt is {latest}")
+    prior_session = started_payload.get("session")
+    if prior_session:
+        live = run(["tmux", "has-session", "-t", prior_session])
+        if live.returncode == 0:
+            raise Refusal("resume-ineligible")
+    common_repo = _git_common_dir(run, repo)
+    common_wt = _git_common_dir(run, worktree)
+    if common_repo is None or common_wt is None or common_repo != common_wt:
+        raise Refusal("resume-ineligible")
+    if not _is_registered_worktree(run, repo, worktree, branch):
+        raise Refusal("resume-ineligible")
+    attached = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree)
+    if attached.returncode != 0 or attached.stdout.strip() != branch:
+        raise Refusal("resume-ineligible")
+    ancestor = run(["git", "merge-base", "--is-ancestor", base_sha, "HEAD"], cwd=worktree)
+    if ancestor.returncode != 0:
+        raise Refusal("resume-ineligible")
+    actual = jresume.capture_work_state(worktree, plan_path, run=run)
+    jresume.require_same_work_state(checkpoint["work_state"], actual)
+    if checkpoint["plan_revision"] != actual["plan_sha256"]:
+        raise Refusal("resume-state-changed")
+
+
+def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
+                           run, post, env, now, allowlist_root, db_path):
+    db_path = db_path or jr.DB_PATH
+    started, finished, _ = _resume_rows(db_path, resume_id)
+    started_payload, finished_payload, prior_path, prior, checkpoint = _resume_load_prior(
+        repo, resume_id, project, started, finished)
+    branch, worktree = _resume_locate(repo, project, allowlist_root, started_payload, prior, checkpoint)
+    whitelist, verify, phase, plan_path = _resume_plan(prior, allowlist_root)
+    plan_defects = _validate_plan_structure(plan_path.read_text(encoding="utf-8"), plan_path, allowlist_root)
+    if plan_defects:
+        raise Refusal("resume-ineligible")
+    runtime, model, effort = _resume_profile(args, prior)
     with jresume.worktree_claim(repo, worktree):
-        try:
-            con = _open_ro(db_path)
-        except sqlite3.Error as exc:
-            raise Refusal("resume-ineligible") from exc
-        con.row_factory = sqlite3.Row
-        try:
-            started_now, finished_now = _builder_run_rows(con, resume_id)
-            latest = _latest_builder_attempt(con, project, repo, branch)
-        finally:
-            con.close()
-        if not started_now or not finished_now:
-            raise Refusal("resume-ineligible")
-        try:
-            prior = _read_prior_manifest(prior_path)
-            checkpoint = jresume.read_checkpoint(
-                _manifest_dir(repo, resume_id) / "resume-checkpoint.json")
-            started_payload = json.loads(started_now["payload"])
-            finished_now_payload = json.loads(finished_now["payload"])
-            if Path(prior.get("repo", "")).resolve() != repo:
-                raise Refusal("resume-ineligible")
-            if Path(started_payload.get("repo", "")).resolve() != repo:
-                raise Refusal("resume-ineligible")
-            if Path(checkpoint["repo"]).resolve() != repo:
-                raise Refusal("resume-ineligible")
-            if Path(prior["worktree"]).resolve() != worktree:
-                raise Refusal("resume-ineligible")
-            if Path(checkpoint["worktree"]).resolve() != worktree:
-                raise Refusal("resume-ineligible")
-        except Refusal:
-            raise
-        except Exception as exc:
-            raise Refusal("resume-ineligible") from exc
-        base_sha = prior.get("base_sha")
-        root_build_run_id = prior.get("root_build_run_id")
-        if (type(prior) is not dict or prior.get("run_id") != resume_id
-                or finished_now_payload.get("result") not in ("failure", "blocked")
-                or checkpoint["run_id"] != resume_id
-                or checkpoint["outcome"] not in ("failure", "blocked")
-                or checkpoint["outcome"] != finished_now_payload.get("result")
-                or checkpoint["branch"] != branch
-                or (prior.get("branch") or prior.get("target")) != branch
-                or type(base_sha) is not str or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
-                or checkpoint["base"] != base_sha
-                or checkpoint["root_build_run_id"] != root_build_run_id
-                or started_payload.get("root_build_run_id") != root_build_run_id
-                or started_payload.get("requested_profile") not in ("default", "fallback")
-                or prior.get("requested_profile") not in ("default", "fallback")
-                or prior.get("requested_profile") != started_payload.get("requested_profile")):
-            raise Refusal("resume-ineligible")
-        whitelist = prior.get("whitelist")
-        verify = prior.get("verify")
-        phase = prior.get("phase")
-        if type(whitelist) is not list or not whitelist or type(verify) is not str or not verify or not phase:
-            raise Refusal("resume-ineligible")
-        try:
-            plan_path = canonicalize_target(Path(prior["plan_path"]), allowlist_root)
-        except Refusal:
-            raise
-        except Exception as exc:
-            raise Refusal("resume-ineligible") from exc
-        if _plan_path_defect(plan_path, allowlist_root):
-            raise Refusal("resume-ineligible")
-        profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
-        if profile_name not in ("default", "fallback"):
-            raise Refusal("resume-ineligible")
-        if latest != resume_id:
-            raise _refuse("resume-ineligible", f"hint: latest attempt is {latest}")
-        prior_session = started_payload.get("session")
-        if prior_session:
-            live = run(["tmux", "has-session", "-t", prior_session])
-            if live.returncode == 0:
-                raise Refusal("resume-ineligible")
-        common_repo = _git_common_dir(run, repo)
-        common_wt = _git_common_dir(run, worktree)
-        if common_repo is None or common_wt is None or common_repo != common_wt:
-            raise Refusal("resume-ineligible")
-        if not _is_registered_worktree(run, repo, worktree, branch):
-            raise Refusal("resume-ineligible")
-        attached = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree)
-        if attached.returncode != 0 or attached.stdout.strip() != branch:
-            raise Refusal("resume-ineligible")
-        ancestor = run(["git", "merge-base", "--is-ancestor", base_sha, "HEAD"], cwd=worktree)
-        if ancestor.returncode != 0:
-            raise Refusal("resume-ineligible")
-        actual = jresume.capture_work_state(worktree, plan_path, run=run)
-        jresume.require_same_work_state(checkpoint["work_state"], actual)
-        if checkpoint["plan_revision"] != actual["plan_sha256"]:
-            raise Refusal("resume-state-changed")
+        started_now, finished_now, latest = _resume_rows(db_path, resume_id, (project, repo, branch))
+        prior, checkpoint, started_payload, base_sha, root_build_run_id = _resume_recheck(
+            repo, worktree, branch, resume_id, prior_path, started_now, finished_now)
+        whitelist, verify, phase, plan_path = _resume_plan(prior, allowlist_root)
+        profile_name = _resume_profile_name(args, prior)
+        _resume_git_checks(
+            run, repo, worktree, branch, resume_id, latest, started_payload, base_sha,
+            plan_path, checkpoint)
         args_ns = SimpleNamespace(
             role="builder", project=project, phase=phase, repo=str(worktree),
             prompt_file=None, runtime=runtime, callback=None,
@@ -1805,31 +1849,31 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         except ValueError as exc:
             raise Refusal(_map_refusal(str(exc))) from exc
         caller_pane = env.get("TMUX_PANE")
-        manifest = {
-            "kind": "build", "role": "builder", "project": project, "phase": phase,
-            "repo": str(repo), "worktree": str(worktree), "branch": branch,
-            "target": branch, "base_sha": base_sha,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "runtime": runtime, "run_id": run_id, "session": session,
-            "no_callback": _no_callback(args, caller), "whitelist": whitelist,
-            "verify": verify, "plan_path": str(plan_path),
-            "dispatch_start": _iso8601(now()),
+        manifest = _build_manifest_base(
+            args, project=project, phase=phase, repo=repo, worktree=worktree, branch=branch,
+            base_sha=base_sha, caller=caller, caller_session=caller_session, model=model,
+            effort=effort, runtime=runtime, run_id=run_id, session=session, whitelist=whitelist,
+            verify=verify, plan_path=plan_path, now=now,
+        )
+        manifest.update({
             "requested_profile": profile_name,
             "root_build_run_id": root_build_run_id,
             "resumes_run_id": resume_id,
             "reservation_owned": False,
             "resume_start": checkpoint["work_state"],
-        }
+        })
         if prior.get("build"):
             manifest["build"] = prior["build"]
-        started_out = {
-            "phase": phase, "runtime": runtime, "kind": "build", "target": branch,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "session": session, "repo": str(repo), "verify": verify,
+        started_out = _build_started_base(
+            phase=phase, runtime=runtime, branch=branch, caller=caller,
+            caller_session=caller_session, model=model, effort=effort, session=session,
+            repo=repo, verify=verify,
+        )
+        started_out.update({
             "requested_profile": profile_name,
             "root_build_run_id": root_build_run_id,
             "resumes_run_id": resume_id,
-        }
+        })
         if caller_pane:
             started_out["caller_pane"] = caller_pane
         if prior.get("build"):
@@ -1839,6 +1883,194 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             role="builder", run_id=run_id, session=session, manifest=manifest,
             manifest_dir=_manifest_dir(repo, run_id), started_payload=started_out,
             cleanup_paths=[],
+        )
+
+
+def _build_manifest_base(args, *, project, phase, repo, worktree, branch, base_sha, caller,
+                         caller_session, model, effort, runtime, run_id, session, whitelist,
+                         verify, plan_path, now):
+    """The manifest keys a fresh build and a resumed build share, in their shared order
+    (manifest.json is written in insertion order; the callers append their own tails).
+    `_no_callback` and `now()` keep their dict-literal evaluation order."""
+    return {
+        "kind": "build", "role": "builder", "project": project, "phase": phase,
+        "repo": str(repo), "worktree": str(worktree), "branch": branch,
+        # target = the branch (spec §2.6/§4.3/§2.4's `result`), NOT the plan path --
+        # see this plan's header for the §4.2/§7.1#14 conflict this resolves.
+        "target": branch,
+        "base_sha": base_sha,
+        "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
+        "runtime": runtime, "run_id": run_id, "session": session,
+        "no_callback": _no_callback(args, caller), "whitelist": whitelist,
+        "verify": verify, "plan_path": str(plan_path),
+        "dispatch_start": _iso8601(now()),
+    }
+
+
+def _build_started_base(*, phase, runtime, branch, caller, caller_session, model, effort,
+                        session, repo, verify):
+    """The `run-started` payload keys a fresh and a resumed build share (the callers append
+    their own tails in their own order)."""
+    return {
+        "phase": phase, "runtime": runtime, "kind": "build", "target": branch,
+        "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
+        "session": session, "repo": str(repo), "verify": verify,
+    }
+
+
+def _validated_build_plan(args, allowlist_root):
+    """The canonical plan path of a fresh build, validated BEFORE any reservation: canonical,
+    non-secret, readable file, structurally valid (MOA-471 item 10). No git call needed."""
+    # Canonicalize + secret-check the plan path BEFORE any reservation (fixes cold review
+    # F3 -- the first draft never called _is_secret_path at all for `build`).
+    plan_path = canonicalize_target(Path(args.plan), allowlist_root)
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
+        raise Refusal(f"secret-detected: {plan_path}")
+    # fixes Part 1 diff-review F1: a directory or unreadable plan path must refuse here,
+    # before any reservation -- not after a worktree/branch already exist (MOA-467: the
+    # original document is read in place later, so there is no copy step to fail in).
+    # No git call needed for this check.
+    if defect:
+        raise Refusal("plan is not a readable file")
+
+    # MOA-471 item 10: plan-structure validation runs BEFORE any reservation below --
+    # `os.mkdir(worktree)` (further down this function) is the earliest filesystem/git
+    # write this dispatch makes, and no plan defect may ever burn one.
+    plan_text = plan_path.read_text(encoding="utf-8")
+    plan_defects = _validate_plan_structure(plan_text, plan_path, allowlist_root)
+    if plan_defects:
+        raise _refuse("plan-invalid", "hint: " + "; ".join(plan_defects))
+    return plan_path
+
+
+def _select_build_profile(args):
+    """`(runtime, model, effort, requested_profile)` of a fresh build: the saved builder
+    profile (`requested_profile` set) or, with no saved profile, the legacy runtime/model
+    defaults (`requested_profile` None). Validates the hub caps on model and effort."""
+    _require_opencode_on()
+    settings = jset.read_settings()
+    selected = jset.select_builder(
+        settings,
+        fallback=getattr(args, "fallback", False),
+        builder=args.builder,
+        model=args.model,
+        effort=args.effort,
+    )
+    requested_profile = None
+    if selected is None:
+        runtime = args.builder or BUILDER_DEFAULT
+        model = args.model or jr.MODEL_BY_RUNTIME.get(runtime, "default")
+        effort = args.effort or "n/a"
+        if args.effort and runtime in jr.MODEL_BY_RUNTIME:
+            raise Refusal(f"effort-not-supported: {runtime}")
+    else:
+        runtime = selected["runtime"]
+        requested_profile = selected["profile_name"]
+        profile = settings["builders"][requested_profile]
+        model = f"{profile['connection']}/{profile['model']}"
+        effort = profile["effort"] if profile["effort"] is not None else "n/a"
+    if type(model) is not str or not 1 <= _utf16_len(model) <= HUB_CAPS["model"]:
+        raise Refusal("model-invalid")
+    if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
+        raise Refusal("effort-invalid")
+    return runtime, model, effort, requested_profile
+
+
+def _resolve_explicit_base(args, run, repo):
+    """`--base` resolved to a 40-hex commit SHA BEFORE the reservation, or None when the flag
+    is absent. It is the SHA, never the caller's string, that reaches `git worktree add`."""
+    # `--base` is resolved to a SHA here, BEFORE the reservation, and it is the SHA -- never
+    # the caller's string -- that reaches `git worktree add` further down. Two reasons, both
+    # load-bearing:
+    #   * `git worktree add -b <branch> <path> <base>` takes the base POSITIONALLY with no
+    #     `--` guard, so a value like `--foo` would be read by git as an option. A resolved
+    #     40-hex SHA cannot start with `-`, which closes that off structurally rather than by
+    #     blacklisting shapes.
+    #   * `rev-parse --verify <base>^{commit}` proves the ref exists and names a commit, so a
+    #     typo refuses here instead of half-creating a worktree and unwinding it.
+    # The explicit shape gate still runs first: `rev-parse` itself would read a leading `--`
+    # as its own option, so the value has to be proven flag-shaped-safe before it is handed
+    # to git at all.
+    if args.base is None:
+        return None
+    if (args.base.startswith("-") or any(c.isspace() for c in args.base)
+            or not 1 <= _utf16_len(args.base) <= 512):
+        raise Refusal("base-invalid")
+    probe = run(["git", "rev-parse", "--verify", f"{args.base}^{{commit}}"], cwd=repo)
+    resolved = probe.stdout.strip()
+    if probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved):
+        raise Refusal("base-invalid")
+    return resolved
+
+
+def _reserve_build_worktree(args, *, run, repo, worktree, base_sha):
+    """Reserve `worktree` for a fresh build and create its branch; returns the 40-hex base SHA
+    the branch starts from. Order is load-bearing: the exclusive `os.mkdir` claim is the first
+    git-or-filesystem write; the default-branch probe (only without `--base`) comes after it;
+    `git worktree add -b` last. A failure after the claim removes only the bare directory."""
+    # Exclusive reservation FIRST (fixes cold review G8/RECURRENCE(F19), spec §4.2 step 1;
+    # reordered ahead of `_default_branch()` per Part 1 diff-review F2): `git worktree add
+    # -b` alone does not reliably refuse a pre-existing, empty directory at this path -- it
+    # happily populates it -- so `os.mkdir` is the actual atomic claim, and it must be the
+    # very first git-or-filesystem write this dispatch makes: an EEXIST refusal here makes
+    # zero git calls of its own (beyond the toplevel resolve every verb already needs).
+    try:
+        os.mkdir(worktree)
+    except FileExistsError:
+        raise Refusal("branch-exists")
+
+    # Read-only, has no bearing on the path/branch collision this dispatch just claimed --
+    # resolved AFTER the reservation (Part 1 diff-review F2) so a failure here only ever
+    # has to undo the bare directory this dispatch itself just reserved, never a git
+    # worktree/branch that `git worktree add -b` has not created yet.
+    try:
+        # Only consulted when `--base` was NOT given: a resolved base makes the default
+        # branch irrelevant, and probing for it anyway would fail a build in a repo whose
+        # default branch is missing even though the caller named a perfectly good base.
+        # New (spec §4.2 F5): resolved to its own commit SHA the same way `--base`
+        # already is, so `manifest["base_sha"]` is always a real 40-hex SHA -- never a
+        # branch name that can't equal a 40-hex `head_sha` even on an untouched
+        # default-base build.
+        if base_sha is None:
+            default_branch = jr._default_branch(repo, run)
+            default_probe = run(
+                ["git", "rev-parse", "--verify", f"{default_branch}^{{commit}}"], cwd=repo)
+            resolved_default = default_probe.stdout.strip()
+            if default_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved_default):
+                raise Refusal("base-invalid")
+            base_sha = resolved_default
+    except Exception as exc:
+        shutil.rmtree(worktree, ignore_errors=True)
+        raise Refusal(f"build failed: {exc}") from exc
+
+    added = run(["git", "worktree", "add", "-b", args.branch, str(worktree), base_sha], cwd=repo)
+    if added.returncode != 0:
+        # Never deletes `args.branch` here (fixes cold review round 2 F5): dropping the
+        # pre-add `git rev-parse <branch>` probe (itself a check-then-act on the very branch
+        # this call is about to create) means this dispatch can no longer safely tell a
+        # pre-existing branch apart from one `git worktree add -b` itself half-created
+        # before failing to populate. The common case -- the branch name was already taken
+        # by something unrelated -- must never be deleted; the rare git-half-created case is
+        # accepted as a leftover orphan ref instead.
+        shutil.rmtree(worktree, ignore_errors=True)
+        raise _refuse("branch-exists", f"hint: {added.stderr.strip()}" if added.stderr else None)
+    return base_sha
+
+
+def _copy_agents_md(repo, worktree):
+    """Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one. It is
+    gitignored, so `git worktree add` never brings it along, and the handoff points the
+    builder at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too."""
+    # Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one
+    # (fixes cold review round 2 F2): AGENTS.md is gitignored (`.gitignore:10`), so
+    # `git worktree add` never brings it along, and Part 3's handoff points the builder
+    # at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too --
+    # never `git add`ed.
+    control_agents_md = repo / "AGENTS.md"
+    if control_agents_md.is_file():
+        (worktree / "AGENTS.md").write_text(
+            control_agents_md.read_text(encoding="utf-8"), encoding="utf-8",
         )
 
 
@@ -1872,130 +2104,19 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         raise Refusal("build-missing-required-flags")
     phase = args.phase
 
-    # Canonicalize + secret-check the plan path BEFORE any reservation (fixes cold review
-    # F3 -- the first draft never called _is_secret_path at all for `build`).
-    plan_path = canonicalize_target(Path(args.plan), allowlist_root)
-    defect = _plan_path_defect(plan_path, allowlist_root)
-    if defect == "secret-detected":
-        raise Refusal(f"secret-detected: {plan_path}")
-    # fixes Part 1 diff-review F1: a directory or unreadable plan path must refuse here,
-    # before any reservation -- not after a worktree/branch already exist (MOA-467: the
-    # original document is read in place later, so there is no copy step to fail in).
-    # No git call needed for this check.
-    if defect:
-        raise Refusal("plan is not a readable file")
+    plan_path = _validated_build_plan(args, allowlist_root)
 
-    # MOA-471 item 10: plan-structure validation runs BEFORE any reservation below --
-    # `os.mkdir(worktree)` (further down this function) is the earliest filesystem/git
-    # write this dispatch makes, and no plan defect may ever burn one.
-    plan_text = plan_path.read_text(encoding="utf-8")
-    plan_defects = _validate_plan_structure(plan_text, plan_path, allowlist_root)
-    if plan_defects:
-        raise _refuse("plan-invalid", "hint: " + "; ".join(plan_defects))
-
-    _require_opencode_on()
-    settings = jset.read_settings()
-    selected = jset.select_builder(
-        settings,
-        fallback=getattr(args, "fallback", False),
-        builder=args.builder,
-        model=args.model,
-        effort=args.effort,
-    )
-    requested_profile = None
-    if selected is None:
-        runtime = args.builder or BUILDER_DEFAULT
-        model = args.model or jr.MODEL_BY_RUNTIME.get(runtime, "default")
-        effort = args.effort or "n/a"
-        if args.effort and runtime in jr.MODEL_BY_RUNTIME:
-            raise Refusal(f"effort-not-supported: {runtime}")
-    else:
-        runtime = selected["runtime"]
-        requested_profile = selected["profile_name"]
-        profile = settings["builders"][requested_profile]
-        model = f"{profile['connection']}/{profile['model']}"
-        effort = profile["effort"] if profile["effort"] is not None else "n/a"
-    if type(model) is not str or not 1 <= _utf16_len(model) <= HUB_CAPS["model"]:
-        raise Refusal("model-invalid")
-    if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
-        raise Refusal("effort-invalid")
+    runtime, model, effort, requested_profile = _select_build_profile(args)
     _check_hub_caps({
         "phase": phase, "verify": args.verify, "build": args.build, "target": args.branch,
         "callerSession": caller_session, "callerPane": env.get("TMUX_PANE"),
         "model": model, "effort": effort, "repo": str(repo),
     })
-    # `--base` is resolved to a SHA here, BEFORE the reservation, and it is the SHA -- never
-    # the caller's string -- that reaches `git worktree add` further down. Two reasons, both
-    # load-bearing:
-    #   * `git worktree add -b <branch> <path> <base>` takes the base POSITIONALLY with no
-    #     `--` guard, so a value like `--foo` would be read by git as an option. A resolved
-    #     40-hex SHA cannot start with `-`, which closes that off structurally rather than by
-    #     blacklisting shapes.
-    #   * `rev-parse --verify <base>^{commit}` proves the ref exists and names a commit, so a
-    #     typo refuses here instead of half-creating a worktree and unwinding it.
-    # The explicit shape gate still runs first: `rev-parse` itself would read a leading `--`
-    # as its own option, so the value has to be proven flag-shaped-safe before it is handed
-    # to git at all.
-    base_sha = None
-    if args.base is not None:
-        if (args.base.startswith("-") or any(c.isspace() for c in args.base)
-                or not 1 <= _utf16_len(args.base) <= 512):
-            raise Refusal("base-invalid")
-        probe = run(["git", "rev-parse", "--verify", f"{args.base}^{{commit}}"], cwd=repo)
-        resolved = probe.stdout.strip()
-        if probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved):
-            raise Refusal("base-invalid")
-        base_sha = resolved
+    base_sha = _resolve_explicit_base(args, run, repo)
     whitelist = [p.strip() for p in args.whitelist.split(",") if p.strip()]
     worktree = _branch_worktree_path(allowlist_root, project, args.branch, resolve=False)
 
-    # Exclusive reservation FIRST (fixes cold review G8/RECURRENCE(F19), spec §4.2 step 1;
-    # reordered ahead of `_default_branch()` per Part 1 diff-review F2): `git worktree add
-    # -b` alone does not reliably refuse a pre-existing, empty directory at this path -- it
-    # happily populates it -- so `os.mkdir` is the actual atomic claim, and it must be the
-    # very first git-or-filesystem write this dispatch makes: an EEXIST refusal here makes
-    # zero git calls of its own (beyond the toplevel resolve every verb already needs).
-    try:
-        os.mkdir(worktree)
-    except FileExistsError:
-        raise Refusal("branch-exists")
-
-    # Read-only, has no bearing on the path/branch collision this dispatch just claimed --
-    # resolved AFTER the reservation (Part 1 diff-review F2) so a failure here only ever
-    # has to undo the bare directory this dispatch itself just reserved, never a git
-    # worktree/branch that `git worktree add -b` has not created yet.
-    try:
-        # Only consulted when `--base` was NOT given: a resolved base makes the default
-        # branch irrelevant, and probing for it anyway would fail a build in a repo whose
-        # default branch is missing even though the caller named a perfectly good base.
-        # New (spec §4.2 F5): resolved to its own commit SHA the same way `--base`
-        # already is, so `manifest["base_sha"]` is always a real 40-hex SHA -- never a
-        # branch name that can't equal a 40-hex `head_sha` even on an untouched
-        # default-base build.
-        if base_sha is None:
-            default_branch = jr._default_branch(repo, run)
-            default_probe = run(
-                ["git", "rev-parse", "--verify", f"{default_branch}^{{commit}}"], cwd=repo)
-            resolved_default = default_probe.stdout.strip()
-            if default_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved_default):
-                raise Refusal("base-invalid")
-            base_sha = resolved_default
-        base = base_sha
-    except Exception as exc:
-        shutil.rmtree(worktree, ignore_errors=True)
-        raise Refusal(f"build failed: {exc}") from exc
-
-    added = run(["git", "worktree", "add", "-b", args.branch, str(worktree), base], cwd=repo)
-    if added.returncode != 0:
-        # Never deletes `args.branch` here (fixes cold review round 2 F5): dropping the
-        # pre-add `git rev-parse <branch>` probe (itself a check-then-act on the very branch
-        # this call is about to create) means this dispatch can no longer safely tell a
-        # pre-existing branch apart from one `git worktree add -b` itself half-created
-        # before failing to populate. The common case -- the branch name was already taken
-        # by something unrelated -- must never be deleted; the rare git-half-created case is
-        # accepted as a leftover orphan ref instead.
-        shutil.rmtree(worktree, ignore_errors=True)
-        raise _refuse("branch-exists", f"hint: {added.stderr.strip()}" if added.stderr else None)
+    base_sha = _reserve_build_worktree(args, run=run, repo=repo, worktree=worktree, base_sha=base_sha)
     # Past this point, `git worktree add` succeeded, so `worktree` is a registered Git
     # worktree admin entry and `args.branch` is a branch this dispatch itself just created --
     # every cleanup path below undoes both via `_cleanup_worktree` (fixes cold review round
@@ -2029,32 +2150,15 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         # gone). The AGENTS.md copy below stays the only control-repo file brought into
         # the worktree.
 
-        # Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one
-        # (fixes cold review round 2 F2): AGENTS.md is gitignored (`.gitignore:10`), so
-        # `git worktree add` never brings it along, and Part 3's handoff points the builder
-        # at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too --
-        # never `git add`ed.
-        control_agents_md = repo / "AGENTS.md"
-        if control_agents_md.is_file():
-            (worktree / "AGENTS.md").write_text(
-                control_agents_md.read_text(encoding="utf-8"), encoding="utf-8",
-            )
-
+        _copy_agents_md(repo, worktree)
         caller_pane = env.get("TMUX_PANE")
 
-        manifest = {
-            "kind": "build", "role": "builder", "project": project, "phase": phase,
-            "repo": str(repo), "worktree": str(worktree), "branch": args.branch,
-            # target = the branch (spec §2.6/§4.3/§2.4's `result`), NOT the plan path --
-            # see this plan's header for the §4.2/§7.1#14 conflict this resolves.
-            "target": args.branch,
-            "base_sha": base_sha,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "runtime": runtime, "run_id": run_id, "session": session,
-            "no_callback": _no_callback(args, caller), "whitelist": whitelist,
-            "verify": args.verify, "plan_path": str(plan_path),
-            "dispatch_start": _iso8601(now()),
-        }
+        manifest = _build_manifest_base(
+            args, project=project, phase=phase, repo=repo, worktree=worktree, branch=args.branch,
+            base_sha=base_sha, caller=caller, caller_session=caller_session, model=model,
+            effort=effort, runtime=runtime, run_id=run_id, session=session, whitelist=whitelist,
+            verify=args.verify, plan_path=plan_path, now=now,
+        )
         if args.build:
             manifest["build"] = args.build
         if requested_profile is not None:
@@ -2062,11 +2166,11 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
             manifest["root_build_run_id"] = run_id
             manifest["reservation_owned"] = True
 
-        started_payload = {
-            "phase": phase, "runtime": runtime, "kind": "build", "target": args.branch,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "session": session, "repo": str(repo), "verify": args.verify,
-        }
+        started_payload = _build_started_base(
+            phase=phase, runtime=runtime, branch=args.branch, caller=caller,
+            caller_session=caller_session, model=model, effort=effort, session=session,
+            repo=repo, verify=args.verify,
+        )
         if caller_pane:
             started_payload["caller_pane"] = caller_pane
         if args.build:
@@ -2223,26 +2327,11 @@ def dispatch_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_
     return run_id
 
 
-def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
-    if args.since is not None and args.full is not None:
-        raise Refusal("since-full-conflict")
-    if args.full is not None and not args.full.strip():
-        raise Refusal("full-reason-blank")
-    if args.since is not None and not _RUN_ID_RE.match(args.since):
-        raise Refusal("since-invalid")
-    cwd = Path.cwd().resolve()
-    repo = _require_toplevel(run, cwd)
-    caller = resolve_caller(env, args.from_caller)
-    selected = jset.select_reviewer(
-        jset.read_settings(), caller, model=args.model, effort=args.effort, agents=_enabled_agents(),
-    )
-    runtime = selected["runtime"]
-    model = selected["model"]
-    effort = selected["effort"]
-    fallback = selected["fallback"]
-    builder_run_id = args.diff
-
-    db_path = db_path or jr.DB_PATH
+def _load_finished_build(db_path, builder_run_id):
+    """The finished build a `review --diff` targets, as `(project, started_payload,
+    finished_payload)`. Every refusal is `unknown-run` with its own hint (spec 2.9). The
+    unfiltered `run-started` lookup only words the hint for a missing builder row; it never
+    decides whether the run is usable."""
     con = _open_ro(db_path)
     con.row_factory = sqlite3.Row
     try:
@@ -2290,23 +2379,14 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # Refusing it threw away whole builds over a report-format slip (MOA-471, b756335468ba).
     if not finished_payload.get("head_sha"):
         raise _refuse("unknown-run", f"hint: build {builder_run_id} finished without a head_sha")
+    return started["project"], started_payload, finished_payload
 
-    project = started["project"]
-    branch = started_payload["target"]
-    verify_cmd = started_payload["verify"]
-    # `.get`, never a subscript: every build recorded before MOA-454 has no `build` key
-    # (spec §2.6), and `review --diff` must keep working on those.
-    build_cmd = started_payload.get("build")
-    phase = args.phase or started_payload["phase"]
 
-    # fixes cold review F2: resolve and confine the derived worktree path (§6 I10) and
-    # require it to still exist -- a removed/never-created worktree must refuse cleanly
-    # (a NEW code, distinct from `unknown-run`: the RUN is known and finished, only its
-    # worktree is gone) instead of an uncaught FileNotFoundError from the verify call below.
-    worktree = _branch_worktree_path(allowlist_root, project, branch)
-    if not _contained(worktree, allowlist_root) or not worktree.is_dir():
-        raise Refusal("worktree-missing")
-
+def _load_build_inputs(repo, builder_run_id, worktree, allowlist_root):
+    """The build's own manifest, plan and resolved spec, as `(builder_manifest, plan_path,
+    spec_dest)`. Runs AFTER the worktree check and BEFORE the verify-first re-run, so a build
+    whose manifest/plan cannot be resolved never spends a verify run or rewrites `.tests.txt`.
+    `_resolve_handoff_spec_path` is a module global (tests spy on it)."""
     # fixes S2 (real smoke b12a3db3da4b): the diff handoff must name the SAME plan/spec
     # the build's own handoff named -- read from the build's own manifest, using the SAME
     # `_manifest_dir` helper `build` writes to. Runs AFTER the worktree check but BEFORE
@@ -2338,7 +2418,14 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     spec_dest, spec_refusal_code = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
     if spec_refusal_code:
         raise Refusal(spec_refusal_code)
+    return builder_manifest, plan_path, spec_dest
 
+
+def _evidence_path(worktree, builder_run_id):
+    """The build's `.tests.txt` evidence path with its reports directory created. Refuses a
+    symlink or a non-regular file BEFORE the path is ever snapshotted, read or written
+    through (F3). Only the file itself is checked: parent dirs are the operator's own
+    worktree, trusted (diff review 4884f63bdd16 F2 rejected)."""
     tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
     # fixes cold review F1: the reports directory may not exist yet for a fresh worktree.
     tests_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2350,7 +2437,13 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # file itself is checked (diff review 4884f63bdd16 F2 rejected).
     if tests_path.is_symlink() or (tests_path.exists() and not tests_path.is_file()):
         raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
+    return tests_path
 
+
+def _review_guards(args, *, run, repo, db_path, project, branch, phase, builder_run_id, now):
+    """The two re-review locks of `review --diff`, in order: the CONCURRENCY lock (never
+    bypassed) and the terminal-verdict lock (bypassed by --full/--since). Returns the
+    manifest's `guard` dict. `run` is only used for `tmux has-session`."""
     # MOA-471 item 7: the CONCURRENCY lock always runs first and is never bypassed.
     guard_con = _open_ro(db_path)
     guard_con.row_factory = sqlite3.Row
@@ -2380,32 +2473,38 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         and r["finished_payload"].get("verdict") in jr.VERDICTS
     ]
     selected = max(terminal, key=lambda r: r["finished_ts"], default=None)
-    full_reason = args.full
     # F4 (diff review 4884f63bdd16): the override reflects the flags actually PASSED,
     # independently of whether a terminal prior review was found to bypass.
     flag_override = "full" if args.full else ("since" if args.since else "none")
     if selected is None:
-        guard_info = {"prior_review_run_id": None, "prior_verdict": None, "override": flag_override}
-    else:
-        prior_run_id = selected["run_id"]
-        verdict = selected["finished_payload"]["verdict"]
-        if args.full:
-            override = "full"
-        elif args.since:
-            override = "since"
-        elif verdict in ("approve", "approve-with-changes"):
-            prior_head = _read_manifest_field(repo, prior_run_id, "head_sha")
-            _log_refusal(
-                repo, reason="prior-review-accepted", target=branch, phase=phase,
-                builder_run_id=builder_run_id, prior_review_run_id=prior_run_id, now=now,
-            )
-            raise _refuse("prior-review-accepted", f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
-                f"pass --full \"<reason>\" or --since {prior_run_id}")
-        else:  # reject, no flags: proceeds, advisory only
-            override = "none"
-            print(f"hint: prior review {prior_run_id} rejected this branch; consider --since {prior_run_id}")
-        guard_info = {"prior_review_run_id": prior_run_id, "prior_verdict": verdict, "override": override}
+        return {"prior_review_run_id": None, "prior_verdict": None, "override": flag_override}
+    prior_run_id = selected["run_id"]
+    verdict = selected["finished_payload"]["verdict"]
+    if args.full:
+        override = "full"
+    elif args.since:
+        override = "since"
+    elif verdict in ("approve", "approve-with-changes"):
+        prior_head = _read_manifest_field(repo, prior_run_id, "head_sha")
+        _log_refusal(
+            repo, reason="prior-review-accepted", target=branch, phase=phase,
+            builder_run_id=builder_run_id, prior_review_run_id=prior_run_id, now=now,
+        )
+        raise _refuse("prior-review-accepted", f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
+            f"pass --full \"<reason>\" or --since {prior_run_id}")
+    else:  # reject, no flags: proceeds, advisory only
+        override = "none"
+        print(f"hint: prior review {prior_run_id} rejected this branch; consider --since {prior_run_id}")
+    return {"prior_review_run_id": prior_run_id, "prior_verdict": verdict, "override": override}
 
+
+def _snapshot_evidence(tests_path):
+    """Snapshot any PRE-EXISTING evidence before the verify re-run overwrites it. Returns
+    `(restore, existing)`: `existing` is the bytes (None when there was no file) and
+    `restore()` puts the snapshot back (or removes the new file), leaving a symlink planted
+    after the guard alone (F3). The caller invokes `restore` itself: from the
+    path-outside-allowlist refusal in `_verify_or_reuse` and from the parent's single
+    `except Refusal`. `verify-failed` never restores: the fresh evidence IS its point."""
     # fixes Part 2 diff-review F5: snapshot any PRE-EXISTING evidence before the verify
     # re-run overwrites it, so a refusal further down this function -- after verify has
     # already PASSED -- can restore it instead of leaving a stale/unlogged artifact behind
@@ -2415,7 +2514,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     evidence_existed = tests_path.is_file()
     evidence_before = tests_path.read_bytes() if evidence_existed else None
 
-    def _restore_evidence():
+    def restore():
         # Re-checked immediately before acting (fixes F3): a symlink planted after the
         # guard above must never be followed for the restore write/unlink either -- a
         # symlinked path here is simply left alone.
@@ -2425,7 +2524,18 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
             tests_path.write_bytes(evidence_before)
         else:
             tests_path.unlink(missing_ok=True)
+    return restore, evidence_before
 
+
+def _verify_or_reuse(run, worktree, tests_path, existing, restore, *, builder_run_id,
+                     verify_cmd, build_cmd, finished_payload, reverify):
+    """The verification step of `review --diff`: reuse the builder's own evidence when
+    HEAD/tree/commands/tests.txt still match (MOA-471 item 8), else re-run and rewrite
+    `.tests.txt`. Returns the manifest's `verify` field. `existing` is the snapshotted
+    evidence bytes (None when absent). The path-outside-allowlist refusal restores the
+    snapshot (F3); `verify-failed` raises WITHOUT restoring, and this helper is called
+    OUTSIDE the parent's `try`, so no verify-step refusal can ever reach the parent's
+    `except Refusal` restore (Decision 10)."""
     # MOA-471 item 8: skip the foreground re-run when HEAD/tree/commands/tests.txt
     # evidence all still match the builder's own finished run (see spec item 8).
     head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
@@ -2433,9 +2543,9 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     porcelain = run(["git", "status", "--porcelain"], cwd=worktree)
     requested_cmds = [verify_cmd] + ([build_cmd] if build_cmd else [])
     frames_parsed, parse_error = None, "tests-file-missing"
-    if evidence_existed:
+    if existing is not None:
         try:
-            existing_text = evidence_before.decode("utf-8")
+            existing_text = existing.decode("utf-8")
         except UnicodeDecodeError:
             frames_parsed, parse_error = None, "tests-file-not-utf8"
         else:
@@ -2451,125 +2561,237 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         commands_match=True,
         frames=frames_parsed, parse_error=parse_error,
     )
-    if args.reverify:
+    if reverify:
         should_reuse, verify_reason = False, "reverify-forced"
     if should_reuse:
         print(f"verification reused from build `{builder_run_id}` at `{current_head}`")
-        verify_field = {
+        return {
             "mode": "reused", "reason": verify_reason,
             "source_build_run_id": builder_run_id, "head_sha": current_head,
         }
-    else:
-        print(f"verification rerun: {verify_reason}")
-        verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
-        if not _write_verify_tests_file(tests_path, verify_frames, worktree=worktree):
-            # fixes F3 (TOCTOU symlink race): refuse, restoring the snapshotted evidence.
-            _restore_evidence()
-            raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
-        if any(r.returncode != 0 for _, r in verify_frames):
-            raise Refusal("verify-failed")
-        verify_field = {
-            "mode": "rerun", "reason": verify_reason,
-            "source_build_run_id": builder_run_id, "head_sha": current_head,
-        }
+    print(f"verification rerun: {verify_reason}")
+    verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
+    if not _write_verify_tests_file(tests_path, verify_frames, worktree=worktree):
+        # fixes F3 (TOCTOU symlink race): refuse, restoring the snapshotted evidence.
+        restore()
+        raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
+    if any(r.returncode != 0 for _, r in verify_frames):
+        raise Refusal("verify-failed")
+    return {
+        "mode": "rerun", "reason": verify_reason,
+        "source_build_run_id": builder_run_id, "head_sha": current_head,
+    }
 
+
+def _resolve_review_range(run, repo, worktree, branch, builder_manifest):
+    """`(base_sha, head_sha)` of the range a `review --diff` covers: worktree HEAD, and the
+    base the build itself recorded (MOA-503), falling back to merge-base. Refuses
+    `reviewer head mismatch` when either end is not a 40-hex SHA. Called INSIDE the parent's
+    `try`: its refusals restore the evidence."""
+    head = run(["git", "rev-parse", "HEAD"], cwd=worktree)
+    head_sha = head.stdout.strip() if head.returncode == 0 else None
+    # MOA-503: review the range the build itself produced -- from its recorded base
+    # (a stacked build's base is its parent branch, not the default branch). A missing,
+    # malformed or non-ancestor base falls back to merge-base; present-but-unusable hints.
+    base_sha, recorded = None, builder_manifest.get("base_sha")
+    if recorded is not None:
+        if not (isinstance(recorded, str) and jr.SHA_RE.match(recorded)):
+            why = "not a 40-hex SHA"
+        elif run(["git", "merge-base", "--is-ancestor", recorded, "HEAD"], cwd=worktree).returncode != 0:
+            why = "not an ancestor of HEAD"
+        else:
+            why, base_sha = None, recorded
+        if why:
+            print(f"hint: recorded build base {recorded} unusable ({why}); reviewing merge-base..HEAD")
+    if base_sha is None:
+        base = run(["git", "merge-base", branch, jr._default_branch(repo, run)], cwd=worktree)
+        base_sha = base.stdout.strip() if base.returncode == 0 else None
+    if not base_sha or not jr.SHA_RE.match(base_sha) or not head_sha or not jr.SHA_RE.match(head_sha):
+        raise Refusal("reviewer head mismatch")
+    return base_sha, head_sha
+
+
+def _resolve_since(args, *, run, repo, worktree, branch, db_path, head_sha, base_sha):
+    """The `--since` correction round: `(since_review_run_id, since_verdict, base_sha)`, the
+    base moved to the prior review's head. Without `--since` it returns `(None, None,
+    base_sha)` untouched. A `Refusal` propagates unchanged; any malformed chain data
+    refuses `since-chain-missing`."""
+    if not args.since:
+        return None, None, base_sha
+    # F3 (diff review 4884f63bdd16): a malformed chain node (a non-string
+    # since_review_run_id or SHA in some manifest along the chain) can raise a
+    # TypeError/AttributeError/etc. deep in the walk or in the git calls below.
+    # ponytail: one guard instead of per-field validation -- any such crash
+    # refuses exactly like a broken/unreadable chain node (Refusal itself
+    # propagates unchanged, never caught here).
     try:
-        head = run(["git", "rev-parse", "HEAD"], cwd=worktree)
-        head_sha = head.stdout.strip() if head.returncode == 0 else None
-        # MOA-503: review the range the build itself produced -- from its recorded base
-        # (a stacked build's base is its parent branch, not the default branch). A missing,
-        # malformed or non-ancestor base falls back to merge-base; present-but-unusable hints.
-        base_sha, recorded = None, builder_manifest.get("base_sha")
-        if recorded is not None:
-            if not (isinstance(recorded, str) and jr.SHA_RE.match(recorded)):
-                why = "not a 40-hex SHA"
-            elif run(["git", "merge-base", "--is-ancestor", recorded, "HEAD"], cwd=worktree).returncode != 0:
-                why = "not an ancestor of HEAD"
-            else:
-                why, base_sha = None, recorded
-            if why:
-                print(f"hint: recorded build base {recorded} unusable ({why}); reviewing merge-base..HEAD")
-        if base_sha is None:
-            base = run(["git", "merge-base", branch, jr._default_branch(repo, run)], cwd=worktree)
-            base_sha = base.stdout.strip() if base.returncode == 0 else None
-        if not base_sha or not jr.SHA_RE.match(base_sha) or not head_sha or not jr.SHA_RE.match(head_sha):
-            raise Refusal("reviewer head mismatch")
-
-        since_review_run_id = None
-        since_verdict = None
-        if args.since:
-            # F3 (diff review 4884f63bdd16): a malformed chain node (a non-string
-            # since_review_run_id or SHA in some manifest along the chain) can raise a
-            # TypeError/AttributeError/etc. deep in the walk or in the git calls below.
-            # ponytail: one guard instead of per-field validation -- any such crash
-            # refuses exactly like a broken/unreadable chain node (Refusal itself
-            # propagates unchanged, never caught here).
-            try:
-                since_con = _open_ro(db_path)
-                since_con.row_factory = sqlite3.Row
-                try:
-                    chain, walk_error = _walk_review_chain(
-                        lambda rid: _load_diff_review_node(since_con, repo, rid), args.since,
-                    )
-                finally:
-                    since_con.close()
-                if walk_error is not None:
-                    kind, bad_run_id = walk_error
-                    raise _refuse(f"since-chain-{kind}", f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead")
-                target_node = chain[-1]
-                if not target_node["head_sha"]:
-                    raise _refuse("since-chain-broken", f"hint: {target_node['run_id']} has no head_sha; run a full review instead")
-                ancestor = run(
-                    ["git", "merge-base", "--is-ancestor", target_node["head_sha"], head_sha], cwd=worktree,
-                )
-                if ancestor.returncode != 0:
-                    raise _refuse("since-not-ancestor", "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead")
-                lock_error = _validate_since_chain(
-                    chain, branch=branch, current_merge_base=base_sha, run=run, worktree=worktree,
-                )
-                if lock_error:
-                    raise _refuse(lock_error, "hint: run a full review instead")
-                since_review_run_id = args.since
-                since_verdict = target_node["verdict"]
-                base_sha = target_node["head_sha"]
-            except Refusal:
-                raise
-            except (TypeError, AttributeError, ValueError, KeyError, json.JSONDecodeError) as exc:
-                raise _refuse("since-chain-missing",
-                              f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead") from exc
-
-        # fixes cold review round 2 F3(a): route --diff through the SAME handoff-grammar/
-        # evidence validation every other reviewer dispatch gets (spec §4.3 step 3), instead of
-        # the standalone jr.reviewer_head_matches(...) call this replaces plus skip_handoff=True.
-        # base_sha/head_sha/tests_path are all already known here, so a small throwaway stub file
-        # carries exactly the grammar block preflight()'s handoff parser expects -- the actual
-        # diff text is rendered later, by the worker. repo=str(worktree), not str(repo) (the
-        # control repo), so the dirty-tree/detached-HEAD checks validate the worktree under
-        # review, not the control repo's own unrelated branch/dirty state. fixes S2: the extra
-        # `spec:`/`plan:` lines (legal, unparsed `paths:` keys -- `parse_reviewer_handoff` only
-        # ever looks for the one `test-output:` line) name the SAME plan/spec `build` itself
-        # resolved, above.
-        stub_path = worktree / ".local" / "runs" / f"{builder_run_id}-diff-handoff-stub.txt"
-        stub_path.parent.mkdir(parents=True, exist_ok=True)
-        stub_path.write_text(
-            f"diff: {base_sha}..{head_sha}\npaths:\n"
-            f"  spec: {spec_dest}\n  plan: {plan_path}\n  test-output: {tests_path}\n",
-            encoding="utf-8",
-        )
-        args_ns = SimpleNamespace(
-            role="reviewer", project=project, phase=phase, repo=str(worktree),
-            prompt_file=str(stub_path), runtime=runtime, callback=None,
-        )
+        since_con = _open_ro(db_path)
+        since_con.row_factory = sqlite3.Row
         try:
-            jr.preflight(
-                args_ns, run=run, allow_untracked=True, require_feat_branch=False,
-                skip_handoff=False, db_path=db_path,
+            chain, walk_error = _walk_review_chain(
+                lambda rid: _load_diff_review_node(since_con, repo, rid), args.since,
             )
-        except ValueError as exc:
-            raise Refusal(_map_refusal(str(exc))) from exc
         finally:
-            stub_path.unlink(missing_ok=True)
+            since_con.close()
+        if walk_error is not None:
+            kind, bad_run_id = walk_error
+            raise _refuse(f"since-chain-{kind}", f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead")
+        target_node = chain[-1]
+        if not target_node["head_sha"]:
+            raise _refuse("since-chain-broken", f"hint: {target_node['run_id']} has no head_sha; run a full review instead")
+        ancestor = run(
+            ["git", "merge-base", "--is-ancestor", target_node["head_sha"], head_sha], cwd=worktree,
+        )
+        if ancestor.returncode != 0:
+            raise _refuse("since-not-ancestor", "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead")
+        lock_error = _validate_since_chain(
+            chain, branch=branch, current_merge_base=base_sha, run=run, worktree=worktree,
+        )
+        if lock_error:
+            raise _refuse(lock_error, "hint: run a full review instead")
+        return args.since, target_node["verdict"], target_node["head_sha"]
+    except Refusal:
+        raise
+    except (TypeError, AttributeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise _refuse("since-chain-missing",
+                      f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead") from exc
 
+
+def _preflight_diff(*, run, db_path, worktree, builder_run_id, project, phase, runtime,
+                    base_sha, head_sha, spec_dest, plan_path, tests_path):
+    """Route `--diff` through the SAME handoff-grammar/evidence validation every other
+    reviewer dispatch gets (spec 4.3 step 3). A throwaway stub file carries the grammar
+    block `jr.preflight` parses; the diff text itself is rendered later, by the worker.
+    Raises `Refusal` through `_map_refusal` on a `ValueError`."""
+    # fixes cold review round 2 F3(a): route --diff through the SAME handoff-grammar/
+    # evidence validation every other reviewer dispatch gets (spec §4.3 step 3), instead of
+    # the standalone jr.reviewer_head_matches(...) call this replaces plus skip_handoff=True.
+    # base_sha/head_sha/tests_path are all already known here, so a small throwaway stub file
+    # carries exactly the grammar block preflight()'s handoff parser expects -- the actual
+    # diff text is rendered later, by the worker. repo=str(worktree), not str(repo) (the
+    # control repo), so the dirty-tree/detached-HEAD checks validate the worktree under
+    # review, not the control repo's own unrelated branch/dirty state. fixes S2: the extra
+    # `spec:`/`plan:` lines (legal, unparsed `paths:` keys -- `parse_reviewer_handoff` only
+    # ever looks for the one `test-output:` line) name the SAME plan/spec `build` itself
+    # resolved, above.
+    stub_path = worktree / ".local" / "runs" / f"{builder_run_id}-diff-handoff-stub.txt"
+    stub_path.parent.mkdir(parents=True, exist_ok=True)
+    stub_path.write_text(
+        f"diff: {base_sha}..{head_sha}\npaths:\n"
+        f"  spec: {spec_dest}\n  plan: {plan_path}\n  test-output: {tests_path}\n",
+        encoding="utf-8",
+    )
+    args_ns = SimpleNamespace(
+        role="reviewer", project=project, phase=phase, repo=str(worktree),
+        prompt_file=str(stub_path), runtime=runtime, callback=None,
+    )
+    try:
+        jr.preflight(
+            args_ns, run=run, allow_untracked=True, require_feat_branch=False,
+            skip_handoff=False, db_path=db_path,
+        )
+    except ValueError as exc:
+        raise Refusal(_map_refusal(str(exc))) from exc
+    finally:
+        stub_path.unlink(missing_ok=True)
+
+
+def _diff_manifests(args, *, repo, worktree, project, phase, branch, builder_run_id, base_sha,
+                    head_sha, tests_path, caller, caller_session, caller_pane, model, effort,
+                    runtime, fallback, run_id, session, now, plan_path, spec_dest, verify_field,
+                    guard_info, since_review_run_id, since_verdict):
+    """`(manifest, started_event_payload)` of a diff-review run. Key order is part of the
+    contract (manifest.json is written in insertion order). `caller_session` is passed in:
+    `_require_caller_session` must keep running in the dispatcher, right after `_alloc_run`."""
+    manifest = {
+        "kind": "diff", "role": "reviewer", "project": project, "phase": phase,
+        "repo": str(repo), "worktree": str(worktree), "target": branch,
+        "builder_run_id": builder_run_id, "base_sha": base_sha, "head_sha": head_sha,
+        "tests_path": str(tests_path), "caller": caller, "caller_session": caller_session,
+        "model": model, "effort": effort, "runtime": runtime, "run_id": run_id,
+        "session": session, "no_callback": _no_callback(args, caller), "focus": args.focus,
+        "threat_model": _threat_model_for(repo),
+        "plan_path": str(plan_path), "spec_path": str(spec_dest),
+        "dispatch_start": _iso8601(now()),
+        "verify": verify_field,
+        "guard": guard_info,
+        "full_reason": args.full,
+    }
+    if since_review_run_id:
+        manifest["since_review_run_id"] = since_review_run_id
+        manifest["since_verdict"] = since_verdict
+    if fallback:
+        manifest["fallback"] = fallback
+
+    started_event_payload = {
+        "phase": phase, "runtime": runtime, "kind": "diff", "target": branch,
+        "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
+        "session": session, "repo": str(repo), "builder_run_id": builder_run_id,
+    }
+    if caller_pane:
+        started_event_payload["caller_pane"] = caller_pane
+    return manifest, started_event_payload
+
+
+def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
+    if args.since is not None and args.full is not None:
+        raise Refusal("since-full-conflict")
+    if args.full is not None and not args.full.strip():
+        raise Refusal("full-reason-blank")
+    if args.since is not None and not _RUN_ID_RE.match(args.since):
+        raise Refusal("since-invalid")
+    cwd = Path.cwd().resolve()
+    repo = _require_toplevel(run, cwd)
+    caller = resolve_caller(env, args.from_caller)
+    selected = jset.select_reviewer(
+        jset.read_settings(), caller, model=args.model, effort=args.effort, agents=_enabled_agents(),
+    )
+    runtime = selected["runtime"]
+    model = selected["model"]
+    effort = selected["effort"]
+    fallback = selected["fallback"]
+    builder_run_id = args.diff
+
+    db_path = db_path or jr.DB_PATH
+    project, started_payload, finished_payload = _load_finished_build(db_path, builder_run_id)
+    branch = started_payload["target"]
+    verify_cmd = started_payload["verify"]
+    # `.get`, never a subscript: every build recorded before MOA-454 has no `build` key
+    # (spec §2.6), and `review --diff` must keep working on those.
+    build_cmd = started_payload.get("build")
+    phase = args.phase or started_payload["phase"]
+
+    # fixes cold review F2: resolve and confine the derived worktree path (§6 I10) and
+    # require it to still exist -- a removed/never-created worktree must refuse cleanly
+    # (a NEW code, distinct from `unknown-run`: the RUN is known and finished, only its
+    # worktree is gone) instead of an uncaught FileNotFoundError from the verify call below.
+    worktree = _branch_worktree_path(allowlist_root, project, branch)
+    if not _contained(worktree, allowlist_root) or not worktree.is_dir():
+        raise Refusal("worktree-missing")
+
+    builder_manifest, plan_path, spec_dest = _load_build_inputs(repo, builder_run_id, worktree, allowlist_root)
+    tests_path = _evidence_path(worktree, builder_run_id)
+    guard_info = _review_guards(
+        args, run=run, repo=repo, db_path=db_path, project=project, branch=branch,
+        phase=phase, builder_run_id=builder_run_id, now=now,
+    )
+    restore_evidence, existing_evidence = _snapshot_evidence(tests_path)
+    verify_field = _verify_or_reuse(
+        run, worktree, tests_path, existing_evidence, restore_evidence,
+        builder_run_id=builder_run_id, verify_cmd=verify_cmd, build_cmd=build_cmd,
+        finished_payload=finished_payload, reverify=args.reverify,
+    )
+    try:
+        base_sha, head_sha = _resolve_review_range(run, repo, worktree, branch, builder_manifest)
+        since_review_run_id, since_verdict, base_sha = _resolve_since(
+            args, run=run, repo=repo, worktree=worktree, branch=branch, db_path=db_path,
+            head_sha=head_sha, base_sha=base_sha,
+        )
+        _preflight_diff(
+            run=run, db_path=db_path, worktree=worktree, builder_run_id=builder_run_id,
+            project=project, phase=phase, runtime=runtime, base_sha=base_sha, head_sha=head_sha,
+            spec_dest=spec_dest, plan_path=plan_path, tests_path=tests_path,
+        )
         try:
             run_id, session, paths = jr._alloc_run(project, "diff", repo, run, run_id=uuid.uuid4().hex[:12])
         except ValueError as exc:
@@ -2578,34 +2800,15 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         caller_session = _require_caller_session(env, caller)
         caller_pane = env.get("TMUX_PANE")
 
-        manifest = {
-            "kind": "diff", "role": "reviewer", "project": project, "phase": phase,
-            "repo": str(repo), "worktree": str(worktree), "target": branch,
-            "builder_run_id": builder_run_id, "base_sha": base_sha, "head_sha": head_sha,
-            "tests_path": str(tests_path), "caller": caller, "caller_session": caller_session,
-            "model": model, "effort": effort, "runtime": runtime, "run_id": run_id,
-            "session": session, "no_callback": _no_callback(args, caller), "focus": args.focus,
-            "threat_model": _threat_model_for(repo),
-            "plan_path": str(plan_path), "spec_path": str(spec_dest),
-            "dispatch_start": _iso8601(now()),
-            "verify": verify_field,
-            "guard": guard_info,
-            "full_reason": full_reason,
-        }
-        if since_review_run_id:
-            manifest["since_review_run_id"] = since_review_run_id
-            manifest["since_verdict"] = since_verdict
-        if fallback:
-            manifest["fallback"] = fallback
-
-        started_event_payload = {
-            "phase": phase, "runtime": runtime, "kind": "diff", "target": branch,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "session": session, "repo": str(repo), "builder_run_id": builder_run_id,
-        }
-        if caller_pane:
-            started_event_payload["caller_pane"] = caller_pane
-
+        manifest, started_event_payload = _diff_manifests(
+            args, repo=repo, worktree=worktree, project=project, phase=phase, branch=branch,
+            builder_run_id=builder_run_id, base_sha=base_sha, head_sha=head_sha,
+            tests_path=tests_path, caller=caller, caller_session=caller_session,
+            caller_pane=caller_pane, model=model, effort=effort, runtime=runtime,
+            fallback=fallback, run_id=run_id, session=session, now=now, plan_path=plan_path,
+            spec_dest=spec_dest, verify_field=verify_field, guard_info=guard_info,
+            since_review_run_id=since_review_run_id, since_verdict=since_verdict,
+        )
         run_id = _dispatch_run(
             run=run, post=post, repo=repo, project=project, phase=phase, kind="diff",
             role="reviewer", run_id=run_id, session=session, manifest=manifest,
@@ -2621,7 +2824,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         # fires AFTER the verify re-run above already overwrote `.tests.txt` -- restore
         # whatever evidence existed before it (or remove the new file entirely) so a
         # refused dispatch never leaves a stale/unlogged artifact behind.
-        _restore_evidence()
+        restore_evidence()
         raise
 
 
@@ -6803,14 +7006,15 @@ _RUN_ID_HELP = "Run id printed by 'jaxflow review' or 'jaxflow build'."
 _OLDER_THAN_HELP = "Age threshold, e.g. 7d (default). Only whole days are supported."
 
 
-def parse_args(argv):
-    parser = argparse.ArgumentParser(
-        prog="jaxflow",
-        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
-                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
+def _add_from(parser, help_text):
+    """The `--from` caller-identity option shared by review, build, pr open, release and merge
+    (the help text differs: dispatch verbs also need the session variable)."""
+    parser.add_argument(
+        "--from", dest="from_caller", choices=("claude", "codex", "jaxos"), help=help_text,
     )
-    sub = parser.add_subparsers(dest="command", required=True)
 
+
+def _add_review_parser(sub):
     review = sub.add_parser(
         "review",
         help="Dispatch a cold review of a spec, a plan, or a finished build's diff.",
@@ -6852,9 +7056,7 @@ def parse_args(argv):
         help="Run identifier token. Defaults to the target file's stem for --spec/--plan, "
              "or to the build run's own phase for --diff.",
     )
-    review.add_argument(
-        "--from", dest="from_caller", choices=["claude", "codex", "jaxos"], help=_FROM_HELP_DISPATCH,
-    )
+    _add_from(review, _FROM_HELP_DISPATCH)
     review.add_argument(
         "--no-callback", action="store_true",
         help="Do not send the '[JAXFLOW] ... finished' line back to the caller's tmux pane "
@@ -6879,7 +7081,10 @@ def parse_args(argv):
         help="For --diff: force a full verify+build re-run, ignoring the reuse check "
              "(MOA-471 item 8).",
     )
+    review.set_defaults(func=_cli_review)
 
+
+def _add_build_parser(sub):
     build = sub.add_parser(
         "build",
         help="Reserve a worktree and dispatch a builder to implement a plan.",
@@ -6955,15 +7160,16 @@ def parse_args(argv):
         "--fallback", action="store_true",
         help="Use the saved fallback builder profile instead of default.",
     )
-    build.add_argument(
-        "--from", dest="from_caller", choices=["claude", "codex", "jaxos"], help=_FROM_HELP_DISPATCH,
-    )
+    _add_from(build, _FROM_HELP_DISPATCH)
     build.add_argument(
         "--no-callback", action="store_true",
         help="Do not send the '[JAXFLOW] build ... finished' line back to the caller's "
              "tmux pane when the run completes.",
     )
+    build.set_defaults(func=_cli_build)
 
+
+def _add_pr_parser(sub):
     pr = sub.add_parser(
         "pr",
         help="Open a GitHub PR for a PR-preset delivery.",
@@ -6985,9 +7191,11 @@ def parse_args(argv):
     popen_.add_argument("--title", required=True, type=_nonblank,
                          help="PR title, passed to gh pr create --title verbatim.")
     popen_.add_argument("--body-file", help="Optional path passed to gh pr create --body-file.")
-    popen_.add_argument("--from", dest="from_caller", choices=("claude", "codex", "jaxos"),
-                         help=_FROM_HELP_MERGE)
+    _add_from(popen_, _FROM_HELP_MERGE)
+    popen_.set_defaults(func=_cli_pr_open)
 
+
+def _add_release_parser(sub):
     release = sub.add_parser(
         "release",
         help="Cut and open the staging -> production promotion PR (dual-branch-pr only).",
@@ -6995,9 +7203,11 @@ def parse_args(argv):
                      "and opens its PR into the Production target, reusing an open release PR. A SEPARATE "
                      "Rafa approval then runs jaxflow merge on the printed branch/sha.",
     )
-    release.add_argument("--from", dest="from_caller", choices=("claude", "codex", "jaxos"),
-                          help=_FROM_HELP_MERGE)
+    _add_from(release, _FROM_HELP_MERGE)
+    release.set_defaults(func=_cli_release)
 
+
+def _add_merge_parser(sub):
     merge = sub.add_parser(
         "merge",
         help="Merge a branch Rafa has explicitly approved by SHA.",
@@ -7052,10 +7262,11 @@ def parse_args(argv):
              "empty, malformed, or not a literal branch name, and target-mismatch if it "
              "differs from policy.",
     )
-    merge.add_argument(
-        "--from", dest="from_caller", choices=("claude", "codex", "jaxos"), help=_FROM_HELP_MERGE,
-    )
+    _add_from(merge, _FROM_HELP_MERGE)
+    merge.set_defaults(func=_cli_merge)
 
+
+def _add_run_query_parsers(sub):
     status = sub.add_parser(
         "status",
         help="Print a run's current state.",
@@ -7063,6 +7274,7 @@ def parse_args(argv):
                      "finished(ok|failed|cancelled).",
     )
     status.add_argument("run_id", help=_RUN_ID_HELP)
+    status.set_defaults(func=_cli_status)
     result = sub.add_parser(
         "result",
         help="Print a finished run's report.",
@@ -7071,6 +7283,7 @@ def parse_args(argv):
                      "run has not finished.",
     )
     result.add_argument("run_id", help=_RUN_ID_HELP)
+    result.set_defaults(func=_cli_result)
     cancel = sub.add_parser(
         "cancel",
         help="Kill a running run.",
@@ -7078,7 +7291,11 @@ def parse_args(argv):
                      "ledger.",
     )
     cancel.add_argument("run_id", help=_RUN_ID_HELP)
-    sub.add_parser("doctor", help="Read-only health check: what is and isn't wired up.")
+    cancel.set_defaults(func=_cli_cancel)
+    sub.add_parser("doctor", help="Read-only health check: what is and isn't wired up.").set_defaults(func=_cli_doctor)
+
+
+def _add_gc_loop_parsers(sub):
     gc = sub.add_parser(
         "gc",
         help="Remove stale jaxflow-reserved worktrees.",
@@ -7090,6 +7307,7 @@ def parse_args(argv):
     gc.add_argument("--dry-run", action="store_true")
     gc.add_argument("--yes", action="store_true")
     gc.add_argument("--force", action="store_true")
+    gc.set_defaults(func=_cli_gc)
 
     loop = sub.add_parser(
         "loop",
@@ -7099,7 +7317,10 @@ def parse_args(argv):
                      "No git repo required.",
     )
     loop.add_argument("prefix", help="Normalized to at least 4 chars; e.g. moa-474.")
+    loop.set_defaults(func=_cli_loop)
 
+
+def _add_mission_parser(sub):
     mission = sub.add_parser(
         "mission",
         help="Track Rafa's own multi-phase objective (opt-in, cross-project).",
@@ -7124,8 +7345,110 @@ def parse_args(argv):
     mission_sub.add_parser("done", help="Finish the active mission as done.")
     mission_sub.add_parser("cancel", help="Finish the active mission as cancelled.")
     mission_sub.add_parser("show", help="Print the active mission, or 'no active mission'.")
+    mission.set_defaults(func=_cli_mission)
 
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="jaxflow",
+        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
+                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    for add in (_add_review_parser, _add_build_parser, _add_pr_parser, _add_release_parser,
+                _add_merge_parser, _add_run_query_parsers, _add_gc_loop_parsers,
+                _add_mission_parser):
+        add(sub)
     return parser.parse_args(argv)
+
+
+def _cli_review(args, deps):
+    dispatch = dispatch_diff_review if args.diff else dispatch_review
+    run_id = dispatch(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                      allowlist_root=deps.allowlist_root)
+    print(run_id)
+    return OK
+
+
+def _cli_build(args, deps):
+    run_id = dispatch_build(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                            allowlist_root=deps.allowlist_root)
+    print(run_id)
+    return OK
+
+
+def _cli_pr_open(args, deps):
+    result = cmd_pr_open(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                         allowlist_root=deps.allowlist_root)
+    print(f"{result['url']}")
+    return OK
+
+
+def _cli_release(args, deps):
+    result = cmd_release(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                         allowlist_root=deps.allowlist_root)
+    print(f"{result['url']}")
+    print(f"snapshot: {result['snapshot_sha']}")
+    print(f"next: jaxflow merge {result['branch']} --sha {result['snapshot_sha']} "
+          f"--phase \"<title>\" --checks \"<cmd>\" --target <Production target>")
+    return OK
+
+
+def _cli_merge(args, deps):
+    return cmd_merge(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                     allowlist_root=deps.allowlist_root)
+
+
+def _cli_gc(args, deps):
+    cmd_gc(args, run=deps.run, post=deps.post, now=deps.now, allowlist_root=deps.allowlist_root)
+    return OK
+
+
+def _cli_loop(args, deps):
+    print(cmd_loop(args.prefix))
+    return OK
+
+
+def _cli_status(args, deps):
+    print(cmd_status(args.run_id, run=deps.run))
+    return OK
+
+
+def _cli_result(args, deps):
+    sys.stdout.write(cmd_result(args.run_id, allowlist_root=deps.allowlist_root))
+    return OK
+
+
+def _cli_cancel(args, deps):
+    # cmd_cancel does NOT take main()'s own `post` (that one is `_post_event`-shaped
+    # for dispatch/worker); it uses its own `_post`-shaped default so it can see the
+    # raw HTTP status (fixes cold review F2).
+    print(cmd_cancel(args.run_id, run=deps.run, now=deps.now))
+    return OK
+
+
+def _cli_doctor(args, deps):
+    lines, code = cmd_doctor()
+    for line in lines:
+        print(line)
+    return code
+
+
+def _cli_mission(args, deps):
+    # Mission uses the module's own `_get`/`_post` (HTTP-status shaped), never main()'s `post`.
+    if args.mission_command == "show":
+        print(cmd_mission_show(get=_get))
+    elif args.mission_command == "start":
+        cmd_mission_start(args, post=_post)
+    elif args.mission_command == "status":
+        cmd_mission_status(args, post=_post)
+    elif args.mission_command == "mark":
+        cmd_mission_mark(args, post=_post)
+    elif args.mission_command == "done":
+        cmd_mission_finish("done", post=_post)
+    elif args.mission_command == "cancel":
+        cmd_mission_finish("cancelled", post=_post)
+    return OK
 
 
 def main(argv=None, *, run=jr.run_command, post=_post_event, env=None, now=None,
@@ -7139,80 +7462,15 @@ def main(argv=None, *, run=jr.run_command, post=_post_event, env=None, now=None,
             return REFUSED
         return run_worker(argv[1], run=run, post=post, popen=popen, env=env, allowlist_root=allowlist_root)
     args = parse_args(argv)
+    deps = SimpleNamespace(run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
     try:
-        if args.command == "review":
-            if args.diff:
-                run_id = dispatch_diff_review(args, run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
-            else:
-                run_id = dispatch_review(args, run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
-            print(run_id)
-            return OK
-        if args.command == "build":
-            run_id = dispatch_build(args, run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
-            print(run_id)
-            return OK
-        if args.command == "pr":
-            if args.pr_command == "open":
-                result = cmd_pr_open(args, run=run, post=post, env=env, now=now,
-                                       allowlist_root=allowlist_root)
-                print(f"{result['url']}")
-                return OK
-        if args.command == "release":
-            result = cmd_release(args, run=run, post=post, env=env, now=now,
-                                   allowlist_root=allowlist_root)
-            print(f"{result['url']}")
-            print(f"snapshot: {result['snapshot_sha']}")
-            print(f"next: jaxflow merge {result['branch']} --sha {result['snapshot_sha']} "
-                  f"--phase \"<title>\" --checks \"<cmd>\" --target <Production target>")
-            return OK
-        if args.command == "merge":
-            return cmd_merge(args, run=run, post=post, env=env, now=now,
-                             allowlist_root=allowlist_root)
-        if args.command == "gc":
-            cmd_gc(args, run=run, post=post, now=now, allowlist_root=allowlist_root)
-            return OK
-        if args.command == "loop":
-            print(cmd_loop(args.prefix))
-            return OK
-        if args.command == "status":
-            print(cmd_status(args.run_id, run=run))
-            return OK
-        if args.command == "result":
-            sys.stdout.write(cmd_result(args.run_id, allowlist_root=allowlist_root))
-            return OK
-        if args.command == "cancel":
-            # cmd_cancel does NOT take main()'s own `post` (that one is `_post_event`-shaped
-            # for dispatch/worker); it uses its own `_post`-shaped default so it can see the
-            # raw HTTP status (fixes cold review F2).
-            print(cmd_cancel(args.run_id, run=run, now=now))
-            return OK
-        if args.command == "doctor":
-            lines, code = cmd_doctor()
-            for line in lines:
-                print(line)
-            return code
-        if args.command == "mission":
-            if args.mission_command == "show":
-                print(cmd_mission_show(get=_get))
-                return OK
-            if args.mission_command == "start":
-                cmd_mission_start(args, post=_post)
-            elif args.mission_command == "status":
-                cmd_mission_status(args, post=_post)
-            elif args.mission_command == "mark":
-                cmd_mission_mark(args, post=_post)
-            elif args.mission_command == "done":
-                cmd_mission_finish("done", post=_post)
-            elif args.mission_command == "cancel":
-                cmd_mission_finish("cancelled", post=_post)
-            return OK
+        return args.func(args, deps)
     except Refusal as exc:
         print(exc.code, file=sys.stderr)
         hint = getattr(exc, "hint", None)
         if hint:
             print(hint, file=sys.stderr)
         return REFUSED
-    return REFUSED
 
 
 if __name__ == "__main__":
