@@ -1805,31 +1805,31 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         except ValueError as exc:
             raise Refusal(_map_refusal(str(exc))) from exc
         caller_pane = env.get("TMUX_PANE")
-        manifest = {
-            "kind": "build", "role": "builder", "project": project, "phase": phase,
-            "repo": str(repo), "worktree": str(worktree), "branch": branch,
-            "target": branch, "base_sha": base_sha,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "runtime": runtime, "run_id": run_id, "session": session,
-            "no_callback": _no_callback(args, caller), "whitelist": whitelist,
-            "verify": verify, "plan_path": str(plan_path),
-            "dispatch_start": _iso8601(now()),
+        manifest = _build_manifest_base(
+            args, project=project, phase=phase, repo=repo, worktree=worktree, branch=branch,
+            base_sha=base_sha, caller=caller, caller_session=caller_session, model=model,
+            effort=effort, runtime=runtime, run_id=run_id, session=session, whitelist=whitelist,
+            verify=verify, plan_path=plan_path, now=now,
+        )
+        manifest.update({
             "requested_profile": profile_name,
             "root_build_run_id": root_build_run_id,
             "resumes_run_id": resume_id,
             "reservation_owned": False,
             "resume_start": checkpoint["work_state"],
-        }
+        })
         if prior.get("build"):
             manifest["build"] = prior["build"]
-        started_out = {
-            "phase": phase, "runtime": runtime, "kind": "build", "target": branch,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "session": session, "repo": str(repo), "verify": verify,
+        started_out = _build_started_base(
+            phase=phase, runtime=runtime, branch=branch, caller=caller,
+            caller_session=caller_session, model=model, effort=effort, session=session,
+            repo=repo, verify=verify,
+        )
+        started_out.update({
             "requested_profile": profile_name,
             "root_build_run_id": root_build_run_id,
             "resumes_run_id": resume_id,
-        }
+        })
         if caller_pane:
             started_out["caller_pane"] = caller_pane
         if prior.get("build"):
@@ -1840,6 +1840,38 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             manifest_dir=_manifest_dir(repo, run_id), started_payload=started_out,
             cleanup_paths=[],
         )
+
+
+def _build_manifest_base(args, *, project, phase, repo, worktree, branch, base_sha, caller,
+                         caller_session, model, effort, runtime, run_id, session, whitelist,
+                         verify, plan_path, now):
+    """The manifest keys a fresh build and a resumed build share, in their shared order
+    (manifest.json is written in insertion order; the callers append their own tails).
+    `_no_callback` and `now()` keep their dict-literal evaluation order."""
+    return {
+        "kind": "build", "role": "builder", "project": project, "phase": phase,
+        "repo": str(repo), "worktree": str(worktree), "branch": branch,
+        # target = the branch (spec §2.6/§4.3/§2.4's `result`), NOT the plan path --
+        # see this plan's header for the §4.2/§7.1#14 conflict this resolves.
+        "target": branch,
+        "base_sha": base_sha,
+        "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
+        "runtime": runtime, "run_id": run_id, "session": session,
+        "no_callback": _no_callback(args, caller), "whitelist": whitelist,
+        "verify": verify, "plan_path": str(plan_path),
+        "dispatch_start": _iso8601(now()),
+    }
+
+
+def _build_started_base(*, phase, runtime, branch, caller, caller_session, model, effort,
+                        session, repo, verify):
+    """The `run-started` payload keys a fresh and a resumed build share (the callers append
+    their own tails in their own order)."""
+    return {
+        "phase": phase, "runtime": runtime, "kind": "build", "target": branch,
+        "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
+        "session": session, "repo": str(repo), "verify": verify,
+    }
 
 
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
@@ -2042,19 +2074,12 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
 
         caller_pane = env.get("TMUX_PANE")
 
-        manifest = {
-            "kind": "build", "role": "builder", "project": project, "phase": phase,
-            "repo": str(repo), "worktree": str(worktree), "branch": args.branch,
-            # target = the branch (spec §2.6/§4.3/§2.4's `result`), NOT the plan path --
-            # see this plan's header for the §4.2/§7.1#14 conflict this resolves.
-            "target": args.branch,
-            "base_sha": base_sha,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "runtime": runtime, "run_id": run_id, "session": session,
-            "no_callback": _no_callback(args, caller), "whitelist": whitelist,
-            "verify": args.verify, "plan_path": str(plan_path),
-            "dispatch_start": _iso8601(now()),
-        }
+        manifest = _build_manifest_base(
+            args, project=project, phase=phase, repo=repo, worktree=worktree, branch=args.branch,
+            base_sha=base_sha, caller=caller, caller_session=caller_session, model=model,
+            effort=effort, runtime=runtime, run_id=run_id, session=session, whitelist=whitelist,
+            verify=args.verify, plan_path=plan_path, now=now,
+        )
         if args.build:
             manifest["build"] = args.build
         if requested_profile is not None:
@@ -2062,11 +2087,11 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
             manifest["root_build_run_id"] = run_id
             manifest["reservation_owned"] = True
 
-        started_payload = {
-            "phase": phase, "runtime": runtime, "kind": "build", "target": args.branch,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "session": session, "repo": str(repo), "verify": args.verify,
-        }
+        started_payload = _build_started_base(
+            phase=phase, runtime=runtime, branch=args.branch, caller=caller,
+            caller_session=caller_session, model=model, effort=effort, session=session,
+            repo=repo, verify=args.verify,
+        )
         if caller_pane:
             started_payload["caller_pane"] = caller_pane
         if args.build:
