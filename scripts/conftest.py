@@ -47,3 +47,60 @@ for _sp in glob.glob(os.path.expanduser("~/.jax-os/inventory-venv/lib/python3.*/
     if _sp not in sys.path:
         sys.path.append(_sp)  # append, not insert: the system interpreter's own packages still win
     os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [os.environ.get("PYTHONPATH", ""), _sp]))
+
+
+# ---- opencode spawn counter (jaxflow lean spec D12/D13/A7) ---------------------------------
+# The real `opencode` binary is slow (75 s of the old 139 s suite). Every process whose
+# executable is `opencode` is recorded in OPENCODE_CALLS (budget assertion: Task 4). Tests that
+# need the binary carry `@pytest.mark.opencode` and skip when it is absent.
+import shlex
+import subprocess
+
+import pytest
+
+OPENCODE_CALLS = []
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "opencode: needs the real `opencode` binary (skipped when it is not installed)")
+
+
+def _argv0(args, shell):
+    """The executable `Popen` would start. shell=False: argv[0] of a list, or a scalar
+    str/bytes/PathLike taken WHOLE (never split: `Path('/tmp/a b/opencode')` is one path).
+    shell=True: `sh -c <command>`, so the executable is the first shell token."""
+    if isinstance(args, (str, bytes, os.PathLike)):
+        first = os.fsdecode(args)
+    else:
+        first = os.fsdecode(args[0]) if args else ""
+    if not shell:
+        return first
+    try:
+        tokens = shlex.split(first)
+    except ValueError:  # unbalanced quote: no executable we can name
+        return ""
+    return tokens[0] if tokens else ""
+
+
+def _count_opencode(args, shell=False):
+    """Record `args` when its executable's basename is `opencode`."""
+    if os.path.basename(_argv0(args, shell)) == "opencode":
+        OPENCODE_CALLS.append(args)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def opencode_spawn_counter():
+    """Count every `opencode` process the session starts. `subprocess.run` builds a
+    `Popen`, so wrapping `Popen` alone sees both without double counting."""
+    real_popen = subprocess.Popen
+
+    class _CountingPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            # ponytail: `shell` passed positionally (9th argument) is not seen; nobody does that.
+            _count_opencode(args[0] if args else kwargs.get("args"), kwargs.get("shell", False))
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = _CountingPopen
+    yield OPENCODE_CALLS
+    subprocess.Popen = real_popen
