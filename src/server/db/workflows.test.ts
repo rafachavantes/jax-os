@@ -3120,14 +3120,24 @@ describe("MOA-469 — native Codex session derivation", () => {
     db.close();
   });
 
-  it("HubCodexSession.capsule reads merge_ask/message_tail from a classified row, the same way lastCapsule does (D2)", () => {
+  it("A9: HubCodexSession.capsule carries mergeAsk 1 + mergeBranch/mergeTarget from a merge-question row, never the sha", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, codexEvent({ source: "deterministic", payload: {
+      capsule_status: "needs_input", capsule_rule: "merge-question", capsule_attempts: 0, merge_ask: 1,
+      merge_branch: "feat/x", merge_target: "main", merge_head_sha: "0123456789abcdef0123456789abcdef01234567" } }), NOW);
+    const { sessions } = getCodexSessions(db, "p1", SNAP());
+    expect(sessions[0].capsule).toMatchObject({ status: "needs_input", mergeAsk: 1, mergeBranch: "feat/x", mergeTarget: "main" });
+    expect(JSON.stringify(sessions[0].capsule)).not.toContain("0123456789abcdef");
+    db.close();
+  });
+
+  it("A9: a classified (old-style) codex row has a non-1 or null mergeAsk and no branch/target, so it is ineligible", () => {
     const db = openDb(":memory:");
     const ev = insertEvent(db, codexEvent({ payload: { message_tail: "posso mergear feat/x em main?" } }), NOW);
     expect(classifyDeferred(db, ev.id, { status: "needs_input" })).toBe(true);
     const { sessions } = getCodexSessions(db, "p1", SNAP());
-    expect(sessions[0].capsule).toMatchObject({
-      status: "needs_input", mergeAsk: 0.97, question: "posso mergear feat/x em main?",
-    });
+    expect(sessions[0].capsule).toMatchObject({ status: "needs_input", mergeAsk: null, question: "posso mergear feat/x em main?" });
+    expect(sessions[0].capsule).not.toHaveProperty("mergeBranch");
     db.close();
   });
 
@@ -3757,7 +3767,7 @@ describe("Phase 2 projections (spec Decisions 2, 9)", () => {
     db.close();
   });
 
-  it("derives mergeAsk and question from a rung-7-classified row's message_tail (last line containing '?')", () => {
+  it("derives the question from a rung-7-classified row's message_tail; mergeAsk stays null (Jev no longer scores it)", () => {
     const db = openDb(":memory:");
     upsertSession(db, { project: "p1", session: "jax-p1-lead", pane: "%1", role: "lead", tmux_incarnation: INCARNATION }, NOW);
     const stop = insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "behavioral",
@@ -3766,8 +3776,39 @@ describe("Phase 2 projections (spec Decisions 2, 9)", () => {
     classifyDeferred(db, stop.id, { status: "needs_input" });
     const live: LiveSnapshot = { paneCommands: new Map(), paneIds: new Set(["%1"]), incarnation: INCARNATION };
     const [pane] = getProjectPanes(db, "p1", live);
-    expect(pane.capsule?.mergeAsk).toBe(0.6);
+    expect(pane.capsule?.mergeAsk).toBeNull();
     expect(pane.capsule?.question).toBe("Or just report?");
+    db.close();
+  });
+
+  it("A9: a pane capsule from a merge-question row exposes mergeAsk 1, branch and target, not the sha", () => {
+    const db = openDb(":memory:");
+    upsertSession(db, { project: "p1", session: "jax-p1-lead", pane: "%1", role: "lead", tmux_incarnation: INCARNATION }, NOW);
+    insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "deterministic",
+      emitter: "claude-stop", pane: "%1", tmux_incarnation: INCARNATION,
+      payload: { capsule_status: "needs_input", capsule_rule: "merge-question", capsule_attempts: 0, merge_ask: 1,
+        merge_branch: "feat/x", merge_target: "main", merge_head_sha: "0123456789abcdef0123456789abcdef01234567" } }, NOW);
+    const live: LiveSnapshot = { paneCommands: new Map(), paneIds: new Set(["%1"]), incarnation: INCARNATION };
+    const [pane] = getProjectPanes(db, "p1", live);
+    expect(pane.capsule).toMatchObject({ status: "needs_input", mergeAsk: 1, mergeBranch: "feat/x", mergeTarget: "main" });
+    expect(JSON.stringify(pane.capsule)).not.toContain("0123456789abcdef");
+    db.close();
+  });
+
+  it("A9: a later turn-started supersedes a merge-question capsule (the stale approval action is gone)", () => {
+    const db = openDb(":memory:");
+    upsertSession(db, { project: "p1", session: "jax-p1-lead", pane: "%1", role: "lead", tmux_incarnation: INCARNATION }, NOW);
+    insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "deterministic",
+      emitter: "claude-stop", pane: "%1", tmux_incarnation: INCARNATION,
+      payload: { capsule_status: "needs_input", capsule_rule: "merge-question", capsule_attempts: 0, merge_ask: 1,
+        merge_branch: "feat/x", merge_target: "main", merge_head_sha: null } }, NOW);
+    const live: LiveSnapshot = { paneCommands: new Map(), paneIds: new Set(["%1"]), incarnation: INCARNATION };
+    expect(getProjectPanes(db, "p1", live)[0].capsule).toMatchObject({ mergeAsk: 1, mergeBranch: "feat/x" });
+    insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-started", source: "deterministic",
+      emitter: "claude-userprompt", pane: "%1", tmux_incarnation: INCARNATION, payload: {} }, NOW);
+    const [pane] = getProjectPanes(db, "p1", live);
+    expect(pane.capsule?.mergeAsk ?? null).toBeNull();
+    expect(pane.capsule ?? {}).not.toHaveProperty("mergeBranch");
     db.close();
   });
 

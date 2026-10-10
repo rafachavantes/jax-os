@@ -880,7 +880,7 @@ export function abandonInjectingAnswers(db: Database.Database): number {
 
 export type LiveSnapshot = { paneIds: Set<string>; incarnation: string | null; paneCommands: Map<string, string> };
 
-export type Capsule = { status: string; minutes: number | null; declaredAt: string; eventId: number; mergeAsk: number | null; question: string | null; answerable?: boolean };
+export type Capsule = { status: string; minutes: number | null; declaredAt: string; eventId: number; mergeAsk: number | null; question: string | null; answerable?: boolean; mergeBranch?: string; mergeTarget?: string };
 
 export type PendingQuestion = {
   eventId: number;
@@ -1117,6 +1117,14 @@ function isAnswered(db: Database.Database, eventId: number): boolean {
   ).get(eventId) !== undefined;
 }
 
+// Merge question contract: branch/target ride the capsule only for the hook's own merge_ask 1.
+// merge_head_sha is audit evidence and is deliberately NOT exposed here.
+function mergeFields(p: { merge_ask?: number; merge_branch?: string; merge_target?: string }): { mergeBranch?: string; mergeTarget?: string } {
+  return p.merge_ask === 1 && typeof p.merge_branch === "string" && typeof p.merge_target === "string"
+    ? { mergeBranch: p.merge_branch, mergeTarget: p.merge_target }
+    : {};
+}
+
 // project-scoped (Finding 1): a pane_key persists across a project switch, so a pane_key-only
 // query here would surface the OTHER project's latest turn-stopped capsule on this project's row
 // once the pane moves on. `project` is always the project currently being enumerated by
@@ -1138,11 +1146,11 @@ function lastCapsule(
   try {
     const p = JSON.parse(row.payload) as {
       capsule_status?: string; capsule_minutes?: number; capsule_rule?: string;
-      merge_ask?: number; message_tail?: string;
+      merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string;
     };
     if (!p.capsule_status) return null;
     if ((p.capsule_status === "needs_input" || p.capsule_status === "blocked") &&
-        (p.capsule_rule === "classified" || p.capsule_rule === "trailing_question")) {
+        (p.capsule_rule === "classified" || p.capsule_rule === "trailing_question" || p.capsule_rule === "merge-question")) {
       const progressedTurn = db.prepare(`
         SELECT 1 FROM workflow_events
         WHERE project = ? AND pane_key = ? AND type = 'turn-started'
@@ -1184,6 +1192,7 @@ function lastCapsule(
       mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
       question: deriveQuestion(p.message_tail),
       answerable,
+      ...mergeFields(p),
     };
   } catch {
     return null;
@@ -1849,7 +1858,7 @@ function lastCodexCapsule(db: Database.Database, project: string, threadId: stri
     .get(project, threadId) as { id: number; ts: string; payload: string | null } | undefined;
   if (!row || !row.payload || isAnswered(db, row.id)) return null;
   try {
-    const p = JSON.parse(row.payload) as { capsule_status?: string; capsule_minutes?: number; merge_ask?: number; message_tail?: string };
+    const p = JSON.parse(row.payload) as { capsule_status?: string; capsule_minutes?: number; merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string };
     if (typeof p.capsule_status !== "string" || !p.capsule_status) return null;
     return {
       status: p.capsule_status,
@@ -1863,6 +1872,7 @@ function lastCodexCapsule(db: Database.Database, project: string, threadId: stri
       question: deriveQuestion(p.message_tail),
       answerable: true, // D4: no proactive Codex liveness check — a dead session just drops out
       // of card.sessions entirely (collectCodexSnapshot); nothing left here to disable.
+      ...mergeFields(p),
     };
   } catch {
     return null;
