@@ -23,6 +23,13 @@ MODES = {
 }
 CAPSULE_RE = re.compile(r"^\[JAXFLOW: (done|needs_input|blocked|waiting ~?\d{1,3}[mh])\]")
 DURATION_RE = re.compile(r"waiting ~?(\d{1,3})([mh])")
+# Merge question contract (spec 2026-10-09 section 4): the ONE canonical question. Case-insensitive on
+# the verb only; backticks around branch and target are required; the optional "(`<sha>`)" is
+# tolerated and ignored (merge_head_sha always comes from git); the "?" must close the same line. Branch and target are capped at 200 chars (= ingress bound).
+MERGE_QUESTION_RE = re.compile(
+    r"(?i:posso mergear|may i merge) `([A-Za-z0-9._/-]{1,200})`(?: \(`([0-9a-f]{7,40})`\))? (?:em|into) `([A-Za-z0-9._/-]{1,200})`[^\n?]*\?"
+)
+GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 MESSAGE_TAIL_MAX = 2000  # mirrors LIMITS.messageTail in src/lib/workflow.ts
 
@@ -206,7 +213,104 @@ def classify_turn_stopped(message):
     return payload, "deterministic"
 
 
-def event_from_input(mode, project, pane, session, payload):
+def find_merge_question(text):
+    """(branch, target) of the LAST canonical merge question in `text`, else None."""
+    if not isinstance(text, str):
+        return None
+    matches = list(MERGE_QUESTION_RE.finditer(text))
+    return (matches[-1].group(1), matches[-1].group(3)) if matches else None
+
+
+def _content(entry):
+    message = entry.get("message")
+    return message.get("content") if isinstance(message, dict) else None
+
+
+def _is_prompt(entry):
+    """A real user prompt: not meta, not a subagent line, not a bare tool_result answer."""
+    if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain"):
+        return False
+    content = _content(entry)
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") != "tool_result" for b in content)
+
+
+def transcript_turn_text(path):
+    """Assistant text blocks after the last user prompt of a Claude transcript JSONL, joined
+    by newlines; None when the file is unreadable, holds ANY malformed line, or holds no such text. ponytail: reads the
+    whole file; tail-read it only if Stop latency is ever measured as a problem."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return None
+    texts = []
+    for line in lines:
+        # ANY malformed line abandons the transcript (-> caller falls back to last_assistant_message):
+        # skipping it could drop a newer user prompt and resurrect a PREVIOUS turn's question.
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(entry, dict):
+            return None
+        if _is_prompt(entry):
+            texts = []
+        elif entry.get("type") == "assistant" and not entry.get("isSidechain"):
+            content = _content(entry)
+            if isinstance(content, list):
+                texts += [b["text"] for b in content
+                          if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)]
+    return "\n".join(texts) or None
+
+
+def turn_text(mode, payload):
+    """The text scanned for the merge question: Claude = the whole turn from the transcript PLUS
+    last_assistant_message appended (the Stop hook may fire before the final block is flushed to the
+    transcript; the last match wins, so the duplicate is harmless); Codex = last_assistant_message
+    only (one final message per turn)."""
+    last = payload.get("last_assistant_message")
+    last = last if isinstance(last, str) else ""
+    if mode == "claude-stop":
+        path = payload.get("transcript_path")
+        if isinstance(path, str) and path:
+            text = transcript_turn_text(path)
+            if text:
+                return text + "\n" + last
+    return last or None
+
+
+def merge_head_sha(branch, cwd, run=run_command):
+    """Branch head observed at Stop time (audit only); None on any failure."""
+    if branch.startswith("-"):
+        return None
+    try:
+        result = run(["git", "rev-parse", "--verify", f"{branch}^{{commit}}"], cwd=cwd)
+    except Exception:
+        return None
+    out = result.stdout.strip() if result.returncode == 0 else ""
+    return out if GIT_SHA_RE.fullmatch(out) else None
+
+
+def stop_payload(mode, payload, run=run_command):
+    """classify_turn_stopped plus the merge-question contract. A matching turn is ALWAYS the one
+    deterministic needs_input shape (any capsule tag in the turn is dropped: the question wins);
+    every other non-empty shape just gains merge_ask: 0."""
+    event_payload, source = classify_turn_stopped(payload.get("last_assistant_message"))
+    found = find_merge_question(redact(turn_text(mode, payload) or ""))
+    if found:
+        branch, target = found
+        return {
+            "capsule_status": "needs_input", "capsule_rule": "merge-question", "capsule_attempts": 0,
+            "merge_ask": 1, "merge_branch": branch, "merge_target": target,
+            "merge_head_sha": merge_head_sha(branch, payload.get("cwd"), run),
+        }, "deterministic"
+    if event_payload:
+        event_payload = {**event_payload, "merge_ask": 0}
+    return event_payload, source
+
+
+def event_from_input(mode, project, pane, session, payload, run=run_command):
     if not isinstance(payload, dict):
         return None
     role = _role_for(session)
@@ -242,10 +346,10 @@ def event_from_input(mode, project, pane, session, payload):
         return {**base, "type": "attention-needed", "source": "behavioral", "emitter": "claude-notification",
                 "payload": {"reason": "agent_needs_input"}}
     if mode == "claude-stop":
-        event_payload, source = classify_turn_stopped(payload.get("last_assistant_message"))
+        event_payload, source = stop_payload(mode, payload, run)
         return {**base, "type": "turn-stopped", "source": source, "emitter": "claude-stop", "payload": event_payload}
     if mode == "codex-stop":
-        event_payload, source = classify_turn_stopped(payload.get("last_assistant_message"))
+        event_payload, source = stop_payload(mode, payload, run)
         return {**base, "type": "turn-stopped", "source": source, "emitter": "codex-stop", "payload": event_payload}
     if mode == "codex-permission":
         return {**base, "type": "attention-needed", "source": "deterministic", "emitter": "codex-permission",
@@ -438,8 +542,10 @@ def _kick_classifier(run=subprocess.run):
 
 def _should_arm_answer_watcher(payload):
     """D3: arm on a reason to expect an eventual answer -- message_tail (untagged prose, the
-    rung-7 candidate) or a needs_input/blocked self-tag (rungs 1/3). waiting/done or an empty
+    rung-7 candidate) or a needs_input/blocked self-tag (rungs 1/3) or a merge-question (merge_ask 1). waiting/done or an empty
     tail (classify_turn_stopped's own {} return) arms nothing."""
+    if payload.get("merge_ask") == 1:
+        return True
     if "message_tail" in payload:
         return True
     return payload.get("capsule_status") in ("needs_input", "blocked")
@@ -520,7 +626,7 @@ def main(argv=None, stdin=None, run=run_command, post=post_json):
             if not isinstance(session_id, str) or not UUID_RE.match(session_id):
                 print("jaxflow-hook: codex session_id missing or not a canonical uuid", file=sys.stderr)
                 return 0
-            event = event_from_input(mode, project, None, None, payload)
+            event = event_from_input(mode, project, None, None, payload, run=run)
             if event is None:
                 return 0
             if mode in TOOLUSED_MODES and not claim_tool_bucket(session_id):
@@ -532,7 +638,7 @@ def main(argv=None, stdin=None, run=run_command, post=post_json):
         if not os.environ.get("TMUX") or not pane:
             return 0
         session, tmux_incarnation = _resolve_identity(pane, run)
-        event = event_from_input(mode, project, pane, session, payload)
+        event = event_from_input(mode, project, pane, session, payload, run=run)
         if event is None:
             return 0
         if mode in TOOLUSED_MODES and not claim_tool_bucket(pane):

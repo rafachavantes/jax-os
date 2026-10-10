@@ -313,7 +313,7 @@ def test_codex_stop_and_claude_stop_route_through_the_same_classifier():
         assert event["type"] == "turn-stopped"
         assert event["emitter"] == emitter
         assert event["source"] == "deterministic"
-        assert event["payload"] == {"capsule_status": "done", "capsule_rule": "tag"}
+        assert event["payload"] == {"capsule_status": "done", "capsule_rule": "tag", "merge_ask": 0}
 
 
 def _fake_urlopen(status_text, calls):
@@ -1368,3 +1368,201 @@ def test_deliver_line_passes_the_fallback_suffix_through_intact(tmp_path, capsys
     assert hook._deliver_line(line, claimed) == 2
     assert capsys.readouterr().err == text + "\n"
     assert not line.exists() and not claimed.exists()
+
+
+# ---- merge question contract (spec 2026-10-09) ---------------------------------------------
+
+_SHA = "0123456789abcdef0123456789abcdef01234567"
+_MQ_PAYLOAD = {
+    "capsule_status": "needs_input", "capsule_rule": "merge-question", "capsule_attempts": 0,
+    "merge_ask": 1, "merge_branch": "feat/x", "merge_target": "main", "merge_head_sha": _SHA,
+}
+_MQ = "Posso mergear `feat/x` em `main`?"
+
+
+def _git_run(sha=_SHA, calls=None):
+    def run(argv, cwd=None):
+        if calls is not None:
+            calls.append((argv, cwd))
+        if argv[:2] == ["git", "rev-parse"]:
+            if sha is None:
+                return SimpleNamespace(returncode=128, stdout="", stderr="bad revision")
+            return SimpleNamespace(returncode=0, stdout=sha + "\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+    return run
+
+
+def _stop_event(payload, mode="claude-stop", run=None):
+    pane, session = ("%1", "jax-p1-lead") if mode == "claude-stop" else (None, None)
+    return hook.event_from_input(mode, "p1", pane, session, payload, run=run or _git_run())
+
+
+def _user(content):
+    return {"type": "user", "message": {"role": "user", "content": content}}
+
+
+def _tool_result():
+    return {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
+
+
+def _assistant(*blocks):
+    return {"type": "assistant", "message": {"role": "assistant", "content": list(blocks)}}
+
+
+def _text(t):
+    return {"type": "text", "text": t}
+
+
+def _write_transcript(tmp_path, entries):
+    path = tmp_path / "transcript.jsonl"
+    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Posso mergear `docs/merge-worktree-note` em `main`?", ("docs/merge-worktree-note", "main")),
+    ("May I merge `feat/x` into `main`?", ("feat/x", "main")),
+    ("Posso mergear `docs/merge-worktree-note` (`320538a`) em `main`?", ("docs/merge-worktree-note", "main")),
+    ("Posso já perguntar: posso mergear `a` em `b` assim que o `ci` passar?", ("a", "b")),
+])
+def test_find_merge_question_positive_rows(text, expected):  # A1
+    assert hook.find_merge_question(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "pode abrir o PR?",
+    "Posso mergear docs/x em main?",
+    "Mergeado: `main` = `19d4d7a` via PR #6",
+    "Posso mergear feat/x em main?",                        # no backticks
+    "Mergear `feat/x` em `main`?",                          # "mergear" without "posso"
+    "Posso mergear `feat/x`, a `main` fica como está?",     # branch and target in prose without em|into
+    "pode abrir o PR de `x` em `main`?",
+])
+def test_find_merge_question_negative_rows(text):  # A1
+    assert hook.find_merge_question(text) is None
+
+
+def test_find_merge_question_tolerated_mixed_forms():  # F3: documented grammar, not a bug
+    assert hook.find_merge_question("May I merge `x` em `main`?") == ("x", "main")
+    assert hook.find_merge_question("Posso mergear `x` into `main` depois do CI?") == ("x", "main")
+
+
+def test_find_merge_question_identifier_length_boundary_matches_ingress():  # F5
+    ok, too_long = "a" * 200, "a" * 201
+    assert hook.find_merge_question(f"Posso mergear `{ok}` em `main`?") == (ok, "main")
+    assert hook.find_merge_question(f"Posso mergear `feat/x` em `{ok}`?") == ("feat/x", ok)
+    assert hook.find_merge_question(f"Posso mergear `{too_long}` em `main`?") is None
+    assert hook.find_merge_question(f"Posso mergear `feat/x` em `{too_long}`?") is None
+    # the ordinary stop payload is kept (not a merge-question) when the identifier is too long
+    event = _stop_event({"cwd": "/r", "last_assistant_message": f"Posso mergear `{too_long}` em `main`?"})
+    assert event["payload"] == {"message_tail": f"Posso mergear `{too_long}` em `main`?", "merge_ask": 0}
+
+
+def test_find_merge_question_last_match_wins():  # A1
+    text = "Posso mergear `a` em `b`?\nO branch andou. May I merge `c` into `d`?"
+    assert hook.find_merge_question(text) == ("c", "d")
+
+
+def test_claude_stop_scans_earlier_blocks_of_the_turn_event_26239_shape(tmp_path):  # A2a
+    transcript = _write_transcript(tmp_path, [
+        _user("old prompt"),
+        _assistant(_text("Posso mergear `old/branch` em `main`?")),  # BEFORE the last prompt: must not count
+        _user("go on"),
+        _assistant(_text(_MQ)),
+        _assistant({"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}),
+        _tool_result(),
+        _assistant(_text("Esperando o CI do PR #7 e a sua resposta sobre o merge de feat/x em main.")),
+    ])
+    event = _stop_event({"cwd": "/r", "transcript_path": transcript,
+                         "last_assistant_message": "Esperando o CI do PR #7 e a sua resposta."})
+    assert event["type"] == "turn-stopped" and event["source"] == "deterministic"
+    assert event["payload"] == _MQ_PAYLOAD
+
+
+def test_codex_stop_scans_only_last_assistant_message(tmp_path):  # A2b
+    inside = "Resumo.\n\nPosso mergear `feat/x` em `main`?\n\nAguardo o CI."
+    assert _stop_event({"cwd": "/r", "last_assistant_message": inside}, mode="codex-stop")["payload"] == _MQ_PAYLOAD
+    # A question only in an earlier Codex message is NOT seen (documented limitation); a
+    # transcript_path on a Codex payload is never read.
+    transcript = _write_transcript(tmp_path, [_user("p"), _assistant(_text(_MQ))])
+    event = _stop_event({"cwd": "/r", "transcript_path": transcript, "last_assistant_message": "Aguardo."},
+                        mode="codex-stop")
+    assert event["payload"] == {"message_tail": "Aguardo.", "merge_ask": 0}
+
+
+def test_no_match_gets_merge_ask_zero_and_no_merge_keys_and_transcript_fallback(tmp_path):  # A3
+    event = _stop_event({"cwd": "/r", "last_assistant_message": "só prosa"})
+    assert event["payload"] == {"message_tail": "só prosa", "merge_ask": 0}
+    tagged = _stop_event({"cwd": "/r", "last_assistant_message": "[JAXFLOW: done] shipped"})
+    assert tagged["payload"] == {"capsule_status": "done", "capsule_rule": "tag", "excerpt": "shipped", "merge_ask": 0}
+    assert _stop_event({"cwd": "/r", "last_assistant_message": ""})["payload"] == {}  # empty stays empty
+    # Missing transcript -> falls back to last_assistant_message, which here HAS the question.
+    missing = str(tmp_path / "does-not-exist.jsonl")
+    fallback = _stop_event({"cwd": "/r", "transcript_path": missing, "last_assistant_message": _MQ})
+    assert fallback["payload"] == _MQ_PAYLOAD
+    # Unreadable content (not JSON) is also a fallback, not a crash.
+    junk = tmp_path / "junk.jsonl"
+    junk.write_text("not json\n", encoding="utf-8")
+    assert _stop_event({"cwd": "/r", "transcript_path": str(junk), "last_assistant_message": _MQ})["payload"] == _MQ_PAYLOAD
+
+
+def test_transcript_lagging_the_final_block_still_sees_the_question(tmp_path):  # A3 (transcript lag)
+    # The Stop hook may fire before the final assistant block is flushed to the transcript:
+    # the transcript is valid and non-empty but lacks the closing message that holds the question.
+    transcript = _write_transcript(tmp_path, [_user("go"), _assistant(_text("Rodei os testes, tudo verde."))])
+    event = _stop_event({"cwd": "/r", "transcript_path": transcript, "last_assistant_message": _MQ})
+    assert event["payload"] == _MQ_PAYLOAD
+    # And the duplicate (question present in BOTH) is harmless: still one merge-question payload.
+    both = _write_transcript(tmp_path, [_user("go"), _assistant(_text(_MQ))])
+    assert _stop_event({"cwd": "/r", "transcript_path": both, "last_assistant_message": _MQ})["payload"] == _MQ_PAYLOAD
+
+
+def test_a_damaged_newer_user_line_never_resurrects_an_old_question(tmp_path):  # F4
+    good = [_user("old prompt"), _assistant(_text("Posso mergear `old/branch` em `main`?"))]
+    path = tmp_path / "damaged.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(e) for e in good) + "\n"
+        + '{"type":"user","message":{"role":"user","content":"new pro' + "\n"   # truncated newer prompt
+        + json.dumps(_assistant(_text("Aguardo."))) + "\n", encoding="utf-8")
+    assert hook.transcript_turn_text(str(path)) is None
+    payload = {"cwd": "/r", "transcript_path": str(path), "last_assistant_message": "Aguardo."}
+    event = _stop_event(payload)
+    assert event["payload"] == {"message_tail": "Aguardo.", "merge_ask": 0}
+    assert event["payload"] == _stop_event({"cwd": "/r", "last_assistant_message": "Aguardo."})["payload"]
+
+
+def test_merge_head_sha_comes_from_git_via_run_and_is_null_on_failure():  # A4
+    calls = []
+    event = _stop_event({"cwd": "/work/tree", "last_assistant_message": "Posso mergear `feat/x` (`deadbee`) em `main`?"},
+                        run=_git_run(calls=calls))
+    assert event["payload"]["merge_head_sha"] == _SHA  # the sha in the prose is ignored
+    assert calls == [(["git", "rev-parse", "--verify", "feat/x^{commit}"], "/work/tree")]
+    failed = _stop_event({"cwd": "/r", "last_assistant_message": _MQ}, run=_git_run(sha=None))
+    assert failed["payload"]["merge_head_sha"] is None and failed["payload"]["merge_ask"] == 1
+    assert _stop_event({"cwd": "/r", "last_assistant_message": "Posso mergear `-x` em `main`?"})["payload"]["merge_head_sha"] is None
+
+
+def test_should_arm_answer_watcher_true_on_merge_ask_one_for_a_tagged_payload():  # A5
+    assert hook._should_arm_answer_watcher({"capsule_status": "done", "capsule_rule": "tag", "merge_ask": 1}) is True
+    assert hook._should_arm_answer_watcher({"capsule_status": "done", "capsule_rule": "tag", "merge_ask": 0}) is False
+    assert hook._should_arm_answer_watcher(_MQ_PAYLOAD) is True
+
+
+@pytest.mark.parametrize("prefix", ["", "[JAXFLOW: done] shipped\n", "[JAXFLOW: waiting ~30m] x\n", "[JAXFLOW: needs_input] y\n"])
+def test_a_matching_turn_is_the_single_deterministic_shape_and_the_tag_is_dropped(prefix):  # A13
+    event = _stop_event({"cwd": "/r", "last_assistant_message": prefix + _MQ})
+    assert event["source"] == "deterministic"
+    assert event["payload"] == _MQ_PAYLOAD
+    for absent in ("message_tail", "capsule_minutes", "excerpt"):
+        assert absent not in event["payload"]
+
+
+def test_hook_output_matches_the_committed_ingress_fixture():  # A14 (the TS tests read this same file)
+    fixture = Path(__file__).resolve().parent.parent / "src/app/api/workflow/events/merge-question-hook-output.fixture.json"
+    cases = {
+        "plain": _MQ,
+        "withDoneTag": "[JAXFLOW: done] shipped\n" + _MQ,
+        "withWaitingTag": "[JAXFLOW: waiting ~30m] ci\n" + _MQ,
+    }
+    produced = {k: _stop_event({"cwd": "/r", "last_assistant_message": v}) for k, v in cases.items()}
+    assert json.loads(fixture.read_text(encoding="utf-8")) == produced

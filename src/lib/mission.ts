@@ -56,6 +56,9 @@ export type MissionPane = {
   // only, never a native Codex session (MissionCodexSession carries neither field, §5/§7's
   // transport guard).
   capsuleMergeAsk: number | null;
+  // Merge question contract: from HubPane.capsule.mergeBranch/mergeTarget. Optional so fixtures that never
+  // exercise the button need no change; absent means "no canonical merge question".
+  capsuleMergeBranch?: string; capsuleMergeTarget?: string;
   capsuleQuestion: string | null;
   // D4: optional (not required like the two fields above) — every real HubPane.capsule already
   // carries it, this is only about not forcing every test fixture in the repo that never
@@ -95,7 +98,7 @@ export type MissionSession =
       // D2/D4: mirrored from HubCodexSession.capsule.mergeAsk/question/answerable the same way
       // MissionPane already mirrors HubPane.capsule — optional for the same fixture-blast-radius
       // reason as MissionPane.capsuleAnswerable above.
-      capsuleMergeAsk?: number | null; capsuleQuestion?: string | null; capsuleAnswerable?: boolean;
+      capsuleMergeAsk?: number | null; capsuleQuestion?: string | null; capsuleAnswerable?: boolean; capsuleMergeBranch?: string; capsuleMergeTarget?: string;
     };
 
 export type MissionTimelineEntry = {
@@ -623,6 +626,7 @@ function buildModel(
         capsuleMinutes: p.capsule?.minutes ?? null,
         capsuleDeclaredAt: p.capsule?.declaredAt ?? null,
         capsuleMergeAsk: p.capsule?.mergeAsk ?? null,
+        capsuleMergeBranch: p.capsule?.mergeBranch, capsuleMergeTarget: p.capsule?.mergeTarget,
         capsuleQuestion: p.capsule?.question ?? null,
         capsuleAnswerable: p.capsule?.answerable ?? true,
         runtime: p.runtime,
@@ -647,6 +651,7 @@ function buildModel(
         return { transport: "codex" as const, threadId: s.threadId, state, lastEventTs: s.lastEventTs, subagentCount: s.subagentCount, capsuleEventId: s.capsule?.eventId ?? null,
           capsuleStatus: capsuleStatusOf(s.capsule), capsuleMinutes: s.capsule?.minutes ?? null, capsuleDeclaredAt: s.capsule?.declaredAt ?? null,
           capsuleMergeAsk: s.capsule?.mergeAsk ?? null, capsuleQuestion: s.capsule?.question ?? null,
+          capsuleMergeBranch: s.capsule?.mergeBranch, capsuleMergeTarget: s.capsule?.mergeTarget,
           capsuleAnswerable: s.capsule?.answerable ?? true };
       }),
     ];
@@ -979,15 +984,11 @@ export function stageDotIndex(stage: ProjectStage): number {
 
 // ---- Phase 2 (Mission Control B): pure card helpers, spec §6 / §9 ---------------------------
 
-// merge-ask spec §4: the shadow-validated separation point for Jev's merge_ask probability — a
-// card-rendering decision, not a classifier parameter, so it is not tunable via env or UI.
-export const MERGE_ASK_THRESHOLD = 0.5;
-
-// merge-ask spec §4, narrowed by native-answer-delivery D1: lit by Jev alone now (a merge_ask
-// probability at/above the threshold) — the literal-regex branch (rung 6's own trailing_question
-// rows, which never reached Jev) is gone along with rung 6 itself.
-export function isMergeAskEligible(mergeAsk: number | null): boolean {
-  return mergeAsk !== null && mergeAsk >= MERGE_ASK_THRESHOLD;
+// Merge question contract: the "Approve merge" button is lit by the hook's deterministic
+// merge-question alone (merge_ask exactly 1 AND a branch). Old rows carry a Jev fraction or no
+// branch and stay ineligible. `typeof` (not `!== null`): the optional fields arrive as undefined.
+export function isMergeAskEligible(mergeAsk: number | null, mergeBranch?: string | null): boolean {
+  return mergeAsk === 1 && typeof mergeBranch === "string";
 }
 
 // parseIndexedReply's grammar (src/lib/workflow.ts:156-187): one `<n>: <i>` or `<n>: <i,j>` line per
@@ -1001,7 +1002,7 @@ export type PendingAction =
   | {
       kind: "freeform"; pane: string; eventId: number; capsuleStatus: "needs_input" | "blocked" | null;
       transport: "tmux" | "codex"; role: "lead" | "adhoc" | null; mergeAsk: number | null; question: string | null;
-      answerable: boolean;
+      answerable: boolean; mergeBranch?: string; mergeTarget?: string;
     };
 
 // Round-3 F4: ONE pending interaction per card. A structured question first — card.pendingQuestions[0]
@@ -1024,6 +1025,7 @@ export function selectPendingAction(card: MissionCard, eventId?: number): Pendin
             kind: "freeform", pane: p.pane, eventId: p.capsuleEventId, capsuleStatus: p.capsuleStatus,
             transport: "tmux", role: p.role, mergeAsk: p.capsuleMergeAsk, question: p.capsuleQuestion,
             answerable: p.capsuleAnswerable ?? true,
+            mergeBranch: p.capsuleMergeBranch, mergeTarget: p.capsuleMergeTarget,
           };
         }
       }
@@ -1032,6 +1034,7 @@ export function selectPendingAction(card: MissionCard, eventId?: number): Pendin
         kind: "freeform", pane: s.threadId, eventId: s.capsuleEventId, capsuleStatus: s.capsuleStatus,
         transport: "codex", role: null, mergeAsk: s.capsuleMergeAsk ?? null, question: s.capsuleQuestion ?? null,
         answerable: s.capsuleAnswerable ?? true,
+        mergeBranch: s.capsuleMergeBranch, mergeTarget: s.capsuleMergeTarget,
       };
     }
   }

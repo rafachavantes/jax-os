@@ -9,9 +9,13 @@ official code — treat it as the most restricted action in the workflow.
 
 ## MUST
 
-- Ask the owner one question naming the branch and the destination: "May I merge
-  `<branch>` into `<destination>`?". Any clear agreement to that question ("sim", "ok",
+- Ask the owner exactly one question naming the branch and the destination, each in
+  backticks, in one of these two forms: "Posso mergear `<branch>` em `<destination>`?" or
+  "May I merge `<branch>` into `<destination>`?". The dashboard lights its "Approve merge"
+  button only for this phrasing (anywhere in the turn); put no SHA in the question text, and
+  any other wording simply shows no button. Any clear agreement to that question ("sim", "ok",
   "pode", "merge aprovado") is the approval — the owner never has to repeat identifiers.
+  The detector tolerates the verb in either language, a backticked branch and target, an optional (`sha`) and any trailing words before the `?`; the legacy gate fallback applies only to rows stored before this change.
   A reply delivered through the dashboard card carries the prefix the dashboard builds
   from `ownerName` — `"[Jax OS] "` when it is empty, `"[Jax OS · <ownerName>] "` when it
   is set — ahead of the owner's own words: the prefix attributes the text to the owner

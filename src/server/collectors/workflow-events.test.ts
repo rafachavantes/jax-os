@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAnswerBody, parseIngress, parseSessionBody, renderMessage, toForwardBody } from "./workflow-events";
+import { parseAnswerBody, parseIngress, parseSessionBody, projectPayload, renderMessage, toForwardBody } from "./workflow-events";
 import { EVENT_MATRIX, EVENT_TYPES, HOOK_TELEMETRY_TYPES, LIMITS, parseIndexedReply, type WorkflowEventRow } from "../../lib/workflow";
 
 const RUN_STARTED = {
@@ -1487,5 +1487,54 @@ describe("pr-opened (spec MOA-465 Ledger & card)", () => {
     const msg = renderMessage({ type: "pr-opened", project: "jax-os", role: "lead", payload: prOpenedEvent().payload });
     expect(msg).toContain("#7");
     expect(msg.length).toBeGreaterThan(0);
+  });
+});
+
+describe("parseIngress - merge question contract (turn-stopped)", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const MQ = { capsule_status: "needs_input", capsule_rule: "merge-question", capsule_attempts: 0,
+    merge_ask: 1, merge_branch: "feat/x", merge_target: "main", merge_head_sha: SHA };
+  const STOP_MQ = { project: "p1", role: "lead", pane: "%1", type: "turn-stopped", source: "deterministic", emitter: "claude-stop" };
+
+  it("accepts the merge-question shape, with a null or hex head sha", () => {
+    expect(parseIngress({ ...STOP_MQ, payload: MQ }).ok).toBe(true);
+    expect(parseIngress({ ...STOP_MQ, payload: { ...MQ, merge_head_sha: null } }).ok).toBe(true);
+    expect(parseIngress({ ...STOP_MQ, payload: { ...MQ, merge_head_sha: "320538a" } }).ok).toBe(true);
+  });
+
+  it.each([
+    ["message_tail", { message_tail: "x" }, /message_tail cannot accompany a merge-question/],
+    ["capsule_minutes", { capsule_minutes: 5 }, /capsule_minutes cannot accompany a merge-question/],
+    ["excerpt", { excerpt: "x" }, /excerpt cannot accompany a merge-question/],
+    ["status other than needs_input", { capsule_status: "done" }, /requires capsule_status needs_input/],
+    ["attempts other than 0", { capsule_attempts: 1 }, /requires capsule_attempts 0/],
+    ["merge_ask 0", { merge_ask: 0 }, /requires merge_ask 1/],
+    ["a bad sha", { merge_head_sha: "XYZ" }, /merge_head_sha malformed/],
+    ["a missing sha key", { merge_head_sha: undefined }, /merge_head_sha required/],
+    ["a bad branch charset", { merge_branch: "feat x;rm" }, /merge_branch malformed/],
+    ["a bad target charset", { merge_target: "ma`in" }, /merge_target malformed/],
+    ["a missing branch", { merge_branch: undefined }, /merge_branch required/],
+  ])("rejects the merge-question shape with %s", (_n, over, re) => {
+    expectInvalid({ ...STOP_MQ, payload: { ...MQ, ...over } }, re);
+  });
+
+  it("rejects a non-deterministic source on the merge-question shape", () => {
+    expectInvalid({ ...STOP_MQ, source: "behavioral", payload: MQ }, /merge-question requires source deterministic/);
+  });
+
+  it("accepts merge_ask 0 on untagged and tagged payloads; rejects merge_ask 1 or merge_* keys outside the shape", () => {
+    expect(parseIngress({ ...STOP_MQ, source: "behavioral", payload: { message_tail: "prose", merge_ask: 0 } }).ok).toBe(true);
+    expect(parseIngress({ ...STOP_MQ, payload: { capsule_status: "done", capsule_rule: "tag", merge_ask: 0 } }).ok).toBe(true);
+    expectInvalid({ ...STOP_MQ, source: "behavioral", payload: { message_tail: "p", merge_ask: 1 } }, /merge_ask must be 0/);
+    expectInvalid({ ...STOP_MQ, source: "behavioral", payload: { message_tail: "p", merge_ask: 0, merge_branch: "a" } }, /merge_branch requires merge_ask 1/);
+    expectInvalid({ ...STOP_MQ, payload: { capsule_status: "done", capsule_rule: "tag", merge_target: "main" } }, /merge_target requires merge_ask 1/);
+    expectInvalid({ ...STOP_MQ, source: "behavioral", payload: { message_tail: "p", merge_head_sha: SHA } }, /merge_head_sha requires merge_ask 1/);
+  });
+
+  it("A8: projectPayload drops merge_head_sha and message_tail but keeps merge_branch/merge_target", () => {
+    const out = projectPayload("turn-stopped", { ...MQ, message_tail: "secret text" });
+    expect(out).not.toHaveProperty("merge_head_sha");
+    expect(out).not.toHaveProperty("message_tail");
+    expect(out).toMatchObject({ merge_ask: 1, merge_branch: "feat/x", merge_target: "main" });
   });
 });
