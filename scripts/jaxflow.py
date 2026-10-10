@@ -2278,6 +2278,45 @@ def _load_finished_build(db_path, builder_run_id):
     return started["project"], started_payload, finished_payload
 
 
+def _load_build_inputs(repo, builder_run_id, worktree, allowlist_root):
+    """The build's own manifest, plan and resolved spec, as `(builder_manifest, plan_path,
+    spec_dest)`. Runs AFTER the worktree check and BEFORE the verify-first re-run, so a build
+    whose manifest/plan cannot be resolved never spends a verify run or rewrites `.tests.txt`.
+    `_resolve_handoff_spec_path` is a module global (tests spy on it)."""
+    # fixes S2 (real smoke b12a3db3da4b): the diff handoff must name the SAME plan/spec
+    # the build's own handoff named -- read from the build's own manifest, using the SAME
+    # `_manifest_dir` helper `build` writes to. Runs AFTER the worktree check but BEFORE
+    # the verify-first re-run below (spec §4.3 step 1 amended), so a build whose own
+    # manifest/plan can't be resolved never spends a verify run or rewrites `.tests.txt`.
+    builder_manifest_path = _manifest_dir(repo, builder_run_id) / "manifest.json"
+
+    def _unusable_builder_manifest():
+        return _refuse("unknown-run", f"hint: build manifest for {builder_run_id} missing or invalid: {builder_manifest_path}")
+
+    try:
+        builder_manifest = _load_manifest(_manifest_dir(repo, builder_run_id))
+    except (OSError, ValueError):
+        raise _unusable_builder_manifest()
+    raw_plan_path = builder_manifest.get("plan_path")
+    try:
+        plan_path = Path(raw_plan_path).resolve() if raw_plan_path else None
+    except OSError:
+        plan_path = None
+    # MOA-467: the plan is the ORIGINAL document -- it lives in the control repo (new
+    # manifests), in the worktree (legacy copied manifests), or in another explicitly
+    # allowed location under the allowlist (external documents `build` already
+    # validated at dispatch). The check below mirrors `dispatch_build`'s own: canonical,
+    # non-secret, readable, inside the allowlist. Secret-shaped paths, missing files and
+    # outside-allowlist paths all refuse here, before any verify run is ever spent.
+    if _plan_path_defect(plan_path, allowlist_root):
+        raise _unusable_builder_manifest()
+    plan_text = plan_path.read_text(encoding="utf-8")
+    spec_dest, spec_refusal_code = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
+    if spec_refusal_code:
+        raise Refusal(spec_refusal_code)
+    return builder_manifest, plan_path, spec_dest
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2314,38 +2353,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     if not _contained(worktree, allowlist_root) or not worktree.is_dir():
         raise Refusal("worktree-missing")
 
-    # fixes S2 (real smoke b12a3db3da4b): the diff handoff must name the SAME plan/spec
-    # the build's own handoff named -- read from the build's own manifest, using the SAME
-    # `_manifest_dir` helper `build` writes to. Runs AFTER the worktree check but BEFORE
-    # the verify-first re-run below (spec §4.3 step 1 amended), so a build whose own
-    # manifest/plan can't be resolved never spends a verify run or rewrites `.tests.txt`.
-    builder_manifest_path = _manifest_dir(repo, builder_run_id) / "manifest.json"
-
-    def _unusable_builder_manifest():
-        return _refuse("unknown-run", f"hint: build manifest for {builder_run_id} missing or invalid: {builder_manifest_path}")
-
-    try:
-        builder_manifest = _load_manifest(_manifest_dir(repo, builder_run_id))
-    except (OSError, ValueError):
-        raise _unusable_builder_manifest()
-    raw_plan_path = builder_manifest.get("plan_path")
-    try:
-        plan_path = Path(raw_plan_path).resolve() if raw_plan_path else None
-    except OSError:
-        plan_path = None
-    # MOA-467: the plan is the ORIGINAL document -- it lives in the control repo (new
-    # manifests), in the worktree (legacy copied manifests), or in another explicitly
-    # allowed location under the allowlist (external documents `build` already
-    # validated at dispatch). The check below mirrors `dispatch_build`'s own: canonical,
-    # non-secret, readable, inside the allowlist. Secret-shaped paths, missing files and
-    # outside-allowlist paths all refuse here, before any verify run is ever spent.
-    if _plan_path_defect(plan_path, allowlist_root):
-        raise _unusable_builder_manifest()
-    plan_text = plan_path.read_text(encoding="utf-8")
-    spec_dest, spec_refusal_code = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
-    if spec_refusal_code:
-        raise Refusal(spec_refusal_code)
-
+    builder_manifest, plan_path, spec_dest = _load_build_inputs(repo, builder_run_id, worktree, allowlist_root)
     tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
     # fixes cold review F1: the reports directory may not exist yet for a fresh worktree.
     tests_path.parent.mkdir(parents=True, exist_ok=True)
