@@ -6440,6 +6440,32 @@ def _pr_run_checks(args, *, run, repo, project, allowlist_root):
                       f"({jr._bound((removed.stderr or removed.stdout).strip(), 200)})")
 
 
+def _revalidate_pr_identity(v, number, sha, target, branch):
+    """cold review 75e934eacdca F3 (partial accept): `--match-head-commit` pins the head at
+    merge time, but nothing pins the base or the open state -- a PR retargeted or closed
+    during the mergeability wait must still be caught. Same refusal codes as the initial
+    read, but the check ORDER here is its own (open state, head oid, base, head branch)
+    and must NOT be unified with the initial sequence (Decision 9)."""
+    if v["state"] != "OPEN":
+        raise _refuse(
+            "pr-closed",
+            f"hint: PR #{number} is no longer open ({v['state'].lower()}); jaxflow never reopens or re-merges one")
+    if v["headRefOid"] != sha:
+        raise _refuse(
+            "pr-head-moved",
+            f"hint: PR #{number}'s head is {v['headRefOid'][:12]}, not the approved {sha[:12]}")
+    if v["baseRefName"] != target:
+        raise _refuse(
+            "pr-identity-mismatch",
+            f"hint: PR #{number}'s base is {v['baseRefName']!r}, not the approved {target!r}")
+    # cold review 24597072c8ac F2: every re-read must re-verify the head branch too,
+    # same as the initial read.
+    if v["headRefName"] != branch:
+        raise _refuse(
+            "pr-identity-mismatch",
+            f"hint: PR #{number}'s head branch is {v['headRefName']!r}, not the approved {branch!r}")
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6492,39 +6518,12 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
         checks_audit = _pr_run_checks(
             args, run=run, repo=repo, project=project, allowlist_root=allowlist_root)
 
-        def _revalidate_pr_identity(v):
-            # cold review 75e934eacdca F3 (partial accept): --match-head-commit below pins
-            # the head at merge time, but nothing pins the base or the open state -- a PR
-            # retargeted or closed during the mergeability wait must still be caught. Reuses
-            # the SAME refusal codes the initial read above already uses for this exact shape
-            # of mismatch (rejected: a server-side anti-retarget policy -- single-user VPS,
-            # GitHub has no such lock, and this last-moment re-check is enough; see Review
-            # triage).
-            if v["state"] != "OPEN":
-                exc = Refusal("pr-closed")
-                exc.hint = f"hint: PR #{number} is no longer open ({v['state'].lower()}); jaxflow never reopens or re-merges one"
-                raise exc
-            if v["headRefOid"] != args.sha:
-                exc = Refusal("pr-head-moved")
-                exc.hint = f"hint: PR #{number}'s head is {v['headRefOid'][:12]}, not the approved {args.sha[:12]}"
-                raise exc
-            if v["baseRefName"] != target:
-                exc = Refusal("pr-identity-mismatch")
-                exc.hint = f"hint: PR #{number}'s base is {v['baseRefName']!r}, not the approved {target!r}"
-                raise exc
-            # cold review 24597072c8ac F2: every re-read must re-verify the head branch too,
-            # same as the initial read above.
-            if v["headRefName"] != args.branch:
-                exc = Refusal("pr-identity-mismatch")
-                exc.hint = f"hint: PR #{number}'s head branch is {v['headRefName']!r}, not the approved {args.branch!r}"
-                raise exc
-
         mergeable = view.get("mergeable")
         attempts = 0
         while mergeable == "UNKNOWN" and attempts < 3:
             time.sleep(2)
             view = _gh_pr_view(run, repo, repo_slug, number)
-            _revalidate_pr_identity(view)
+            _revalidate_pr_identity(view, number, args.sha, target, args.branch)
             mergeable = view.get("mergeable")
             attempts += 1
         if mergeable == "UNKNOWN":
@@ -6532,7 +6531,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
 
         # Immediately before the merge call too, even when the loop above never ran (mergeable
         # was never UNKNOWN) -- same reasoning as inside the loop.
-        _revalidate_pr_identity(view)
+        _revalidate_pr_identity(view, number, args.sha, target, args.branch)
 
         merged = run(["gh", "pr", "merge", str(number), "--repo", repo_slug, "--merge",
                       "--match-head-commit", args.sha, "--subject",
