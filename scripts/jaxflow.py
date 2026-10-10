@@ -1741,6 +1741,51 @@ def _resume_profile(args, prior):
     return runtime, model, effort
 
 
+def _resume_recheck(repo, worktree, branch, resume_id, prior_path, started_now, finished_now):
+    """The re-validation under the worktree claim: re-read the prior manifest and checkpoint
+    and refuse `resume-ineligible` unless every recorded identity still agrees. Returns
+    `(prior, checkpoint, started_payload, base_sha, root_build_run_id)`. The statement order
+    (including `prior.get` BEFORE the `type(prior)` check) is the inline code's."""
+    try:
+        prior = _read_prior_manifest(prior_path)
+        checkpoint = jresume.read_checkpoint(
+            _manifest_dir(repo, resume_id) / "resume-checkpoint.json")
+        started_payload = json.loads(started_now["payload"])
+        finished_now_payload = json.loads(finished_now["payload"])
+        if Path(prior.get("repo", "")).resolve() != repo:
+            raise Refusal("resume-ineligible")
+        if Path(started_payload.get("repo", "")).resolve() != repo:
+            raise Refusal("resume-ineligible")
+        if Path(checkpoint["repo"]).resolve() != repo:
+            raise Refusal("resume-ineligible")
+        if Path(prior["worktree"]).resolve() != worktree:
+            raise Refusal("resume-ineligible")
+        if Path(checkpoint["worktree"]).resolve() != worktree:
+            raise Refusal("resume-ineligible")
+    except Refusal:
+        raise
+    except Exception as exc:
+        raise Refusal("resume-ineligible") from exc
+    base_sha = prior.get("base_sha")
+    root_build_run_id = prior.get("root_build_run_id")
+    if (type(prior) is not dict or prior.get("run_id") != resume_id
+            or finished_now_payload.get("result") not in ("failure", "blocked")
+            or checkpoint["run_id"] != resume_id
+            or checkpoint["outcome"] not in ("failure", "blocked")
+            or checkpoint["outcome"] != finished_now_payload.get("result")
+            or checkpoint["branch"] != branch
+            or (prior.get("branch") or prior.get("target")) != branch
+            or type(base_sha) is not str or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
+            or checkpoint["base"] != base_sha
+            or checkpoint["root_build_run_id"] != root_build_run_id
+            or started_payload.get("root_build_run_id") != root_build_run_id
+            or started_payload.get("requested_profile") not in ("default", "fallback")
+            or prior.get("requested_profile") not in ("default", "fallback")
+            or prior.get("requested_profile") != started_payload.get("requested_profile")):
+        raise Refusal("resume-ineligible")
+    return prior, checkpoint, started_payload, base_sha, root_build_run_id
+
+
 def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
                            run, post, env, now, allowlist_root, db_path):
     db_path = db_path or jr.DB_PATH
@@ -1755,43 +1800,8 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
     runtime, model, effort = _resume_profile(args, prior)
     with jresume.worktree_claim(repo, worktree):
         started_now, finished_now, latest = _resume_rows(db_path, resume_id, (project, repo, branch))
-        try:
-            prior = _read_prior_manifest(prior_path)
-            checkpoint = jresume.read_checkpoint(
-                _manifest_dir(repo, resume_id) / "resume-checkpoint.json")
-            started_payload = json.loads(started_now["payload"])
-            finished_now_payload = json.loads(finished_now["payload"])
-            if Path(prior.get("repo", "")).resolve() != repo:
-                raise Refusal("resume-ineligible")
-            if Path(started_payload.get("repo", "")).resolve() != repo:
-                raise Refusal("resume-ineligible")
-            if Path(checkpoint["repo"]).resolve() != repo:
-                raise Refusal("resume-ineligible")
-            if Path(prior["worktree"]).resolve() != worktree:
-                raise Refusal("resume-ineligible")
-            if Path(checkpoint["worktree"]).resolve() != worktree:
-                raise Refusal("resume-ineligible")
-        except Refusal:
-            raise
-        except Exception as exc:
-            raise Refusal("resume-ineligible") from exc
-        base_sha = prior.get("base_sha")
-        root_build_run_id = prior.get("root_build_run_id")
-        if (type(prior) is not dict or prior.get("run_id") != resume_id
-                or finished_now_payload.get("result") not in ("failure", "blocked")
-                or checkpoint["run_id"] != resume_id
-                or checkpoint["outcome"] not in ("failure", "blocked")
-                or checkpoint["outcome"] != finished_now_payload.get("result")
-                or checkpoint["branch"] != branch
-                or (prior.get("branch") or prior.get("target")) != branch
-                or type(base_sha) is not str or not re.fullmatch(r"[0-9a-f]{40}", base_sha)
-                or checkpoint["base"] != base_sha
-                or checkpoint["root_build_run_id"] != root_build_run_id
-                or started_payload.get("root_build_run_id") != root_build_run_id
-                or started_payload.get("requested_profile") not in ("default", "fallback")
-                or prior.get("requested_profile") not in ("default", "fallback")
-                or prior.get("requested_profile") != started_payload.get("requested_profile")):
-            raise Refusal("resume-ineligible")
+        prior, checkpoint, started_payload, base_sha, root_build_run_id = _resume_recheck(
+            repo, worktree, branch, resume_id, prior_path, started_now, finished_now)
         whitelist, verify, phase, plan_path = _resume_plan(prior, allowlist_root)
         profile_name = _resume_profile_name(args, prior)
         if latest != resume_id:
