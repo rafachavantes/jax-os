@@ -6041,6 +6041,89 @@ def _record_merge_status(run, allowlist_root, *, repo, caller, target, dispatch_
     return OK
 
 
+def _validate_merge_inputs(args, *, run, repo):
+    """Shape-validates every merge input BEFORE any git state is touched: full 40-hex sha,
+    `--branch`, ONE canonical `--phase` (UTF-16 bounded, no newline, no U+FEFF), `--target`
+    (literal branch name + a read-only `git check-ref-format`). Precedence between several
+    invalid inputs is the order below. Returns `(phase, approved_target)`."""
+    # An abbreviated sha is an INCOMPLETE approval per merge-contract.md, not a lookup to
+    # widen -- refused before any git state is touched.
+    if not re.fullmatch(r"[0-9a-f]{40}", args.sha or ""):
+        exc = Refusal("sha-mismatch")
+        exc.hint = "hint: --sha must be the full 40-character commit sha from the approval"
+        raise exc
+
+    # `--branch` reaches the commit subject AND the audit payload, where the validator
+    # bounds it at `LIMITS.target` (512). `git check-ref-format` happily accepts a
+    # 2048-character ref, so an oversized-but-valid branch would commit and only then fail
+    # its POST -- the same stranded-merge shape the phase bound prevents, one field over
+    # (part-2 cold review round 4 / round-5 F11). Bounded here, ahead of every mutation.
+    # UTF-16 code units, not Python characters -- the same unit the validator measures and
+    # the same mistake as the phase bound, one field over (round-6 F13). A branch may
+    # legally carry astral characters, and `len()` would count each as one where
+    # `String.length` counts two.
+    if not (args.branch and not any(c.isspace() for c in args.branch)
+            and 1 <= _utf16_len(args.branch) <= 512):   # -1 means unencodable, not short
+        exc = Refusal("branch-invalid")
+        exc.hint = ("hint: --branch must be a non-empty ref of at most 512 UTF-16 code "
+                    "units (emoji count as two) with no whitespace")
+        raise exc
+
+    # ONE canonical phase title, used byte-for-byte by the commit subject, the audit
+    # payload and the resume comparison (round-4 F15/F16). Two shapes had to be refused
+    # here rather than accommodated later:
+    #   * a title containing a newline -- `git commit -m` accepts it, but `%s` FLATTENS it
+    #     into the subject, so the resume equality check would never match again and a
+    #     post-commit retry would strand the merge it was meant to finish;
+    #   * a title over the event validator's `LIMITS.summary` bound -- the audit row would
+    #     silently record a truncated phase while the commit carried the full one.
+    # The length is measured in UTF-16 CODE UNITS, not Python characters (part-1 cold
+    # review): the validator is TypeScript and `String.length` counts units, so 200 emoji
+    # are 200 to Python and 400 to the validator. Bounding by `len()` would let that title
+    # commit and then fail its POST, and the documented retry would fail identically --
+    # a stranded merge. Refusing costs the tech lead one retype.
+    phase = (args.phase or "").strip()
+    utf16_len = _utf16_len(phase)
+    if utf16_len < 0:
+        # POSIX argv is decoded with `surrogateescape`, so an undecodable byte reaches here
+        # as a lone surrogate that cannot be encoded at all. It has no honest length and no
+        # business in a commit subject; refuse instead of crashing past the refusal contract
+        # (part-1 cold review round 2).
+        phase = ""
+    # `\ufeff` is the one character the VALIDATOR calls whitespace and Python's `strip()`
+    # does not (part-2 cold review round 4, measured over every BMP code point). The other
+    # five differences run the safe way -- Python strips them, so this gate refuses first
+    # and the validator never sees them. This one runs the dangerous way, so refuse it
+    # here rather than relaxing the validator: only producer-accepts/validator-rejects
+    # commits and then fails audit.
+    if (not phase or utf16_len > 200 or phase != args.phase
+            or any(c in phase for c in "\r\n\t\ufeff")):
+        exc = Refusal("phase-invalid")
+        exc.hint = ("hint: --phase must be a single line of at most 200 UTF-16 code units "
+                    "(emoji count as two) with no leading or trailing whitespace")
+        raise exc
+
+    # `--target` is the approved destination, asserted against policy — never an override
+    # and never defaulted from current policy (MOA-458). Shape first, then a read-only
+    # `git check-ref-format`; do not trim, normalize, or resolve. SHA/branch/phase above
+    # keep their precedence when several inputs are invalid.
+    approved_target = getattr(args, "target", None)
+    if not (isinstance(approved_target, str) and not approved_target.startswith("-")
+            and not any(c.isspace() for c in approved_target)
+            and 1 <= _utf16_len(approved_target) <= 512):
+        exc = Refusal("target-invalid")
+        exc.hint = ("hint: --target must be a literal branch name of 1–512 UTF-16 code "
+                    "units with no whitespace or leading dash")
+        raise exc
+    fmt = run(["git", "check-ref-format", f"refs/heads/{approved_target}"], cwd=repo)
+    if fmt.returncode != 0:
+        exc = Refusal("target-invalid")
+        exc.hint = (f"hint: --target is not a valid branch name: "
+                    f"{jr._bound(approved_target, 120)}")
+        raise exc
+    return phase, approved_target
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6290,81 +6373,7 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
     caller = resolve_caller(env, args.from_caller)
     project = slugify_project(repo.name)
 
-    # An abbreviated sha is an INCOMPLETE approval per merge-contract.md, not a lookup to
-    # widen -- refused before any git state is touched.
-    if not re.fullmatch(r"[0-9a-f]{40}", args.sha or ""):
-        exc = Refusal("sha-mismatch")
-        exc.hint = "hint: --sha must be the full 40-character commit sha from the approval"
-        raise exc
-
-    # `--branch` reaches the commit subject AND the audit payload, where the validator
-    # bounds it at `LIMITS.target` (512). `git check-ref-format` happily accepts a
-    # 2048-character ref, so an oversized-but-valid branch would commit and only then fail
-    # its POST -- the same stranded-merge shape the phase bound prevents, one field over
-    # (part-2 cold review round 4 / round-5 F11). Bounded here, ahead of every mutation.
-    # UTF-16 code units, not Python characters -- the same unit the validator measures and
-    # the same mistake as the phase bound, one field over (round-6 F13). A branch may
-    # legally carry astral characters, and `len()` would count each as one where
-    # `String.length` counts two.
-    if not (args.branch and not any(c.isspace() for c in args.branch)
-            and 1 <= _utf16_len(args.branch) <= 512):   # -1 means unencodable, not short
-        exc = Refusal("branch-invalid")
-        exc.hint = ("hint: --branch must be a non-empty ref of at most 512 UTF-16 code "
-                    "units (emoji count as two) with no whitespace")
-        raise exc
-
-    # ONE canonical phase title, used byte-for-byte by the commit subject, the audit
-    # payload and the resume comparison (round-4 F15/F16). Two shapes had to be refused
-    # here rather than accommodated later:
-    #   * a title containing a newline -- `git commit -m` accepts it, but `%s` FLATTENS it
-    #     into the subject, so the resume equality check would never match again and a
-    #     post-commit retry would strand the merge it was meant to finish;
-    #   * a title over the event validator's `LIMITS.summary` bound -- the audit row would
-    #     silently record a truncated phase while the commit carried the full one.
-    # The length is measured in UTF-16 CODE UNITS, not Python characters (part-1 cold
-    # review): the validator is TypeScript and `String.length` counts units, so 200 emoji
-    # are 200 to Python and 400 to the validator. Bounding by `len()` would let that title
-    # commit and then fail its POST, and the documented retry would fail identically --
-    # a stranded merge. Refusing costs the tech lead one retype.
-    phase = (args.phase or "").strip()
-    utf16_len = _utf16_len(phase)
-    if utf16_len < 0:
-        # POSIX argv is decoded with `surrogateescape`, so an undecodable byte reaches here
-        # as a lone surrogate that cannot be encoded at all. It has no honest length and no
-        # business in a commit subject; refuse instead of crashing past the refusal contract
-        # (part-1 cold review round 2).
-        phase = ""
-    # `\ufeff` is the one character the VALIDATOR calls whitespace and Python's `strip()`
-    # does not (part-2 cold review round 4, measured over every BMP code point). The other
-    # five differences run the safe way -- Python strips them, so this gate refuses first
-    # and the validator never sees them. This one runs the dangerous way, so refuse it
-    # here rather than relaxing the validator: only producer-accepts/validator-rejects
-    # commits and then fails audit.
-    if (not phase or utf16_len > 200 or phase != args.phase
-            or any(c in phase for c in "\r\n\t\ufeff")):
-        exc = Refusal("phase-invalid")
-        exc.hint = ("hint: --phase must be a single line of at most 200 UTF-16 code units "
-                    "(emoji count as two) with no leading or trailing whitespace")
-        raise exc
-
-    # `--target` is the approved destination, asserted against policy — never an override
-    # and never defaulted from current policy (MOA-458). Shape first, then a read-only
-    # `git check-ref-format`; do not trim, normalize, or resolve. SHA/branch/phase above
-    # keep their precedence when several inputs are invalid.
-    approved_target = getattr(args, "target", None)
-    if not (isinstance(approved_target, str) and not approved_target.startswith("-")
-            and not any(c.isspace() for c in approved_target)
-            and 1 <= _utf16_len(approved_target) <= 512):
-        exc = Refusal("target-invalid")
-        exc.hint = ("hint: --target must be a literal branch name of 1–512 UTF-16 code "
-                    "units with no whitespace or leading dash")
-        raise exc
-    fmt = run(["git", "check-ref-format", f"refs/heads/{approved_target}"], cwd=repo)
-    if fmt.returncode != 0:
-        exc = Refusal("target-invalid")
-        exc.hint = (f"hint: --target is not a valid branch name: "
-                    f"{jr._bound(approved_target, 120)}")
-        raise exc
+    phase, approved_target = _validate_merge_inputs(args, run=run, repo=repo)
 
     target, no_preset_block, preset = _resolve_delivery_target(repo, run=run)
     # Same bound as `--branch`, and for the same reason: the target is audit payload too,
