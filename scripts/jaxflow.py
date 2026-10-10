@@ -6530,6 +6530,21 @@ def _pr_merge_and_readback(args, *, run, repo, repo_slug, number, phase, target)
     return view, merge_sha
 
 
+def _sync_local_target(run, repo, target):
+    """Best-effort local sync (decision 10): fetch + fast-forward the local target only when
+    clean and direct; a divergence or a dirty tree is reported, never reset or force."""
+    run(["git", "fetch", "origin", target], cwd=repo)
+    switched = run(["git", "switch", target], cwd=repo)
+    if switched.returncode == 0:
+        status = _status_tracked(run, repo)
+        if status.returncode == 0 and not status.stdout.strip():
+            ff = run(["git", "merge", "--ff-only", f"origin/{target}"], cwd=repo)
+            if ff.returncode != 0:
+                print(f"local {target} not fast-forwarded (diverged from origin/{target}); left as-is")
+        else:
+            print(f"local {target} not synced (tracked tree not clean)")
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6598,18 +6613,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
         retry_msg=f"PR #{number} merged as {merge_sha}; re-run the same jaxflow merge to resume",
         warn_bad_pane=False)
 
-    # Best-effort local sync (decision 10): fetch + fast-forward the local target only when
-    # clean and direct; a divergence or a dirty tree is reported, never reset or force.
-    run(["git", "fetch", "origin", target], cwd=repo)
-    switched = run(["git", "switch", target], cwd=repo)
-    if switched.returncode == 0:
-        status = _status_tracked(run, repo)
-        if status.returncode == 0 and not status.stdout.strip():
-            ff = run(["git", "merge", "--ff-only", f"origin/{target}"], cwd=repo)
-            if ff.returncode != 0:
-                print(f"local {target} not fast-forwarded (diverged from origin/{target}); left as-is")
-        else:
-            print(f"local {target} not synced (tracked tree not clean)")
+    _sync_local_target(run, repo, target)
 
     if not args.branch.startswith("release/"):
         _cleanup_merged_worktree(
