@@ -1581,6 +1581,23 @@ def _refuse_nonterminal_builder(project, repo, branch, db_path=None):
         raise Refusal("resume-ineligible")
 
 
+def _plan_path_defect(plan_path, allowlist_root):
+    """Why a (resolved) plan path is unusable, or None. The check order is load-bearing and
+    shared by every caller: missing -> secret FIRST (a symlink planted inside the worktree
+    that resolves to a control-repo `.env` must say `secret-detected` even though it is
+    "contained") -> outside the allowlist / not a file / unreadable. Callers map the result
+    to their own refusal: `resume-ineligible`, `secret-detected: <path>`,
+    `plan is not a readable file`, `unknown-run` or `path-outside-allowlist`."""
+    if plan_path is None:
+        return "path-outside-allowlist"
+    if _is_secret_path(plan_path):
+        return "secret-detected"
+    if (not _contained(plan_path, allowlist_root) or not plan_path.is_file()
+            or not os.access(plan_path, os.R_OK)):
+        return "path-outside-allowlist"
+    return None
+
+
 def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
                            run, post, env, now, allowlist_root, db_path):
     db_path = db_path or jr.DB_PATH
@@ -1666,7 +1683,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise
     except Exception as exc:
         raise Refusal("resume-ineligible") from exc
-    if _is_secret_path(plan_path) or not plan_path.is_file() or not os.access(plan_path, os.R_OK):
+    if _plan_path_defect(plan_path, allowlist_root):
         raise Refusal("resume-ineligible")
     plan_defects = _validate_plan_structure(plan_path.read_text(encoding="utf-8"), plan_path, allowlist_root)
     if plan_defects:
@@ -1756,7 +1773,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             raise
         except Exception as exc:
             raise Refusal("resume-ineligible") from exc
-        if _is_secret_path(plan_path) or not plan_path.is_file() or not os.access(plan_path, os.R_OK):
+        if _plan_path_defect(plan_path, allowlist_root):
             raise Refusal("resume-ineligible")
         profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
         if profile_name not in ("default", "fallback"):
@@ -1867,13 +1884,14 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
     # Canonicalize + secret-check the plan path BEFORE any reservation (fixes cold review
     # F3 -- the first draft never called _is_secret_path at all for `build`).
     plan_path = canonicalize_target(Path(args.plan), allowlist_root)
-    if _is_secret_path(plan_path):
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
         raise Refusal(f"secret-detected: {plan_path}")
     # fixes Part 1 diff-review F1: a directory or unreadable plan path must refuse here,
     # before any reservation -- not after a worktree/branch already exist (MOA-467: the
     # original document is read in place later, so there is no copy step to fail in).
     # No git call needed for this check.
-    if not plan_path.is_file() or not os.access(plan_path, os.R_OK):
+    if defect:
         raise Refusal("plan is not a readable file")
 
     # MOA-471 item 10: plan-structure validation runs BEFORE any reservation below --
@@ -2346,11 +2364,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # validated at dispatch). The check below mirrors `dispatch_build`'s own: canonical,
     # non-secret, readable, inside the allowlist. Secret-shaped paths, missing files and
     # outside-allowlist paths all refuse here, before any verify run is ever spent.
-    if (
-        plan_path is None or _is_secret_path(plan_path)
-        or not _contained(plan_path, allowlist_root)
-        or not plan_path.is_file() or not os.access(plan_path, os.R_OK)
-    ):
+    if _plan_path_defect(plan_path, allowlist_root):
         raise _unusable_builder_manifest()
     plan_text = plan_path.read_text(encoding="utf-8")
     spec_dest, spec_refusal_code = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
@@ -3674,15 +3688,15 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
             # symlink planted inside the worktree that resolves to a control-repo `.env`
             # must refuse even though it is "contained".
             plan_path = Path(manifest["plan_path"]).resolve()
-            if _is_secret_path(plan_path):
+            defect = _plan_path_defect(plan_path, allowlist_root)
+            if defect == "secret-detected":
                 return _refuse_builder_run(
                     f"secret-detected: {plan_path}", manifest=manifest, run=run, post=post,
                     control_repo=control_repo, worktree=worktree, branch=branch,
                 )
-            if not _contained(plan_path, allowlist_root) or not plan_path.is_file() \
-                    or not os.access(plan_path, os.R_OK):
+            if defect:
                 return _refuse_builder_run(
-                    "path-outside-allowlist", manifest=manifest, run=run, post=post,
+                    defect, manifest=manifest, run=run, post=post,
                     control_repo=control_repo, worktree=worktree, branch=branch,
                 )
             resume_start = manifest.get("resume_start")
@@ -4024,14 +4038,11 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
         plan_path = Path(raw_plan).resolve() if raw_plan else None
     except OSError:
         plan_path = None
-    if plan_path is not None and _is_secret_path(plan_path):
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
         return _refuse_diff_run(f"secret-detected: {plan_path}", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-    if (
-        plan_path is None
-        or not _contained(plan_path, allowlist_root)
-        or not plan_path.is_file() or not os.access(plan_path, os.R_OK)
-    ):
-        return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
+    if defect:
+        return _refuse_diff_run(defect, manifest=manifest, run=run, post=post, manifest_path=manifest_path)
     raw_spec = manifest.get("spec_path")
     try:
         spec_path = Path(raw_spec).resolve() if raw_spec else None
