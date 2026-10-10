@@ -6124,6 +6124,74 @@ def _validate_merge_inputs(args, *, run, repo):
     return phase, approved_target
 
 
+def _merge_resume_verify(args, *, run, repo, target, phase):
+    """Proves a RESUME is really the approved delivery: the target's merge commit carries
+    exactly the subject jaxflow itself writes for this branch/phase (the WHOLE subject, not
+    a substring: `--phase` is free text), and the source branch is either gone (exit 1 of
+    `show-ref`) or still the approved sha. Returns `(merge_sha, branch_present)`."""
+    branch_present = True
+    # A resume skips the whole switch/merge/checks/commit sequence, so it never gets
+    # the source-branch identity for free -- and it later DELETES that branch. Earn it
+    # here (cold review F2): the caller-named branch must still resolve to the approved
+    # sha, or resolve to nothing at all (a previous resume already cleaned it up).
+    # The merge commit lives on TARGET, and a resume never switches to it -- reading
+    # HEAD here would report whatever branch the caller happens to be standing on
+    # (found while fixing round-2 F4).
+    merge_sha = _git_read(run, repo, ["git", "rev-parse", f"{target}^{{commit}}"],
+                          shape=r"[0-9a-f]{40}")
+    if merge_sha is None:
+        exc = Refusal("sha-mismatch")
+        exc.hint = f"hint: resume refused -- {target} does not resolve to a commit"
+        raise exc
+
+    # Resolving to the approved sha does NOT prove this is the branch the approval
+    # named: any alias pointing at the same commit resolves identically, and the
+    # cleanup below would then delete the alias and its worktree while the delivered
+    # branch survived (round-2 F4, reproduced on real git). The merge commit jaxflow
+    # itself wrote carries the branch name in its subject; that is the binding. A
+    # merge jaxflow did not write is refused rather than resumed.
+    # The WHOLE subject, not a substring of it (round-3 F7): `--phase` is free text,
+    # so a real merge of `other` titled `Release (merge feat/x)` writes
+    # `feat: Release (merge feat/x) (merge other)` -- a substring test would accept a
+    # resume for feat/x and delete it. Equality against the subject jaxflow itself
+    # writes cannot be forged from the phase title alone.
+    subject = _git_read(run, repo, ["git", "log", "-1", "--format=%s", merge_sha])
+    expected_subject = f"feat: {phase} (merge {args.branch})"
+    if subject != expected_subject:
+        exc = Refusal("sha-mismatch")
+        exc.hint = (f"hint: resume refused -- {target}'s merge commit {merge_sha} does "
+                    f"not record {args.branch} "
+                    f"(subject: {jr._bound(subject or '<unreadable>', 120)}; "
+                    f"expected: {jr._bound(expected_subject, 120)})")
+        raise exc
+
+    # "The branch is gone" and "the ref read failed" are different facts, and
+    # `rev-parse --verify` returns 128 for both (round-5 F6). `show-ref --verify`
+    # separates them on real git: exit 1 is "no such ref", exit 128 is a repository
+    # error. Only exit 1 may skip cleanup; anything else refuses rather than posting
+    # an audit for a delivery whose source branch it could not read.
+    present = run(["git", "show-ref", "--verify", "--quiet",
+                   f"refs/heads/{args.branch}"], cwd=repo)
+    if present.returncode == 1:
+        branch_present = False
+    elif present.returncode != 0:
+        exc = Refusal("sha-mismatch")
+        exc.hint = (f"hint: resume refused -- could not read {args.branch}: "
+                    f"{jr._bound((present.stderr or present.stdout).strip(), 200)}")
+        raise exc
+    if branch_present:
+        src = _git_read(run, repo,
+                        ["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"],
+                        shape=r"[0-9a-f]{40}")
+        if src != args.sha:
+            exc = Refusal("sha-mismatch")
+            exc.hint = (f"hint: resume refused -- {args.branch} now points at "
+                        f"{src or '<unreadable>'}, not the approved {args.sha}")
+            raise exc
+    print(f"resuming: {target} already carries the merge of {args.sha}")
+    return merge_sha, branch_present
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6427,65 +6495,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
         merge_sha = None
         branch_present = True
         if resuming:
-            # A resume skips the whole switch/merge/checks/commit sequence, so it never gets
-            # the source-branch identity for free -- and it later DELETES that branch. Earn it
-            # here (cold review F2): the caller-named branch must still resolve to the approved
-            # sha, or resolve to nothing at all (a previous resume already cleaned it up).
-            # The merge commit lives on TARGET, and a resume never switches to it -- reading
-            # HEAD here would report whatever branch the caller happens to be standing on
-            # (found while fixing round-2 F4).
-            merge_sha = _git_read(run, repo, ["git", "rev-parse", f"{target}^{{commit}}"],
-                                  shape=r"[0-9a-f]{40}")
-            if merge_sha is None:
-                exc = Refusal("sha-mismatch")
-                exc.hint = f"hint: resume refused -- {target} does not resolve to a commit"
-                raise exc
-
-            # Resolving to the approved sha does NOT prove this is the branch the approval
-            # named: any alias pointing at the same commit resolves identically, and the
-            # cleanup below would then delete the alias and its worktree while the delivered
-            # branch survived (round-2 F4, reproduced on real git). The merge commit jaxflow
-            # itself wrote carries the branch name in its subject; that is the binding. A
-            # merge jaxflow did not write is refused rather than resumed.
-            # The WHOLE subject, not a substring of it (round-3 F7): `--phase` is free text,
-            # so a real merge of `other` titled `Release (merge feat/x)` writes
-            # `feat: Release (merge feat/x) (merge other)` -- a substring test would accept a
-            # resume for feat/x and delete it. Equality against the subject jaxflow itself
-            # writes cannot be forged from the phase title alone.
-            subject = _git_read(run, repo, ["git", "log", "-1", "--format=%s", merge_sha])
-            expected_subject = f"feat: {phase} (merge {args.branch})"
-            if subject != expected_subject:
-                exc = Refusal("sha-mismatch")
-                exc.hint = (f"hint: resume refused -- {target}'s merge commit {merge_sha} does "
-                            f"not record {args.branch} "
-                            f"(subject: {jr._bound(subject or '<unreadable>', 120)}; "
-                            f"expected: {jr._bound(expected_subject, 120)})")
-                raise exc
-
-            # "The branch is gone" and "the ref read failed" are different facts, and
-            # `rev-parse --verify` returns 128 for both (round-5 F6). `show-ref --verify`
-            # separates them on real git: exit 1 is "no such ref", exit 128 is a repository
-            # error. Only exit 1 may skip cleanup; anything else refuses rather than posting
-            # an audit for a delivery whose source branch it could not read.
-            present = run(["git", "show-ref", "--verify", "--quiet",
-                           f"refs/heads/{args.branch}"], cwd=repo)
-            if present.returncode == 1:
-                branch_present = False
-            elif present.returncode != 0:
-                exc = Refusal("sha-mismatch")
-                exc.hint = (f"hint: resume refused -- could not read {args.branch}: "
-                            f"{jr._bound((present.stderr or present.stdout).strip(), 200)}")
-                raise exc
-            if branch_present:
-                src = _git_read(run, repo,
-                                ["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"],
-                                shape=r"[0-9a-f]{40}")
-                if src != args.sha:
-                    exc = Refusal("sha-mismatch")
-                    exc.hint = (f"hint: resume refused -- {args.branch} now points at "
-                                f"{src or '<unreadable>'}, not the approved {args.sha}")
-                    raise exc
-            print(f"resuming: {target} already carries the merge of {args.sha}")
+            merge_sha, branch_present = _merge_resume_verify(
+                args, run=run, repo=repo, target=target, phase=phase)
         else:
             # NO `git switch <branch>` here (round-4 F12, reproduced on real git). `build`
             # leaves the approved branch checked out in its own linked worktree, and git
