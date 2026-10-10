@@ -1874,6 +1874,32 @@ def _build_started_base(*, phase, runtime, branch, caller, caller_session, model
     }
 
 
+def _validated_build_plan(args, allowlist_root):
+    """The canonical plan path of a fresh build, validated BEFORE any reservation: canonical,
+    non-secret, readable file, structurally valid (MOA-471 item 10). No git call needed."""
+    # Canonicalize + secret-check the plan path BEFORE any reservation (fixes cold review
+    # F3 -- the first draft never called _is_secret_path at all for `build`).
+    plan_path = canonicalize_target(Path(args.plan), allowlist_root)
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
+        raise Refusal(f"secret-detected: {plan_path}")
+    # fixes Part 1 diff-review F1: a directory or unreadable plan path must refuse here,
+    # before any reservation -- not after a worktree/branch already exist (MOA-467: the
+    # original document is read in place later, so there is no copy step to fail in).
+    # No git call needed for this check.
+    if defect:
+        raise Refusal("plan is not a readable file")
+
+    # MOA-471 item 10: plan-structure validation runs BEFORE any reservation below --
+    # `os.mkdir(worktree)` (further down this function) is the earliest filesystem/git
+    # write this dispatch makes, and no plan defect may ever burn one.
+    plan_text = plan_path.read_text(encoding="utf-8")
+    plan_defects = _validate_plan_structure(plan_text, plan_path, allowlist_root)
+    if plan_defects:
+        raise _refuse("plan-invalid", "hint: " + "; ".join(plan_defects))
+    return plan_path
+
+
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     cwd = Path.cwd().resolve()
     repo = _require_toplevel(run, cwd)
@@ -1904,26 +1930,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         raise Refusal("build-missing-required-flags")
     phase = args.phase
 
-    # Canonicalize + secret-check the plan path BEFORE any reservation (fixes cold review
-    # F3 -- the first draft never called _is_secret_path at all for `build`).
-    plan_path = canonicalize_target(Path(args.plan), allowlist_root)
-    defect = _plan_path_defect(plan_path, allowlist_root)
-    if defect == "secret-detected":
-        raise Refusal(f"secret-detected: {plan_path}")
-    # fixes Part 1 diff-review F1: a directory or unreadable plan path must refuse here,
-    # before any reservation -- not after a worktree/branch already exist (MOA-467: the
-    # original document is read in place later, so there is no copy step to fail in).
-    # No git call needed for this check.
-    if defect:
-        raise Refusal("plan is not a readable file")
-
-    # MOA-471 item 10: plan-structure validation runs BEFORE any reservation below --
-    # `os.mkdir(worktree)` (further down this function) is the earliest filesystem/git
-    # write this dispatch makes, and no plan defect may ever burn one.
-    plan_text = plan_path.read_text(encoding="utf-8")
-    plan_defects = _validate_plan_structure(plan_text, plan_path, allowlist_root)
-    if plan_defects:
-        raise _refuse("plan-invalid", "hint: " + "; ".join(plan_defects))
+    plan_path = _validated_build_plan(args, allowlist_root)
 
     _require_opencode_on()
     settings = jset.read_settings()
