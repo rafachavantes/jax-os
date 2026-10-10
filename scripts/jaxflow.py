@@ -1598,6 +1598,25 @@ def _plan_path_defect(plan_path, allowlist_root):
     return None
 
 
+def _builder_run_rows(con, run_id):
+    """The builder `run-started` row (`project`, `payload`) and `run-finished` row
+    (`payload`) of a run, as `(started, finished)`; either may be None. `role = 'builder'`
+    stays in BOTH queries (diff-review F3: a reviewer's own `run-started` must never pair
+    with an unrelated builder `run-finished` of the same id). `con.row_factory` must be
+    `sqlite3.Row`; the caller owns the connection."""
+    started = con.execute(
+        "SELECT project, payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
+        "AND type = 'run-started' LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    finished = con.execute(
+        "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
+        "AND type = 'run-finished' LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    return started, finished
+
+
 def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
                            run, post, env, now, allowlist_root, db_path):
     db_path = db_path or jr.DB_PATH
@@ -1607,16 +1626,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise Refusal("resume-ineligible") from exc
     con.row_factory = sqlite3.Row
     try:
-        started = con.execute(
-            "SELECT project, payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-started' LIMIT 1",
-            (resume_id,),
-        ).fetchone()
-        finished = con.execute(
-            "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-finished' LIMIT 1",
-            (resume_id,),
-        ).fetchone()
+        started, finished = _builder_run_rows(con, resume_id)
     finally:
         con.close()
     if not started or not finished:
@@ -1710,16 +1720,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             raise Refusal("resume-ineligible") from exc
         con.row_factory = sqlite3.Row
         try:
-            started_now = con.execute(
-                "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-                "AND type = 'run-started' LIMIT 1",
-                (resume_id,),
-            ).fetchone()
-            finished_now = con.execute(
-                "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-                "AND type = 'run-finished' LIMIT 1",
-                (resume_id,),
-            ).fetchone()
+            started_now, finished_now = _builder_run_rows(con, resume_id)
             latest = _latest_builder_attempt(con, project, repo, branch)
         finally:
             con.close()
@@ -2267,16 +2268,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         # build. When this filtered query misses, a SEPARATE unfiltered lookup below is
         # used ONLY to word the `unknown-run` hint -- never to decide whether the run is
         # usable.
-        started = con.execute(
-            "SELECT project, payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-started' LIMIT 1",
-            (builder_run_id,),
-        ).fetchone()
-        finished = con.execute(
-            "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-finished' LIMIT 1",
-            (builder_run_id,),
-        ).fetchone()
+        started, finished = _builder_run_rows(con, builder_run_id)
         if not started:
             any_started = con.execute(
                 "SELECT role, payload FROM workflow_events WHERE run_id = ? "
