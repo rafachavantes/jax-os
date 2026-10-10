@@ -6018,6 +6018,29 @@ def _post_merge_audit(post, env, project, payload, *, retry_msg, warn_bad_pane):
         raise refusal from exc
 
 
+def _record_merge_status(run, allowlist_root, *, repo, caller, target, dispatch_start,
+                         outcome, checks_audit, checks_cmd, target_note=None):
+    """status.md + the closing stdout lines of a delivered merge; returns `OK`. `branch` is
+    passed to `_update_status_md` explicitly rather than left to `_current_branch()`
+    (part-1 cold review): a RESUME never switches to the target, so the current checkout is
+    whatever the tech lead was standing on -- or nothing, from a detached HEAD.
+    `target_note` is the local path's `target: ... (no preset block)` line. Order: status
+    update -> note -> outcome -> checks line."""
+    _update_status_md(
+        {"repo": str(repo), "kind": "merge", "runtime": None if caller == "jaxos" else caller,
+         "branch": target, "dispatch_start": dispatch_start, "worker_summary": outcome,
+         "worker_outcome": None},
+        run=run, allowlist_root=allowlist_root,
+    )
+    if target_note:
+        print(target_note)
+    print(outcome)
+    line = _merge_checks_line(checks_audit, checks_cmd)
+    if line:
+        print(line)
+    return OK
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6244,18 +6267,11 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
             run, repo, _branch_worktree_path(allowlist_root, project, args.branch),
             args.branch, allowlist_root)
 
-    outcome = f"merged {merge_sha} via PR #{number} ({view['url']})"
-    _update_status_md(
-        {"repo": str(repo), "kind": "merge", "runtime": None if caller == "jaxos" else caller,
-         "branch": target, "dispatch_start": _iso8601(now()), "worker_summary": outcome,
-         "worker_outcome": None},
-        run=run, allowlist_root=allowlist_root,
-    )
-    print(outcome)
-    line = _merge_checks_line(checks_audit, args.checks)
-    if line:
-        print(line)
-    return OK
+    return _record_merge_status(
+        run, allowlist_root, repo=repo, caller=caller, target=target,
+        dispatch_start=_iso8601(now()),
+        outcome=f"merged {merge_sha} via PR #{number} ({view['url']})",
+        checks_audit=checks_audit, checks_cmd=args.checks)
 
 
 def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
@@ -6643,24 +6659,11 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
 
         outcome = (f"merged {merge_sha} pushed origin/{target}" if pushed
                    else f"merged {merge_sha} — no remote delivery configured")
-        # `branch` is passed explicitly rather than left to `_current_branch()` (part-1 cold
-        # review): a RESUME never switches to the target, so the current checkout is whatever
-        # the tech lead happened to be standing on -- or nothing, from a detached HEAD.
-        # Requires the one-word `_update_status_md` change in the same step.
-        _update_status_md(
-            {"repo": str(repo), "kind": "merge", "runtime": None if caller == "jaxos" else caller,
-             "branch": target,
-             "dispatch_start": started_at, "worker_summary": outcome, "worker_outcome": None},
-            run=run, allowlist_root=allowlist_root,
-        )
-
-        if no_preset_block:
-            print(f"target: {target} (no preset block)")
-        print(outcome)
-        line = _merge_checks_line(checks_audit, checks_cmd)
-        if line:
-            print(line)
-        return OK
+        return _record_merge_status(
+            run, allowlist_root, repo=repo, caller=caller, target=target,
+            dispatch_start=started_at, outcome=outcome, checks_audit=checks_audit,
+            checks_cmd=checks_cmd,
+            target_note=f"target: {target} (no preset block)" if no_preset_block else None)
 
 
 def _nonblank(value):
