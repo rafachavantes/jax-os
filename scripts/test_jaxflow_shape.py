@@ -31,8 +31,7 @@ def test_no_function_over_250_lines():
 
 
 _MODULES = [
-    pytest.param("jaxflow.py", id="jaxflow", marks=pytest.mark.xfail(
-        strict=True, reason="P2 splits jaxflow.py under 1800")),
+    pytest.param("jaxflow.py", id="jaxflow"),
     *(pytest.param(f"{name}.py", id=name) for name in (
         "jaxflow_common", "jaxflow_workerkit", "jaxflow_merge", "jaxflow_review",
         "jaxflow_build", "jaxflow_worker", "jaxflow_cli")),
