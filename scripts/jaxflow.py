@@ -1694,13 +1694,10 @@ def _resume_locate(repo, project, allowlist_root, started_payload, prior, checkp
     return branch, worktree
 
 
-def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
-                           run, post, env, now, allowlist_root, db_path):
-    db_path = db_path or jr.DB_PATH
-    started, finished, _ = _resume_rows(db_path, resume_id)
-    started_payload, finished_payload, prior_path, prior, checkpoint = _resume_load_prior(
-        repo, resume_id, project, started, finished)
-    branch, worktree = _resume_locate(repo, project, allowlist_root, started_payload, prior, checkpoint)
+def _resume_plan(prior, allowlist_root):
+    """`(whitelist, verify, phase, plan_path)` recorded by the prior attempt, refusing
+    `resume-ineligible` unless they are well-formed and the plan is a canonical, non-secret,
+    readable file (P1a's `_plan_path_defect`)."""
     whitelist = prior.get("whitelist")
     verify = prior.get("verify")
     phase = prior.get("phase")
@@ -1714,6 +1711,26 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise Refusal("resume-ineligible") from exc
     if _plan_path_defect(plan_path, allowlist_root):
         raise Refusal("resume-ineligible")
+    return whitelist, verify, phase, plan_path
+
+
+def _resume_profile_name(args, prior):
+    """The builder profile a resume runs under: `fallback` with `--fallback`, else the one the
+    prior attempt recorded; anything but default/fallback refuses `resume-ineligible`."""
+    profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
+    if profile_name not in ("default", "fallback"):
+        raise Refusal("resume-ineligible")
+    return profile_name
+
+
+def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
+                           run, post, env, now, allowlist_root, db_path):
+    db_path = db_path or jr.DB_PATH
+    started, finished, _ = _resume_rows(db_path, resume_id)
+    started_payload, finished_payload, prior_path, prior, checkpoint = _resume_load_prior(
+        repo, resume_id, project, started, finished)
+    branch, worktree = _resume_locate(repo, project, allowlist_root, started_payload, prior, checkpoint)
+    whitelist, verify, phase, plan_path = _resume_plan(prior, allowlist_root)
     plan_defects = _validate_plan_structure(plan_path.read_text(encoding="utf-8"), plan_path, allowlist_root)
     if plan_defects:
         raise Refusal("resume-ineligible")
@@ -1771,22 +1788,8 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
                 or prior.get("requested_profile") not in ("default", "fallback")
                 or prior.get("requested_profile") != started_payload.get("requested_profile")):
             raise Refusal("resume-ineligible")
-        whitelist = prior.get("whitelist")
-        verify = prior.get("verify")
-        phase = prior.get("phase")
-        if type(whitelist) is not list or not whitelist or type(verify) is not str or not verify or not phase:
-            raise Refusal("resume-ineligible")
-        try:
-            plan_path = canonicalize_target(Path(prior["plan_path"]), allowlist_root)
-        except Refusal:
-            raise
-        except Exception as exc:
-            raise Refusal("resume-ineligible") from exc
-        if _plan_path_defect(plan_path, allowlist_root):
-            raise Refusal("resume-ineligible")
-        profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
-        if profile_name not in ("default", "fallback"):
-            raise Refusal("resume-ineligible")
+        whitelist, verify, phase, plan_path = _resume_plan(prior, allowlist_root)
+        profile_name = _resume_profile_name(args, prior)
         if latest != resume_id:
             raise _refuse("resume-ineligible", f"hint: latest attempt is {latest}")
         prior_session = started_payload.get("session")
