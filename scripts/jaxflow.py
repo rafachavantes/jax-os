@@ -5992,6 +5992,32 @@ def _cleanup_merged_worktree(run, repo, worktree, branch, allowlist_root):
         print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
 
 
+def _post_merge_audit(post, env, project, payload, *, retry_msg, warn_bad_pane):
+    """Post the `merge-approved` audit event. The delivery is already durable, so a failed
+    POST becomes the hub refusal; when the failure is retryable `retry_msg` is printed and
+    the refusal carries the hint (resume advice). `pane` is present-or-absent, never null
+    (the `caller_pane` discipline): a merge run outside tmux has no pane, which the
+    validator's `wrapper` carve-out allows. `warn_bad_pane` (the local merge path) also
+    says so when TMUX_PANE is set but unusable -- the validator checks `%<1-10 digits>`,
+    and a junk value must not strand a merge that is already committed (round-6 F14); the
+    PR path omits the pane silently, as before."""
+    event = {"project": project, "role": "lead", "type": "merge-approved",
+             "source": "deterministic", "emitter": "wrapper", "payload": payload}
+    pane = env.get("TMUX_PANE")
+    if pane and re.fullmatch(r"%[0-9]{1,10}", pane):
+        event["pane"] = pane
+    elif pane and warn_bad_pane:
+        print(f"TMUX_PANE={jr._bound(pane, 60)} is not a pane target; reporting without it")
+    try:
+        post(event)
+    except Exception as exc:
+        refusal = _hub_refusal(exc)
+        if _hub_retryable(exc):
+            print(retry_msg)
+            refusal.hint = f"hint: {jr._bound(str(exc), 200)}"
+        raise refusal from exc
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6192,22 +6218,13 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
             exc.hint = f"hint: PR #{number} merged but no merge commit sha was reported"
             raise exc
 
-    event = {"project": project, "role": "lead", "type": "merge-approved", "source": "deterministic",
-             "emitter": "wrapper",
-             "payload": {"phase": phase, "branch": args.branch, "sha": args.sha, "target": target,
-                         "approved_by": "rafa", "merge_sha": merge_sha,
-                         "pr_number": number, "pr_url": view["url"], "checks": checks_audit}}
-    pane = env.get("TMUX_PANE")
-    if pane and re.fullmatch(r"%[0-9]{1,10}", pane):
-        event["pane"] = pane
-    try:
-        post(event)
-    except Exception as exc:
-        refusal = _hub_refusal(exc)
-        if _hub_retryable(exc):
-            print(f"PR #{number} merged as {merge_sha}; re-run the same jaxflow merge to resume")
-            refusal.hint = f"hint: {jr._bound(str(exc), 200)}"
-        raise refusal from exc
+    _post_merge_audit(
+        post, env, project,
+        {"phase": phase, "branch": args.branch, "sha": args.sha, "target": target,
+         "approved_by": "rafa", "merge_sha": merge_sha, "pr_number": number,
+         "pr_url": view["url"], "checks": checks_audit},
+        retry_msg=f"PR #{number} merged as {merge_sha}; re-run the same jaxflow merge to resume",
+        warn_bad_pane=False)
 
     # Best-effort local sync (decision 10): fetch + fast-forward the local target only when
     # clean and direct; a divergence or a dirty tree is reported, never reset or force.
@@ -6591,36 +6608,13 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
                         "re-run the same jaxflow merge to resume")
             raise exc
 
-        event = {
-            "project": project, "role": "lead", "type": "merge-approved",
-            "source": "deterministic", "emitter": "wrapper",
-            "payload": {
-                "phase": phase, "branch": args.branch, "sha": args.sha,   # already <= 200
-                "target": target, "approved_by": "rafa", "merge_sha": merge_sha,
-                "checks": checks_audit,
-            },
-        }
-        # Present-or-absent, never null (the `caller_pane` discipline). A merge run outside
-        # tmux has no pane at all, and the validator's `wrapper` carve-out (spec §2.6, amended
-        # 2026-09-07) is what lets that event through.
-        pane = env.get("TMUX_PANE")
-        if pane and re.fullmatch(r"%[0-9]{1,10}", pane):
-            event["pane"] = pane
-        elif pane:
-            # The validator checks `pane` against `%<1-10 digits>`, so a junk or oversized
-            # TMUX_PANE would fail the POST *after* the commit and strand the delivery
-            # (round-6 F14). The field is optional, and an unusable pane target is worth
-            # nothing to whoever reads the ledger -- omit it and say so, rather than let an
-            # environment variable decide whether a merge can be audited.
-            print(f"TMUX_PANE={jr._bound(pane, 60)} is not a pane target; reporting without it")
-        try:
-            post(event)
-        except Exception as exc:
-            refusal = _hub_refusal(exc)
-            if _hub_retryable(exc):
-                print(f"merge commit {merge_sha} kept; re-run the same jaxflow merge to resume")
-                refusal.hint = f"hint: {jr._bound(str(exc), 200)}"
-            raise refusal from exc
+        _post_merge_audit(
+            post, env, project,
+            {"phase": phase, "branch": args.branch, "sha": args.sha,   # already <= 200
+             "target": target, "approved_by": "rafa", "merge_sha": merge_sha,
+             "checks": checks_audit},
+            retry_msg=f"merge commit {merge_sha} kept; re-run the same jaxflow merge to resume",
+            warn_bad_pane=True)
 
         pushed = False
         # Exit 2 is "No such remote" and NOTHING else is (verified on real git, round-5 F4).
