@@ -2507,6 +2507,52 @@ def _resolve_review_range(run, repo, worktree, branch, builder_manifest):
     return base_sha, head_sha
 
 
+def _resolve_since(args, *, run, repo, worktree, branch, db_path, head_sha, base_sha):
+    """The `--since` correction round: `(since_review_run_id, since_verdict, base_sha)`, the
+    base moved to the prior review's head. Without `--since` it returns `(None, None,
+    base_sha)` untouched. A `Refusal` propagates unchanged; any malformed chain data
+    refuses `since-chain-missing`."""
+    if not args.since:
+        return None, None, base_sha
+    # F3 (diff review 4884f63bdd16): a malformed chain node (a non-string
+    # since_review_run_id or SHA in some manifest along the chain) can raise a
+    # TypeError/AttributeError/etc. deep in the walk or in the git calls below.
+    # ponytail: one guard instead of per-field validation -- any such crash
+    # refuses exactly like a broken/unreadable chain node (Refusal itself
+    # propagates unchanged, never caught here).
+    try:
+        since_con = _open_ro(db_path)
+        since_con.row_factory = sqlite3.Row
+        try:
+            chain, walk_error = _walk_review_chain(
+                lambda rid: _load_diff_review_node(since_con, repo, rid), args.since,
+            )
+        finally:
+            since_con.close()
+        if walk_error is not None:
+            kind, bad_run_id = walk_error
+            raise _refuse(f"since-chain-{kind}", f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead")
+        target_node = chain[-1]
+        if not target_node["head_sha"]:
+            raise _refuse("since-chain-broken", f"hint: {target_node['run_id']} has no head_sha; run a full review instead")
+        ancestor = run(
+            ["git", "merge-base", "--is-ancestor", target_node["head_sha"], head_sha], cwd=worktree,
+        )
+        if ancestor.returncode != 0:
+            raise _refuse("since-not-ancestor", "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead")
+        lock_error = _validate_since_chain(
+            chain, branch=branch, current_merge_base=base_sha, run=run, worktree=worktree,
+        )
+        if lock_error:
+            raise _refuse(lock_error, "hint: run a full review instead")
+        return args.since, target_node["verdict"], target_node["head_sha"]
+    except Refusal:
+        raise
+    except (TypeError, AttributeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise _refuse("since-chain-missing",
+                      f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead") from exc
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2558,49 +2604,10 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     )
     try:
         base_sha, head_sha = _resolve_review_range(run, repo, worktree, branch, builder_manifest)
-        since_review_run_id = None
-        since_verdict = None
-        if args.since:
-            # F3 (diff review 4884f63bdd16): a malformed chain node (a non-string
-            # since_review_run_id or SHA in some manifest along the chain) can raise a
-            # TypeError/AttributeError/etc. deep in the walk or in the git calls below.
-            # ponytail: one guard instead of per-field validation -- any such crash
-            # refuses exactly like a broken/unreadable chain node (Refusal itself
-            # propagates unchanged, never caught here).
-            try:
-                since_con = _open_ro(db_path)
-                since_con.row_factory = sqlite3.Row
-                try:
-                    chain, walk_error = _walk_review_chain(
-                        lambda rid: _load_diff_review_node(since_con, repo, rid), args.since,
-                    )
-                finally:
-                    since_con.close()
-                if walk_error is not None:
-                    kind, bad_run_id = walk_error
-                    raise _refuse(f"since-chain-{kind}", f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead")
-                target_node = chain[-1]
-                if not target_node["head_sha"]:
-                    raise _refuse("since-chain-broken", f"hint: {target_node['run_id']} has no head_sha; run a full review instead")
-                ancestor = run(
-                    ["git", "merge-base", "--is-ancestor", target_node["head_sha"], head_sha], cwd=worktree,
-                )
-                if ancestor.returncode != 0:
-                    raise _refuse("since-not-ancestor", "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead")
-                lock_error = _validate_since_chain(
-                    chain, branch=branch, current_merge_base=base_sha, run=run, worktree=worktree,
-                )
-                if lock_error:
-                    raise _refuse(lock_error, "hint: run a full review instead")
-                since_review_run_id = args.since
-                since_verdict = target_node["verdict"]
-                base_sha = target_node["head_sha"]
-            except Refusal:
-                raise
-            except (TypeError, AttributeError, ValueError, KeyError, json.JSONDecodeError) as exc:
-                raise _refuse("since-chain-missing",
-                              f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead") from exc
-
+        since_review_run_id, since_verdict, base_sha = _resolve_since(
+            args, run=run, repo=repo, worktree=worktree, branch=branch, db_path=db_path,
+            head_sha=head_sha, base_sha=base_sha,
+        )
         # fixes cold review round 2 F3(a): route --diff through the SAME handoff-grammar/
         # evidence validation every other reviewer dispatch gets (spec §4.3 step 3), instead of
         # the standalone jr.reviewer_head_matches(...) call this replaces plus skip_handoff=True.
