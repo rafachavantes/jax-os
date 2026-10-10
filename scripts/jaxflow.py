@@ -6466,6 +6466,28 @@ def _revalidate_pr_identity(v, number, sha, target, branch):
             f"hint: PR #{number}'s head branch is {v['headRefName']!r}, not the approved {branch!r}")
 
 
+def _pr_await_mergeable(view, *, run, repo, repo_slug, number, sha, target, branch):
+    """Wait (up to 3 x 2 s) for GitHub to compute `mergeable`, re-reading and
+    re-validating the PR identity after EVERY wait; refuse `mergeability-unknown` if it
+    never settles; then re-validate once more immediately before the merge call, even when
+    the loop never ran. Returns the latest view. `time.sleep` is looked up on the `time`
+    module at call time (23 tests patch `jaxflow.time.sleep`); `_gh_pr_view` likewise."""
+    mergeable = view.get("mergeable")
+    attempts = 0
+    while mergeable == "UNKNOWN" and attempts < 3:
+        time.sleep(2)
+        view = _gh_pr_view(run, repo, repo_slug, number)
+        _revalidate_pr_identity(view, number, sha, target, branch)
+        mergeable = view.get("mergeable")
+        attempts += 1
+    if mergeable == "UNKNOWN":
+        raise Refusal("mergeability-unknown")
+    # Immediately before the merge call too, even when the loop above never ran (mergeable
+    # was never UNKNOWN) -- same reasoning as inside the loop.
+    _revalidate_pr_identity(view, number, sha, target, branch)
+    return view
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6518,20 +6540,9 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
         checks_audit = _pr_run_checks(
             args, run=run, repo=repo, project=project, allowlist_root=allowlist_root)
 
-        mergeable = view.get("mergeable")
-        attempts = 0
-        while mergeable == "UNKNOWN" and attempts < 3:
-            time.sleep(2)
-            view = _gh_pr_view(run, repo, repo_slug, number)
-            _revalidate_pr_identity(view, number, args.sha, target, args.branch)
-            mergeable = view.get("mergeable")
-            attempts += 1
-        if mergeable == "UNKNOWN":
-            raise Refusal("mergeability-unknown")
-
-        # Immediately before the merge call too, even when the loop above never ran (mergeable
-        # was never UNKNOWN) -- same reasoning as inside the loop.
-        _revalidate_pr_identity(view, number, args.sha, target, args.branch)
+        view = _pr_await_mergeable(
+            view, run=run, repo=repo, repo_slug=repo_slug, number=number,
+            sha=args.sha, target=target, branch=args.branch)
 
         merged = run(["gh", "pr", "merge", str(number), "--repo", repo_slug, "--merge",
                       "--match-head-commit", args.sha, "--subject",
