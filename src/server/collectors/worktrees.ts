@@ -37,7 +37,7 @@ export function collectRetainedWorktrees(
   const entries = parseWorktreePorcelain(porcelain);
   const registeredBranches = new Set(entries.filter((e) => !e.detached && e.path !== opts.controlRepoPath && e.branch).map((e) => e.branch as string));
   // F6 (round 4): "latest" is by event TIMESTAMP, `id` breaking an exact tie -- the
-  // same rule Python's `_latest_builder_attempt` (scripts/jaxflow.py:994) uses, so gc
+  // same rule Python's `_latest_builder_attempt` (`scripts/jaxflow_common.py`) uses, so gc
   // and this card-line count never disagree on which attempt is the latest for a
   // backfilled or out-of-order write.
   const latestBuildByBranch = new Map<string, LedgerRow>();

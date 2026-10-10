@@ -442,7 +442,7 @@ def test_pr_open_resumes_at_the_same_sha_with_no_mutation(tmp_path, monkeypatch)
     # project MUST be the real slug cmd_pr_open computes (slugify_project(repo.name), where
     # repo.name is tmp_path's own pytest-generated basename) — a hardcoded "demo" would never
     # match and _find_recorded_pr would silently see nothing (same convention as
-    # scripts/test_jaxflow.py:13158's existing resume-ineligible fixture).
+    # the older jaxflow test suite's existing resume-ineligible fixture).
     _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": "feat/x", "sha": "a" * 40, "base": "staging",
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
@@ -774,7 +774,7 @@ def _pr_merge_setup(tmp_path, db, *, pr_state="OPEN", mergeable="MERGEABLE", tar
                          branch="feat/x", sha="a" * 40, worktree_registered=True,
                          merge_result=None):
     # project MUST be the real slug cmd_merge computes (slugify_project(repo.name)) — reuses
-    # the existing `_worktree_path` helper (scripts/test_jaxflow.py:12971-12973) for the exact
+    # the existing `_worktree_path` helper (from the older jaxflow test suite) for the exact
     # same reason every OTHER merge test does: a literal like "demo" would never match.
     con = _fresh_db(db)
     _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
