@@ -305,6 +305,7 @@ export const CAPSULE_RULES = [
   "tag", "question_open", "attention", "run_in_flight", "run_finished",
   "trailing_question", "deferred", "classified", "abandoned",
   "classifier-off", // MOA-502 Decision 1: settled on the spot when integrations.classifier is off
+  "merge-question", // merge question contract: the hook saw the canonical question; deterministic, Jev never consulted
 ] as const;
 export type CapsuleRule = (typeof CAPSULE_RULES)[number];
 

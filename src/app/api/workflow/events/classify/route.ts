@@ -19,27 +19,19 @@ export async function POST(req: Request) {
   if (!Number.isInteger(id) || (id as number) <= 0) {
     return NextResponse.json({ ok: false, error: "id must be a positive integer" });
   }
-  let outcome: { status: string; mergeAsk?: number } | { failed: true } | { indeterminate: true };
-  if (keys === "capsule_status,id" || keys === "capsule_status,id,merge_ask") {
+  let outcome: { status: string } | { failed: true } | { indeterminate: true };
+  if (keys === "capsule_status,id") {
     const s = body.capsule_status;
     if (typeof s !== "string" || !CAPSULE_STATUSES.includes(s as never) || s === "unknown") {
       return NextResponse.json({ ok: false, error: "capsule_status not allowed" });
     }
-    if (keys === "capsule_status,id,merge_ask") {
-      const m = body.merge_ask;
-      if (typeof m !== "number" || !Number.isFinite(m) || m < 0 || m > 1) {
-        return NextResponse.json({ ok: false, error: "merge_ask not allowed" });
-      }
-      outcome = { status: s, mergeAsk: m };
-    } else {
-      outcome = { status: s };
-    }
+    outcome = { status: s };
   } else if (keys === "failed,id" && body.failed === true) {
     outcome = { failed: true };
   } else if (keys === "id,indeterminate" && body.indeterminate === true) {
     outcome = { indeterminate: true };
   } else {
-    return NextResponse.json({ ok: false, error: "body must be {id, capsule_status}, {id, capsule_status, merge_ask}, {id, failed: true}, or {id, indeterminate: true}" });
+    return NextResponse.json({ ok: false, error: "body must be {id, capsule_status}, {id, failed: true}, or {id, indeterminate: true}" });
   }
   return collectorResponse(() => ({ settled: classifyDeferred(getDb(), id as number, outcome as never) }));
 }

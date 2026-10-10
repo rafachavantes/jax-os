@@ -74,6 +74,11 @@ export function deriveCapsule(
 ): Derived {
   const p = ev.payload as { capsule_status?: string; capsule_rule?: string; message_tail?: string };
 
+  // Rung 1b - the hook saw the canonical merge question (merge question contract): needs_input by
+  // construction. Ingress validates the whole shape; the rule is what keeps the ladder (and Jev)
+  // from rewriting the hook's verdict.
+  if (p.capsule_rule === "merge-question") return det("needs_input", "merge-question");
+
   // Rung 1 — the hook matched the capsule tag. An agent that tags itself is believed, but the
   // value is re-checked here rather than cast: ingress is the guard, and a derivation that
   // trusts a cast would store `undefined` the day that guard is loosened.
@@ -173,10 +178,8 @@ export function deriveCapsule(
   if (lines.length === 0) return { capsule_status: "unknown", capsule_rule: "abandoned", source: "behavioral" };
 
   // Rung 6 is gone (native-answer-delivery spec D1): a synchronous "?"-ending guess intercepted
-  // rows before Jev ever ran on them, so merge_ask (the merge-ask spec's own field) was never
-  // computed for a trailing-question stop. Every non-empty tail now falls straight through to
-  // rung 7 — one Jev call yields both capsule_status and merge_ask, for every case rung 6 used to
-  // intercept and every case it never saw.
+  // rows before Jev ever ran on them. Every non-empty tail now falls straight through to rung 7,
+  // where Jev judges capsule_status ONLY (merge intent is the hook's deterministic merge-question rule).
 
   // Rung 7 — the leftover guess, queued for the poller, UNLESS integrations.classifier is off:
   // a live, uncached read (no consumer here is high-volume enough to need caching) — {ok:false}

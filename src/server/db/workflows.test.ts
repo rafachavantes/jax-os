@@ -117,19 +117,28 @@ describe("insertEvent", () => {
     db.close();
   });
 
-  it("stores merge_ask alongside capsule_status when the caller passes one, writes no key at all when omitted", () => {
+  it("classifyDeferred writes the status and never a merge_ask key", () => {
     const db = openDb(":memory:");
     const row = insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped",
       source: "behavioral", emitter: "claude-stop", pane: "%1", tmux_incarnation: INCARNATION,
-      payload: { message_tail: "posso mergear feat/x em main?\nAguardo seu retorno." } }, NOW);
-    expect(classifyDeferred(db, row.id, { status: "needs_input", mergeAsk: 0.82 })).toBe(true);
-    expect(getProjectTimeline(db, "p1")[0].payload).toMatchObject({ capsule_status: "needs_input", capsule_rule: "classified", merge_ask: 0.82 });
+      payload: { message_tail: "posso mergear feat/x em main?" } }, NOW);
+    expect(classifyDeferred(db, row.id, { status: "needs_input" })).toBe(true);
+    const payload = getProjectTimeline(db, "p1")[0].payload;
+    expect(payload).toMatchObject({ capsule_status: "needs_input", capsule_rule: "classified" });
+    expect(payload).not.toHaveProperty("merge_ask");
+    db.close();
+  });
 
-    const row2 = insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped",
-      source: "behavioral", emitter: "claude-stop", pane: "%2", tmux_incarnation: INCARNATION,
-      payload: { message_tail: "ambiguous prose" } }, NOW);
-    expect(classifyDeferred(db, row2.id, { status: "done" })).toBe(true);
-    expect(getProjectTimeline(db, "p1")[0].payload).not.toHaveProperty("merge_ask");
+  it("A13: classifyDeferred leaves a merge-question row untouched (not deferred, hook merge_ask 1 survives)", () => {
+    const db = openDb(":memory:");
+    const row = insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped",
+      source: "deterministic", emitter: "claude-stop", pane: "%1", tmux_incarnation: INCARNATION,
+      payload: { capsule_status: "needs_input", capsule_rule: "merge-question", capsule_attempts: 0, merge_ask: 1,
+        merge_branch: "feat/x", merge_target: "main", merge_head_sha: null } }, NOW);
+    expect(classifyDeferred(db, row.id, { status: "done" })).toBe(false);
+    expect(classifyDeferred(db, row.id, { failed: true })).toBe(false);
+    expect(getProjectTimeline(db, "p1")[0].payload).toMatchObject({
+      capsule_status: "needs_input", capsule_rule: "merge-question", merge_ask: 1, merge_branch: "feat/x" });
     db.close();
   });
 
@@ -3114,7 +3123,7 @@ describe("MOA-469 — native Codex session derivation", () => {
   it("HubCodexSession.capsule reads merge_ask/message_tail from a classified row, the same way lastCapsule does (D2)", () => {
     const db = openDb(":memory:");
     const ev = insertEvent(db, codexEvent({ payload: { message_tail: "posso mergear feat/x em main?" } }), NOW);
-    expect(classifyDeferred(db, ev.id, { status: "needs_input", mergeAsk: 0.97 })).toBe(true);
+    expect(classifyDeferred(db, ev.id, { status: "needs_input" })).toBe(true);
     const { sessions } = getCodexSessions(db, "p1", SNAP());
     expect(sessions[0].capsule).toMatchObject({
       status: "needs_input", mergeAsk: 0.97, question: "posso mergear feat/x em main?",
@@ -3754,7 +3763,7 @@ describe("Phase 2 projections (spec Decisions 2, 9)", () => {
     const stop = insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "behavioral",
       emitter: "claude-stop", pane: "%1", tmux_incarnation: INCARNATION,
       payload: { message_tail: "Two things done.\nShould I retry the build?\nOr just report?\nAguardo." } }, NOW);
-    classifyDeferred(db, stop.id, { status: "needs_input", mergeAsk: 0.6 });
+    classifyDeferred(db, stop.id, { status: "needs_input" });
     const live: LiveSnapshot = { paneCommands: new Map(), paneIds: new Set(["%1"]), incarnation: INCARNATION };
     const [pane] = getProjectPanes(db, "p1", live);
     expect(pane.capsule?.mergeAsk).toBe(0.6);
