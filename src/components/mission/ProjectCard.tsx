@@ -61,7 +61,7 @@ const FINDING_SEVERITY_CLASS: Record<"high" | "medium" | "low", string> = {
 type PendingUiAction =
   | { kind: "generic"; pendingQuestion: MissionPendingQuestion }
   | { kind: "freeform"; pane: string; eventId: number; answerable: boolean }
-  | { kind: "approve"; eventId: number; question: string | null; replyYes: string; replyNo: string; answerable: boolean }
+  | { kind: "approve"; eventId: number; question: string | null; replyYes: string; replyNo: string; answerable: boolean; branch?: string; target?: string }
   | null;
 
 // One place both the compact row and ExpandedCard's detail block read from, so they always
@@ -83,8 +83,12 @@ export function pendingUiAction(
   // role/gate check already only admit a real signal; `answerable` rides along so the card can
   // render the pair DISABLED instead of hiding it outright when delivery is known-impossible.
   if (pending?.kind === "freeform" && pending.capsuleStatus === "needs_input") {
-    if (isMergeAskEligible(pending.mergeAsk)) {
-      return { kind: "approve", eventId: pending.eventId, question: pending.question, replyYes: t?.("actions.replyMergeAsk") ?? "pode", replyNo: t?.("actions.replyDeny") ?? "não", answerable: pending.answerable };
+    if (isMergeAskEligible(pending.mergeAsk, pending.mergeBranch)) {
+      return {
+        kind: "approve", eventId: pending.eventId, question: pending.question,
+        replyYes: t?.("actions.replyMergeAsk") ?? "pode", replyNo: t?.("actions.replyDeny") ?? "não", answerable: pending.answerable,
+        branch: pending.mergeBranch, target: pending.mergeTarget,
+      };
     }
     // Gate fallback only when the classifier gave no score (null); a scored non-merge ask must not get a merge button.
     if (pending.mergeAsk === null && pending.role === "lead" && card.gate === "awaiting-approval" && card.headline === "needs-you") {
@@ -169,6 +173,7 @@ function QuestionLine({ action }: { action: PendingUiAction }) {
   if (action?.kind === "approve") {
     return (
       <>
+        {action.branch && action.target ? <span className="block truncate font-mono text-[11px] text-muted">{t("actions.mergeTarget", { branch: action.branch, target: action.target })}</span> : null}
         {action.question ? <span className="block truncate font-mono text-[11px] text-muted">? &quot;{action.question}&quot;</span> : null}
         {!action.answerable ? <span className="block text-[11px] text-danger">{t("actions.answerUnreachable")}</span> : null}
       </>
