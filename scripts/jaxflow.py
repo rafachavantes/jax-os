@@ -6192,6 +6192,58 @@ def _merge_resume_verify(args, *, run, repo, target, phase):
     return merge_sha, branch_present
 
 
+def _merge_prepare_target(args, *, run, repo, target):
+    """Fresh (non-resume) delivery preflight: the approved branch still points at the approved
+    sha, the CONTROL repo's tracked tree is clean, and the target is checked out. Returns
+    `target_tip` (the target HEAD captured BEFORE `git merge` runs -- never a later HEAD
+    re-read, AC 8)."""
+    # NO `git switch <branch>` here (round-4 F12, reproduced on real git). `build`
+    # leaves the approved branch checked out in its own linked worktree, and git
+    # refuses to check the same branch out twice:
+    #     fatal: 'feat/x' is already used by worktree at '<builder worktree>'
+    # Every real delivery would refuse. Nothing in this verb needs that checkout
+    # anyway: `git merge` takes a COMMIT, and the tree that has to be clean is the
+    # CONTROL repo's, wherever its HEAD happens to be. A ref read answers the only
+    # question the switch was ever asked -- does <branch> point at the approved sha?
+    head = run(["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"], cwd=repo)
+    if head.returncode != 0 or head.stdout.strip() != args.sha:
+        exc = Refusal("sha-mismatch")
+        exc.hint = (f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved "
+                    f"{args.sha}")
+        raise exc
+
+    # Tracked-only: an untracked build artifact never blocks a delivery (§2.10 #1's
+    # allow_untracked rule, implemented here because `merge` does not call preflight()).
+    status = _status_tracked(run, repo)
+    if status.returncode != 0 or status.stdout.strip():
+        # A failed probe is NOT a clean tree (round-4 F4): empty stdout from a git
+        # that errored would otherwise read as "nothing dirty" and let the merge
+        # proceed on a tree whose state was never established.
+        raise _refuse(
+            "dirty-tracked-tree",
+            "hint: git status failed, so the tree could not be checked: "
+            f"{jr._bound((status.stderr or status.stdout).strip(), 200)}"
+            if status.returncode != 0 else None)
+
+    switched = run(["git", "switch", target], cwd=repo)
+    if switched.returncode != 0:
+        exc = Refusal("target-mismatch")
+        exc.hint = (f"hint: git switch {target} failed: "
+                    f"{jr._bound((switched.stderr or switched.stdout).strip(), 200)}")
+        raise exc
+    on_target = _git_read(run, repo, ["git", "branch", "--show-current"])
+    if on_target != target:
+        exc = Refusal("target-mismatch")
+        exc.hint = f"hint: expected to be on {target}, got {on_target or '?'}"
+        raise exc
+    # New (spec §4.5, 77f30f829248 F4): captured HERE, before `git merge` runs --
+    # never a later HEAD re-read (AC 8). `None` on a resume path is never read,
+    # since `fast_forward` below is only computed inside `if not resuming:`.
+    target_tip = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
+                           shape=r"[0-9a-f]{40}")
+    return target_tip
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6498,50 +6550,7 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
             merge_sha, branch_present = _merge_resume_verify(
                 args, run=run, repo=repo, target=target, phase=phase)
         else:
-            # NO `git switch <branch>` here (round-4 F12, reproduced on real git). `build`
-            # leaves the approved branch checked out in its own linked worktree, and git
-            # refuses to check the same branch out twice:
-            #     fatal: 'feat/x' is already used by worktree at '<builder worktree>'
-            # Every real delivery would refuse. Nothing in this verb needs that checkout
-            # anyway: `git merge` takes a COMMIT, and the tree that has to be clean is the
-            # CONTROL repo's, wherever its HEAD happens to be. A ref read answers the only
-            # question the switch was ever asked -- does <branch> point at the approved sha?
-            head = run(["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"], cwd=repo)
-            if head.returncode != 0 or head.stdout.strip() != args.sha:
-                exc = Refusal("sha-mismatch")
-                exc.hint = (f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved "
-                            f"{args.sha}")
-                raise exc
-
-            # Tracked-only: an untracked build artifact never blocks a delivery (§2.10 #1's
-            # allow_untracked rule, implemented here because `merge` does not call preflight()).
-            status = _status_tracked(run, repo)
-            if status.returncode != 0 or status.stdout.strip():
-                # A failed probe is NOT a clean tree (round-4 F4): empty stdout from a git
-                # that errored would otherwise read as "nothing dirty" and let the merge
-                # proceed on a tree whose state was never established.
-                exc = Refusal("dirty-tracked-tree")
-                if status.returncode != 0:
-                    exc.hint = ("hint: git status failed, so the tree could not be checked: "
-                                f"{jr._bound((status.stderr or status.stdout).strip(), 200)}")
-                raise exc
-
-            switched = run(["git", "switch", target], cwd=repo)
-            if switched.returncode != 0:
-                exc = Refusal("target-mismatch")
-                exc.hint = (f"hint: git switch {target} failed: "
-                            f"{jr._bound((switched.stderr or switched.stdout).strip(), 200)}")
-                raise exc
-            on_target = _git_read(run, repo, ["git", "branch", "--show-current"])
-            if on_target != target:
-                exc = Refusal("target-mismatch")
-                exc.hint = f"hint: expected to be on {target}, got {on_target or '?'}"
-                raise exc
-            # New (spec §4.5, 77f30f829248 F4): captured HERE, before `git merge` runs --
-            # never a later HEAD re-read (AC 8). `None` on a resume path is never read,
-            # since `fast_forward` below is only computed inside `if not resuming:`.
-            target_tip = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
-                                   shape=r"[0-9a-f]{40}")
+            target_tip = _merge_prepare_target(args, run=run, repo=repo, target=target)
 
         checks_cmd = args.checks
         checks_audit = {"mode": "resumed"}   # D5: a resume neither runs nor reuses the checks
