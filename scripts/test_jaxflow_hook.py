@@ -104,14 +104,13 @@ def test_role_derived_from_session_suffix_and_registers_session():
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "notification_type": "agent_needs_input"})
-    with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
-        hook.main(["claude-notification"], stdin=io.StringIO(payload), run=_run_identity(session="jax-jax-os-lead"), post=post)
+    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "done"})
+    with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9", "JAXFLOW_NO_CLASSIFY_KICK": "1"}, clear=True):
+        hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(session="jax-jax-os-lead"), post=post)
     assert [url for url, _ in posts] == [hook.SESSIONS_URL, hook.EVENTS_URL]
     assert posts[0][1] == {"project": "jax-os", "session": "jax-jax-os-lead", "pane": "%9", "role": "lead", "tmux_incarnation": "234790:1787586213"}
     assert posts[1][1]["role"] == "lead"
-    assert posts[1][1]["type"] == "attention-needed"
-    assert posts[1][1]["payload"] == {"reason": "agent_needs_input"}
+    assert posts[1][1]["type"] == "turn-stopped"
 
 
 def test_session_registration_failure_does_not_drop_the_event_post_finding_3():
@@ -137,8 +136,10 @@ def test_adhoc_role_for_a_non_lead_session_name(is_adhoc_event=True):
     payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "notification_type": "agent_needs_input"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         hook.main(["claude-notification"], stdin=io.StringIO(payload), run=_run_identity(session="probe-scratch"), post=post)
+    assert [url for url, _ in posts] == [hook.EVENTS_URL]  # notification no longer registers a session
     assert posts[0][1]["role"] == "adhoc"
-    assert posts[1][1]["role"] == "adhoc"
+    assert posts[0][1]["type"] == "attention-needed"
+    assert posts[0][1]["payload"] == {"reason": "agent_needs_input"}
 
 
 def test_failed_identity_lookup_falls_back_to_adhoc_and_skips_session_post_finding_37():
@@ -1566,3 +1567,50 @@ def test_hook_output_matches_the_committed_ingress_fixture():  # A14 (the TS tes
     }
     produced = {k: _stop_event({"cwd": "/r", "last_assistant_message": v}) for k, v in cases.items()}
     assert json.loads(fixture.read_text(encoding="utf-8")) == produced
+
+
+def _collect_posts(fail_sessions=False):
+    posts = []
+
+    def post(url, payload, timeout=5):
+        if fail_sessions and url == hook.SESSIONS_URL:
+            raise RuntimeError("session registry unavailable")
+        posts.append((url, payload))
+        return {"ok": True}
+    return posts, post
+
+
+def _drive_claude(mode, payload, post):
+    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", **payload})
+    env = {"TMUX": "1", "TMUX_PANE": "%9", "JAXFLOW_NO_CLASSIFY_KICK": "1"}  # no real poller start on stop
+    with patch.dict(os.environ, env, clear=True):
+        return hook.main([mode], stdin=io.StringIO(raw), run=_run_identity(), post=post)
+
+
+_ASK = {"tool_name": "AskUserQuestion", "tool_use_id": "toolu_1", "tool_input": {"questions": [{"q": "x"}]}}
+
+
+@pytest.mark.parametrize("mode", ["claude-pretool", "claude-posttool"])
+def test_hook_tool_events_skip_session_registration(mode):
+    posts, post = _collect_posts()
+    assert _drive_claude(mode, _ASK, post) == 0
+    assert [url for url, _ in posts] == [hook.EVENTS_URL]  # event only, never SESSIONS_URL
+
+
+@pytest.mark.parametrize("mode,payload", [
+    ("claude-userprompt", {"prompt": "hi"}),
+    ("claude-stop", {"last_assistant_message": "done"}),
+])
+def test_hook_turn_events_register_then_post(mode, payload):
+    posts, post = _collect_posts()
+    assert _drive_claude(mode, payload, post) == 0
+    assert [url for url, _ in posts] == [hook.SESSIONS_URL, hook.EVENTS_URL]  # sessions first
+    assert posts[0][1] == {"project": "jax-os", "session": "jax-jax-os-lead", "pane": "%9",
+                           "role": "lead", "tmux_incarnation": "234790:1787586213"}
+
+
+def test_hook_sessions_failure_still_posts_event():
+    posts, post = _collect_posts(fail_sessions=True)
+    assert _drive_claude("claude-userprompt", {"prompt": "hi"}, post) == 0
+    assert [url for url, _ in posts] == [hook.EVENTS_URL]  # sessions POST raised; event still posted
+    assert posts[0][1]["type"] == "turn-started"

@@ -645,10 +645,13 @@ def main(argv=None, stdin=None, run=run_command, post=post_json):
             return 0  # before the session registration too: a skipped tool-use re-registers nothing
         if tmux_incarnation:
             event["tmux_incarnation"] = tmux_incarnation
-        if session:
+        if session and mode in ("claude-userprompt", "claude-stop"):
             # Best-effort: session registration is a convenience registry (Spec B's watchtower),
             # never the correctness signal. A failure here must not drop the event POST below,
             # which is (Finding 3).
+            # P3 (lean spec D15): registered once per turn boundary only; pane and tmux
+            # incarnation are stable within a turn, no state kept. Tool/notification/subagent
+            # events never re-register.
             try:
                 post(SESSIONS_URL, {
                     "project": project, "session": session, "pane": pane,
