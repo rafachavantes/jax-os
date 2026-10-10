@@ -3572,6 +3572,17 @@ def _log_diagnosis(payload, child_log_text, *, exit_code, contract_status):
         payload["log_context"] = context
 
 
+def _reviewer_stdio(runtime, output_path):
+    """`(stdout_file, stdout_target, stderr_target)` for a reviewer child. Claude's stdout
+    stays the opened report file (spec §5: out of scope) and only its stderr is piped for
+    child.log; Codex's final report always goes through `--output-last-message`, so its
+    stdout is free for the merged pipe, same as the builder."""
+    if runtime == "claude":
+        stdout_file = open(output_path, "wb")
+        return stdout_file, stdout_file, subprocess.PIPE
+    return None, subprocess.PIPE, subprocess.STDOUT
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -4162,20 +4173,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
             documents=(plan_path, spec_path),
         ),
     )
-    stdout_file = None
-    stdout_target = None
-    stderr_target = None
-    # MOA-470 §4.2: Codex has no separate stdout consumer to protect -- its final
-    # report always goes through --output-last-message regardless of stdout -- so its
-    # stdout is free for the merged pipe, same as the builder. Claude's stdout stays
-    # the opened report file (spec §5: out of scope); only its stderr is newly piped.
-    if runtime == "claude":
-        stdout_file = open(paths["reviewer_output"], "wb")
-        stdout_target = stdout_file
-        stderr_target = subprocess.PIPE
-    else:
-        stdout_target = subprocess.PIPE
-        stderr_target = subprocess.STDOUT
+    stdout_file, stdout_target, stderr_target = _reviewer_stdio(runtime, paths["reviewer_output"])
 
     child_box = {"child": None}
     terminated = {"flag": False}
@@ -4423,16 +4421,7 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
             repo, repo, run=run, allowlist_root=allowlist_root, documents=(target_path,),
         ),
     )
-    stdout_file = None
-    stdout_target = None
-    stderr_target = None
-    if runtime == "claude":
-        stdout_file = open(paths["reviewer_output"], "wb")
-        stdout_target = stdout_file
-        stderr_target = subprocess.PIPE
-    else:
-        stdout_target = subprocess.PIPE
-        stderr_target = subprocess.STDOUT
+    stdout_file, stdout_target, stderr_target = _reviewer_stdio(runtime, paths["reviewer_output"])
 
     # Handlers are installed BEFORE Popen (fixes cold review F6): `tmux kill-session`
     # delivers the signal to this pane's process, and a fast kill could otherwise land
