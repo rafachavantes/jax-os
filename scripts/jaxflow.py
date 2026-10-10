@@ -3555,6 +3555,23 @@ def _deliver_terminal_event(post, repo, run_id, event):
     return delivered
 
 
+def _log_diagnosis(payload, child_log_text, *, exit_code, contract_status):
+    """MOA-470 §4.3 / MOA-495 2.1: `reason`, `tail` (and `log_context` when Jev found
+    relevant slices) travel together and are added iff `contract_status` needed a diagnosis
+    -- never for "ok". `refine_reason` keeps `classify_reason`'s regex/exit precedence and
+    only asks Jev to pick among the wider reason set when the regex did not already decide
+    provider-limit. (The fourth `contract_status in ("missing", "invalid")` hit, in
+    `_send_callback`'s own line text at :3196, is not a payload block and stays.)"""
+    if contract_status not in ("missing", "invalid"):
+        return
+    window = jr.child_log_classify_window(child_log_text)
+    payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
+    payload["tail"] = jr.child_log_tail(child_log_text)
+    context = jr.log_context(window)
+    if context:
+        payload["log_context"] = context
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -3932,17 +3949,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
             payload["diagnostic"] = outcome["diagnostic"]
         # MOA-470 §4.3: both keys travel together, emitted iff contract_status needed a
         # diagnosis -- never for "ok" (verify's own result covers that).
-        if contract_status in ("missing", "invalid"):
-            window = jr.child_log_classify_window(child_log_text)
-            # MOA-495 2.1: refine_reason keeps classify_reason's regex/exit precedence
-            # and only asks Jev to pick among the wider reason set when the regex did
-            # not already decide provider-limit; log_context surfaces the log slices
-            # Jev found most relevant, for `jaxflow result` to show instead of raw tail.
-            payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
-            payload["tail"] = jr.child_log_tail(child_log_text)
-            context = jr.log_context(window)
-            if context:
-                payload["log_context"] = context
+        _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
         # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
         # payload byte ceiling -- drops log_context (then tally, N/A on this branch)
         # if the combination still overflows it despite the byte-bounded chunks above.
@@ -4280,15 +4287,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
         if outcome["stage"] is not None:
             payload["stage"] = outcome["stage"]
             payload["diagnostic"] = outcome["diagnostic"]
-    if contract_status in ("missing", "invalid"):
-        window = jr.child_log_classify_window(child_log_text)
-        # MOA-495 2.1: see the builder worker's own comment above -- same refine_reason/
-        # log_context wiring, reused here for a reviewer's missing/invalid row.
-        payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
-        payload["tail"] = jr.child_log_tail(child_log_text)
-        context = jr.log_context(window)
-        if context:
-            payload["log_context"] = context
+    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
 
     # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
     # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
@@ -4548,15 +4547,7 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
         if outcome["stage"] is not None:
             payload["stage"] = outcome["stage"]
             payload["diagnostic"] = outcome["diagnostic"]
-    if contract_status in ("missing", "invalid"):
-        window = jr.child_log_classify_window(child_log_text)
-        # MOA-495 2.1: see the builder worker's own comment above -- same refine_reason/
-        # log_context wiring, reused here for a reviewer's missing/invalid row.
-        payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
-        payload["tail"] = jr.child_log_tail(child_log_text)
-        context = jr.log_context(window)
-        if context:
-            payload["log_context"] = context
+    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
     # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
     # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
     # but the guard covers both), if the payload still overflows it.
