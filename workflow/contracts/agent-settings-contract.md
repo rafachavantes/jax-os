@@ -142,7 +142,7 @@ exists, Default/Fallback are the authority. Runtime never creates the file.
 
 ### Supported transports
 
-Captured-request coverage (`test_writer_produced_aliases_capture_supported_transports`):
+Writer configuration coverage (argv + written `opencode.json`, `test_writer_produced_aliases_capture_supported_transports`) for the three adapters below; the real captured-request transport smoke is three spawns, one per adapter: OpenRouter (`test_saved_profiles_forward_model_reasoning_and_full_routing`), xAI (`test_native_xai_captured_request_uses_own_wire_format`) and OpenAI-compatible (the `openai-compatible` case of the writer test):
 
 | Adapter | npm | Effort on the wire | Routing |
 | --- | --- | --- | --- |

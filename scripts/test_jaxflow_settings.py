@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from jaxflow import _pure_config_run
 import jaxflow_run as jr
 from jax_init import Refusal
 import jaxflow_settings as jset
@@ -868,9 +867,20 @@ def _spawn_builder(argv, work, env):
     return proc
 
 
+def _spawn_and_capture(argv, work, env, label):
+    """The ONE place a settings test launches the real opencode binary (budget: D12/A7)."""
+    before = len(_CaptureHandler.requests)
+    proc = _spawn_builder(argv, work, env)
+    captured = _CaptureHandler.requests[before:]
+    err = (proc.stderr.read()[-1000:] if proc.stderr else "") or ""
+    assert captured, f"opencode {label} emitted no request (exit {proc.returncode}): {err}"
+    return captured
+
+
+@pytest.mark.opencode
 def test_saved_profiles_forward_model_reasoning_and_full_routing(tmp_path, fixture_settings):
     if shutil.which("opencode") is None:
-        pytest.fail("installed opencode CLI is unavailable")
+        pytest.skip("opencode binary not installed")
     _CaptureHandler.requests = []
     work = tmp_path / "work"
     work.mkdir()
@@ -906,9 +916,8 @@ def test_saved_profiles_forward_model_reasoning_and_full_routing(tmp_path, fixtu
         env = _isolated_env(work)
         expected = {"default": _FULL_DEFAULT, "fallback": _FULL_FALLBACK}
         for name, routing in expected.items():
-            before = len(_CaptureHandler.requests)
-            effective = read_effective_opencode_config(run=_pure_config_run, env=env, repo=work)
-            resolved = resolve_profile(settings, name, effective_config=effective)
+            # No config probe: the native dict IS the effective config (opencode spawn budget).
+            resolved = resolve_profile(settings, name, effective_config=native)
             argv = jr.runtime_argv(
                 "opencode-builder", "builder", work, prompt, last,
                 model=resolved["runtime_model"], effort=resolved["effort"],
@@ -916,88 +925,62 @@ def test_saved_profiles_forward_model_reasoning_and_full_routing(tmp_path, fixtu
             assert argv[:2] == ["opencode", "run"]
             assert "--pure" not in argv
             assert argv[argv.index("--model") + 1] == f"fixture/jaxflow-builder-{name}"
-            proc = _spawn_builder(argv, work, env)
-            captured = _CaptureHandler.requests[before:]
-            if not captured:
-                err = (proc.stderr.read()[-1000:] if proc.stderr else "") or ""
-                pytest.fail(
-                    f"opencode {name} emitted no request (exit {proc.returncode}): {err}"
-                )
-            for request in captured:
-                assert request["model"] == "wire-real-model"
-                assert request["reasoning"] == {"effort": "high"}
-                assert request["provider"] == routing
-                assert request["provider"]["sort"] == "price"
-                assert not {"reasoningEffort", "reasoning_effort", "models", "order"}.intersection(request)
+            assert argv[argv.index("--variant") + 1] == "high"
+            alias = native["provider"]["fixture"]["models"][f"jaxflow-builder-{name}"]
+            assert alias["id"] == "wire-real-model"
+            assert alias["options"]["provider"] == routing
+            if name == "default":  # the ONE real spawn: transport smoke for the full-routing wire
+                captured = _spawn_and_capture(argv, work, env, name)
+                for request in captured:
+                    assert request["model"] == "wire-real-model"
+                    assert request["reasoning"] == {"effort": "high"}
+                    assert request["provider"] == routing
+                    assert request["provider"]["sort"] == "price"
+                    assert not {"reasoningEffort", "reasoning_effort", "models", "order"}.intersection(request)
+                assert json.loads((work / "opencode.json").read_text(encoding="utf-8"))["permission"]["read"] == "deny"
 
-            variant = native["provider"]["fixture"]["models"][f"jaxflow-builder-{name}"]["variants"]["high"]
+            variant = alias["variants"]["high"]
             variant["provider"] = {**routing, "only": ["fixture-alternate"]}
-            (work / "opencode.json").write_text(json.dumps(native), encoding="utf-8")
-            effective = read_effective_opencode_config(run=_pure_config_run, env=env, repo=work)
             with pytest.raises(Refusal) as exc:
-                resolve_profile(settings, name, effective_config=effective)
+                resolve_profile(settings, name, effective_config=native)
             assert exc.value.code == "agent-profile-conflict"
             del variant["provider"]
-            (work / "opencode.json").write_text(json.dumps(native), encoding="utf-8")
 
         native["agent"]["build"]["model"] = "fixture/agent-conflict"
         native["provider"]["fixture"]["models"]["agent-conflict"] = _model_entry(_FULL_DEFAULT)
         native["provider"]["fixture"]["models"]["agent-conflict"]["id"] = "agent-wire-model"
-        (work / "opencode.json").write_text(json.dumps(native), encoding="utf-8")
         resolved = resolve_profile(settings, "default", effective_config=native)
         argv = jr.runtime_argv(
             "opencode-builder", "builder", work, prompt, last,
             model=resolved["runtime_model"], effort=resolved["effort"],
         )
+        # The agent.build.model override must not leak into the argv: the alias still wins.
         assert argv[argv.index("--model") + 1] == "fixture/jaxflow-builder-default"
-        before = len(_CaptureHandler.requests)
-        proc = _spawn_builder(argv, work, env)
-        captured = _CaptureHandler.requests[before:]
-        if not captured:
-            err = (proc.stderr.read()[-1000:] if proc.stderr else "") or ""
-            pytest.fail(
-                f"opencode F4 emitted no request (exit {proc.returncode}): {err}"
-            )
-        for request in captured:
-            assert request["model"] == "wire-real-model"
-            assert request["model"] != "agent-wire-model"
 
         conflict = json.loads(json.dumps(native))
         conflict["provider"]["fixture"]["models"]["jaxflow-builder-default"]["options"]["provider"]["allow_fallbacks"] = False
         with pytest.raises(Refusal) as exc:
             resolve_profile(settings, "default", effective_config=conflict)
         assert exc.value.code == "agent-profile-conflict"
-        assert json.loads((work / "opencode.json").read_text(encoding="utf-8"))["permission"]["read"] == "deny"
 
         settings["builders"]["default"]["effort"] = None
         del native["provider"]["fixture"]["models"]["jaxflow-builder-default"]["variants"]
-        (work / "opencode.json").write_text(json.dumps(native), encoding="utf-8")
         none = resolve_profile(settings, "default", effective_config=native)
         argv = jr.runtime_argv(
             "opencode-builder", "builder", work, prompt, last,
             model=none["runtime_model"], effort=none["effort"],
         )
+        assert none["effort"] is None
         assert "--variant" not in argv
-        before = len(_CaptureHandler.requests)
-        proc = _spawn_builder(argv, work, env)
-        captured = _CaptureHandler.requests[before:]
-        if not captured:
-            err = (proc.stderr.read()[-1000:] if proc.stderr else "") or ""
-            pytest.fail(f"non-reasoning profile emitted no request (exit {proc.returncode}): {err}")
-        for request in captured:
-            assert request["model"] == "wire-real-model"
-            assert "reasoning" not in request
-            assert "reasoningEffort" not in request and "reasoning_effort" not in request
-            assert request["provider"] == _FULL_DEFAULT
-        assert json.loads((work / "opencode.json").read_text(encoding="utf-8"))["permission"]["read"] == "deny"
     finally:
         server.shutdown()
         server.server_close()
 
 
+@pytest.mark.opencode
 def test_native_xai_captured_request_uses_own_wire_format(tmp_path, fixture_settings):
     if shutil.which("opencode") is None:
-        pytest.fail("installed opencode CLI is unavailable")
+        pytest.skip("opencode binary not installed")
     _CaptureHandler.requests = []
     work = tmp_path / "work"
     work.mkdir()
@@ -1046,13 +1029,7 @@ def test_native_xai_captured_request_uses_own_wire_format(tmp_path, fixture_sett
         assert "--pure" not in argv
         assert argv[argv.index("--model") + 1] == "fixture/jaxflow-builder-default"
         assert argv[argv.index("--variant") + 1] == "high"
-        proc = _spawn_builder(argv, work, env)
-        captured = _CaptureHandler.requests
-        if not captured:
-            err = (proc.stderr.read()[-1000:] if proc.stderr else "") or ""
-            pytest.fail(
-                f"opencode xAI emitted no request (exit {proc.returncode}): {err}"
-            )
+        captured = _spawn_and_capture(argv, work, env, "xAI")
         for request in captured:
             assert request["model"] == "wire-real-model"
             provider = request.get("provider")
@@ -1075,168 +1052,176 @@ def test_native_xai_captured_request_uses_own_wire_format(tmp_path, fixture_sett
 _WRITER_OP = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 
 
-def test_writer_produced_aliases_capture_supported_transports(tmp_path):
-    if shutil.which("opencode") is None:
-        pytest.fail("installed opencode CLI is unavailable")
-    cases = (
-        {
-            "name": "openrouter",
-            "npm": "@openrouter/ai-sdk-provider",
-            "suffix": "/api/v1",
-            "variants": {"high": {"reasoning": {"effort": "high"}}},
-            "routing_default": dict(_FULL_DEFAULT),
-            "routing_fallback": dict(_FULL_FALLBACK),
-            "default_effort": "high",
-            "fallback_effort": "high",
-        },
-        {
-            "name": "xai",
-            "npm": "@ai-sdk/xai",
-            "suffix": "/v1",
-            "variants": {"high": {"reasoningEffort": "high"}},
-            "routing_default": None,
-            "routing_fallback": None,
-            "default_effort": "high",
-            "fallback_effort": "high",
-        },
-        {
-            "name": "openai-compatible",
-            "npm": "@ai-sdk/openai-compatible",
-            "suffix": "/v1",
-            "variants": {"high": {"reasoningEffort": "high"}},
-            "routing_default": None,
-            "routing_fallback": None,
-            "default_effort": "high",
-            "fallback_effort": "high",
-        },
-        {
-            "name": "openai-compatible-none",
-            "npm": "@ai-sdk/openai-compatible",
-            "suffix": "/v1",
-            "variants": None,
-            "routing_default": None,
-            "routing_fallback": None,
-            "default_effort": None,
-            "fallback_effort": None,
-        },
-    )
+_WRITER_CASES = (
+    {
+        "name": "openrouter",
+        "npm": "@openrouter/ai-sdk-provider",
+        "suffix": "/api/v1",
+        "variants": {"high": {"reasoning": {"effort": "high"}}},
+        "routing_default": dict(_FULL_DEFAULT),
+        "routing_fallback": dict(_FULL_FALLBACK),
+        "default_effort": "high",
+        "fallback_effort": "high",
+    },
+    {
+        "name": "xai",
+        "npm": "@ai-sdk/xai",
+        "suffix": "/v1",
+        "variants": {"high": {"reasoningEffort": "high"}},
+        "routing_default": None,
+        "routing_fallback": None,
+        "default_effort": "high",
+        "fallback_effort": "high",
+    },
+    {
+        "name": "openai-compatible",
+        "npm": "@ai-sdk/openai-compatible",
+        "suffix": "/v1",
+        "variants": {"high": {"reasoningEffort": "high"}},
+        "routing_default": None,
+        "routing_fallback": None,
+        "default_effort": "high",
+        "fallback_effort": "high",
+    },
+    {
+        "name": "openai-compatible-none",
+        "npm": "@ai-sdk/openai-compatible",
+        "suffix": "/v1",
+        "variants": None,
+        "routing_default": None,
+        "routing_fallback": None,
+        "default_effort": None,
+        "fallback_effort": None,
+    },
+)
+
+
+# Exactly ONE case keeps the real opencode spawn (the openai-compatible wire, the only
+# transport no other test spawns); the others assert the argv and the written opencode.json.
+@pytest.mark.parametrize("case", [
+    pytest.param(_WRITER_CASES[0], id="openrouter"),
+    pytest.param(_WRITER_CASES[1], id="xai"),
+    pytest.param(_WRITER_CASES[2], id="openai-compatible", marks=pytest.mark.opencode),
+    pytest.param(_WRITER_CASES[3], id="openai-compatible-none"),
+])
+def test_writer_produced_aliases_capture_supported_transports(tmp_path, case):
+    real = case["name"] == "openai-compatible"
+    if real and shutil.which("opencode") is None:
+        pytest.skip("opencode binary not installed")
     reviewers = {
         "claude": {"model": "sonnet", "effort": "xhigh"},
         "codex": {"model": "gpt-5.6-luna", "effort": "xhigh"},
     }
-    for case in cases:
-        _CaptureHandler.requests = []
-        root = tmp_path / case["name"]
-        work = root / "work"
-        work.mkdir(parents=True)
-        prompt = work / "prompt.txt"
-        prompt.write_text("ok\n", encoding="utf-8")
-        last = work / "last.md"
-        hermes = root / "hermes"
-        hermes.mkdir()
-        paths = {
-            "settings": root / "jax-os" / "agent-settings.json",
-            "lock": root / "jax-os" / "agent-settings.lock",
-            "opencode.json": work / "opencode.json",
-            "opencode.jsonc": root / "config" / "opencode" / "opencode.jsonc",
-            "env": hermes / ".env",
+    _CaptureHandler.requests = []
+    root = tmp_path / case["name"]
+    work = root / "work"
+    work.mkdir(parents=True)
+    prompt = work / "prompt.txt"
+    prompt.write_text("ok\n", encoding="utf-8")
+    last = work / "last.md"
+    hermes = root / "hermes"
+    hermes.mkdir()
+    paths = {
+        "settings": root / "jax-os" / "agent-settings.json",
+        "lock": root / "jax-os" / "agent-settings.lock",
+        "opencode.json": work / "opencode.json",
+        "opencode.jsonc": root / "config" / "opencode" / "opencode.jsonc",
+        "env": hermes / ".env",
+    }
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        catalog = {"id": "wire-real-model", "name": "Wire"}
+        if case["variants"] is not None:
+            catalog["variants"] = case["variants"]
+        native = {
+            "provider": {
+                "fixture": {
+                    "npm": case["npm"],
+                    "options": {
+                        "baseURL": f"http://127.0.0.1:{server.server_port}{case['suffix']}",
+                        "apiKey": "fixture",
+                    },
+                    "models": {"wire-real-model": catalog},
+                }
+            },
+            "permission": {"read": "deny"},
+            "agent": {"build": {}},
         }
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _CaptureHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            catalog = {"id": "wire-real-model", "name": "Wire"}
-            if case["variants"] is not None:
-                catalog["variants"] = case["variants"]
-            native = {
-                "provider": {
-                    "fixture": {
-                        "npm": case["npm"],
-                        "options": {
-                            "baseURL": f"http://127.0.0.1:{server.server_port}{case['suffix']}",
-                            "apiKey": "fixture",
-                        },
-                        "models": {"wire-real-model": catalog},
-                    }
+        (work / "opencode.json").write_text(json.dumps(native), encoding="utf-8")
+        meta = {"providers": {"fixture": {"npm": case["npm"], "models": {"wire-real-model": catalog}}}}
+        intent = {
+            "kind": "save-settings",
+            "reviewers": reviewers,
+            "builders": {
+                "default": {
+                    "connection": "fixture",
+                    "model": "wire-real-model",
+                    "effort": case["default_effort"],
+                    "credential": {"kind": "native"},
+                    "routing": case["routing_default"],
                 },
-                "permission": {"read": "deny"},
-                "agent": {"build": {}},
-            }
-            (work / "opencode.json").write_text(json.dumps(native), encoding="utf-8")
-            meta = {"providers": {"fixture": {"npm": case["npm"], "models": {"wire-real-model": catalog}}}}
-            intent = {
-                "kind": "save-settings",
-                "reviewers": reviewers,
-                "builders": {
-                    "default": {
-                        "connection": "fixture",
-                        "model": "wire-real-model",
-                        "effort": case["default_effort"],
-                        "credential": {"kind": "native"},
-                        "routing": case["routing_default"],
-                    },
-                    "fallback": {
-                        "connection": "fixture",
-                        "model": "wire-real-model",
-                        "effort": case["fallback_effort"],
-                        "credential": {"kind": "native"},
-                        "routing": case["routing_fallback"],
-                    },
+                "fallback": {
+                    "connection": "fixture",
+                    "model": "wire-real-model",
+                    "effort": case["fallback_effort"],
+                    "credential": {"kind": "native"},
+                    "routing": case["routing_fallback"],
                 },
-            }
-            expected = snapshot(paths, meta)["editor_revision"]
-            published = apply(intent, expected, _WRITER_OP, paths, meta)
-            settings = published["settings"]
-            env = _isolated_env(work)
-            written = json.loads((work / "opencode.json").read_text(encoding="utf-8"))
-            assert written["permission"]["read"] == "deny"
-            for name in ("default", "fallback"):
-                before = len(_CaptureHandler.requests)
-                effective = read_effective_opencode_config(run=_pure_config_run, env=env, repo=work)
-                resolved = resolve_profile(settings, name, effective_config=effective)
-                argv = jr.runtime_argv(
-                    "opencode-builder", "builder", work, prompt, last,
-                    model=resolved["runtime_model"], effort=resolved["effort"],
-                )
-                assert argv[:2] == ["opencode", "run"]
-                assert "--pure" not in argv
-                assert argv[argv.index("--model") + 1] == f"fixture/jaxflow-builder-{name}"
-                effort = settings["builders"][name]["effort"]
-                if effort is None:
-                    assert "--variant" not in argv
+            },
+        }
+        expected = snapshot(paths, meta)["editor_revision"]
+        published = apply(intent, expected, _WRITER_OP, paths, meta)
+        settings = published["settings"]
+        env = _isolated_env(work)
+        written = json.loads((work / "opencode.json").read_text(encoding="utf-8"))
+        assert written["permission"]["read"] == "deny"
+        for name in ("default", "fallback"):
+            # No config probe: the file the writer produced IS the effective config.
+            resolved = resolve_profile(settings, name, effective_config=written)
+            argv = jr.runtime_argv(
+                "opencode-builder", "builder", work, prompt, last,
+                model=resolved["runtime_model"], effort=resolved["effort"],
+            )
+            assert argv[:2] == ["opencode", "run"]
+            assert "--pure" not in argv
+            assert argv[argv.index("--model") + 1] == f"fixture/jaxflow-builder-{name}"
+            effort = settings["builders"][name]["effort"]
+            if effort is None:
+                assert "--variant" not in argv
+            else:
+                assert argv[argv.index("--variant") + 1] == effort
+            routing = settings["builders"][name]["routing"]
+            alias = written["provider"]["fixture"]["models"][f"jaxflow-builder-{name}"]
+            assert alias["id"] == "wire-real-model"
+            assert alias.get("variants") == case["variants"]
+            assert alias.get("options", {}).get("provider") == routing
+            if not (real and name == "default"):
+                continue
+            for request in _spawn_and_capture(argv, work, env, f"writer {case['name']} {name}"):
+                assert request["model"] == "wire-real-model"
+                if routing is not None:
+                    assert request["provider"] == routing
+                    assert request["provider"]["sort"] == "price"
+                    assert request["reasoning"] == {"effort": "high"}
+                    assert not {"reasoningEffort", "reasoning_effort", "models", "order"}.intersection(request)
+                elif effort is None:
+                    assert "reasoning" not in request
+                    assert "reasoningEffort" not in request and "reasoning_effort" not in request
                 else:
-                    assert argv[argv.index("--variant") + 1] == effort
-                proc = _spawn_builder(argv, work, env)
-                captured = _CaptureHandler.requests[before:]
-                if not captured:
-                    err = (proc.stderr.read()[-1000:] if proc.stderr else "") or ""
-                    pytest.fail(
-                        f"writer {case['name']} {name} emitted no request (exit {proc.returncode}): {err}"
+                    provider = request.get("provider")
+                    assert not (isinstance(provider, dict) and "sort" in provider)
+                    chat = request.get("reasoning_effort") == "high"
+                    nested = (
+                        isinstance(request.get("reasoning"), dict)
+                        and request["reasoning"].get("effort") == "high"
                     )
-                routing = settings["builders"][name]["routing"]
-                for request in captured:
-                    assert request["model"] == "wire-real-model"
-                    if routing is not None:
-                        assert request["provider"] == routing
-                        assert request["provider"]["sort"] == "price"
-                        assert request["reasoning"] == {"effort": "high"}
-                        assert not {"reasoningEffort", "reasoning_effort", "models", "order"}.intersection(request)
-                    elif effort is None:
-                        assert "reasoning" not in request
-                        assert "reasoningEffort" not in request and "reasoning_effort" not in request
-                    else:
-                        provider = request.get("provider")
-                        assert not (isinstance(provider, dict) and "sort" in provider)
-                        chat = request.get("reasoning_effort") == "high"
-                        nested = (
-                            isinstance(request.get("reasoning"), dict)
-                            and request["reasoning"].get("effort") == "high"
-                        )
-                        assert chat or nested
-            assert json.loads((work / "opencode.json").read_text(encoding="utf-8"))["permission"]["read"] == "deny"
-        finally:
-            server.shutdown()
-            server.server_close()
+                    assert chat or nested
+        assert json.loads((work / "opencode.json").read_text(encoding="utf-8"))["permission"]["read"] == "deny"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 
