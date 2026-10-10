@@ -1609,9 +1609,11 @@ def _builder_run_rows(con, run_id):
     return started, finished
 
 
-def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
-                           run, post, env, now, allowlist_root, db_path):
-    db_path = db_path or jr.DB_PATH
+def _resume_rows(db_path, resume_id, latest_of=None):
+    """The builder `run-started`/`run-finished` rows of the run being resumed, as `(started,
+    finished, latest)`; `resume-ineligible` when the DB is unreadable or either row is
+    missing. `latest_of=(project, repo, branch)` also resolves the latest attempt, on the
+    SAME connection and BEFORE the missing-row refusal (the order the inline code had)."""
     try:
         con = _open_ro(db_path)
     except sqlite3.Error as exc:
@@ -1619,10 +1621,18 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
     con.row_factory = sqlite3.Row
     try:
         started, finished = _builder_run_rows(con, resume_id)
+        latest = _latest_builder_attempt(con, *latest_of) if latest_of else None
     finally:
         con.close()
     if not started or not finished:
         raise Refusal("resume-ineligible")
+    return started, finished, latest
+
+
+def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
+                           run, post, env, now, allowlist_root, db_path):
+    db_path = db_path or jr.DB_PATH
+    started, finished, _ = _resume_rows(db_path, resume_id)
     try:
         started_payload = json.loads(started["payload"])
         finished_payload = json.loads(finished["payload"])
@@ -1706,18 +1716,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
     if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
         raise Refusal("effort-invalid")
     with jresume.worktree_claim(repo, worktree):
-        try:
-            con = _open_ro(db_path)
-        except sqlite3.Error as exc:
-            raise Refusal("resume-ineligible") from exc
-        con.row_factory = sqlite3.Row
-        try:
-            started_now, finished_now = _builder_run_rows(con, resume_id)
-            latest = _latest_builder_attempt(con, project, repo, branch)
-        finally:
-            con.close()
-        if not started_now or not finished_now:
-            raise Refusal("resume-ineligible")
+        started_now, finished_now, latest = _resume_rows(db_path, resume_id, (project, repo, branch))
         try:
             prior = _read_prior_manifest(prior_path)
             checkpoint = jresume.read_checkpoint(
