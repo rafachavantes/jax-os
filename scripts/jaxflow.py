@@ -3583,6 +3583,61 @@ def _reviewer_stdio(runtime, output_path):
     return None, subprocess.PIPE, subprocess.STDOUT
 
 
+def _install_worker_signal_handler(manifest, *, role, kind, outcome, run, post, killpg,
+                                   run_id, project, phase, spool_repo, log_path, child_box,
+                                   terminated, worktree=None, base_sha=None, persist=False):
+    """Registers the SIGTERM/SIGHUP handler of a worker and returns it. `log_path` MUST
+    already be bound by the caller (MOA-474 cold review 887b1d3994d4 F1: a signal landing
+    between registration and a late assignment raised NameError inside the handler and
+    left no terminal row). `child_box`/`terminated` are the caller's shared dicts, so a
+    signal that lands before the child exists is a plain no-op. Exact order inside the
+    handler, which tests pin: terminate child -> best-effort PLAIN read of child.log (never
+    through the log fd `_capture_child_output` may still be writing) -> `_interrupted_payload`
+    -> [builder only: `_persist_resume_checkpoint`] -> spool / post / unspool ->
+    `_send_callback` -> `os._exit(0)` in `finally`. `persist=True` is the builder: it also
+    passes `worktree`/`base_sha`/`run` to `_interrupted_payload` (ignored for reviewers).
+    Every collaborator is a module global resolved at call time."""
+    def _on_signal(signum, frame):
+        terminated["flag"] = True
+        child = child_box["child"]
+        try:
+            if child is not None:
+                pgid = os.getpgid(child.pid)
+                _terminate_child(child, pgid, killpg=killpg)
+            signal_name = signal.Signals(signum).name
+            try:
+                raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
+            except OSError:
+                raw_log = ""
+            last_line = next(
+                (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
+            )
+            payload = _interrupted_payload(
+                role=role, phase=phase, signal_name=signal_name,
+                worktree=worktree, base_sha=base_sha, run=run, last_line=last_line,
+            )
+            finished_event = {
+                "run_id": run_id, "project": project, "role": role,
+                "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
+                "payload": payload,
+            }
+            if persist:
+                _persist_resume_checkpoint(manifest, spool_repo, worktree, payload, run=run)
+            delivered = _deliver_terminal_event(post, spool_repo, run_id, finished_event)
+            _send_callback(
+                manifest, run=run, kind=kind, outcome=outcome,
+                summary=payload["summary"], report_path=None, stage=payload["stage"],
+                diagnostic=payload["diagnostic"], contract_status="interrupted",
+                ledger_pending=not delivered,
+            )
+        finally:
+            os._exit(0)
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGHUP, _on_signal)
+    return _on_signal
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -3832,55 +3887,18 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
         child_box = {"child": None}
         terminated = {"flag": False}
 
-        def _on_signal(signum, frame):
-            terminated["flag"] = True
-            child = child_box["child"]
-            try:
-                if child is not None:
-                    pgid = os.getpgid(child.pid)
-                    _terminate_child(child, pgid, killpg=killpg)
-                signal_name = signal.Signals(signum).name
-                # MOA-474 cold review F3: a best-effort read of whatever child.log has
-                # on disk so far, redacted the same way `_finalize_child_log` redacts
-                # the completed file -- a PLAIN read (never through log_fd, which
-                # `_capture_child_output` may still be mid-write to at signal time; no
-                # fd contention this way). Any read failure just yields no evidence,
-                # same as the original plain-text default.
-                try:
-                    raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
-                except OSError:
-                    raw_log = ""
-                last_line = next(
-                    (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
-                )
-                payload = _interrupted_payload(
-                    role="builder", phase=phase, signal_name=signal_name,
-                    worktree=worktree, base_sha=manifest.get("base_sha"), run=run,
-                    last_line=last_line,
-                )
-                finished_event = {
-                    "run_id": run_id, "project": project, "role": "builder",
-                    "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
-                    "payload": payload,
-                }
-                _persist_resume_checkpoint(manifest, control_repo, worktree, payload, run=run)
-                delivered = _deliver_terminal_event(post, control_repo, run_id, finished_event)
-                _send_callback(
-                    manifest, run=run, kind="build", outcome="failure",
-                    summary=payload["summary"], report_path=None, stage=payload["stage"],
-                    diagnostic=payload["diagnostic"], contract_status="interrupted",
-                    ledger_pending=not delivered,
-                )
-            finally:
-                os._exit(0)
-
         # MOA-474 cold review 887b1d3994d4 F1: `_on_signal` above reads `log_path`, so
         # it must be bound BEFORE the handlers are registered -- a signal landing in the
         # window between registration and the old assignment raised NameError inside the
         # handler and exited with no terminal row.
         log_path = jr.child_log_path(control_repo, run_id)
-        signal.signal(signal.SIGTERM, _on_signal)
-        signal.signal(signal.SIGHUP, _on_signal)
+        _install_worker_signal_handler(
+            manifest, role="builder", kind="build", outcome="failure", run=run, post=post,
+            killpg=killpg, run_id=run_id, project=project, phase=phase,
+            spool_repo=control_repo, log_path=log_path, child_box=child_box,
+            terminated=terminated, worktree=worktree, base_sha=manifest.get("base_sha"),
+            persist=True,
+        )
 
         # MOA-470 §4.2: OpenCode has no --output-* flag, so its stdout was never the
         # report channel -- free to redirect to a pipe. stderr merges into the same pipe
@@ -4178,48 +4196,15 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     child_box = {"child": None}
     terminated = {"flag": False}
 
-    def _on_signal(signum, frame):
-        terminated["flag"] = True
-        child = child_box["child"]
-        try:
-            if child is not None:
-                pgid = os.getpgid(child.pid)
-                _terminate_child(child, pgid, killpg=killpg)
-            signal_name = signal.Signals(signum).name
-            # MOA-474 cold review F3: same best-effort plain read + redact as the
-            # builder worker's own signal handler -- never through log_fd, which
-            # `_capture_child_output` may still be mid-write to.
-            try:
-                raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
-            except OSError:
-                raw_log = ""
-            last_line = next(
-                (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
-            )
-            payload = _interrupted_payload(
-                role="reviewer", phase=phase, signal_name=signal_name, last_line=last_line,
-            )
-            finished_event = {
-                "run_id": run_id, "project": project, "role": "reviewer",
-                "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
-                "payload": payload,
-            }
-            delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
-            _send_callback(
-                manifest, run=run, kind="diff", outcome="no verdict",
-                summary=payload["summary"], report_path=None, stage=payload["stage"],
-                diagnostic=payload["diagnostic"], contract_status="interrupted",
-                ledger_pending=not delivered,
-            )
-        finally:
-            os._exit(0)
-
     # MOA-474 cold review 887b1d3994d4 F1: bind `log_path` BEFORE registering the
     # handlers -- a signal in the old window raised NameError inside the handler and
     # exited with no terminal row.
     log_path = jr.child_log_path(repo, run_id)
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGHUP, _on_signal)
+    _install_worker_signal_handler(
+        manifest, role="reviewer", kind="diff", outcome="no verdict", run=run, post=post,
+        killpg=killpg, run_id=run_id, project=project, phase=phase, spool_repo=repo,
+        log_path=log_path, child_box=child_box, terminated=terminated,
+    )
 
     log_fd = _open_child_log(log_path)
     try:
@@ -4431,48 +4416,15 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
     child_box = {"child": None}
     terminated = {"flag": False}
 
-    def _on_signal(signum, frame):
-        terminated["flag"] = True
-        child = child_box["child"]
-        try:
-            if child is not None:
-                pgid = os.getpgid(child.pid)
-                _terminate_child(child, pgid, killpg=killpg)
-            signal_name = signal.Signals(signum).name
-            # MOA-474 cold review F3: same best-effort plain read + redact as the
-            # builder worker's own signal handler -- never through log_fd, which
-            # `_capture_child_output` may still be mid-write to.
-            try:
-                raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
-            except OSError:
-                raw_log = ""
-            last_line = next(
-                (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
-            )
-            payload = _interrupted_payload(
-                role="reviewer", phase=phase, signal_name=signal_name, last_line=last_line,
-            )
-            finished_event = {
-                "run_id": run_id, "project": project, "role": "reviewer",
-                "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
-                "payload": payload,
-            }
-            delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
-            _send_callback(
-                manifest, run=run, kind=kind, outcome="no verdict",
-                summary=payload["summary"], report_path=None, stage=payload["stage"],
-                diagnostic=payload["diagnostic"], contract_status="interrupted",
-                ledger_pending=not delivered,
-            )
-        finally:
-            os._exit(0)
-
     # MOA-474 cold review 887b1d3994d4 F1: bind `log_path` BEFORE registering the
     # handlers -- a signal in the old window raised NameError inside the handler and
     # exited with no terminal row.
     log_path = jr.child_log_path(repo, run_id)
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGHUP, _on_signal)
+    _install_worker_signal_handler(
+        manifest, role="reviewer", kind=kind, outcome="no verdict", run=run, post=post,
+        killpg=killpg, run_id=run_id, project=project, phase=phase, spool_repo=repo,
+        log_path=log_path, child_box=child_box, terminated=terminated,
+    )
 
     log_fd = _open_child_log(log_path)
     try:
