@@ -7167,17 +7167,7 @@ def _add_build_parser(sub):
     )
 
 
-def parse_args(argv):
-    parser = argparse.ArgumentParser(
-        prog="jaxflow",
-        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
-                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    _add_review_parser(sub)
-    _add_build_parser(sub)
-
+def _add_pr_parser(sub):
     pr = sub.add_parser(
         "pr",
         help="Open a GitHub PR for a PR-preset delivery.",
@@ -7199,9 +7189,10 @@ def parse_args(argv):
     popen_.add_argument("--title", required=True, type=_nonblank,
                          help="PR title, passed to gh pr create --title verbatim.")
     popen_.add_argument("--body-file", help="Optional path passed to gh pr create --body-file.")
-    popen_.add_argument("--from", dest="from_caller", choices=("claude", "codex", "jaxos"),
-                         help=_FROM_HELP_MERGE)
+    _add_from(popen_, _FROM_HELP_MERGE)
 
+
+def _add_release_parser(sub):
     release = sub.add_parser(
         "release",
         help="Cut and open the staging -> production promotion PR (dual-branch-pr only).",
@@ -7209,9 +7200,10 @@ def parse_args(argv):
                      "and opens its PR into the Production target, reusing an open release PR. A SEPARATE "
                      "Rafa approval then runs jaxflow merge on the printed branch/sha.",
     )
-    release.add_argument("--from", dest="from_caller", choices=("claude", "codex", "jaxos"),
-                          help=_FROM_HELP_MERGE)
+    _add_from(release, _FROM_HELP_MERGE)
 
+
+def _add_merge_parser(sub):
     merge = sub.add_parser(
         "merge",
         help="Merge a branch Rafa has explicitly approved by SHA.",
@@ -7266,9 +7258,23 @@ def parse_args(argv):
              "empty, malformed, or not a literal branch name, and target-mismatch if it "
              "differs from policy.",
     )
-    merge.add_argument(
-        "--from", dest="from_caller", choices=("claude", "codex", "jaxos"), help=_FROM_HELP_MERGE,
+    _add_from(merge, _FROM_HELP_MERGE)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="jaxflow",
+        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
+                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
     )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    _add_review_parser(sub)
+    _add_build_parser(sub)
+
+    _add_pr_parser(sub)
+    _add_release_parser(sub)
+    _add_merge_parser(sub)
 
     status = sub.add_parser(
         "status",
