@@ -3967,6 +3967,85 @@ def _builder_finish_payload(manifest, *, run, paths, run_id, project, phase, wor
     return payload, summary, contract_status, outcome, verify_contradicts
 
 
+def _validate_diff_worker_inputs(manifest, *, run, allowlist_root, worktree, builder_run_id,
+                                 base_sha, head_sha):
+    """Every pre-launch check of the diff worker. Returns `(message, tests_path, plan_path,
+    spec_path)`: `message` is the refusal text for `_refuse_diff_run` (None when all checks
+    passed -- then the other three are the validated values). A failing `git diff
+    --name-only` still RAISES RuntimeError (not a refusal), exactly as before."""
+    # fixes F6 (HIGH, NEW): the evidence path is DERIVED from the validated worktree plus
+    # `builder_run_id` -- exactly as `dispatch_diff_review` itself derives it (spec §4.3
+    # step 1) -- never trusted verbatim from the manifest body. `builder_run_id` itself is
+    # shape-checked first (it is embedded into a filesystem path below); a manifest
+    # `tests_path` that disagrees with the derived path is a forged or stale value and
+    # refuses rather than being echoed into the reviewer prompt.
+    if not _RUN_ID_RE.match(builder_run_id):
+        return "path-outside-allowlist", None, None, None
+    tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
+    manifest_tests_path = manifest.get("tests_path")
+    if manifest_tests_path is not None and Path(manifest_tests_path).resolve() != tests_path.resolve():
+        return "path-outside-allowlist", None, None, None
+
+    # fixes S2, amended MOA-467 (acceptance fixes): re-validates plan_path/spec_path --
+    # the build's own handoff inputs -- before any read (defense-in-depth against a
+    # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
+    # path). The plan must be a real readable non-secret file inside the allowlist --
+    # the same policy `dispatch_build` applied, so an explicitly named external plan
+    # (another allowlist repo, a related worktree) survives the build AND the later
+    # diff review. The spec is NOT trusted verbatim from the manifest: it must equal the
+    # one the plan itself declares (re-derived here from the validated plan text, so a
+    # forged manifest can never inject an arbitrary spec path) -- except for the legacy
+    # worktree-copy shape, which stays accepted exactly as it always was.
+    raw_plan = manifest.get("plan_path")
+    try:
+        plan_path = Path(raw_plan).resolve() if raw_plan else None
+    except OSError:
+        plan_path = None
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
+        return f"secret-detected: {plan_path}", None, None, None
+    if defect:
+        return defect, None, None, None
+    raw_spec = manifest.get("spec_path")
+    try:
+        spec_path = Path(raw_spec).resolve() if raw_spec else None
+    except OSError:
+        spec_path = None
+    legacy_copy_ok = (
+        spec_path is not None and not _is_secret_path(spec_path)
+        and spec_path.is_file() and os.access(spec_path, os.R_OK)
+        and _contained(spec_path, worktree)
+    )
+    if not legacy_copy_ok:
+        # New-style manifests: re-derive the spec from the validated plan text and
+        # require the manifest to agree -- a forged spec path can never be injected.
+        plan_text = plan_path.read_text(encoding="utf-8")
+        derived_spec, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
+        if spec_refusal:
+            return spec_refusal, None, None, None
+        # str()-compared, not Path-compared (MOA-471 item 2): `derived_spec` is a plain
+        # str, not a Path, whenever the plan's **Spec:** line carries a resolved
+        # `#<heading>` fragment -- comparing Path != str would always be unequal and
+        # falsely refuse every fragmented spec even when both sides name the same value.
+        if str(spec_path) != str(derived_spec):
+            return "path-outside-allowlist", None, None, None
+        spec_path = derived_spec
+
+    # fixes Part 2 diff-review F2: the changed-path LIST is checked against the same
+    # secret-path guard I4/jax_init uses BEFORE the full diff (which can carry secret file
+    # CONTENTS, not just names) is ever read -- refusing loudly instead of embedding a
+    # secret's value in the reviewer prompt.
+    names_result = run(["git", "diff", "--name-only", f"{base_sha}..{head_sha}"], cwd=worktree)
+    if names_result.returncode != 0:
+        raise RuntimeError(f"git diff --name-only {base_sha}..{head_sha} failed: {names_result.stderr}")
+    secret_hit = next(
+        (p for p in names_result.stdout.splitlines() if p and _is_secret_path(p)), None,
+    )
+    if secret_hit:
+        return f"secret-detected: {secret_hit}", None, None, None
+    return None, tests_path, plan_path, spec_path
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -4171,76 +4250,12 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
         return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
     repo, worktree = validated
 
-    # fixes F6 (HIGH, NEW): the evidence path is DERIVED from the validated worktree plus
-    # `builder_run_id` -- exactly as `dispatch_diff_review` itself derives it (spec §4.3
-    # step 1) -- never trusted verbatim from the manifest body. `builder_run_id` itself is
-    # shape-checked first (it is embedded into a filesystem path below); a manifest
-    # `tests_path` that disagrees with the derived path is a forged or stale value and
-    # refuses rather than being echoed into the reviewer prompt.
-    if not _RUN_ID_RE.match(builder_run_id):
-        return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-    tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
-    manifest_tests_path = manifest.get("tests_path")
-    if manifest_tests_path is not None and Path(manifest_tests_path).resolve() != tests_path.resolve():
-        return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-
-    # fixes S2, amended MOA-467 (acceptance fixes): re-validates plan_path/spec_path --
-    # the build's own handoff inputs -- before any read (defense-in-depth against a
-    # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
-    # path). The plan must be a real readable non-secret file inside the allowlist --
-    # the same policy `dispatch_build` applied, so an explicitly named external plan
-    # (another allowlist repo, a related worktree) survives the build AND the later
-    # diff review. The spec is NOT trusted verbatim from the manifest: it must equal the
-    # one the plan itself declares (re-derived here from the validated plan text, so a
-    # forged manifest can never inject an arbitrary spec path) -- except for the legacy
-    # worktree-copy shape, which stays accepted exactly as it always was.
-    raw_plan = manifest.get("plan_path")
-    try:
-        plan_path = Path(raw_plan).resolve() if raw_plan else None
-    except OSError:
-        plan_path = None
-    defect = _plan_path_defect(plan_path, allowlist_root)
-    if defect == "secret-detected":
-        return _refuse_diff_run(f"secret-detected: {plan_path}", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-    if defect:
-        return _refuse_diff_run(defect, manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-    raw_spec = manifest.get("spec_path")
-    try:
-        spec_path = Path(raw_spec).resolve() if raw_spec else None
-    except OSError:
-        spec_path = None
-    legacy_copy_ok = (
-        spec_path is not None and not _is_secret_path(spec_path)
-        and spec_path.is_file() and os.access(spec_path, os.R_OK)
-        and _contained(spec_path, worktree)
+    message, tests_path, plan_path, spec_path = _validate_diff_worker_inputs(
+        manifest, run=run, allowlist_root=allowlist_root, worktree=worktree,
+        builder_run_id=builder_run_id, base_sha=base_sha, head_sha=head_sha,
     )
-    if not legacy_copy_ok:
-        # New-style manifests: re-derive the spec from the validated plan text and
-        # require the manifest to agree -- a forged spec path can never be injected.
-        plan_text = plan_path.read_text(encoding="utf-8")
-        derived_spec, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
-        if spec_refusal:
-            return _refuse_diff_run(spec_refusal, manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-        # str()-compared, not Path-compared (MOA-471 item 2): `derived_spec` is a plain
-        # str, not a Path, whenever the plan's **Spec:** line carries a resolved
-        # `#<heading>` fragment -- comparing Path != str would always be unequal and
-        # falsely refuse every fragmented spec even when both sides name the same value.
-        if str(spec_path) != str(derived_spec):
-            return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-        spec_path = derived_spec
-
-    # fixes Part 2 diff-review F2: the changed-path LIST is checked against the same
-    # secret-path guard I4/jax_init uses BEFORE the full diff (which can carry secret file
-    # CONTENTS, not just names) is ever read -- refusing loudly instead of embedding a
-    # secret's value in the reviewer prompt.
-    names_result = run(["git", "diff", "--name-only", f"{base_sha}..{head_sha}"], cwd=worktree)
-    if names_result.returncode != 0:
-        raise RuntimeError(f"git diff --name-only {base_sha}..{head_sha} failed: {names_result.stderr}")
-    secret_hit = next(
-        (p for p in names_result.stdout.splitlines() if p and _is_secret_path(p)), None,
-    )
-    if secret_hit:
-        return _refuse_diff_run(f"secret-detected: {secret_hit}", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
+    if message:
+        return _refuse_diff_run(message, manifest=manifest, run=run, post=post, manifest_path=manifest_path)
 
     # Reviewer runs always use the CONTROL repo for report/scratch paths (spec §2.4 step
     # 2), even though the reviewer's own cwd (below) is the worktree.
