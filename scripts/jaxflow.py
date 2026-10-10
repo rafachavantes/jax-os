@@ -2479,6 +2479,34 @@ def _verify_or_reuse(run, worktree, tests_path, existing, restore, *, builder_ru
     }
 
 
+def _resolve_review_range(run, repo, worktree, branch, builder_manifest):
+    """`(base_sha, head_sha)` of the range a `review --diff` covers: worktree HEAD, and the
+    base the build itself recorded (MOA-503), falling back to merge-base. Refuses
+    `reviewer head mismatch` when either end is not a 40-hex SHA. Called INSIDE the parent's
+    `try`: its refusals restore the evidence."""
+    head = run(["git", "rev-parse", "HEAD"], cwd=worktree)
+    head_sha = head.stdout.strip() if head.returncode == 0 else None
+    # MOA-503: review the range the build itself produced -- from its recorded base
+    # (a stacked build's base is its parent branch, not the default branch). A missing,
+    # malformed or non-ancestor base falls back to merge-base; present-but-unusable hints.
+    base_sha, recorded = None, builder_manifest.get("base_sha")
+    if recorded is not None:
+        if not (isinstance(recorded, str) and jr.SHA_RE.match(recorded)):
+            why = "not a 40-hex SHA"
+        elif run(["git", "merge-base", "--is-ancestor", recorded, "HEAD"], cwd=worktree).returncode != 0:
+            why = "not an ancestor of HEAD"
+        else:
+            why, base_sha = None, recorded
+        if why:
+            print(f"hint: recorded build base {recorded} unusable ({why}); reviewing merge-base..HEAD")
+    if base_sha is None:
+        base = run(["git", "merge-base", branch, jr._default_branch(repo, run)], cwd=worktree)
+        base_sha = base.stdout.strip() if base.returncode == 0 else None
+    if not base_sha or not jr.SHA_RE.match(base_sha) or not head_sha or not jr.SHA_RE.match(head_sha):
+        raise Refusal("reviewer head mismatch")
+    return base_sha, head_sha
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2529,27 +2557,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         finished_payload=finished_payload, reverify=args.reverify,
     )
     try:
-        head = run(["git", "rev-parse", "HEAD"], cwd=worktree)
-        head_sha = head.stdout.strip() if head.returncode == 0 else None
-        # MOA-503: review the range the build itself produced -- from its recorded base
-        # (a stacked build's base is its parent branch, not the default branch). A missing,
-        # malformed or non-ancestor base falls back to merge-base; present-but-unusable hints.
-        base_sha, recorded = None, builder_manifest.get("base_sha")
-        if recorded is not None:
-            if not (isinstance(recorded, str) and jr.SHA_RE.match(recorded)):
-                why = "not a 40-hex SHA"
-            elif run(["git", "merge-base", "--is-ancestor", recorded, "HEAD"], cwd=worktree).returncode != 0:
-                why = "not an ancestor of HEAD"
-            else:
-                why, base_sha = None, recorded
-            if why:
-                print(f"hint: recorded build base {recorded} unusable ({why}); reviewing merge-base..HEAD")
-        if base_sha is None:
-            base = run(["git", "merge-base", branch, jr._default_branch(repo, run)], cwd=worktree)
-            base_sha = base.stdout.strip() if base.returncode == 0 else None
-        if not base_sha or not jr.SHA_RE.match(base_sha) or not head_sha or not jr.SHA_RE.match(head_sha):
-            raise Refusal("reviewer head mismatch")
-
+        base_sha, head_sha = _resolve_review_range(run, repo, worktree, branch, builder_manifest)
         since_review_run_id = None
         since_verdict = None
         if args.since:
