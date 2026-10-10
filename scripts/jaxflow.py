@@ -2336,6 +2336,64 @@ def _evidence_path(worktree, builder_run_id):
     return tests_path
 
 
+def _review_guards(args, *, run, repo, db_path, project, branch, phase, builder_run_id, now):
+    """The two re-review locks of `review --diff`, in order: the CONCURRENCY lock (never
+    bypassed) and the terminal-verdict lock (bypassed by --full/--since). Returns the
+    manifest's `guard` dict. `run` is only used for `tmux has-session`."""
+    # MOA-471 item 7: the CONCURRENCY lock always runs first and is never bypassed.
+    guard_con = _open_ro(db_path)
+    guard_con.row_factory = sqlite3.Row
+    try:
+        prior_reviews = _diff_reviews_for_branch(guard_con, project, branch)
+    finally:
+        guard_con.close()
+    # ponytail: best-effort, no reservation (a duplicate reviewer costs minutes, a
+    # reservation costs a schema) -- cr F1, rejected by the tech lead.
+    running = next(
+        (r for r in prior_reviews if r["finished_payload"] is None and r["session"]
+         and run(["tmux", "has-session", "-t", r["session"]]).returncode == 0),
+        None,
+    )
+    if running:
+        _log_refusal(
+            repo, reason="review-running", target=branch, phase=phase,
+            builder_run_id=builder_run_id, prior_review_run_id=running["run_id"], now=now,
+        )
+        raise _refuse("review-running", f"hint: run {running['run_id']} is still reviewing this branch")
+
+    # The terminal-verdict lock: only among prior reviews with a real terminal verdict.
+    terminal = [
+        r for r in prior_reviews
+        if r["finished_payload"] is not None
+        and r["finished_payload"].get("contract_status") == "ok"
+        and r["finished_payload"].get("verdict") in jr.VERDICTS
+    ]
+    selected = max(terminal, key=lambda r: r["finished_ts"], default=None)
+    # F4 (diff review 4884f63bdd16): the override reflects the flags actually PASSED,
+    # independently of whether a terminal prior review was found to bypass.
+    flag_override = "full" if args.full else ("since" if args.since else "none")
+    if selected is None:
+        return {"prior_review_run_id": None, "prior_verdict": None, "override": flag_override}
+    prior_run_id = selected["run_id"]
+    verdict = selected["finished_payload"]["verdict"]
+    if args.full:
+        override = "full"
+    elif args.since:
+        override = "since"
+    elif verdict in ("approve", "approve-with-changes"):
+        prior_head = _read_manifest_field(repo, prior_run_id, "head_sha")
+        _log_refusal(
+            repo, reason="prior-review-accepted", target=branch, phase=phase,
+            builder_run_id=builder_run_id, prior_review_run_id=prior_run_id, now=now,
+        )
+        raise _refuse("prior-review-accepted", f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
+            f"pass --full \"<reason>\" or --since {prior_run_id}")
+    else:  # reject, no flags: proceeds, advisory only
+        override = "none"
+        print(f"hint: prior review {prior_run_id} rejected this branch; consider --since {prior_run_id}")
+    return {"prior_review_run_id": prior_run_id, "prior_verdict": verdict, "override": override}
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2374,61 +2432,11 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
 
     builder_manifest, plan_path, spec_dest = _load_build_inputs(repo, builder_run_id, worktree, allowlist_root)
     tests_path = _evidence_path(worktree, builder_run_id)
-    # MOA-471 item 7: the CONCURRENCY lock always runs first and is never bypassed.
-    guard_con = _open_ro(db_path)
-    guard_con.row_factory = sqlite3.Row
-    try:
-        prior_reviews = _diff_reviews_for_branch(guard_con, project, branch)
-    finally:
-        guard_con.close()
-    # ponytail: best-effort, no reservation (a duplicate reviewer costs minutes, a
-    # reservation costs a schema) -- cr F1, rejected by the tech lead.
-    running = next(
-        (r for r in prior_reviews if r["finished_payload"] is None and r["session"]
-         and run(["tmux", "has-session", "-t", r["session"]]).returncode == 0),
-        None,
-    )
-    if running:
-        _log_refusal(
-            repo, reason="review-running", target=branch, phase=phase,
-            builder_run_id=builder_run_id, prior_review_run_id=running["run_id"], now=now,
-        )
-        raise _refuse("review-running", f"hint: run {running['run_id']} is still reviewing this branch")
-
-    # The terminal-verdict lock: only among prior reviews with a real terminal verdict.
-    terminal = [
-        r for r in prior_reviews
-        if r["finished_payload"] is not None
-        and r["finished_payload"].get("contract_status") == "ok"
-        and r["finished_payload"].get("verdict") in jr.VERDICTS
-    ]
-    selected = max(terminal, key=lambda r: r["finished_ts"], default=None)
     full_reason = args.full
-    # F4 (diff review 4884f63bdd16): the override reflects the flags actually PASSED,
-    # independently of whether a terminal prior review was found to bypass.
-    flag_override = "full" if args.full else ("since" if args.since else "none")
-    if selected is None:
-        guard_info = {"prior_review_run_id": None, "prior_verdict": None, "override": flag_override}
-    else:
-        prior_run_id = selected["run_id"]
-        verdict = selected["finished_payload"]["verdict"]
-        if args.full:
-            override = "full"
-        elif args.since:
-            override = "since"
-        elif verdict in ("approve", "approve-with-changes"):
-            prior_head = _read_manifest_field(repo, prior_run_id, "head_sha")
-            _log_refusal(
-                repo, reason="prior-review-accepted", target=branch, phase=phase,
-                builder_run_id=builder_run_id, prior_review_run_id=prior_run_id, now=now,
-            )
-            raise _refuse("prior-review-accepted", f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
-                f"pass --full \"<reason>\" or --since {prior_run_id}")
-        else:  # reject, no flags: proceeds, advisory only
-            override = "none"
-            print(f"hint: prior review {prior_run_id} rejected this branch; consider --since {prior_run_id}")
-        guard_info = {"prior_review_run_id": prior_run_id, "prior_verdict": verdict, "override": override}
-
+    guard_info = _review_guards(
+        args, run=run, repo=repo, db_path=db_path, project=project, branch=branch,
+        phase=phase, builder_run_id=builder_run_id, now=now,
+    )
     # fixes Part 2 diff-review F5: snapshot any PRE-EXISTING evidence before the verify
     # re-run overwrites it, so a refusal further down this function -- after verify has
     # already PASSED -- can restore it instead of leaving a stale/unlogged artifact behind
