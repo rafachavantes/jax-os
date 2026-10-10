@@ -1723,6 +1723,24 @@ def _resume_profile_name(args, prior):
     return profile_name
 
 
+def _resume_profile(args, prior):
+    """`(runtime, model, effort)` of the resumed builder from the saved settings profile,
+    after the opencode-on and settings-initialized refusals."""
+    _require_opencode_on()
+    settings = jset.read_settings()
+    if settings is None:
+        raise Refusal("agent-settings-uninitialized")
+    profile = settings["builders"][_resume_profile_name(args, prior)]
+    runtime = "opencode-builder"
+    model = f"{profile['connection']}/{profile['model']}"
+    effort = profile["effort"] if profile["effort"] is not None else "n/a"
+    if type(model) is not str or not 1 <= _utf16_len(model) <= HUB_CAPS["model"]:
+        raise Refusal("model-invalid")
+    if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
+        raise Refusal("effort-invalid")
+    return runtime, model, effort
+
+
 def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
                            run, post, env, now, allowlist_root, db_path):
     db_path = db_path or jr.DB_PATH
@@ -1734,21 +1752,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
     plan_defects = _validate_plan_structure(plan_path.read_text(encoding="utf-8"), plan_path, allowlist_root)
     if plan_defects:
         raise Refusal("resume-ineligible")
-    _require_opencode_on()
-    settings = jset.read_settings()
-    if settings is None:
-        raise Refusal("agent-settings-uninitialized")
-    profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
-    if profile_name not in ("default", "fallback"):
-        raise Refusal("resume-ineligible")
-    profile = settings["builders"][profile_name]
-    runtime = "opencode-builder"
-    model = f"{profile['connection']}/{profile['model']}"
-    effort = profile["effort"] if profile["effort"] is not None else "n/a"
-    if type(model) is not str or not 1 <= _utf16_len(model) <= HUB_CAPS["model"]:
-        raise Refusal("model-invalid")
-    if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
-        raise Refusal("effort-invalid")
+    runtime, model, effort = _resume_profile(args, prior)
     with jresume.worktree_claim(repo, worktree):
         started_now, finished_now, latest = _resume_rows(db_path, resume_id, (project, repo, branch))
         try:
