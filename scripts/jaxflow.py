@@ -7081,6 +7081,7 @@ def _add_review_parser(sub):
         help="For --diff: force a full verify+build re-run, ignoring the reuse check "
              "(MOA-471 item 8).",
     )
+    review.set_defaults(func=_cli_review)
 
 
 def _add_build_parser(sub):
@@ -7165,6 +7166,7 @@ def _add_build_parser(sub):
         help="Do not send the '[JAXFLOW] build ... finished' line back to the caller's "
              "tmux pane when the run completes.",
     )
+    build.set_defaults(func=_cli_build)
 
 
 def _add_pr_parser(sub):
@@ -7190,6 +7192,7 @@ def _add_pr_parser(sub):
                          help="PR title, passed to gh pr create --title verbatim.")
     popen_.add_argument("--body-file", help="Optional path passed to gh pr create --body-file.")
     _add_from(popen_, _FROM_HELP_MERGE)
+    popen_.set_defaults(func=_cli_pr_open)
 
 
 def _add_release_parser(sub):
@@ -7201,6 +7204,7 @@ def _add_release_parser(sub):
                      "Rafa approval then runs jaxflow merge on the printed branch/sha.",
     )
     _add_from(release, _FROM_HELP_MERGE)
+    release.set_defaults(func=_cli_release)
 
 
 def _add_merge_parser(sub):
@@ -7259,6 +7263,7 @@ def _add_merge_parser(sub):
              "differs from policy.",
     )
     _add_from(merge, _FROM_HELP_MERGE)
+    merge.set_defaults(func=_cli_merge)
 
 
 def _add_run_query_parsers(sub):
@@ -7269,6 +7274,7 @@ def _add_run_query_parsers(sub):
                      "finished(ok|failed|cancelled).",
     )
     status.add_argument("run_id", help=_RUN_ID_HELP)
+    status.set_defaults(func=_cli_status)
     result = sub.add_parser(
         "result",
         help="Print a finished run's report.",
@@ -7277,6 +7283,7 @@ def _add_run_query_parsers(sub):
                      "run has not finished.",
     )
     result.add_argument("run_id", help=_RUN_ID_HELP)
+    result.set_defaults(func=_cli_result)
     cancel = sub.add_parser(
         "cancel",
         help="Kill a running run.",
@@ -7284,7 +7291,8 @@ def _add_run_query_parsers(sub):
                      "ledger.",
     )
     cancel.add_argument("run_id", help=_RUN_ID_HELP)
-    sub.add_parser("doctor", help="Read-only health check: what is and isn't wired up.")
+    cancel.set_defaults(func=_cli_cancel)
+    sub.add_parser("doctor", help="Read-only health check: what is and isn't wired up.").set_defaults(func=_cli_doctor)
 
 
 def _add_gc_loop_parsers(sub):
@@ -7299,6 +7307,7 @@ def _add_gc_loop_parsers(sub):
     gc.add_argument("--dry-run", action="store_true")
     gc.add_argument("--yes", action="store_true")
     gc.add_argument("--force", action="store_true")
+    gc.set_defaults(func=_cli_gc)
 
     loop = sub.add_parser(
         "loop",
@@ -7308,6 +7317,7 @@ def _add_gc_loop_parsers(sub):
                      "No git repo required.",
     )
     loop.add_argument("prefix", help="Normalized to at least 4 chars; e.g. moa-474.")
+    loop.set_defaults(func=_cli_loop)
 
 
 def _add_mission_parser(sub):
@@ -7335,6 +7345,7 @@ def _add_mission_parser(sub):
     mission_sub.add_parser("done", help="Finish the active mission as done.")
     mission_sub.add_parser("cancel", help="Finish the active mission as cancelled.")
     mission_sub.add_parser("show", help="Print the active mission, or 'no active mission'.")
+    mission.set_defaults(func=_cli_mission)
 
 
 def parse_args(argv):
@@ -7351,6 +7362,95 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
+def _cli_review(args, deps):
+    dispatch = dispatch_diff_review if args.diff else dispatch_review
+    run_id = dispatch(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                      allowlist_root=deps.allowlist_root)
+    print(run_id)
+    return OK
+
+
+def _cli_build(args, deps):
+    run_id = dispatch_build(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                            allowlist_root=deps.allowlist_root)
+    print(run_id)
+    return OK
+
+
+def _cli_pr_open(args, deps):
+    result = cmd_pr_open(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                         allowlist_root=deps.allowlist_root)
+    print(f"{result['url']}")
+    return OK
+
+
+def _cli_release(args, deps):
+    result = cmd_release(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                         allowlist_root=deps.allowlist_root)
+    print(f"{result['url']}")
+    print(f"snapshot: {result['snapshot_sha']}")
+    print(f"next: jaxflow merge {result['branch']} --sha {result['snapshot_sha']} "
+          f"--phase \"<title>\" --checks \"<cmd>\" --target <Production target>")
+    return OK
+
+
+def _cli_merge(args, deps):
+    return cmd_merge(args, run=deps.run, post=deps.post, env=deps.env, now=deps.now,
+                     allowlist_root=deps.allowlist_root)
+
+
+def _cli_gc(args, deps):
+    cmd_gc(args, run=deps.run, post=deps.post, now=deps.now, allowlist_root=deps.allowlist_root)
+    return OK
+
+
+def _cli_loop(args, deps):
+    print(cmd_loop(args.prefix))
+    return OK
+
+
+def _cli_status(args, deps):
+    print(cmd_status(args.run_id, run=deps.run))
+    return OK
+
+
+def _cli_result(args, deps):
+    sys.stdout.write(cmd_result(args.run_id, allowlist_root=deps.allowlist_root))
+    return OK
+
+
+def _cli_cancel(args, deps):
+    # cmd_cancel does NOT take main()'s own `post` (that one is `_post_event`-shaped
+    # for dispatch/worker); it uses its own `_post`-shaped default so it can see the
+    # raw HTTP status (fixes cold review F2).
+    print(cmd_cancel(args.run_id, run=deps.run, now=deps.now))
+    return OK
+
+
+def _cli_doctor(args, deps):
+    lines, code = cmd_doctor()
+    for line in lines:
+        print(line)
+    return code
+
+
+def _cli_mission(args, deps):
+    # Mission uses the module's own `_get`/`_post` (HTTP-status shaped), never main()'s `post`.
+    if args.mission_command == "show":
+        print(cmd_mission_show(get=_get))
+    elif args.mission_command == "start":
+        cmd_mission_start(args, post=_post)
+    elif args.mission_command == "status":
+        cmd_mission_status(args, post=_post)
+    elif args.mission_command == "mark":
+        cmd_mission_mark(args, post=_post)
+    elif args.mission_command == "done":
+        cmd_mission_finish("done", post=_post)
+    elif args.mission_command == "cancel":
+        cmd_mission_finish("cancelled", post=_post)
+    return OK
+
+
 def main(argv=None, *, run=jr.run_command, post=_post_event, env=None, now=None,
           allowlist_root=ALLOWLIST_ROOT_DEFAULT, popen=subprocess.Popen):
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -7362,80 +7462,15 @@ def main(argv=None, *, run=jr.run_command, post=_post_event, env=None, now=None,
             return REFUSED
         return run_worker(argv[1], run=run, post=post, popen=popen, env=env, allowlist_root=allowlist_root)
     args = parse_args(argv)
+    deps = SimpleNamespace(run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
     try:
-        if args.command == "review":
-            if args.diff:
-                run_id = dispatch_diff_review(args, run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
-            else:
-                run_id = dispatch_review(args, run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
-            print(run_id)
-            return OK
-        if args.command == "build":
-            run_id = dispatch_build(args, run=run, post=post, env=env, now=now, allowlist_root=allowlist_root)
-            print(run_id)
-            return OK
-        if args.command == "pr":
-            if args.pr_command == "open":
-                result = cmd_pr_open(args, run=run, post=post, env=env, now=now,
-                                       allowlist_root=allowlist_root)
-                print(f"{result['url']}")
-                return OK
-        if args.command == "release":
-            result = cmd_release(args, run=run, post=post, env=env, now=now,
-                                   allowlist_root=allowlist_root)
-            print(f"{result['url']}")
-            print(f"snapshot: {result['snapshot_sha']}")
-            print(f"next: jaxflow merge {result['branch']} --sha {result['snapshot_sha']} "
-                  f"--phase \"<title>\" --checks \"<cmd>\" --target <Production target>")
-            return OK
-        if args.command == "merge":
-            return cmd_merge(args, run=run, post=post, env=env, now=now,
-                             allowlist_root=allowlist_root)
-        if args.command == "gc":
-            cmd_gc(args, run=run, post=post, now=now, allowlist_root=allowlist_root)
-            return OK
-        if args.command == "loop":
-            print(cmd_loop(args.prefix))
-            return OK
-        if args.command == "status":
-            print(cmd_status(args.run_id, run=run))
-            return OK
-        if args.command == "result":
-            sys.stdout.write(cmd_result(args.run_id, allowlist_root=allowlist_root))
-            return OK
-        if args.command == "cancel":
-            # cmd_cancel does NOT take main()'s own `post` (that one is `_post_event`-shaped
-            # for dispatch/worker); it uses its own `_post`-shaped default so it can see the
-            # raw HTTP status (fixes cold review F2).
-            print(cmd_cancel(args.run_id, run=run, now=now))
-            return OK
-        if args.command == "doctor":
-            lines, code = cmd_doctor()
-            for line in lines:
-                print(line)
-            return code
-        if args.command == "mission":
-            if args.mission_command == "show":
-                print(cmd_mission_show(get=_get))
-                return OK
-            if args.mission_command == "start":
-                cmd_mission_start(args, post=_post)
-            elif args.mission_command == "status":
-                cmd_mission_status(args, post=_post)
-            elif args.mission_command == "mark":
-                cmd_mission_mark(args, post=_post)
-            elif args.mission_command == "done":
-                cmd_mission_finish("done", post=_post)
-            elif args.mission_command == "cancel":
-                cmd_mission_finish("cancelled", post=_post)
-            return OK
+        return args.func(args, deps)
     except Refusal as exc:
         print(exc.code, file=sys.stderr)
         hint = getattr(exc, "hint", None)
         if hint:
             print(hint, file=sys.stderr)
         return REFUSED
-    return REFUSED
 
 
 if __name__ == "__main__":
