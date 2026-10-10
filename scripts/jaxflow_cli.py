@@ -684,7 +684,7 @@ def _parse_worktree_porcelain(output):
 
 
 def _classify_gc_state(finished_payload):
-    """Narrows `cmd_status`'s branching (jaxflow.py:4106-4136) to gc's own categories. None means `open` (no run-finished row yet)."""
+    """Narrows `cmd_status`'s branching (`scripts/jaxflow_cli.py`) to gc's own categories. None means `open` (no run-finished row yet)."""
     if finished_payload is None:
         return "open"
     status = finished_payload.get("contract_status")
@@ -702,7 +702,7 @@ def _classify_gc_state(finished_payload):
 def _gc_worktree_is_reserved(repo, run_id, candidate_path):
     """F2 (round 4): ownership requires the EXACT worktree path jaxflow reserved for
     `run_id` -- its own manifest's `worktree` field (`<repo>/.local/runs/<run_id>/
-    manifest.json`, written by `dispatch_build`, `jaxflow.py:1494`) -- to equal
+    manifest.json`, written by `dispatch_build`, `scripts/jaxflow_build.py`) -- to equal
     `candidate_path`. Matching only `(project, repo, branch)` would let a worktree
     manually recreated on the same branch, at a DIFFERENT path, inherit another run's
     ownership and get GC'd on the strength of that guess. No manifest, an unreadable
@@ -717,7 +717,7 @@ def _gc_worktree_is_reserved(repo, run_id, candidate_path):
 
 
 def _latest_builder_run_for_gc(con, project, repo, branch, candidate_path):
-    """Like `_latest_builder_attempt` (jaxflow.py:994) plus the matching run-finished
+    """Like `_latest_builder_attempt` (`scripts/jaxflow_common.py`) plus the matching run-finished
     row, gated by ownership of `candidate_path` (F2, round 4: see `_gc_worktree_is_
     reserved`). (None, None, None) means no builder ever ran on `branch` at exactly
     this path (`unowned`)."""

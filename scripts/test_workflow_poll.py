@@ -693,7 +693,7 @@ def test_reap_builder_close_with_worktree_gone_has_null_head_and_no_checkpoint(m
 
 def test_reaper_checkpoint_outcome_is_failure_for_managed_builder(monkeypatch):
     # F2 (cold review 938043c1d949): `_persist_resume_checkpoint` reads
-    # `payload.get("result")` as the checkpoint's `outcome` (jaxflow.py:777-800) -- a
+    # `payload.get("result")` as the checkpoint's `outcome` (`scripts/jaxflow_workerkit.py`) -- a
     # managed-builder manifest (real `requested_profile` + a real `plan_path`) must
     # produce a checkpoint whose `outcome` is "failure", never `None`, or a later
     # `--resume` refuses it (Task 4's `checkpoint["outcome"] not in ("failure",

@@ -43,7 +43,7 @@ describe("collectRetainedWorktrees", () => {
   });
 
   // F6 (round 4): "latest builder attempt" is by ts, `id` breaking an exact tie -- the
-  // same rule as Python's `_latest_builder_attempt` (scripts/jaxflow.py:994).
+  // same rule as Python's `_latest_builder_attempt` (`scripts/jaxflow_common.py`).
   test("picks the latest build per branch by (startedAt, id), not array order", () => {
     const older = row({ runId: "aaaa", id: 1, startedAt: "2026-09-01T00:00:00Z", finishedAt: "2026-09-01T00:00:00Z" });
     const newerById = row({ runId: "bbbb", id: 2, startedAt: "2026-09-01T00:00:00Z", finishedAt: "2026-09-18T00:00:00Z" }); // same ts, higher id, NOT old enough

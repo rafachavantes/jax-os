@@ -2216,7 +2216,7 @@ def test_diff_dispatch_refuses_when_the_declared_spec_fragment_heading_is_missin
 
 
 def test_worker_diff_review_prompt_carries_the_spec_fragment_when_the_plan_declares_one():
-    # Regression for the Path-vs-str comparison hazard at scripts/jaxflow.py:1731 --
+    # Regression for the Path-vs-str comparison hazard at `scripts/jaxflow_review.py` (diff-review worker) --
     # under the OLD `if spec_path != derived_spec:` this fails with path-outside-allowlist
     # even though every value agrees, because spec_path is always a Path and derived_spec
     # is a str whenever a fragment is present.

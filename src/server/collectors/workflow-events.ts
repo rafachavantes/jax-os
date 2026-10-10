@@ -129,7 +129,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       }
       if (p.kind === "diff") {
         // F7 (round 4): required at INGRESS for every NEW diff run-started event -- the
-        // real producer (`dispatch_diff_review`, `scripts/jaxflow.py:2074`) always knows
+        // real producer (`dispatch_diff_review`, `scripts/jaxflow_review.py`) always knows
         // its own reviewed build's run id, and an unlinked diff distorts loop grouping
         // (F4/L2). A row already PERSISTED without it (predating this requirement) is
         // still tolerated on the READ side -- `getLoopSummary`'s branch fallback (L2) --
