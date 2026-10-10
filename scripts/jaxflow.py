@@ -2014,6 +2014,22 @@ def _reserve_build_worktree(args, *, run, repo, worktree, base_sha):
     return base_sha
 
 
+def _copy_agents_md(repo, worktree):
+    """Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one. It is
+    gitignored, so `git worktree add` never brings it along, and the handoff points the
+    builder at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too."""
+    # Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one
+    # (fixes cold review round 2 F2): AGENTS.md is gitignored (`.gitignore:10`), so
+    # `git worktree add` never brings it along, and Part 3's handoff points the builder
+    # at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too --
+    # never `git add`ed.
+    control_agents_md = repo / "AGENTS.md"
+    if control_agents_md.is_file():
+        (worktree / "AGENTS.md").write_text(
+            control_agents_md.read_text(encoding="utf-8"), encoding="utf-8",
+        )
+
+
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     cwd = Path.cwd().resolve()
     repo = _require_toplevel(run, cwd)
@@ -2090,17 +2106,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         # gone). The AGENTS.md copy below stays the only control-repo file brought into
         # the worktree.
 
-        # Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one
-        # (fixes cold review round 2 F2): AGENTS.md is gitignored (`.gitignore:10`), so
-        # `git worktree add` never brings it along, and Part 3's handoff points the builder
-        # at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too --
-        # never `git add`ed.
-        control_agents_md = repo / "AGENTS.md"
-        if control_agents_md.is_file():
-            (worktree / "AGENTS.md").write_text(
-                control_agents_md.read_text(encoding="utf-8"), encoding="utf-8",
-            )
-
+        _copy_agents_md(repo, worktree)
         caller_pane = env.get("TMUX_PANE")
 
         manifest = _build_manifest_base(
