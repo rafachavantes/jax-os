@@ -7006,14 +7006,15 @@ _RUN_ID_HELP = "Run id printed by 'jaxflow review' or 'jaxflow build'."
 _OLDER_THAN_HELP = "Age threshold, e.g. 7d (default). Only whole days are supported."
 
 
-def parse_args(argv):
-    parser = argparse.ArgumentParser(
-        prog="jaxflow",
-        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
-                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
+def _add_from(parser, help_text):
+    """The `--from` caller-identity option shared by review, build, pr open, release and merge
+    (the help text differs: dispatch verbs also need the session variable)."""
+    parser.add_argument(
+        "--from", dest="from_caller", choices=("claude", "codex", "jaxos"), help=help_text,
     )
-    sub = parser.add_subparsers(dest="command", required=True)
 
+
+def _add_review_parser(sub):
     review = sub.add_parser(
         "review",
         help="Dispatch a cold review of a spec, a plan, or a finished build's diff.",
@@ -7055,9 +7056,7 @@ def parse_args(argv):
         help="Run identifier token. Defaults to the target file's stem for --spec/--plan, "
              "or to the build run's own phase for --diff.",
     )
-    review.add_argument(
-        "--from", dest="from_caller", choices=["claude", "codex", "jaxos"], help=_FROM_HELP_DISPATCH,
-    )
+    _add_from(review, _FROM_HELP_DISPATCH)
     review.add_argument(
         "--no-callback", action="store_true",
         help="Do not send the '[JAXFLOW] ... finished' line back to the caller's tmux pane "
@@ -7083,6 +7082,8 @@ def parse_args(argv):
              "(MOA-471 item 8).",
     )
 
+
+def _add_build_parser(sub):
     build = sub.add_parser(
         "build",
         help="Reserve a worktree and dispatch a builder to implement a plan.",
@@ -7158,14 +7159,24 @@ def parse_args(argv):
         "--fallback", action="store_true",
         help="Use the saved fallback builder profile instead of default.",
     )
-    build.add_argument(
-        "--from", dest="from_caller", choices=["claude", "codex", "jaxos"], help=_FROM_HELP_DISPATCH,
-    )
+    _add_from(build, _FROM_HELP_DISPATCH)
     build.add_argument(
         "--no-callback", action="store_true",
         help="Do not send the '[JAXFLOW] build ... finished' line back to the caller's "
              "tmux pane when the run completes.",
     )
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="jaxflow",
+        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
+                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    _add_review_parser(sub)
+    _add_build_parser(sub)
 
     pr = sub.add_parser(
         "pr",
