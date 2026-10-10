@@ -24,6 +24,7 @@ import pytest
 
 import general_settings
 import jaxflow
+import jaxflow_build
 import jaxflow_review
 import jaxflow_merge
 import jaxflow_workerkit
@@ -892,7 +893,7 @@ def test_dispatch_writes_pointer_for_build(monkeypatch):
         plan = _plan_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -923,7 +924,7 @@ def test_dispatch_writes_pointer_for_build_resume(monkeypatch, tmp_path):
             "CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID,
             "TMUX_PANE": "%3", "PATH": "/bin", "HOME": str(tmp_path),
         }
-        first_id = jaxflow.dispatch_build(
+        first_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), branch="feat/x", whitelist="a.py", verify="false"),
             run=_run_with_tmux(fake, real_cwd=root),
             post=post, env=env, now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -934,7 +935,7 @@ def test_dispatch_writes_pointer_for_build_resume(monkeypatch, tmp_path):
             run=_run_with_tmux(fake, real_cwd=worktree),
             post=post, popen=_E2EBuilderPopen, allowlist_root=allow_root, env=env,
         )
-        second_id = jaxflow.dispatch_build(
+        second_id = jaxflow_build.dispatch_build(
             _build_args(resume=first_id), run=_run_with_tmux(fake, real_cwd=root),
             post=post, env=env, now=_fixed_now, allowlist_root=allow_root, db_path=db,
         )
@@ -1059,7 +1060,7 @@ def test_dispatch_build_writes_no_pointer_on_tmux_failure(monkeypatch):
         fake = FakeTmux()
         fake.new_session_fails = True
         with pytest.raises(ji.Refusal, match="tmux-failed"):
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1119,7 +1120,7 @@ def test_dispatch_build_writes_no_pointer_when_launcher_raises(monkeypatch):
             return _run_with_tmux(FakeTmux(), real_cwd=root)(argv, cwd=cwd)
 
         with pytest.raises(ji.Refusal, match="tmux-failed"):
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=raising_run, post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -3696,7 +3697,7 @@ def test_build_refuses_effort_override_for_opencode_runtime_before_reservation(c
                 argv, run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
             )
-            expected_runtime = builder or jaxflow.BUILDER_DEFAULT
+            expected_runtime = builder or jaxflow_build.BUILDER_DEFAULT
             assert code == jaxflow_common.REFUSED
             assert capsys.readouterr().err.strip() == f"effort-not-supported: {expected_runtime}"
         assert fake.calls == []
@@ -3721,7 +3722,7 @@ def _probe_dispatch_build(monkeypatch, root, allow_root, plan, **flags):
         return {"ok": True}
 
     try:
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), **flags),
             run=_run_with_tmux_and_log(fake, git_calls, real_cwd=root),
             post=post, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -3826,7 +3827,7 @@ def test_dispatch_build_legacy_namespace_without_fallback_attr(monkeypatch):
             verify="true", builder=None, model=None, effort=None, from_caller=None,
             no_callback=False, base=None, build=None,
         )
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             args, run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: events.append(e) or {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
@@ -3943,7 +3944,7 @@ def test_build_refuses_branch_exists_when_worktree_path_already_a_directory(monk
         fake = FakeTmux()
         git_calls = []
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)),
                 run=_run_with_tmux_and_log(fake, git_calls, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -3982,7 +3983,7 @@ def test_build_base_stacks_the_new_branch_on_the_named_ref(monkeypatch):
         plan.write_text("# Plan\n\n### Task 1: t\n", encoding="utf-8")
         monkeypatch.chdir(root)
         git_calls = []
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), branch="feat/p2", base="feat/p1"),
             run=_run_with_tmux_and_log(FakeTmux(), git_calls, real_cwd=root),
             post=lambda e: {"ok": True},
@@ -4021,7 +4022,7 @@ def test_build_refuses_a_malformed_base_without_handing_it_to_git_at_all(monkeyp
             fake = FakeTmux()
             git_calls = []
             try:
-                jaxflow.dispatch_build(
+                jaxflow_build.dispatch_build(
                     _build_args(plan=str(plan), branch="feat/x", base=bad),
                     run=_run_with_tmux_and_log(fake, git_calls, real_cwd=root),
                     post=lambda e: {"ok": True},
@@ -4051,7 +4052,7 @@ def test_build_refuses_a_well_shaped_base_that_does_not_resolve(monkeypatch):
         fake = FakeTmux()
         git_calls = []
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/x", base="no/such/ref"),
                 run=_run_with_tmux_and_log(fake, git_calls, real_cwd=root),
                 post=lambda e: {"ok": True},
@@ -4088,7 +4089,7 @@ def test_build_without_base_still_starts_from_the_default_branch(monkeypatch):
         plan.parent.mkdir(parents=True)
         plan.write_text("# Plan\n\n### Task 1: t\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        jaxflow.dispatch_build(
+        jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), branch="feat/plain"),
             run=_run_with_tmux(FakeTmux(), real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
@@ -4112,7 +4113,7 @@ def test_build_refuses_plan_path_that_is_a_directory_before_reservation(monkeypa
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan_dir)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -4139,7 +4140,7 @@ def test_build_refuses_plan_invalid_unresolvable_spec_line(monkeypatch):
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -4174,7 +4175,7 @@ def test_build_refuses_plan_invalid_spec_fragment_not_found(monkeypatch):
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -4199,7 +4200,7 @@ def test_build_refuses_plan_invalid_lists_every_defect_not_just_the_first(monkey
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -4226,7 +4227,7 @@ def test_build_dispatches_a_plan_with_no_goal_or_task_heading(monkeypatch):
         plan.parent.mkdir(parents=True)
         plan.write_text("## Task - 1\n\nDo the thing.\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan)), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root,
@@ -4254,7 +4255,7 @@ def test_build_accepts_a_structurally_valid_plan_unchanged(monkeypatch):
         _init_repo(root)
         plan = _plan_file(root)  # "# Plan\n\n**Goal:** g\n\n### Task 1: t\n"
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan)), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root,
@@ -4286,7 +4287,7 @@ def test_build_default_branch_probe_failure_after_reservation_removes_empty_dir(
             return _run_real(argv, cwd if cwd is not None else root)
 
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=run, post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
                 allowlist_root=allow_root,
@@ -4328,7 +4329,7 @@ def test_build_post_add_exception_cleans_up_worktree_branch_and_admin_entry(monk
         monkeypatch.setattr(Path, "read_text", failing_read_text)
 
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -4358,7 +4359,7 @@ def test_build_worktree_add_failure_cleans_up_reserved_dir_and_never_reaches_pre
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -4392,7 +4393,7 @@ def test_build_refuses_malformed_phase_via_preflight_and_cleans_up_worktree(monk
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/x", phase="not a token!"),
                 run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
@@ -4427,7 +4428,7 @@ def test_build_refuses_run_path_collision_and_cleans_up_worktree(monkeypatch):
             return _run_real(argv, cwd if cwd is not None else root)
 
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/x"), run=run,
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -4461,7 +4462,7 @@ def test_build_keeps_original_plan_path_and_copies_only_agents_md(monkeypatch):
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), branch="feat/my-phase"),
             run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
@@ -4538,7 +4539,7 @@ def test_build_records_the_build_command_in_manifest_and_started_payload(monkeyp
         plan = _plan_file(root)
         monkeypatch.chdir(root)
         events = []
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), verify="pnpm test", build="pnpm build"),
             run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: events.append(e) or {"ok": True},
@@ -4565,7 +4566,7 @@ def test_build_omits_the_build_key_entirely_when_no_build_command_is_given(monke
         plan = _plan_file(root)
         monkeypatch.chdir(root)
         events = []
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), verify="pnpm test"),
             run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: events.append(e) or {"ok": True},
@@ -4666,7 +4667,7 @@ def _seed_resumable(monkeypatch, tmp_path, allow_root, root, *, prior="aaaaaaaaa
 def _dispatch_resume(seeded, fake, **extra):
     events = []
     git_calls = []
-    run_id = jaxflow.dispatch_build(
+    run_id = jaxflow_build.dispatch_build(
         _build_args(resume=seeded.prior, **extra),
         run=_run_with_tmux_and_log(fake, git_calls, real_cwd=seeded.root),
         post=lambda e: events.append(e) or {"ok": True},
@@ -4741,7 +4742,7 @@ def test_build_resume_refuses_conflicting_fresh_flags(monkeypatch):
         )
         for extra in extras:
             with pytest.raises(ji.Refusal) as caught:
-                jaxflow.dispatch_build(_build_args(resume="aaaaaaaaaaaa", **extra), **kwargs)
+                jaxflow_build.dispatch_build(_build_args(resume="aaaaaaaaaaaa", **extra), **kwargs)
             assert caught.value.code == "resume-ineligible"
             assert not (allow_root / "demo-feat-demo").exists()
             assert not (allow_root / "demo-feat-x").exists()
@@ -4756,7 +4757,7 @@ def test_build_resume_refuses_invalid_run_id_before_paths(monkeypatch):
         monkeypatch.chdir(root)
         fake = FakeTmux()
         with pytest.raises(ji.Refusal) as caught:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(resume="../escape"),
                 run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True},
@@ -4864,7 +4865,7 @@ def test_resume_is_ineligible_on_an_interrupted_row_with_no_checkpoint(monkeypat
         _checkpoint_path(root, seeded.prior).unlink()
         fake = FakeTmux()
         with pytest.raises(ji.Refusal) as caught:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(resume=seeded.prior),
                 run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True},
@@ -4962,7 +4963,7 @@ def test_build_resume_fallback_e2e_reuses_worktree_and_keeps_original_base(monke
             "CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd", "TMUX_PANE": "%3",
             "PATH": "/bin", "HOME": str(tmp_path),
         }
-        first_id = jaxflow.dispatch_build(
+        first_id = jaxflow_build.dispatch_build(
             _build_args(
                 plan=str(plan), branch="feat/x", whitelist="a.py",
                 verify="printf v >> .local/verify-ran",
@@ -4995,7 +4996,7 @@ def test_build_resume_fallback_e2e_reuses_worktree_and_keeps_original_base(monke
         assert (worktree / ".local" / "verify-ran").read_text(encoding="utf-8") == "v"
         assert (worktree / ".local" / "build-ran").read_text(encoding="utf-8") == "b"
 
-        second_id = jaxflow.dispatch_build(
+        second_id = jaxflow_build.dispatch_build(
             _build_args(resume=first_id, fallback=True),
             run=_run_with_tmux(fake, real_cwd=root),
             post=post, env=env, now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -5052,7 +5053,7 @@ def test_build_resume_uses_current_saved_profile_after_settings_change(monkeypat
             "CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd", "TMUX_PANE": "%3",
             "PATH": "/bin", "HOME": str(tmp_path),
         }
-        first_id = jaxflow.dispatch_build(
+        first_id = jaxflow_build.dispatch_build(
             _build_args(
                 plan=str(plan), branch="feat/x", whitelist="a.py",
                 verify="true",
@@ -5081,7 +5082,7 @@ def test_build_resume_uses_current_saved_profile_after_settings_change(monkeypat
                 )
                 captured["argv"] = list(argv)
 
-        second_id = jaxflow.dispatch_build(
+        second_id = jaxflow_build.dispatch_build(
             _build_args(resume=first_id),
             run=_run_with_tmux(fake, real_cwd=root),
             post=post, env=env, now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -5184,7 +5185,7 @@ def test_build_resume_refuses_ineligible(monkeypatch, tmp_path, case):
         elif case == "live-session":
             fake.existing.add(f"jax-demo-build-{seeded.prior}")
         with pytest.raises(ji.Refusal) as caught:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(resume=seeded.prior),
                 run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True},
@@ -5209,7 +5210,7 @@ def _rewrite_checkpoint(root, run_id, **fields):
 
 def _assert_resume_refused_without_new_attempt(seeded, fake, monkeypatch):
     with pytest.raises(ji.Refusal) as caught:
-        jaxflow.dispatch_build(
+        jaxflow_build.dispatch_build(
             _build_args(resume=seeded.prior),
             run=_run_with_tmux(fake, real_cwd=seeded.root),
             post=lambda e: {"ok": True},
@@ -5389,7 +5390,7 @@ def _tl2_resume_child(cfg, start, published, proceed):
         if cfg.get("role") == "waiter" and published is not None and not published.wait(30):
             _tl2_write_result(cfg["result"], {"ok": False, "error": "published-timeout"})
             return
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(resume=cfg["prior"]),
             run=_run_with_tmux(FakeTmux(), real_cwd=Path(cfg["root"])),
             post=_tl2_ledger_post(
@@ -5605,7 +5606,7 @@ def test_build_dispatch_posts_run_started_before_tmux_with_builder_defaults(monk
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CODEX_THREAD_ID": "t1"}, now=_fixed_now, allowlist_root=allow_root,
         )
@@ -5637,7 +5638,7 @@ def test_build_tmux_failure_posts_cancelled_row_with_null_head_sha_and_cleans_wo
             return {"ok": True}
 
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/x"), run=_run_with_tmux(fake, real_cwd=root),
                 post=post, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
                 allowlist_root=allow_root,
@@ -5676,7 +5677,7 @@ def test_build_tmux_new_session_raises_is_treated_as_tmux_failed(monkeypatch):
             return _run_with_tmux(FakeTmux(), real_cwd=root)(argv, cwd=cwd)
 
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/y"), run=raising_run, post=post,
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
                 allowlist_root=allow_root,
@@ -5706,7 +5707,7 @@ def test_build_hub_unreachable_removes_manifest_worktree_and_branch_without_tmux
             raise RuntimeError("event post failed")
 
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/z"), run=_run_with_tmux(fake, real_cwd=root),
                 post=post, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
                 allowlist_root=allow_root,
@@ -5732,7 +5733,7 @@ def test_build_quotes_tmux_command_for_space_and_semicolon_in_repo_path(monkeypa
         monkeypatch.chdir(root)
         fake = FakeTmux()
 
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root,
@@ -5765,7 +5766,7 @@ def test_build_builder_override_and_runtime_not_allowed_end_to_end(capsys, monke
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), branch="feat/y", builder="opencode-deepseek"),
             run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
@@ -5818,7 +5819,7 @@ def test_build_refuses_builder_on_default_branch_after_worktree_checkout(monkeyp
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="main"),
                 run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
@@ -7055,7 +7056,7 @@ def test_builder_manifest_records_base_sha_at_dispatch(monkeypatch):
         expected_sha = _run_real(["git", "rev-parse", "HEAD"], root).stdout.strip()
         plan = _plan_file(root)
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan)), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root,
@@ -8730,7 +8731,7 @@ def test_external_plan_survives_dispatch_builder_and_diff_launch(monkeypatch):
             "# External plan\n\n**Goal:** g\n\n### Task 1: t\n", encoding="utf-8",
         )
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan_src), branch="feat/x"),
             run=_run_with_tmux(FakeTmux(), real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
@@ -17738,7 +17739,7 @@ def test_resolve_caller_accepts_jaxos_from_flag_without_env_markers():
 def test_main_accepts_from_jaxos_on_review_build_and_merge(monkeypatch):
     seen = []
     monkeypatch.setattr(jaxflow_review, "dispatch_review", lambda args, **kw: seen.append(("review", args.from_caller)) or "r1")
-    monkeypatch.setattr(jaxflow, "dispatch_build", lambda args, **kw: seen.append(("build", args.from_caller)) or "b1")
+    monkeypatch.setattr(jaxflow_build, "dispatch_build", lambda args, **kw: seen.append(("build", args.from_caller)) or "b1")
     monkeypatch.setattr(jaxflow_merge, "cmd_merge", lambda args, **kw: seen.append(("merge", args.from_caller)) or jaxflow_common.OK)
     assert jaxflow.main(["review", "--spec", "x.md", "--from", "jaxos"]) == jaxflow_common.OK
     assert jaxflow.main([
@@ -17803,7 +17804,7 @@ def test_jaxos_build_dispatch_forces_no_callback_and_records_caller(monkeypatch)
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan), from_caller="jaxos"),
             run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"JAXOS_CALLER_SESSION": "jaxos"}, now=_fixed_now, allowlist_root=allow_root,
@@ -18773,7 +18774,7 @@ def test_build_verify_501_chars_refused_before_any_side_effect(monkeypatch):
         monkeypatch.setattr(os, "mkdir", wrapped_mkdir)
         pane_exc = None
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/pane"),
                 run=_run_with_tmux_and_log(fake, git_calls, real_cwd=root),
                 post=lambda e: events.append(e) or {"ok": True},
@@ -18789,7 +18790,7 @@ def test_build_verify_501_chars_refused_before_any_side_effect(monkeypatch):
         events, git_calls, mkdir_calls = [], [], []
         session_exc = None
         try:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan), branch="feat/session"),
                 run=_run_with_tmux_and_log(fake, git_calls, real_cwd=root),
                 post=lambda e: events.append(e) or {"ok": True},
@@ -18845,7 +18846,7 @@ def test_build_backstop_session_too_long_cleans_worktree(monkeypatch):
         )
         events = []
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)),
                 run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: events.append(e) or {"ok": True},
@@ -19121,7 +19122,7 @@ def test_review_and_build_refuse_on_unreadable_settings_and_reserve_nothing(monk
         for call in (
             lambda: jaxflow_review.dispatch_review(_review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
                                             post=lambda e: {"ok": True}, env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root),
-            lambda: jaxflow.dispatch_build(_build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
+            lambda: jaxflow_build.dispatch_build(_build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                                            post=lambda e: {"ok": True}, env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root),
         ):
             with pytest.raises(ji.Refusal) as caught:
@@ -19251,7 +19252,7 @@ def test_build_refuses_when_opencode_is_off_before_reserving_anything(monkeypatc
         monkeypatch.chdir(root)
         fake, posts = FakeTmux(), []
         with pytest.raises(ji.Refusal) as caught:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: posts.append(e), env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root,
             )
@@ -19269,7 +19270,7 @@ def test_build_with_opencode_on_is_unchanged_by_the_other_switches(monkeypatch):
         _init_repo(root)
         plan = _plan_file(root)
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_build(
+        run_id = jaxflow_build.dispatch_build(
             _build_args(plan=str(plan)), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root,
         )
@@ -19285,7 +19286,7 @@ def test_build_resume_refuses_when_opencode_is_off_before_claiming_the_worktree(
         _agents_setting(monkeypatch, opencode=False)  # AFTER seeding: the seed may patch settings itself
         fake, posts = FakeTmux(), []
         with pytest.raises(ji.Refusal) as caught:
-            jaxflow.dispatch_build(
+            jaxflow_build.dispatch_build(
                 _build_args(resume=seeded.prior), run=_run_with_tmux_and_log(fake, [], real_cwd=root),
                 post=lambda e: posts.append(e), env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root,
             )
