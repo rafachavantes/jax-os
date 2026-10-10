@@ -1004,7 +1004,7 @@ def _verify_command_diagnostic(command, result):
     appear in a verify/build command line or its output (an env var assignment on the
     command, a leaked token in a stack trace) -- redacted with the SAME `redact()`
     `_write_verify_tests_file` already applies to this evidence
-    (`scripts/jaxflow.py:2152-2153`), before this diagnostic is ever persisted to the
+    (`scripts/jaxflow_workerkit.py`), before this diagnostic is ever persisted to the
     DB or sent in a callback line."""
     output = (result.stdout or "") + (result.stderr or "")
     last_line = next((ln for ln in reversed(output.splitlines()) if ln.strip()), "")
@@ -1035,7 +1035,7 @@ def _runtime_row(evidence):
 def _verify_build_row(evidence):
     """Rows 6/11 (build) then 7/12 (verify) (spec §7): TABLE order checks build BEFORE
     verify, the REVERSE of `_run_verify_commands`'s own emission order (verify/test
-    first, build second, jaxflow.py:2105-2108) -- frames[1] is the build frame when
+    first, build second, `scripts/jaxflow_workerkit.py`) -- frames[1] is the build frame when
     two frames are present. `tests_written is False` (the verify-evidence FILE itself
     failed to write) is folded into the verify row, per spec §7 row 7's "or the
     verify-evidence file itself failed to write" clause. Reviewer evidence always has
