@@ -5320,6 +5320,13 @@ def _find_latest_release_pr(project, repo_slug, *, db_path=None):
     return None
 
 
+def _status_tracked(run, cwd):
+    """The tracked-only status probe (porcelain, untracked files excluded: an untracked
+    artifact never blocks anything). Returns the raw `run(...)` result; every caller keeps
+    its own `returncode`/`stdout` reading (a failed probe is NOT a clean tree)."""
+    return run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd)
+
+
 def _abort_merge(run, repo):
     """Aborts an in-progress merge and reports what actually survived. `git merge --abort`
     is NOT a guaranteed restore (verified 2026-09-07): when the checks modified a tracked
@@ -5343,7 +5350,7 @@ def _abort_merge(run, repo):
         notes.append("MERGE_HEAD still present (the checkout is mid-merge)")
     elif merge_head.returncode != 1:
         notes.append("MERGE_HEAD could not be checked")
-    dirty = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo)
+    dirty = _status_tracked(run, repo)
     if dirty.returncode != 0:
         notes.append("tracked changes could not be checked")
     elif dirty.stdout.strip():
@@ -6099,7 +6106,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
                 exc = Refusal("sha-mismatch")
                 exc.hint = f"hint: {checks_dir} is not at the approved {args.sha}"
                 raise exc
-            status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=checks_dir)
+            status = _status_tracked(run, checks_dir)
             if status.returncode != 0 or status.stdout.strip():
                 exc = Refusal("dirty-tracked-tree")
                 if status.returncode != 0:
@@ -6123,7 +6130,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
                     exc = Refusal("checks-failed")
                     exc.hint = f"hint: {args.checks} exit {checked.returncode}"
                     raise exc
-                status_after = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=checks_dir)
+                status_after = _status_tracked(run, checks_dir)
                 if status_after.returncode != 0 or status_after.stdout.strip():
                     exc = Refusal("checks-dirtied-tree")
                     exc.hint = "hint: the checks command modified a tracked file"
@@ -6239,7 +6246,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
     run(["git", "fetch", "origin", target], cwd=repo)
     switched = run(["git", "switch", target], cwd=repo)
     if switched.returncode == 0:
-        status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo)
+        status = _status_tracked(run, repo)
         if status.returncode == 0 and not status.stdout.strip():
             ff = run(["git", "merge", "--ff-only", f"origin/{target}"], cwd=repo)
             if ff.returncode != 0:
@@ -6498,7 +6505,7 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
 
             # Tracked-only: an untracked build artifact never blocks a delivery (§2.10 #1's
             # allow_untracked rule, implemented here because `merge` does not call preflight()).
-            status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo)
+            status = _status_tracked(run, repo)
             if status.returncode != 0 or status.stdout.strip():
                 # A failed probe is NOT a clean tree (round-4 F4): empty stdout from a git
                 # that errored would otherwise read as "nothing dirty" and let the merge
