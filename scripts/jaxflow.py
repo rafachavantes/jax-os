@@ -1818,10 +1818,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
 
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     caller = resolve_caller(env, args.from_caller)
     # Fires as early as possible -- BEFORE any worktree reservation -- so a missing
     # session variable never leaves a worktree/branch to clean up (a natural extension of
@@ -2085,10 +2082,7 @@ def dispatch_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_
     # `repo` is the resolved git toplevel of the cwd, not the cwd itself (fixes
     # branch review F1) -- only a failed rev-parse (cwd outside any git repo) refuses.
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     caller = resolve_caller(env, args.from_caller)
     kind = "spec" if args.spec else "plan"
     raw_target = args.spec if args.spec else args.plan
@@ -2216,10 +2210,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     if args.since is not None and not _RUN_ID_RE.match(args.since):
         raise Refusal("since-invalid")
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     caller = resolve_caller(env, args.from_caller)
     selected = jset.select_reviewer(
         jset.read_settings(), caller, model=args.model, effort=args.effort, agents=_enabled_agents(),
@@ -5181,6 +5172,26 @@ def _git_read(run, repo, argv, *, shape=None):
     return out
 
 
+def _require_toplevel(run, cwd, *, strict=False):
+    """The resolved git toplevel of `cwd`, or the toplevel refusal. Two forms,
+    both preserved from the inline copies. `strict=False` (dispatchers, gc): only a failed
+    `rev-parse` refuses and the stdout is taken as-is. `strict=True` (pr/merge verbs, round-5
+    F8): the value becomes the repo root every later call is scoped to, so it must be a
+    non-empty absolute path to a directory -- an empty or relative one would silently
+    resolve against the process cwd. `_git_read` is looked up at call time."""
+    argv = ["git", "rev-parse", "--show-toplevel"]
+    if strict:
+        top = _git_read(run, cwd, argv)
+        valid = top is not None and top.startswith("/") and Path(top).is_dir()
+    else:
+        result = run(argv, cwd=cwd)
+        top = result.stdout.strip()
+        valid = result.returncode == 0
+    if not valid:
+        raise Refusal("not-a-git-toplevel")
+    return Path(top).resolve()
+
+
 def _is_strict_descendant(run, repo, base, head):
     """True iff `head` descends from `base` AND `head != base` (spec §4.2, pinned once:
     both call sites -- this fallback's commit-beyond-base check, and `cmd_merge`'s
@@ -5635,10 +5646,7 @@ def cmd_gc(args, *, run=jr.run_command, post=_post_event, now=None, db_path=None
     now_val = now() if now is not None else datetime.now().astimezone()
     db_path = db_path or jr.DB_PATH
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     project = slugify_project(repo.name)
 
     if args.yes:
@@ -5859,10 +5867,7 @@ def cmd_release(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     env = os.environ if env is None else env
     now = now or (lambda: datetime.now().astimezone())
     cwd = Path.cwd().resolve()
-    top = _git_read(run, cwd, ["git", "rev-parse", "--show-toplevel"])
-    if top is None or not top.startswith("/") or not Path(top).is_dir():
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top).resolve()
+    repo = _require_toplevel(run, cwd, strict=True)
     settings = general_settings.read_settings()
     if not (settings.get("ok") and settings["data"]["integrations"]["github"]):
         raise Refusal("github-integration-disabled")
@@ -5950,10 +5955,7 @@ def cmd_pr_open(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     env = os.environ if env is None else env
     now = now or (lambda: datetime.now().astimezone())
     cwd = Path.cwd().resolve()
-    top = _git_read(run, cwd, ["git", "rev-parse", "--show-toplevel"])
-    if top is None or not top.startswith("/") or not Path(top).is_dir():
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top).resolve()
+    repo = _require_toplevel(run, cwd, strict=True)
     caller = resolve_caller(env, args.from_caller)
     project = slugify_project(repo.name)
     settings = general_settings.read_settings()
@@ -6287,13 +6289,7 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
     started_at = _iso8601(now())
 
     cwd = Path.cwd().resolve()
-    top = _git_read(run, cwd, ["git", "rev-parse", "--show-toplevel"])
-    if top is None or not top.startswith("/") or not Path(top).is_dir():
-        # Shape, not just exit status (round-5 F8): the value becomes the repo root every
-        # later call is scoped to, and an empty or relative one would silently resolve
-        # against the process cwd.
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top).resolve()
+    repo = _require_toplevel(run, cwd, strict=True)
     caller = resolve_caller(env, args.from_caller)
     project = slugify_project(repo.name)
 
