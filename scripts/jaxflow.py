@@ -4328,33 +4328,11 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     )
 
 
-def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=subprocess.Popen,
-                killpg=os.killpg, env=None, allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    # Sealed env (§2.3) is set on a COPY, never on the real os.environ (fixes cold review
-    # F4 — the old in-place os.environ mutation was untestable and left every later test
-    # in the same process permanently sealed too). The copy is what actually reaches the
-    # child via Popen(env=...) below.
-    env = dict(os.environ if env is None else env)
-    env["HONCHO_ENABLED"] = "false"
-    env["JAXFLOW_ONESHOT"] = "1"
-    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-
-    if manifest["role"] == "builder":
-        code = _run_builder_worker(
-            manifest, run=run, post=post, popen=popen, killpg=killpg, env=env,
-            allowlist_root=allowlist_root, manifest_path=manifest_path,
-        )
-        _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
-        return code
-
-    if manifest["kind"] == "diff":
-        code = _run_diff_reviewer_worker(
-            manifest, run=run, post=post, popen=popen, killpg=killpg, env=env,
-            allowlist_root=allowlist_root, manifest_path=manifest_path,
-        )
-        _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
-        return code
-
+def _run_doc_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowlist_root,
+                             manifest_path):
+    """The `--spec` / `--plan` document-review worker: validates its own manifest target
+    (defense-in-depth), builds the doc-review handoff, runs the reviewer in `/tmp` and
+    finishes through `_finish_reviewer_worker(status_first=True)`. Returns the exit code."""
     repo = Path(manifest["repo"]).resolve()
     if not _contained(repo, allowlist_root):
         print("path-outside-allowlist", file=sys.stderr)
@@ -4476,6 +4454,30 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
         phase=phase, kind=kind, child=child, child_log_text=child_log_text,
         status_first=True, allowlist_root=allowlist_root,
     )
+
+
+def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=subprocess.Popen,
+                killpg=os.killpg, env=None, allowlist_root=ALLOWLIST_ROOT_DEFAULT):
+    # Sealed env (§2.3) is set on a COPY, never on the real os.environ (fixes cold review
+    # F4 — the old in-place os.environ mutation was untestable and left every later test
+    # in the same process permanently sealed too). The copy is what actually reaches the
+    # child via Popen(env=...) below.
+    env = dict(os.environ if env is None else env)
+    env["HONCHO_ENABLED"] = "false"
+    env["JAXFLOW_ONESHOT"] = "1"
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    worker_kwargs = dict(run=run, post=post, popen=popen, killpg=killpg, env=env,
+                         allowlist_root=allowlist_root, manifest_path=manifest_path)
+
+    if manifest["role"] == "builder":
+        code = _run_builder_worker(manifest, **worker_kwargs)
+    elif manifest["kind"] == "diff":
+        code = _run_diff_reviewer_worker(manifest, **worker_kwargs)
+    else:
+        # The doc path updates status.md itself, BEFORE its callback (Decision 7).
+        return _run_doc_reviewer_worker(manifest, **worker_kwargs)
+    _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
+    return code
 
 
 def _open_ro(db_path):
