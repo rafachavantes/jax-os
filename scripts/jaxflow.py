@@ -6244,6 +6244,99 @@ def _merge_prepare_target(args, *, run, repo, target):
     return target_tip
 
 
+def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, phase,
+                              allowlist_root, target_tip):
+    """Stage the merge (`--no-ff --no-commit`), fingerprint the index, reuse or run the
+    checks, prove the checks did not change WHAT GETS DELIVERED, commit. Returns
+    `(merge_sha, checks_audit)`. The two `git write-tree` calls stay DIRECT `run` calls
+    (Decision 8): `_git_read` discards the underlying git failure text, and the F9 test
+    expects it in the refusal hint."""
+    checks_cmd = args.checks
+    merged = run(["git", "merge", "--no-ff", "--no-commit", args.sha], cwd=repo)
+    if merged.returncode != 0:
+        exc = Refusal("merge-failed")
+        exc.hint = f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo)}"
+        raise exc
+
+    # The exact merge result, as an object id, BEFORE the checks touch anything.
+    # `git write-tree` is what `git commit` itself runs; it succeeds here because a
+    # merge that left conflicts already refused above.
+    # A tree object id, not just an exit code (round-5 F3): these two values are
+    # compared to each other, so two malformed-but-equal outputs would report "the
+    # checks staged nothing" -- the one thing `git diff --quiet` cannot see.
+    # Read directly rather than through `_git_read` (deviation from the plan's literal
+    # text, see report): the plan's own F9 test expects the underlying git failure
+    # text (e.g. "unable to write new index file") IN the refusal hint, which
+    # `_git_read` -- by design -- discards on any failure. The shape check itself is
+    # unchanged (round-5 F3: a tree object id, not just an exit code).
+    tree_before_probe = run(["git", "write-tree"], cwd=repo)
+    tree_before = tree_before_probe.stdout.strip()
+    if tree_before_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_before):
+        # An index that cannot be fingerprinted is a broken merge, not a dirty check
+        # (round-3 F9). Refuse BEFORE spending a checks run on it.
+        detail = jr._bound((tree_before_probe.stderr or tree_before_probe.stdout).strip(), 200)
+        raise _refuse("merge-failed", f"hint: could not fingerprint the merged index: {detail}"
+                      + _abort_merge(run, repo))
+
+    # MOA-510 D4: `fast_forward` keeps its meaning ("the target has no commits the
+    # branch lacks": the merged tree is byte-identical to the branch head) but is no
+    # longer a skip by itself -- the head must also be the one the latest diff review
+    # already tested. A moved target never reaches the lookup; an EQUAL tip stays
+    # outside `fast_forward` (`_is_strict_descendant` needs `base != head`).
+    fast_forward = target_tip is not None and _is_strict_descendant(
+        run, repo, base=target_tip, head=args.sha)
+    if fast_forward:
+        reused, _reason, review_id = _merge_checks_reuse(
+            run, repo, project, worktree, args.branch, args.sha, checks_cmd,
+            allowlist_root=allowlist_root, recheck=args.recheck)
+    else:
+        reused, review_id = False, None
+    checks_audit = _checks_audit(reused, review_id, args.sha)
+    if not reused:
+        checked = run(["/bin/bash", "-lc", checks_cmd], cwd=repo)
+        if checked.returncode != 0:
+            raise _refuse("checks-failed",
+                          f"hint: {checks_cmd} exit {checked.returncode}{_abort_merge(run, repo)}")
+
+        # The checks must not have changed WHAT GETS DELIVERED: a checks command that
+        # rewrites a lockfile or a snapshot would otherwise ride along inside the merge.
+        # Two comparisons are needed (cold review round 2, F5, reproduced on real git):
+        # `git diff --quiet` sees only worktree-vs-index, so a check that edits a tracked
+        # file and then runs `git add` passes it while the index -- and therefore the
+        # commit -- has already changed. Untracked artifacts the checks created are their
+        # own output and are left alone.
+        # Same deviation as tree_before, same reason: keep the underlying git failure
+        # text available for the hint instead of losing it inside `_git_read`.
+        tree_after_probe = run(["git", "write-tree"], cwd=repo)
+        tree_after = tree_after_probe.stdout.strip()
+        if tree_after_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_after):
+            detail = jr._bound((tree_after_probe.stderr or tree_after_probe.stdout).strip(), 200)
+            raise _refuse("checks-dirtied-tree",
+                          f"hint: the index could not be fingerprinted after the checks: {detail}"
+                          + _abort_merge(run, repo))
+        staged_changed = tree_after != tree_before
+        if staged_changed or run(["git", "diff", "--quiet"], cwd=repo).returncode != 0:
+            raise _refuse("checks-dirtied-tree",
+                          "hint: the checks command modified a tracked file "
+                          + ("(staged)" if staged_changed else "(unstaged)")
+                          + _abort_merge(run, repo))
+
+    # A commit hook can refuse -- this very repository has one (`.githooks/commit-msg`).
+    # An unchecked failure here would audit and push a merge that was never committed
+    # (cold review F3).
+    committed = run(["git", "commit", "-m", f"feat: {phase} (merge {args.branch})"],
+                    cwd=repo)
+    if committed.returncode != 0:
+        exc = Refusal("merge-failed")
+        exc.hint = (f"hint: commit refused: "
+                    f"{jr._bound((committed.stderr or committed.stdout).strip(), 200)}"
+                    + _abort_merge(run, repo))
+        raise exc
+    merge_sha = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
+                          shape=r"[0-9a-f]{40}")
+    return merge_sha, checks_audit
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6555,93 +6648,9 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
         checks_cmd = args.checks
         checks_audit = {"mode": "resumed"}   # D5: a resume neither runs nor reuses the checks
         if not resuming:
-            merged = run(["git", "merge", "--no-ff", "--no-commit", args.sha], cwd=repo)
-            if merged.returncode != 0:
-                exc = Refusal("merge-failed")
-                exc.hint = f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo)}"
-                raise exc
-
-            # The exact merge result, as an object id, BEFORE the checks touch anything.
-            # `git write-tree` is what `git commit` itself runs; it succeeds here because a
-            # merge that left conflicts already refused above.
-            # A tree object id, not just an exit code (round-5 F3): these two values are
-            # compared to each other, so two malformed-but-equal outputs would report "the
-            # checks staged nothing" -- the one thing `git diff --quiet` cannot see.
-            # Read directly rather than through `_git_read` (deviation from the plan's literal
-            # text, see report): the plan's own F9 test expects the underlying git failure
-            # text (e.g. "unable to write new index file") IN the refusal hint, which
-            # `_git_read` -- by design -- discards on any failure. The shape check itself is
-            # unchanged (round-5 F3: a tree object id, not just an exit code).
-            tree_before_probe = run(["git", "write-tree"], cwd=repo)
-            tree_before = tree_before_probe.stdout.strip()
-            if tree_before_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_before):
-                # An index that cannot be fingerprinted is a broken merge, not a dirty check
-                # (round-3 F9). Refuse BEFORE spending a checks run on it.
-                exc = Refusal("merge-failed")
-                detail = jr._bound((tree_before_probe.stderr or tree_before_probe.stdout).strip(), 200)
-                exc.hint = (f"hint: could not fingerprint the merged index: {detail}"
-                            + _abort_merge(run, repo))
-                raise exc
-
-            # MOA-510 D4: `fast_forward` keeps its meaning ("the target has no commits the
-            # branch lacks": the merged tree is byte-identical to the branch head) but is no
-            # longer a skip by itself -- the head must also be the one the latest diff review
-            # already tested. A moved target never reaches the lookup; an EQUAL tip stays
-            # outside `fast_forward` (`_is_strict_descendant` needs `base != head`).
-            fast_forward = target_tip is not None and _is_strict_descendant(
-                run, repo, base=target_tip, head=args.sha)
-            if fast_forward:
-                reused, _reason, review_id = _merge_checks_reuse(
-                    run, repo, project, worktree, args.branch, args.sha, checks_cmd,
-                    allowlist_root=allowlist_root, recheck=args.recheck)
-            else:
-                reused, review_id = False, None
-            checks_audit = _checks_audit(reused, review_id, args.sha)
-            if not reused:
-                checked = run(["/bin/bash", "-lc", checks_cmd], cwd=repo)
-                if checked.returncode != 0:
-                    exc = Refusal("checks-failed")
-                    exc.hint = f"hint: {checks_cmd} exit {checked.returncode}{_abort_merge(run, repo)}"
-                    raise exc
-
-                # The checks must not have changed WHAT GETS DELIVERED: a checks command that
-                # rewrites a lockfile or a snapshot would otherwise ride along inside the merge.
-                # Two comparisons are needed (cold review round 2, F5, reproduced on real git):
-                # `git diff --quiet` sees only worktree-vs-index, so a check that edits a tracked
-                # file and then runs `git add` passes it while the index -- and therefore the
-                # commit -- has already changed. Untracked artifacts the checks created are their
-                # own output and are left alone.
-                # Same deviation as tree_before, same reason: keep the underlying git failure
-                # text available for the hint instead of losing it inside `_git_read`.
-                tree_after_probe = run(["git", "write-tree"], cwd=repo)
-                tree_after = tree_after_probe.stdout.strip()
-                if tree_after_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_after):
-                    exc = Refusal("checks-dirtied-tree")
-                    detail = jr._bound((tree_after_probe.stderr or tree_after_probe.stdout).strip(), 200)
-                    exc.hint = (f"hint: the index could not be fingerprinted after the checks: {detail}"
-                                + _abort_merge(run, repo))
-                    raise exc
-                staged_changed = tree_after != tree_before
-                if staged_changed or run(["git", "diff", "--quiet"], cwd=repo).returncode != 0:
-                    exc = Refusal("checks-dirtied-tree")
-                    exc.hint = ("hint: the checks command modified a tracked file "
-                                + ("(staged)" if staged_changed else "(unstaged)")
-                                + _abort_merge(run, repo))
-                    raise exc
-
-            # A commit hook can refuse -- this very repository has one (`.githooks/commit-msg`).
-            # An unchecked failure here would audit and push a merge that was never committed
-            # (cold review F3).
-            committed = run(["git", "commit", "-m", f"feat: {phase} (merge {args.branch})"],
-                            cwd=repo)
-            if committed.returncode != 0:
-                exc = Refusal("merge-failed")
-                exc.hint = (f"hint: commit refused: "
-                            f"{jr._bound((committed.stderr or committed.stdout).strip(), 200)}"
-                            + _abort_merge(run, repo))
-                raise exc
-            merge_sha = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
-                                  shape=r"[0-9a-f]{40}")
+            merge_sha, checks_audit = _merge_stage_check_commit(
+                args, run=run, repo=repo, project=project, worktree=worktree, target=target,
+                phase=phase, allowlist_root=allowlist_root, target_tip=target_tip)
 
         # One guard for BOTH paths (round-4 F5). `merge-approved` requires a full 40-hex sha
         # and the validator rejects anything else, so an unchecked probe would turn a durable
