@@ -1960,6 +1960,60 @@ def _resolve_explicit_base(args, run, repo):
     return resolved
 
 
+def _reserve_build_worktree(args, *, run, repo, worktree, base_sha):
+    """Reserve `worktree` for a fresh build and create its branch; returns the 40-hex base SHA
+    the branch starts from. Order is load-bearing: the exclusive `os.mkdir` claim is the first
+    git-or-filesystem write; the default-branch probe (only without `--base`) comes after it;
+    `git worktree add -b` last. A failure after the claim removes only the bare directory."""
+    # Exclusive reservation FIRST (fixes cold review G8/RECURRENCE(F19), spec §4.2 step 1;
+    # reordered ahead of `_default_branch()` per Part 1 diff-review F2): `git worktree add
+    # -b` alone does not reliably refuse a pre-existing, empty directory at this path -- it
+    # happily populates it -- so `os.mkdir` is the actual atomic claim, and it must be the
+    # very first git-or-filesystem write this dispatch makes: an EEXIST refusal here makes
+    # zero git calls of its own (beyond the toplevel resolve every verb already needs).
+    try:
+        os.mkdir(worktree)
+    except FileExistsError:
+        raise Refusal("branch-exists")
+
+    # Read-only, has no bearing on the path/branch collision this dispatch just claimed --
+    # resolved AFTER the reservation (Part 1 diff-review F2) so a failure here only ever
+    # has to undo the bare directory this dispatch itself just reserved, never a git
+    # worktree/branch that `git worktree add -b` has not created yet.
+    try:
+        # Only consulted when `--base` was NOT given: a resolved base makes the default
+        # branch irrelevant, and probing for it anyway would fail a build in a repo whose
+        # default branch is missing even though the caller named a perfectly good base.
+        # New (spec §4.2 F5): resolved to its own commit SHA the same way `--base`
+        # already is, so `manifest["base_sha"]` is always a real 40-hex SHA -- never a
+        # branch name that can't equal a 40-hex `head_sha` even on an untouched
+        # default-base build.
+        if base_sha is None:
+            default_branch = jr._default_branch(repo, run)
+            default_probe = run(
+                ["git", "rev-parse", "--verify", f"{default_branch}^{{commit}}"], cwd=repo)
+            resolved_default = default_probe.stdout.strip()
+            if default_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved_default):
+                raise Refusal("base-invalid")
+            base_sha = resolved_default
+    except Exception as exc:
+        shutil.rmtree(worktree, ignore_errors=True)
+        raise Refusal(f"build failed: {exc}") from exc
+
+    added = run(["git", "worktree", "add", "-b", args.branch, str(worktree), base_sha], cwd=repo)
+    if added.returncode != 0:
+        # Never deletes `args.branch` here (fixes cold review round 2 F5): dropping the
+        # pre-add `git rev-parse <branch>` probe (itself a check-then-act on the very branch
+        # this call is about to create) means this dispatch can no longer safely tell a
+        # pre-existing branch apart from one `git worktree add -b` itself half-created
+        # before failing to populate. The common case -- the branch name was already taken
+        # by something unrelated -- must never be deleted; the rare git-half-created case is
+        # accepted as a leftover orphan ref instead.
+        shutil.rmtree(worktree, ignore_errors=True)
+        raise _refuse("branch-exists", f"hint: {added.stderr.strip()}" if added.stderr else None)
+    return base_sha
+
+
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     cwd = Path.cwd().resolve()
     repo = _require_toplevel(run, cwd)
@@ -2002,53 +2056,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
     whitelist = [p.strip() for p in args.whitelist.split(",") if p.strip()]
     worktree = _branch_worktree_path(allowlist_root, project, args.branch, resolve=False)
 
-    # Exclusive reservation FIRST (fixes cold review G8/RECURRENCE(F19), spec §4.2 step 1;
-    # reordered ahead of `_default_branch()` per Part 1 diff-review F2): `git worktree add
-    # -b` alone does not reliably refuse a pre-existing, empty directory at this path -- it
-    # happily populates it -- so `os.mkdir` is the actual atomic claim, and it must be the
-    # very first git-or-filesystem write this dispatch makes: an EEXIST refusal here makes
-    # zero git calls of its own (beyond the toplevel resolve every verb already needs).
-    try:
-        os.mkdir(worktree)
-    except FileExistsError:
-        raise Refusal("branch-exists")
-
-    # Read-only, has no bearing on the path/branch collision this dispatch just claimed --
-    # resolved AFTER the reservation (Part 1 diff-review F2) so a failure here only ever
-    # has to undo the bare directory this dispatch itself just reserved, never a git
-    # worktree/branch that `git worktree add -b` has not created yet.
-    try:
-        # Only consulted when `--base` was NOT given: a resolved base makes the default
-        # branch irrelevant, and probing for it anyway would fail a build in a repo whose
-        # default branch is missing even though the caller named a perfectly good base.
-        # New (spec §4.2 F5): resolved to its own commit SHA the same way `--base`
-        # already is, so `manifest["base_sha"]` is always a real 40-hex SHA -- never a
-        # branch name that can't equal a 40-hex `head_sha` even on an untouched
-        # default-base build.
-        if base_sha is None:
-            default_branch = jr._default_branch(repo, run)
-            default_probe = run(
-                ["git", "rev-parse", "--verify", f"{default_branch}^{{commit}}"], cwd=repo)
-            resolved_default = default_probe.stdout.strip()
-            if default_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved_default):
-                raise Refusal("base-invalid")
-            base_sha = resolved_default
-        base = base_sha
-    except Exception as exc:
-        shutil.rmtree(worktree, ignore_errors=True)
-        raise Refusal(f"build failed: {exc}") from exc
-
-    added = run(["git", "worktree", "add", "-b", args.branch, str(worktree), base], cwd=repo)
-    if added.returncode != 0:
-        # Never deletes `args.branch` here (fixes cold review round 2 F5): dropping the
-        # pre-add `git rev-parse <branch>` probe (itself a check-then-act on the very branch
-        # this call is about to create) means this dispatch can no longer safely tell a
-        # pre-existing branch apart from one `git worktree add -b` itself half-created
-        # before failing to populate. The common case -- the branch name was already taken
-        # by something unrelated -- must never be deleted; the rare git-half-created case is
-        # accepted as a leftover orphan ref instead.
-        shutil.rmtree(worktree, ignore_errors=True)
-        raise _refuse("branch-exists", f"hint: {added.stderr.strip()}" if added.stderr else None)
+    base_sha = _reserve_build_worktree(args, run=run, repo=repo, worktree=worktree, base_sha=base_sha)
     # Past this point, `git worktree add` succeeded, so `worktree` is a registered Git
     # worktree admin entry and `args.branch` is a branch this dispatch itself just created --
     # every cleanup path below undoes both via `_cleanup_worktree` (fixes cold review round
