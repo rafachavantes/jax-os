@@ -6364,6 +6364,23 @@ def _merge_push(run, repo, target):
     return pushed
 
 
+def _pr_already_merged(view, number, sha):
+    """Recovery path: the PR is already MERGED (a previous run merged it but recording
+    failed). cold review e441aa1770e3 F2: a PR merged with extra commits pushed outside the
+    approval flow must never be recorded as an approval of a DIFFERENT sha -- same
+    `pr-head-moved` code the open-PR branch uses. Returns GitHub's own merge commit sha."""
+    if view["headRefOid"] != sha:
+        raise _refuse(
+            "pr-head-moved",
+            f"hint: PR #{number} merged at head {view['headRefOid'][:12]}, not the approved {sha[:12]}")
+    merge_sha = (view.get("mergeCommit") or {}).get("oid")
+    if not merge_sha:
+        raise _refuse(
+            "github-unreachable",
+            f"hint: PR #{number} is merged but its merge commit sha could not be read")
+    return merge_sha
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6399,23 +6416,9 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
 
     merge_sha = None
     if view["state"] == "MERGED":
-        # cold review e441aa1770e3 F2: a PR merged with extra commits pushed and merged outside
-        # the approval flow (e.g. by hand) must never be recorded as an approval of a DIFFERENT
-        # sha -- same pr-head-moved code the non-merged branch below already uses for this exact
-        # mismatch shape. Base is already covered: the baseRefName check a few lines above this
-        # state split runs unconditionally, before MERGED vs. not is even decided.
-        if view["headRefOid"] != args.sha:
-            exc = Refusal("pr-head-moved")
-            exc.hint = (f"hint: PR #{number} merged at head {view['headRefOid'][:12]}, not the "
-                        f"approved {args.sha[:12]}")
-            raise exc
         # Recovery table: already merged, local recording failed -- skip checks/merge, just
         # record + sync + cleanup below, using GitHub's own merge commit sha.
-        merge_sha = (view.get("mergeCommit") or {}).get("oid")
-        if not merge_sha:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: PR #{number} is merged but its merge commit sha could not be read"
-            raise exc
+        merge_sha = _pr_already_merged(view, number, args.sha)
         checks_audit = {"mode": "resumed"}
     else:
         if view["state"] == "CLOSED":
