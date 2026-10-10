@@ -2553,6 +2553,45 @@ def _resolve_since(args, *, run, repo, worktree, branch, db_path, head_sha, base
                       f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead") from exc
 
 
+def _preflight_diff(*, run, db_path, worktree, builder_run_id, project, phase, runtime,
+                    base_sha, head_sha, spec_dest, plan_path, tests_path):
+    """Route `--diff` through the SAME handoff-grammar/evidence validation every other
+    reviewer dispatch gets (spec 4.3 step 3). A throwaway stub file carries the grammar
+    block `jr.preflight` parses; the diff text itself is rendered later, by the worker.
+    Raises `Refusal` through `_map_refusal` on a `ValueError`."""
+    # fixes cold review round 2 F3(a): route --diff through the SAME handoff-grammar/
+    # evidence validation every other reviewer dispatch gets (spec §4.3 step 3), instead of
+    # the standalone jr.reviewer_head_matches(...) call this replaces plus skip_handoff=True.
+    # base_sha/head_sha/tests_path are all already known here, so a small throwaway stub file
+    # carries exactly the grammar block preflight()'s handoff parser expects -- the actual
+    # diff text is rendered later, by the worker. repo=str(worktree), not str(repo) (the
+    # control repo), so the dirty-tree/detached-HEAD checks validate the worktree under
+    # review, not the control repo's own unrelated branch/dirty state. fixes S2: the extra
+    # `spec:`/`plan:` lines (legal, unparsed `paths:` keys -- `parse_reviewer_handoff` only
+    # ever looks for the one `test-output:` line) name the SAME plan/spec `build` itself
+    # resolved, above.
+    stub_path = worktree / ".local" / "runs" / f"{builder_run_id}-diff-handoff-stub.txt"
+    stub_path.parent.mkdir(parents=True, exist_ok=True)
+    stub_path.write_text(
+        f"diff: {base_sha}..{head_sha}\npaths:\n"
+        f"  spec: {spec_dest}\n  plan: {plan_path}\n  test-output: {tests_path}\n",
+        encoding="utf-8",
+    )
+    args_ns = SimpleNamespace(
+        role="reviewer", project=project, phase=phase, repo=str(worktree),
+        prompt_file=str(stub_path), runtime=runtime, callback=None,
+    )
+    try:
+        jr.preflight(
+            args_ns, run=run, allow_untracked=True, require_feat_branch=False,
+            skip_handoff=False, db_path=db_path,
+        )
+    except ValueError as exc:
+        raise Refusal(_map_refusal(str(exc))) from exc
+    finally:
+        stub_path.unlink(missing_ok=True)
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2608,38 +2647,11 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
             args, run=run, repo=repo, worktree=worktree, branch=branch, db_path=db_path,
             head_sha=head_sha, base_sha=base_sha,
         )
-        # fixes cold review round 2 F3(a): route --diff through the SAME handoff-grammar/
-        # evidence validation every other reviewer dispatch gets (spec §4.3 step 3), instead of
-        # the standalone jr.reviewer_head_matches(...) call this replaces plus skip_handoff=True.
-        # base_sha/head_sha/tests_path are all already known here, so a small throwaway stub file
-        # carries exactly the grammar block preflight()'s handoff parser expects -- the actual
-        # diff text is rendered later, by the worker. repo=str(worktree), not str(repo) (the
-        # control repo), so the dirty-tree/detached-HEAD checks validate the worktree under
-        # review, not the control repo's own unrelated branch/dirty state. fixes S2: the extra
-        # `spec:`/`plan:` lines (legal, unparsed `paths:` keys -- `parse_reviewer_handoff` only
-        # ever looks for the one `test-output:` line) name the SAME plan/spec `build` itself
-        # resolved, above.
-        stub_path = worktree / ".local" / "runs" / f"{builder_run_id}-diff-handoff-stub.txt"
-        stub_path.parent.mkdir(parents=True, exist_ok=True)
-        stub_path.write_text(
-            f"diff: {base_sha}..{head_sha}\npaths:\n"
-            f"  spec: {spec_dest}\n  plan: {plan_path}\n  test-output: {tests_path}\n",
-            encoding="utf-8",
+        _preflight_diff(
+            run=run, db_path=db_path, worktree=worktree, builder_run_id=builder_run_id,
+            project=project, phase=phase, runtime=runtime, base_sha=base_sha, head_sha=head_sha,
+            spec_dest=spec_dest, plan_path=plan_path, tests_path=tests_path,
         )
-        args_ns = SimpleNamespace(
-            role="reviewer", project=project, phase=phase, repo=str(worktree),
-            prompt_file=str(stub_path), runtime=runtime, callback=None,
-        )
-        try:
-            jr.preflight(
-                args_ns, run=run, allow_untracked=True, require_feat_branch=False,
-                skip_handoff=False, db_path=db_path,
-            )
-        except ValueError as exc:
-            raise Refusal(_map_refusal(str(exc))) from exc
-        finally:
-            stub_path.unlink(missing_ok=True)
-
         try:
             run_id, session, paths = jr._alloc_run(project, "diff", repo, run, run_id=uuid.uuid4().hex[:12])
         except ValueError as exc:
