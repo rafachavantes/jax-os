@@ -431,8 +431,10 @@ def test_pr_open_happy_path_pushes_creates_and_records(tmp_path, monkeypatch):
         "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature",
     }
     assert ["git", "push", "origin", f"{'a' * 40}:refs/heads/feat/x"] in calls
+    # No --body-file: `--fill` keeps gh non-interactive (a bare `gh pr create` opens an
+    # editor and dies under the non-tty child).
     assert ["gh", "pr", "create", "--repo", "acme/x", "--head", "feat/x", "--base", "staging",
-            "--title", "Ship it"] in calls
+            "--title", "Ship it", "--fill"] in calls
 
 
 def test_pr_open_resumes_at_the_same_sha_with_no_mutation(tmp_path, monkeypatch):
@@ -738,7 +740,7 @@ def test_pr_open_single_branch_pr_targets_main_and_records_the_pr(tmp_path, monk
     assert result["number"] == 7
     assert events[0]["type"] == "pr-opened" and events[0]["payload"]["base"] == "main"
     assert ["gh", "pr", "create", "--repo", "acme/x", "--head", "feat/x", "--base", "main",
-            "--title", "Ship it"] in calls
+            "--title", "Ship it", "--fill"] in calls
 
 
 def test_pr_open_single_branch_pr_refuses_a_release_head_even_with_a_production_target(
