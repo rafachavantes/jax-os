@@ -1786,6 +1786,37 @@ def _resume_recheck(repo, worktree, branch, resume_id, prior_path, started_now, 
     return prior, checkpoint, started_payload, base_sha, root_build_run_id
 
 
+def _resume_git_checks(run, repo, worktree, branch, resume_id, latest, started_payload,
+                       base_sha, plan_path, checkpoint):
+    """The live-state checks of a resume, in order: this IS the latest attempt, its tmux
+    session is gone, repo and worktree share one git common dir and the worktree is
+    registered on `branch`, HEAD is attached and descends from the recorded base, and the
+    work state and plan revision still match the checkpoint."""
+    if latest != resume_id:
+        raise _refuse("resume-ineligible", f"hint: latest attempt is {latest}")
+    prior_session = started_payload.get("session")
+    if prior_session:
+        live = run(["tmux", "has-session", "-t", prior_session])
+        if live.returncode == 0:
+            raise Refusal("resume-ineligible")
+    common_repo = _git_common_dir(run, repo)
+    common_wt = _git_common_dir(run, worktree)
+    if common_repo is None or common_wt is None or common_repo != common_wt:
+        raise Refusal("resume-ineligible")
+    if not _is_registered_worktree(run, repo, worktree, branch):
+        raise Refusal("resume-ineligible")
+    attached = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree)
+    if attached.returncode != 0 or attached.stdout.strip() != branch:
+        raise Refusal("resume-ineligible")
+    ancestor = run(["git", "merge-base", "--is-ancestor", base_sha, "HEAD"], cwd=worktree)
+    if ancestor.returncode != 0:
+        raise Refusal("resume-ineligible")
+    actual = jresume.capture_work_state(worktree, plan_path, run=run)
+    jresume.require_same_work_state(checkpoint["work_state"], actual)
+    if checkpoint["plan_revision"] != actual["plan_sha256"]:
+        raise Refusal("resume-state-changed")
+
+
 def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
                            run, post, env, now, allowlist_root, db_path):
     db_path = db_path or jr.DB_PATH
@@ -1804,29 +1835,9 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             repo, worktree, branch, resume_id, prior_path, started_now, finished_now)
         whitelist, verify, phase, plan_path = _resume_plan(prior, allowlist_root)
         profile_name = _resume_profile_name(args, prior)
-        if latest != resume_id:
-            raise _refuse("resume-ineligible", f"hint: latest attempt is {latest}")
-        prior_session = started_payload.get("session")
-        if prior_session:
-            live = run(["tmux", "has-session", "-t", prior_session])
-            if live.returncode == 0:
-                raise Refusal("resume-ineligible")
-        common_repo = _git_common_dir(run, repo)
-        common_wt = _git_common_dir(run, worktree)
-        if common_repo is None or common_wt is None or common_repo != common_wt:
-            raise Refusal("resume-ineligible")
-        if not _is_registered_worktree(run, repo, worktree, branch):
-            raise Refusal("resume-ineligible")
-        attached = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree)
-        if attached.returncode != 0 or attached.stdout.strip() != branch:
-            raise Refusal("resume-ineligible")
-        ancestor = run(["git", "merge-base", "--is-ancestor", base_sha, "HEAD"], cwd=worktree)
-        if ancestor.returncode != 0:
-            raise Refusal("resume-ineligible")
-        actual = jresume.capture_work_state(worktree, plan_path, run=run)
-        jresume.require_same_work_state(checkpoint["work_state"], actual)
-        if checkpoint["plan_revision"] != actual["plan_sha256"]:
-            raise Refusal("resume-state-changed")
+        _resume_git_checks(
+            run, repo, worktree, branch, resume_id, latest, started_payload, base_sha,
+            plan_path, checkpoint)
         args_ns = SimpleNamespace(
             role="builder", project=project, phase=phase, repo=str(worktree),
             prompt_file=None, runtime=runtime, callback=None,
