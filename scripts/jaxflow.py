@@ -2879,6 +2879,15 @@ def _merge_checks_reuse(run, repo, project, worktree, branch, sha, checks_cmd, *
         return False, "lookup-failed", None
 
 
+def _checks_audit(reused, review_id, sha):
+    """The `checks` field of the `merge-approved` audit: `reused` records which diff review
+    already tested this exact head; otherwise the checks ran. (A resume records
+    `{"mode": "resumed"}` itself: it neither runs nor reuses checks.)"""
+    if reused:
+        return {"mode": "reused", "source_review_run_id": review_id, "head_sha": sha}
+    return {"mode": "run"}
+
+
 def _merge_checks_line(audit, checks_cmd):
     """The `checks:` outcome line (D5). A resumed delivery ran nothing, so it prints none."""
     if audit["mode"] == "reused":
@@ -6061,11 +6070,8 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
                 reused, _reason, review_id = _merge_checks_reuse(
                     run, repo, project, checks_dir, args.branch, args.sha, args.checks,
                     allowlist_root=allowlist_root, recheck=args.recheck)
-            if reused:
-                checks_audit = {"mode": "reused", "source_review_run_id": review_id,
-                                "head_sha": args.sha}
-            else:
-                checks_audit = {"mode": "run"}
+            checks_audit = _checks_audit(reused, review_id, args.sha)
+            if not reused:
                 checked = run(["/bin/bash", "-lc", args.checks], cwd=checks_dir)
                 if checked.returncode != 0:
                     exc = Refusal("checks-failed")
@@ -6518,11 +6524,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
                     allowlist_root=allowlist_root, recheck=args.recheck)
             else:
                 reused, review_id = False, None
-            if reused:
-                checks_audit = {"mode": "reused", "source_review_run_id": review_id,
-                                "head_sha": args.sha}
-            else:
-                checks_audit = {"mode": "run"}
+            checks_audit = _checks_audit(reused, review_id, args.sha)
+            if not reused:
                 checked = run(["/bin/bash", "-lc", checks_cmd], cwd=repo)
                 if checked.returncode != 0:
                     exc = Refusal("checks-failed")
