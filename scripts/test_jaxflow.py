@@ -24,6 +24,7 @@ import pytest
 
 import general_settings
 import jaxflow
+import jaxflow_worker
 import jaxflow_build
 import jaxflow_review
 import jaxflow_merge
@@ -220,7 +221,7 @@ def _capture_builder_popen():
 
 def _run_builder_worker_test(worktree, manifest_path, allow_root, popen, env=None):
     events = []
-    code = jaxflow.run_worker(
+    code = jaxflow_worker.run_worker(
         str(manifest_path),
         run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
         post=lambda e: events.append(e) or {"ok": True},
@@ -598,7 +599,7 @@ def test_worker_refuses_secret_manifest_target_without_reading_or_posting(capsys
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen, allowlist_root=root,
         )
         assert code == jaxflow_common.REFUSED
@@ -625,7 +626,7 @@ def test_worker_refuses_secret_target_via_symlink_using_resolved_path(capsys):
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen, allowlist_root=root,
         )
         assert code == jaxflow_common.REFUSED
@@ -651,7 +652,7 @@ def test_worker_refuses_target_outside_allowlist_root(capsys):
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen,
             allowlist_root=allow_root,
         )
@@ -930,7 +931,7 @@ def test_dispatch_writes_pointer_for_build_resume(monkeypatch, tmp_path):
             post=post, env=env, now=_fixed_now, allowlist_root=allow_root, db_path=db,
         )
         worktree = allow_root / "demo-feat-x"
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(root / ".local" / "runs" / first_id / "manifest.json"),
             run=_run_with_tmux(fake, real_cwd=worktree),
             post=post, popen=_E2EBuilderPopen, allowlist_root=allow_root, env=env,
@@ -1434,7 +1435,7 @@ def test_worker_pipes_prompt_on_stdin_for_both_runtimes_and_finalizes():
                 events.append(event)
                 return {"ok": True}
 
-            code = jaxflow.run_worker(
+            code = jaxflow_worker.run_worker(
                 str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen,
                 allowlist_root=root,
             )
@@ -1460,7 +1461,7 @@ def test_worker_claude_runtime_redirects_stdout_to_reviewer_output_path():
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen, allowlist_root=root,
         )
         assert code == 0
@@ -1484,7 +1485,7 @@ def test_worker_stdin_carries_prompt_text_no_shell_argv_leak():
                 captured["env"] = env
 
         snapshot = dict(os.environ)
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True}, popen=CapturePopen,
             allowlist_root=root,
         )
@@ -1514,7 +1515,7 @@ def test_worker_prompt_starts_with_preamble_and_names_test_evidence_path():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True}, popen=CapturePopen,
             allowlist_root=root,
         )
@@ -1537,7 +1538,7 @@ def test_worker_prompt_frames_document_under_review_before_document_and_after_re
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True}, popen=CapturePopen,
             allowlist_root=root,
         )
@@ -1582,7 +1583,7 @@ def test_doc_review_file_inputs_and_directory_grants(monkeypatch, caller, runtim
             jaxflow_common, "_update_status_md",
             lambda state, **kwargs: captured.update(gate=state.get("spec_gate_required")),
         )
-        assert jaxflow.run_worker(
+        assert jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda event: {"ok": True}, popen=CapturePopen, allowlist_root=allowed,
         ) == 0
@@ -1618,7 +1619,7 @@ def test_doc_review_refuses_outside_repo_before_directory_grant(capsys):
         def no_child(*args, **kwargs):
             raise AssertionError("outside repo must not reach the runtime")
 
-        assert jaxflow.run_worker(
+        assert jaxflow_worker.run_worker(
             str(manifest_path), popen=no_child, post=lambda event: {"ok": True},
             allowlist_root=allowed,
         ) == jaxflow_common.REFUSED
@@ -1650,7 +1651,7 @@ def test_claude_doc_review_from_linked_worktree_grants_control_repo(kind):
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=allow_root,
         )
@@ -1682,7 +1683,7 @@ def test_claude_doc_review_from_separate_git_dir_main_grants_its_linked_worktree
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=main),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=allow_root,
         )
@@ -1714,7 +1715,7 @@ def test_claude_doc_review_from_main_grants_the_linked_worktree_root(kind):
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=allow_root,
         )
@@ -1743,7 +1744,7 @@ def test_codex_doc_review_from_main_into_a_worktree_argv_is_unchanged():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=allow_root,
         )
@@ -1772,7 +1773,7 @@ def test_codex_doc_review_from_linked_worktree_argv_is_unchanged():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=allow_root,
         )
@@ -1825,7 +1826,7 @@ def test_claude_diff_review_grants_worktree_control_and_external_spec_parent_ded
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=allow_root,
         )
@@ -1868,7 +1869,7 @@ def test_claude_diff_review_grants_no_unrelated_sibling_dirs():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=allow_root,
         )
@@ -2004,7 +2005,7 @@ def test_worker_signal_during_wait_kills_process_group_then_posts_interrupted(mo
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post,
             popen=fake_popen, killpg=fake_killpg, allowlist_root=root,
         )
@@ -2074,7 +2075,7 @@ def test_worker_builder_signal_posts_interrupted_with_real_head_and_checkpoint(m
             return SignalingChild()
 
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=fake_popen, killpg=fake_killpg, allowlist_root=root.parent,
@@ -2120,7 +2121,7 @@ def test_worker_builder_signal_writes_checkpoint_for_managed_run(tmp_path, monke
     # so a monkeypatched os.killpg would NOT reach it -- and this child's pid is the
     # test process itself, so a real killpg would signal the whole test session.
     events = []
-    jaxflow.run_worker(
+    jaxflow_worker.run_worker(
         str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
         post=lambda e: events.append(e) or {"ok": True},
         popen=popen, killpg=lambda pgid, sig: None, allowlist_root=allow_root,
@@ -2151,7 +2152,7 @@ def test_worker_builder_signal_before_popen_still_posts_interrupted(monkeypatch)
         # raises -- so the AssertionError propagates out of run_worker; the events the
         # handler posted before that are what this test asserts.
         with pytest.raises(AssertionError):
-            jaxflow.run_worker(
+            jaxflow_worker.run_worker(
                 str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
                 post=lambda e: events.append(e) or {"ok": True}, popen=popen,
                 killpg=lambda pgid, sig: None, allowlist_root=root.parent,
@@ -2207,7 +2208,7 @@ def test_worker_diff_reviewer_signal_posts_interrupted_no_verdict(monkeypatch):
             return SignalingChild()
 
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=fake_popen, killpg=fake_killpg, allowlist_root=root.parent,
@@ -2257,7 +2258,7 @@ def test_worker_doc_reviewer_signal_posts_interrupted_no_verdict(monkeypatch):
             return SignalingChild()
 
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()),
             post=lambda e: events.append(e) or {"ok": True},
             popen=fake_popen, killpg=fake_killpg, allowlist_root=root,
@@ -2287,7 +2288,7 @@ def test_worker_post_failure_prints_delivery_failed_and_leaves_callback_line_exa
         def post(event):
             raise RuntimeError("event post failed")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake), post=post, popen=FakePopen, allowlist_root=root,
         )
         assert code == 0
@@ -2315,7 +2316,7 @@ def test_worker_no_callback_flag_sends_nothing(monkeypatch, caller):
         manifest_path, manifest = _write_manifest_for_worker(
             root, target, caller=caller, no_callback=True,
         )
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake), post=lambda e: {"ok": True}, popen=FakePopen,
             allowlist_root=root,
         )
@@ -2524,12 +2525,12 @@ def test_refusal_paths_spool_before_post_keep_on_failure_delete_on_delivery(tmp_
     def call():
         if refuse_kind == "builder":
             worktree = _init_worktree(root)
-            return jaxflow._refuse_builder_run(
+            return jaxflow_worker._refuse_builder_run(
                 "boom", manifest=manifest, run=jr.run_command, post=post_fn,
                 control_repo=root, worktree=worktree, branch="feat/x",
             )
         if refuse_kind == "unvalidated":
-            return jaxflow._refuse_unvalidated_builder_run(
+            return jaxflow_worker._refuse_unvalidated_builder_run(
                 "boom", manifest=manifest, manifest_path=manifest_path,
                 run=jr.run_command, post=post_fn,
             )
@@ -2691,7 +2692,7 @@ def test_send_callback_claude_writes_line_file_on_builder_success():
         worktree = _init_worktree(root)
         _write_plan(worktree)
         manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
@@ -2715,7 +2716,7 @@ def test_send_callback_claude_writes_line_file_on_diff_review_success():
         manifest_path, manifest = _write_manifest_for_diff_worker(
             root, worktree, base_sha=base_sha, head_sha=head_sha,
         )
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=FakePopen, allowlist_root=root.parent,
         )
@@ -2732,7 +2733,7 @@ def test_send_callback_claude_writes_line_file_on_doc_review_success():
         _init_repo(root)
         target = _spec_file(root)
         manifest_path, manifest = _write_manifest_for_worker(root, target, runtime="codex")
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True},
             popen=FakePopen, allowlist_root=root,
         )
@@ -2768,7 +2769,7 @@ def test_worker_codex_callback_queue_failure_still_finalizes(monkeypatch, capsys
             root, target, caller="codex", caller_session=_CAPTURED_THREAD,
             caller_pane="%3", caller_incarnation=fake.incarnation,
         )
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake),
             post=lambda event: events.append(event) or {"ok": True},
             popen=FakePopen, allowlist_root=root,
@@ -3015,7 +3016,7 @@ def test_worker_doc_review_ok_row_gets_a_tally_against_the_previous_ok_round(mon
         monkeypatch.setattr(jaxflow_workerkit, "_same_problem_noul_batch", _all_pairs_noul(0.9))
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=events.append, popen=FindingsPopen,
             allowlist_root=root,
         )
@@ -3034,7 +3035,7 @@ def test_worker_doc_review_no_tally_without_a_previous_round(monkeypatch, tmp_pa
     monkeypatch.setattr(jr, "DB_PATH", db)
 
     events = []
-    code = jaxflow.run_worker(
+    code = jaxflow_worker.run_worker(
         str(manifest_path), run=_run_with_tmux(FakeTmux()), post=events.append, popen=FakePopen,
         allowlist_root=root,
     )
@@ -4237,7 +4238,7 @@ def test_build_dispatches_a_plan_with_no_goal_or_task_heading(monkeypatch):
 
 
 def test_build_handoff_omits_goal_tasks_acceptance_and_names_the_plan_path():
-    handoff = jaxflow._build_builder_handoff(
+    handoff = jaxflow_worker._build_builder_handoff(
         plan_dest=Path("/p/plan.md"), spec_dest=Path("/p/spec.md"),
         agents_path=Path("/p/AGENTS.md"), branch="feat/x", head_sha="a" * 40,
         whitelist=["src"], verify_cmd="pnpm test", build_cmd=None,
@@ -4976,7 +4977,7 @@ def test_build_resume_fallback_e2e_reuses_worktree_and_keeps_original_base(monke
             (root / ".local" / "runs" / first_id / "manifest.json").read_text(encoding="utf-8"))
         worktree = Path(first_manifest["worktree"])
         base_sha = first_manifest["base_sha"]
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(root / ".local" / "runs" / first_id / "manifest.json"),
             run=_run_with_tmux(fake, real_cwd=worktree),
             post=post, popen=_E2EBuilderPopen, allowlist_root=allow_root, env=env,
@@ -5008,7 +5009,7 @@ def test_build_resume_fallback_e2e_reuses_worktree_and_keeps_original_base(monke
         assert second_manifest["worktree"] == str(worktree)
         assert second_manifest["requested_profile"] == "fallback"
         assert second_manifest["resumes_run_id"] == first_id
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(root / ".local" / "runs" / second_id / "manifest.json"),
             run=_run_with_tmux(fake, real_cwd=worktree),
             post=post, popen=_E2EBuilderPopen, allowlist_root=allow_root, env=env,
@@ -5061,7 +5062,7 @@ def test_build_resume_uses_current_saved_profile_after_settings_change(monkeypat
             run=_run_with_tmux(fake, real_cwd=root),
             post=post, env=env, now=_fixed_now, allowlist_root=allow_root, db_path=db,
         )
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(root / ".local" / "runs" / first_id / "manifest.json"),
             run=_run_with_tmux(fake, real_cwd=Path(allow_root / "demo-feat-x")),
             post=post, popen=_E2EBuilderPopen, allowlist_root=allow_root, env=env,
@@ -5091,7 +5092,7 @@ def test_build_resume_uses_current_saved_profile_after_settings_change(monkeypat
             (root / ".local" / "runs" / second_id / "manifest.json").read_text(encoding="utf-8"))
         assert resume_manifest["requested_profile"] == "default"
         assert resume_manifest["model"] == "fixture/changed-model"
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(root / ".local" / "runs" / second_id / "manifest.json"),
             run=_run_with_tmux(fake, real_cwd=Path(resume_manifest["worktree"])),
             post=post, popen=CapturePopen, allowlist_root=allow_root, env=env,
@@ -6228,7 +6229,7 @@ def test_worker_builder_refuses_forged_run_id_before_any_path_construction(capsy
 
         fake = FakeTmux()
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -6270,7 +6271,7 @@ def test_worker_builder_refuses_worktree_mismatched_from_manifest_derivation(cap
 
         fake = FakeTmux()
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -6307,7 +6308,7 @@ def test_worker_builder_refuses_worktree_outside_allowlist_root(capsys):
 
         fake = FakeTmux()
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -6342,7 +6343,7 @@ def test_worker_builder_refuses_branch_target_mismatch_before_validation_leaves_
 
         fake = FakeTmux()
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -6377,7 +6378,7 @@ def test_worker_builder_refusal_after_validation_cleans_up_the_validated_target_
 
         fake = FakeTmux()
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -6413,7 +6414,7 @@ def test_worker_builder_manifest_missing_plan_path_is_a_cleaned_refusal(capsys):
             raise AssertionError("popen must never be called for a manifest missing plan_path")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -6449,7 +6450,7 @@ def test_worker_builder_run_writes_report_records_head_sha_and_verify_passes():
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
@@ -6481,7 +6482,7 @@ def test_worker_builder_verify_failure_overrides_result_but_not_contract_status(
             events.append(event)
             return {"ok": True}
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
@@ -6515,7 +6516,7 @@ def test_worker_builder_runs_both_commands_writes_both_frames_and_wires_the_hand
                 super().__init__(*a, **kw)
                 prompts.append(self.stdin_bytes.decode("utf-8"))
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=CapturingBuilderPopen, allowlist_root=root.parent,
@@ -6542,7 +6543,7 @@ def test_worker_builder_a_failing_build_command_fails_the_run_and_still_records_
         manifest_path, _ = _write_manifest_for_builder_worker(
             root, worktree, verify="true", build="false")
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=FakeBuilderPopen, allowlist_root=root.parent,
@@ -6563,7 +6564,7 @@ def test_worker_builder_still_runs_the_build_when_the_test_command_failed():
         manifest_path, _ = _write_manifest_for_builder_worker(
             root, worktree, verify="false", build="true")
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=FakeBuilderPopen, allowlist_root=root.parent,
@@ -6607,7 +6608,7 @@ class NoLabelReportPopen(FakeBuilderPopen):
 def _run_failing_builder(root, worktree, fake, *, verify):
     manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree, verify=verify)
     events = []
-    jaxflow.run_worker(
+    jaxflow_worker.run_worker(
         str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
         post=lambda event: events.append(event) or {"ok": True},
         popen=FailingReportPopen, allowlist_root=root.parent,
@@ -6686,7 +6687,7 @@ def test_worker_builder_normal_path_reports_runtime_stage_on_a_terminal_stream_e
 
         manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=CrashingPopen, allowlist_root=root.parent,
@@ -6706,7 +6707,7 @@ def test_worker_builder_normal_path_omits_stage_on_the_happy_path():
         _write_plan(worktree)
         manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=FakeBuilderPopen, allowlist_root=root.parent,
@@ -6740,7 +6741,7 @@ def test_worker_builder_missing_report_gets_a_verify_derived_result():
             events.append(event)
             return {"ok": True}
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=NoReportPopen, allowlist_root=root.parent,
         )
@@ -6790,7 +6791,7 @@ def test_worker_diff_reviewer_normal_path_reports_no_verdict_on_terminal_stream_
             root, worktree, base_sha=base_sha, head_sha=head_sha,
         )
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=CrashingDiffPopen, allowlist_root=root.parent,
@@ -6826,7 +6827,7 @@ def test_worker_doc_reviewer_normal_path_reports_report_stage_on_clean_missing_r
         target = _spec_file(root)
         manifest_path, manifest = _write_manifest_for_worker(root, target)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()),
             post=lambda e: events.append(e) or {"ok": True},
             popen=NoReportPopen, allowlist_root=root,
@@ -6850,7 +6851,7 @@ def test_reviewer_unreadable_verdict_stays_invalid_with_no_fallback():
         target = _spec_file(root)
         manifest_path, manifest = _write_manifest_for_worker(root, target)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()),
             post=lambda e: events.append(e) or {"ok": True},
             popen=NoVerdictPopen, allowlist_root=root,
@@ -6876,7 +6877,7 @@ def test_worker_builder_stage_two_only_report_posts_run_finished():
         _write_plan(worktree)
         manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=LooseResultPopen, allowlist_root=root.parent,
@@ -6898,7 +6899,7 @@ def test_worker_reviewer_stage_two_only_report_posts_run_finished():
         target = _spec_file(root)
         manifest_path, manifest = _write_manifest_for_worker(root, target)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()),
             post=lambda e: events.append(e) or {"ok": True},
             popen=LooseVerdictPopen, allowlist_root=root,
@@ -6927,7 +6928,7 @@ def test_builder_fallback_records_the_result_from_verify_and_commits(commit, ver
         manifest_path, manifest = _write_manifest_for_builder_worker(
             root, worktree, base_sha=base_sha, **({} if verify is None else {"verify": verify}))
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=NoLabelReportPopen, allowlist_root=root.parent,
@@ -6959,7 +6960,7 @@ def test_builder_fallback_applies_when_the_only_result_label_is_out_of_enum():
         manifest_path, manifest = _write_manifest_for_builder_worker(
             root, worktree, base_sha=base_sha)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=GarbageResultPopen, allowlist_root=root.parent,
@@ -6986,7 +6987,7 @@ def test_builder_fallback_never_applies_to_a_green_verify_on_an_unrelated_head()
         manifest_path, manifest = _write_manifest_for_builder_worker(
             root, worktree, base_sha=unrelated_base_sha)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=NoLabelReportPopen, allowlist_root=root.parent,
@@ -7011,7 +7012,7 @@ def test_builder_fallback_survives_a_non_string_base_sha_in_a_hand_edited_manife
         manifest_path, manifest = _write_manifest_for_builder_worker(
             root, worktree, base_sha=12345)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=NoLabelReportPopen, allowlist_root=root.parent,
@@ -7038,7 +7039,7 @@ def test_worker_builder_blocked_with_failing_verify_stays_blocked():
         manifest_path, manifest = _write_manifest_for_builder_worker(
             root, worktree, verify="false")
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=BlockedReportPopen, allowlist_root=root.parent,
@@ -7226,7 +7227,7 @@ def test_worker_builder_symlinked_report_is_invalid_and_never_followed():
             events.append(event)
             return {"ok": True}
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=SymlinkReportPopen, allowlist_root=root.parent,
         )
@@ -7277,7 +7278,7 @@ def test_worker_builder_symlinked_tests_path_skips_write_and_reports_failure():
             events.append(event)
             return {"ok": True}
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=SymlinkTestsPopen, allowlist_root=root.parent,
         )
@@ -7311,7 +7312,7 @@ def test_worker_builder_report_chmod_failure_is_invalid_not_ok(monkeypatch):
 
         monkeypatch.setattr(os, "fchmod", failing_fchmod)
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
@@ -7358,7 +7359,7 @@ def test_worker_builder_report_symlink_planted_between_read_and_lock_never_chmod
 
         monkeypatch.setattr(jr, "validate_report", swap_after_validating)
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
@@ -7387,7 +7388,7 @@ def test_worker_builder_stdin_prompt_and_process_group():
                 captured["cwd"] = cwd
                 captured["start_new_session"] = start_new_session
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -7564,7 +7565,7 @@ def test_worker_history_write_failure_refuses_before_launch(tmp_path, monkeypatc
     def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(jaxflow, "_persist_launch_selection", boom)
+    monkeypatch.setattr(jaxflow_worker, "_persist_launch_selection", boom)
 
     def popen(*a, **kw):
         raise AssertionError("popen must never be called")
@@ -7613,7 +7614,7 @@ def test_worker_resume_prelaunch_refusal_keeps_inherited_worktree(tmp_path, monk
     def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(jaxflow, "_persist_launch_selection", boom)
+    monkeypatch.setattr(jaxflow_worker, "_persist_launch_selection", boom)
     allow_root, root, worktree, manifest_path, _ = _managed_worker_repo(
         tmp_path, monkeypatch, reservation_owned=True, root_build_run_id=prior,
         resumes_run_id=prior,
@@ -7811,7 +7812,7 @@ def test_claim_refusal_and_replayed_checkpoint_do_not_request_cleanup(tmp_path, 
     def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(jaxflow, "_persist_launch_selection", boom)
+    monkeypatch.setattr(jaxflow_worker, "_persist_launch_selection", boom)
     cleaned = _spy_cleanup(monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
     assert code == jaxflow_common.REFUSED
@@ -7834,13 +7835,13 @@ def test_refuse_builder_run_missing_started_does_not_own_resume(tmp_path, monkey
         "resumes_run_id": "aaaaaaaaaaaa", "reservation_owned": True,
         "no_callback": True,
     }
-    monkeypatch.setattr(jaxflow, "_builder_started_payload", lambda *a, **k: None)
+    monkeypatch.setattr(jaxflow_worker, "_builder_started_payload", lambda *a, **k: None)
     cleaned = _spy_cleanup(monkeypatch)
 
     def forbidden(*a, **k):
         raise AssertionError("git must not run")
 
-    jaxflow._refuse_builder_run(
+    jaxflow_worker._refuse_builder_run(
         "disk full", manifest=manifest, run=forbidden, post=lambda e: {"ok": True},
         control_repo=tmp_path, worktree=worktree, branch="feat/x",
     )
@@ -7900,7 +7901,7 @@ def test_fresh_owner_prelaunch_refusal_requests_cleanup(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr(jaxflow, "_persist_launch_selection", boom)
+    monkeypatch.setattr(jaxflow_worker, "_persist_launch_selection", boom)
 
     def popen(*a, **kw):
         raise AssertionError("popen must never be called")
@@ -8089,7 +8090,7 @@ def test_persist_launch_selection_binds_canonical_manifest(tmp_path):
     copied.write_bytes(canonical.read_bytes())
     copied.chmod(0o600)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._persist_launch_selection(
+        jaxflow_worker._persist_launch_selection(
             copied, dict(manifest), _LAUNCH_SELECTION, control_repo=repo,
         )
     assert exc.value.code in ("path-outside-allowlist", "agent-settings-permissions")
@@ -8099,11 +8100,11 @@ def test_persist_launch_selection_binds_canonical_manifest(tmp_path):
     linked_parent.symlink_to(canonical.parent.parent)
     linked = linked_parent / run_id / "manifest.json"
     with pytest.raises(ji.Refusal):
-        jaxflow._persist_launch_selection(
+        jaxflow_worker._persist_launch_selection(
             linked, dict(manifest), _LAUNCH_SELECTION, control_repo=repo,
         )
     assert "launch_selection" not in json.loads(canonical.read_text(encoding="utf-8"))
-    jaxflow._persist_launch_selection(
+    jaxflow_worker._persist_launch_selection(
         canonical, dict(manifest), _LAUNCH_SELECTION, control_repo=repo,
     )
     stored = json.loads(canonical.read_text(encoding="utf-8"))["launch_selection"]
@@ -8139,7 +8140,7 @@ def test_persist_launch_selection_refuses_parent_switch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "open", gated)
     with pytest.raises(ji.Refusal):
-        jaxflow._persist_launch_selection(
+        jaxflow_worker._persist_launch_selection(
             canonical, {"run_id": run_id}, _LAUNCH_SELECTION, control_repo=repo,
         )
     assert (outside / "manifest.json").read_bytes() == prior
@@ -8213,12 +8214,12 @@ def test_worker_symlinked_manifest_is_not_a_write_destination(tmp_path, monkeypa
 
 def test_pure_config_run_bounds_stdout_and_reaps(tmp_path):
     exe = sys.executable
-    under = jaxflow._pure_config_run(
+    under = jaxflow_worker._pure_config_run(
         [exe, "-c", "import sys; sys.stdout.buffer.write(b'{}')"], cap=64,
     )
     assert under.returncode == 0
     assert under.stdout == b"{}"
-    exact = jaxflow._pure_config_run(
+    exact = jaxflow_worker._pure_config_run(
         [exe, "-c", "import sys; sys.stdout.buffer.write(b'x' * 64)"], cap=64,
     )
     assert exact.returncode == 0
@@ -8233,13 +8234,13 @@ def test_pure_config_run_bounds_stdout_and_reaps(tmp_path):
         "time.sleep(30)\n"
     )
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._pure_config_run([exe, "-c", over_script], cap=64)
+        jaxflow_worker._pure_config_run([exe, "-c", over_script], cap=64)
     assert exc.value.code == "agent-profile-conflict"
     pid = int(pid_file.read_text(encoding="utf-8"))
     with pytest.raises(OSError):
         os.kill(pid, 0)
 
-    err = jaxflow._pure_config_run(
+    err = jaxflow_worker._pure_config_run(
         [exe, "-c", "import sys; sys.stderr.write('secret-stderr\\n')"], cap=64,
     )
     assert err.stdout == b""
@@ -8254,7 +8255,7 @@ def test_pure_config_run_bounds_stdout_and_reaps(tmp_path):
         "time.sleep(30)\n"
     )
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._pure_config_run([exe, "-c", stall_script], deadline=0.2, cap=64)
+        jaxflow_worker._pure_config_run([exe, "-c", stall_script], deadline=0.2, cap=64)
     assert exc.value.code == "agent-profile-conflict"
     pid = int(stall_pid.read_text(encoding="utf-8"))
     with pytest.raises(OSError):
@@ -8476,7 +8477,7 @@ def test_builder_handoff_carries_both_commands_and_never_hardcodes_none():
     """MOA-454, the defect this issue is named for: `commands.build` was the literal
     `none` no matter what, so a tech lead who chained a build into --verify got a handoff
     that told the builder it had no build command."""
-    handoff = jaxflow._build_builder_handoff(
+    handoff = jaxflow_worker._build_builder_handoff(
         plan_dest=Path("/p/plan.md"),
         spec_dest=Path("/p/spec.md"), agents_path=Path("/p/AGENTS.md"),
         branch="feat/x", head_sha="a" * 40, whitelist=["src"],
@@ -8488,7 +8489,7 @@ def test_builder_handoff_carries_both_commands_and_never_hardcodes_none():
 
 
 def test_builder_handoff_says_none_only_when_there_is_no_build_command():
-    handoff = jaxflow._build_builder_handoff(
+    handoff = jaxflow_worker._build_builder_handoff(
         plan_dest=Path("/p/plan.md"),
         spec_dest=Path("/p/spec.md"), agents_path=Path("/p/AGENTS.md"),
         branch="feat/x", head_sha="a" * 40, whitelist=["src"],
@@ -8515,7 +8516,7 @@ def test_worker_builder_handoff_is_contract_valid_with_plan_fallback_spec():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -8564,7 +8565,7 @@ def test_worker_builder_handoff_names_target_and_existing_copied_agents_md():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -8598,7 +8599,7 @@ def test_worker_builder_handoff_names_referenced_spec_original_without_copy():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -8629,7 +8630,7 @@ def test_worker_builder_handoff_names_spec_fragment_when_the_plan_declares_a_hea
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        assert jaxflow.run_worker(
+        assert jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         ) == 0
@@ -8666,7 +8667,7 @@ def test_worker_builder_handoff_names_original_plan_and_declared_spec_without_co
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -8700,7 +8701,7 @@ def test_worker_builder_refuses_plan_outside_the_allowlist(capsys):
         def popen(*a, **kw):
             raise AssertionError("popen must never run for a plan outside the allowlist")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen,
             allowlist_root=allow_root,
@@ -8753,7 +8754,7 @@ def test_external_plan_survives_dispatch_builder_and_diff_launch(monkeypatch):
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        assert jaxflow.run_worker(
+        assert jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CaptureBuilderPopen, allowlist_root=allow_root,
         ) == 0
@@ -8790,7 +8791,7 @@ def test_external_plan_survives_dispatch_builder_and_diff_launch(monkeypatch):
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured_diff["stdin_bytes"] = self.stdin_bytes
 
-        assert jaxflow.run_worker(
+        assert jaxflow_worker.run_worker(
             str(root / ".local" / "runs" / diff_run_id / "manifest.json"),
             run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=lambda e: {"ok": True},
             popen=CaptureDiffPopen, allowlist_root=allow_root,
@@ -8813,7 +8814,7 @@ def test_worker_builder_refuses_a_missing_plan_file(capsys):
         def popen(*a, **kw):
             raise AssertionError("popen must never run for a missing plan")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -8839,7 +8840,7 @@ def test_worker_builder_refuses_symlinked_secret_plan_path(capsys):
         def popen(*a, **kw):
             raise AssertionError("popen must never run for a symlinked secret plan")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -8865,7 +8866,7 @@ def test_worker_builder_model_effort_override_reaches_runtime_argv():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["argv"] = argv
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -8889,7 +8890,7 @@ def test_worker_builder_model_effort_override_reaches_runtime_argv():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured2["argv"] = argv
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path2), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen2, allowlist_root=root.parent,
         )
@@ -9016,7 +9017,7 @@ def test_worker_builder_refuses_declared_spec_outside_allowlist_posts_cancelled_
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=post, popen=popen, allowlist_root=allow_root,
         )
@@ -9049,7 +9050,7 @@ def test_worker_builder_refuses_declared_secret_spec(capsys):
             "### Task 1: do it\n"
         ))
         manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=FakeBuilderPopen, allowlist_root=allow_root,
         )
@@ -9081,7 +9082,7 @@ def test_worker_builder_refusal_sends_jaxflow_callback_and_sets_worker_fields(ca
         def popen(*a, **kw):
             raise AssertionError("popen must never be called once the declared spec refuses")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -9129,7 +9130,7 @@ def test_worker_builder_refusal_codex_callback_attempts_queue_once(monkeypatch, 
             raise AssertionError("popen must never be called once the declared spec refuses")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -9167,7 +9168,7 @@ def test_worker_diff_review_refusal_sends_jaxflow_callback_line(capsys):
         def popen(*a, **kw):
             raise AssertionError("popen must never be called for a secret path")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -9208,7 +9209,7 @@ def test_worker_diff_review_refusal_codex_callback_attempts_queue_once(monkeypat
             raise AssertionError("popen must never be called for a secret path")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -9248,7 +9249,7 @@ def test_worker_builder_refusal_no_callback_flag_sends_nothing():
         def popen(*a, **kw):
             raise AssertionError("popen must never be called once the declared spec refuses")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -9277,7 +9278,7 @@ def test_worker_builder_refusal_updates_status_md_now_and_stage_with_no_gate():
         def popen(*a, **kw):
             raise AssertionError("popen must never be called once the declared spec refuses")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -9325,7 +9326,7 @@ def test_worker_builder_invalid_report_is_invalid_not_missing():
             events.append(event)
             return {"ok": True}
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=InvalidReportPopen, allowlist_root=root.parent,
         )
@@ -9352,7 +9353,7 @@ def test_worker_builder_seals_env_for_child_process():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["env"] = env
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -9371,7 +9372,7 @@ def test_worker_builder_updates_control_repo_status_md():
         _write_plan(worktree)
         status_path = _write_status_md(root)
         manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
@@ -9511,7 +9512,7 @@ def test_builder_read_roots_separate_git_dir_main_resolves_to_the_checkout():
         gitdir = allow_root / "cache" / ".git"
         _init_separate_git_dir_repo(main, gitdir)
         worktree = _init_worktree(main, "feat/x")
-        roots = jaxflow._builder_read_roots(
+        roots = jaxflow_worker._builder_read_roots(
             main, worktree, run=_run_real, allowlist_root=allow_root,
         )
         assert roots == (main.resolve(), worktree.resolve())
@@ -9567,7 +9568,7 @@ def test_worker_doc_review_from_linked_worktree_writes_control_status_not_the_wo
         manifest_path, manifest = _write_manifest_for_worker(
             worktree, target, runtime="claude",
         )
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=FakePopen, allowlist_root=allow_root,
         )
@@ -11179,7 +11180,7 @@ def test_worker_diff_review_prompt_carries_the_spec_fragment_when_the_plan_decla
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -11849,7 +11850,7 @@ def test_worker_diff_review_refuses_forged_run_id_before_any_path_construction(c
             raise AssertionError("popen must never be called for a forged run_id")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -11884,7 +11885,7 @@ def test_worker_diff_review_refuses_repo_outside_allowlist_root(capsys):
             raise AssertionError("popen must never be called for an escaping repo")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -11910,7 +11911,7 @@ def test_worker_diff_review_refuses_worktree_mismatched_from_manifest_derivation
             raise AssertionError("popen must never be called for a mismatched worktree")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -11941,7 +11942,7 @@ def test_worker_diff_review_refuses_forged_plan_path_outside_allowlist(capsys):
             raise AssertionError("popen must never be called for a forged plan_path")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
@@ -11970,7 +11971,7 @@ def test_worker_diff_review_refuses_forged_tests_path_never_reaches_prompt(capsy
             raise AssertionError("popen must never be called for a forged tests_path")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -12010,7 +12011,7 @@ def test_worker_diff_review_accepts_original_control_repo_plan_and_spec():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -12056,7 +12057,7 @@ def test_worker_diff_review_accepts_a_legacy_spec_copy_when_the_original_is_gone
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -12081,7 +12082,7 @@ def test_worker_diff_review_refuses_a_spec_not_named_by_the_plan(capsys):
             raise AssertionError("popen must never run for a forged spec_path")
 
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen,
             allowlist_root=root.parent,
@@ -12105,7 +12106,7 @@ def test_worker_diff_review_refuses_a_missing_plan_file(capsys):
         def popen(*a, **kw):
             raise AssertionError("popen must never run for a missing plan")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -12128,7 +12129,7 @@ def test_worker_diff_review_refuses_symlinked_secret_plan(capsys):
         def popen(*a, **kw):
             raise AssertionError("popen must never run for a symlinked secret plan")
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
@@ -12156,7 +12157,7 @@ def test_worker_diff_review_prompt_renders_spec_and_plan_before_test_output():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -12178,7 +12179,7 @@ def _run_diff_worker_and_capture_prompt(manifest_path, worktree, root):
             super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
             captured["stdin_bytes"] = self.stdin_bytes
 
-    code = jaxflow.run_worker(
+    code = jaxflow_worker.run_worker(
         str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
         post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
     )
@@ -12238,7 +12239,7 @@ def test_worker_diff_review_refuses_secret_named_changed_paths(capsys):
                 raise AssertionError(f"popen must never be called for a secret path ({name})")
 
             events = []
-            code = jaxflow.run_worker(
+            code = jaxflow_worker.run_worker(
                 str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
                 post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
             )
@@ -12285,7 +12286,7 @@ def test_worker_diff_review_prompt_embeds_diff_text_and_grammar_for_both_runtime
                     captured["cwd"] = cwd
                     captured["stdin_bytes"] = self.stdin_bytes
 
-            code = jaxflow.run_worker(
+            code = jaxflow_worker.run_worker(
                 str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
                 post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
             )
@@ -12366,7 +12367,7 @@ def test_worker_diff_review_prompt_survives_diff_containing_test_output_literal(
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -12402,7 +12403,7 @@ def test_worker_diff_review_finalizes_report_via_control_repo_paths():
             events.append(event)
             return {"ok": True}
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
             popen=FakePopen, allowlist_root=root.parent,
         )
@@ -12434,7 +12435,7 @@ def test_worker_diff_review_updates_control_repo_status_md_with_approval_gate():
             root, worktree, base_sha=base_sha, head_sha=head_sha,
         )
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=FakePopen, allowlist_root=root.parent,
         )
@@ -12465,7 +12466,7 @@ def test_worker_diff_review_git_diff_failure_is_a_hard_failure_not_placeholder_t
         )
         events = []
         try:
-            jaxflow.run_worker(
+            jaxflow_worker.run_worker(
                 str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
                 post=lambda e: events.append(e) or {"ok": True}, popen=FakePopen,
                 allowlist_root=root.parent,
@@ -12815,7 +12816,7 @@ def test_worker_doc_review_handoff_threat_model_line_before_focus():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True},
             popen=CapturePopen, allowlist_root=root,
         )
@@ -12840,7 +12841,7 @@ def test_worker_doc_review_handoff_omits_threat_model_line_when_absent():
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
                 captured["stdin_bytes"] = self.stdin_bytes
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True},
             popen=CapturePopen, allowlist_root=root,
         )
@@ -16469,7 +16470,7 @@ def test_worker_builder_captures_stdout_stderr_merged_into_child_log():
         class ChattyBuilderPopen(FakeBuilderPopen):
             CHILD_BYTES = b"opencode: starting build\nopencode: done\n"
 
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=ChattyBuilderPopen, allowlist_root=root.parent,
         )
@@ -16507,7 +16508,7 @@ def test_worker_builder_call_order_is_open_then_popen_then_capture_then_wait_the
         worktree = _init_worktree(root)
         _write_plan(worktree)
         manifest_path, _ = _write_manifest_for_builder_worker(root, worktree)
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=RecordingPopen, allowlist_root=root.parent,
         )
@@ -16529,7 +16530,7 @@ def test_worker_builder_passes_merged_pipe_kwargs_to_popen():
         worktree = _init_worktree(root)
         _write_plan(worktree)
         manifest_path, _ = _write_manifest_for_builder_worker(root, worktree)
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
@@ -16567,7 +16568,7 @@ def test_worker_builder_missing_report_gets_reason_and_tail_together():
         worktree = _init_worktree(root)
         _write_plan(worktree)
         manifest_path, _ = _write_manifest_for_builder_worker(root, worktree)
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=posted.append, popen=NoReportPopen, allowlist_root=root.parent,
         )
@@ -16585,7 +16586,7 @@ def test_worker_builder_ok_row_has_no_tail_or_reason():
         worktree = _init_worktree(root)
         _write_plan(worktree)
         manifest_path, _ = _write_manifest_for_builder_worker(root, worktree)
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=posted.append, popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
@@ -16614,7 +16615,7 @@ def test_worker_diff_review_codex_merges_stdout_stderr_into_child_log():
         class ChattyCodexPopen(FakePopen):
             CHILD_BYTES = b"codex: reviewing diff\ncodex: wrote last-message\n"
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_real, post=lambda e: {"ok": True},
             popen=ChattyCodexPopen, allowlist_root=root.parent,
         )
@@ -16644,7 +16645,7 @@ def test_worker_diff_review_claude_captures_stderr_only_stdout_stays_the_report(
                 captured["stderr"] = stderr
                 super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
 
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_real, post=lambda e: {"ok": True},
             popen=CaptureClaudePopen, allowlist_root=root.parent,
         )
@@ -16698,7 +16699,7 @@ def test_worker_diff_review_missing_or_invalid_row_gets_tail_and_reason():
         manifest_path, _ = _write_manifest_for_diff_worker(
             root, worktree, runtime="codex", base_sha=p1_sha, head_sha=head_sha,
         )
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_real, post=posted.append,
             popen=InvalidReportPopen, allowlist_root=root.parent,
         )
@@ -16722,7 +16723,7 @@ def test_worker_doc_review_wires_the_same_codex_claude_branching():
             class ChattyPopen(FakePopen):
                 CHILD_BYTES = b"reviewer chatter\n"
 
-            jaxflow.run_worker(
+            jaxflow_worker.run_worker(
                 str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True},
                 popen=ChattyPopen, allowlist_root=root,
             )
@@ -16749,7 +16750,7 @@ def test_worker_doc_review_popen_kwargs_are_wired_per_runtime():
                     captured["stderr"] = stderr
                     super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
 
-            jaxflow.run_worker(
+            jaxflow_worker.run_worker(
                 str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True},
                 popen=CapturePopen, allowlist_root=root,
             )
@@ -16795,7 +16796,7 @@ def test_worker_diff_review_call_order_is_open_then_popen_then_capture_then_wait
         manifest_path, _ = _write_manifest_for_diff_worker(
             root, worktree, runtime="codex", base_sha=p1_sha, head_sha=head_sha,
         )
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_real, post=lambda e: {"ok": True},
             popen=RecordingPopen, allowlist_root=root.parent,
         )
@@ -16826,7 +16827,7 @@ def test_worker_doc_review_call_order_is_open_then_popen_then_capture_then_wait_
         _init_repo(root)
         target = _spec_file(root)
         manifest_path, _ = _write_manifest_for_worker(root, target, runtime="codex")
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True},
             popen=RecordingPopen, allowlist_root=root,
         )
@@ -16870,7 +16871,7 @@ def test_worker_diff_review_real_subprocess_drains_before_wait(monkeypatch):
             old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
             signal.alarm(15)
             try:
-                code = jaxflow.run_worker(
+                code = jaxflow_worker.run_worker(
                     str(manifest_path), run=_run_real, post=lambda e: {"ok": True},
                     popen=subprocess.Popen, allowlist_root=root.parent,
                 )
@@ -17054,7 +17055,7 @@ def test_worker_reviewer_ok_report_posts_findings_counts_beside_verdict():
         target = _spec_file(root)
         manifest_path, manifest = _write_manifest_for_worker(root, target)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()),
             post=lambda e: events.append(e) or {"ok": True},
             popen=FindingsPopen, allowlist_root=root,
@@ -17074,7 +17075,7 @@ def test_worker_reviewer_report_with_no_numbered_findings_omits_the_field():
         target = _spec_file(root)
         manifest_path, manifest = _write_manifest_for_worker(root, target)
         events = []
-        jaxflow.run_worker(
+        jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()),
             post=lambda e: events.append(e) or {"ok": True},
             popen=FakePopen, allowlist_root=root,
@@ -17104,7 +17105,7 @@ def test_worker_diff_reviewer_ok_report_posts_findings_counts_beside_verdict():
             root, worktree, base_sha=base_sha, head_sha=head_sha, tests_path=str(tests_path),
         )
         events = []
-        code = jaxflow.run_worker(
+        code = jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True},
             popen=FindingsPopen, allowlist_root=root.parent,
@@ -18135,7 +18136,7 @@ def _prepare_doc_review_worker_fixture(tmp_path):
 def test_builder_worker_refuses_missing_cli_with_no_traceback_and_cleans_up_the_reservation(tmp_path):
     allow_root, root, worktree, manifest_path, manifest = _prepare_builder_worker_fixture(tmp_path)
     events = []
-    code = jaxflow.run_worker(
+    code = jaxflow_worker.run_worker(
         str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
         post=lambda e: events.append(e) or {"ok": True}, popen=_MissingCliPopen,
         allowlist_root=allow_root,
@@ -18150,7 +18151,7 @@ def test_builder_worker_refuses_missing_cli_with_no_traceback_and_cleans_up_the_
 def test_diff_reviewer_worker_refuses_missing_cli_with_no_worktree_cleanup_attempted(tmp_path):
     manifest_path, manifest, repo, worktree = _prepare_diff_reviewer_worker_fixture(tmp_path)
     events = []
-    code = jaxflow.run_worker(
+    code = jaxflow_worker.run_worker(
         str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
         post=lambda e: events.append(e) or {"ok": True}, popen=_MissingCliPopen,
         allowlist_root=repo.parent,
@@ -18165,7 +18166,7 @@ def test_diff_reviewer_worker_refuses_missing_cli_with_no_worktree_cleanup_attem
 def test_doc_review_worker_refuses_missing_cli(tmp_path):
     manifest_path, manifest, repo = _prepare_doc_review_worker_fixture(tmp_path)
     events = []
-    code = jaxflow.run_worker(
+    code = jaxflow_worker.run_worker(
         str(manifest_path), run=_run_with_tmux(FakeTmux()),
         post=lambda e: events.append(e) or {"ok": True}, popen=_MissingCliPopen,
         allowlist_root=repo.parent,
