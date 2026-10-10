@@ -539,6 +539,15 @@ def _review_round_tally(repo, project, kind, target, run_id, new_report_text, *,
     return build_review_tally(new_report_text, prev_text)
 
 
+def _load_manifest(run_dir):
+    """The decoded `manifest.json` of a run directory, whatever JSON value it holds.
+    Raises exactly what the inline reads raised (`OSError`, `ValueError`/`JSONDecodeError`,
+    `RecursionError`): each caller keeps its own `try/except`, its non-dict handling and
+    its own refusal code. `run_worker`'s direct parse (it must PROPAGATE read errors) and
+    `_read_prior_manifest` (no-follow open) deliberately do not use it."""
+    return json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+
 def _load_diff_review_node(con, repo, run_id):
     """Everything the item 9 chain walk needs for one diff-review run: its own manifest
     (base_sha/head_sha/since_review_run_id), its ledger target/verdict, and its linked
@@ -549,7 +558,7 @@ def _load_diff_review_node(con, repo, run_id):
     if manifest_dir is None:
         return None
     try:
-        manifest = json.loads((manifest_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest = _load_manifest(manifest_dir)
     except (OSError, ValueError):
         return None
     if manifest.get("kind") != "diff":
@@ -687,7 +696,7 @@ def _chain_block(run_id, *, db_path):
 
 def _read_manifest_field(repo, run_id, field):
     try:
-        data = json.loads((_manifest_dir(repo, run_id) / "manifest.json").read_text(encoding="utf-8"))
+        data = _load_manifest(_manifest_dir(repo, run_id))
     except (OSError, ValueError, RecursionError):
         return None
     if type(data) is not dict:
@@ -2323,7 +2332,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         return exc
 
     try:
-        builder_manifest = json.loads(builder_manifest_path.read_text(encoding="utf-8"))
+        builder_manifest = _load_manifest(_manifest_dir(repo, builder_run_id))
     except (OSError, ValueError):
         raise _unusable_builder_manifest()
     raw_plan_path = builder_manifest.get("plan_path")
@@ -2821,7 +2830,7 @@ def _merge_checks_reuse(run, repo, project, worktree, branch, sha, checks_cmd, *
                 if not _contained(mpath, mdir):  # review F1: a symlinked manifest.json escapes
                     return False, "lookup-failed", None
                 try:
-                    manifest = json.loads(mpath.read_text(encoding="utf-8"))
+                    manifest = _load_manifest(mdir)
                 except (OSError, ValueError):
                     manifest = None
             if not isinstance(manifest, dict) or manifest.get("kind") != "diff" \
