@@ -3638,6 +3638,41 @@ def _install_worker_signal_handler(manifest, *, role, kind, outcome, run, post, 
     return _on_signal
 
 
+def _spawn_and_drain(popen, argv, *, cwd, prompt_path, env, log_path, child_box, terminated,
+                     stdout_target, stderr_target, stdout_file=None, drain_stderr=False):
+    """Open child.log, spawn the child with the prompt on stdin, drain its output into the
+    log, wait. Returns `(status, child, child_log_text)`: status `"missing-cli"` (child
+    None: the caller refuses with `missing-cli: <argv[0]>`), `"terminated"` (a signal tore
+    the run down; the handler owns the terminal row and `child.log` stays partial and NOT
+    redacted since `_finalize_child_log` never runs -- spec §4.2 known limit) or `"ok"`
+    (text = the redacted, finalized log). Drain BEFORE wait (spec §4.2): the OS pipe buffer
+    is 64 KiB, so a child writing more with nobody reading deadlocks against `wait()`.
+    `drain_stderr` is the Claude reviewer (stdout is the report file, stderr the stream).
+    `_open_child_log`, `_capture_child_output`, `_finalize_child_log` are module globals."""
+    log_fd = _open_child_log(log_path)
+    try:
+        with prompt_path.open("rb") as stdin_source:
+            child = popen(
+                argv, cwd=cwd, stdin=stdin_source,
+                stdout=stdout_target, stderr=stderr_target,
+                start_new_session=True, env=env,
+            )
+    except FileNotFoundError:
+        os.close(log_fd)
+        if stdout_file is not None:
+            stdout_file.close()
+        return "missing-cli", None, None
+    child_box["child"] = child
+    if stdout_file is not None:
+        stdout_file.close()
+    _capture_child_output(child.stderr if drain_stderr else child.stdout, log_fd)
+    child.wait()
+    if terminated["flag"]:
+        os.close(log_fd)
+        return "terminated", child, None
+    return "ok", child, _finalize_child_log(log_fd, log_path)
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -3903,33 +3938,18 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
         # MOA-470 §4.2: OpenCode has no --output-* flag, so its stdout was never the
         # report channel -- free to redirect to a pipe. stderr merges into the same pipe
         # (matches how both already appear interleaved in a tmux pane today).
-        log_fd = _open_child_log(log_path)
-        try:
-            with prompt_path.open("rb") as stdin_source:
-                child = popen(
-                    argv, cwd=str(worktree), stdin=stdin_source,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    start_new_session=True, env=child_env,
-                )
-        except FileNotFoundError:
-            os.close(log_fd)
+        status, child, child_log_text = _spawn_and_drain(
+            popen, argv, cwd=str(worktree), prompt_path=prompt_path, env=child_env,
+            log_path=log_path, child_box=child_box, terminated=terminated,
+            stdout_target=subprocess.PIPE, stderr_target=subprocess.STDOUT,
+        )
+        if status == "missing-cli":
             return _refuse_builder_run(
                 f"missing-cli: {argv[0]}", manifest=manifest, run=run, post=post,
                 control_repo=control_repo, worktree=worktree, branch=branch,
             )
-        child_box["child"] = child
-
-        # Drain BEFORE wait (spec §4.2): the OS pipe buffer is 64 KiB on Linux: a child
-        # writing more than that with nobody reading deadlocks against `wait()` below.
-        _capture_child_output(child.stdout, log_fd)
-        child.wait()
-        if terminated["flag"]:
-            # Known limit, not a bug (spec §4.2): a signal-torn-down run's child.log is
-            # left exactly as far as the drain got -- partial and NOT redacted, since
-            # `_finalize_child_log` (which redacts) never runs on this path.
-            os.close(log_fd)
+        if status == "terminated":
             return 0
-        child_log_text = _finalize_child_log(log_fd, log_path)
 
         contract_status, summary, report_result = finalize_builder_report(
             paths, run_id, project, phase, worktree=worktree)
@@ -4206,33 +4226,19 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
         log_path=log_path, child_box=child_box, terminated=terminated,
     )
 
-    log_fd = _open_child_log(log_path)
-    try:
-        with prompt_path.open("rb") as stdin_source:
-            # cwd = the worktree (spec §4.3 step 4), not /tmp -- unlike a doc review, this
-            # reviewer's cwd is the real repo whose commits it is reviewing.
-            child = popen(
-                argv, cwd=str(worktree), stdin=stdin_source,
-                stdout=stdout_target, stderr=stderr_target,
-                start_new_session=True, env=env,
-            )
-    except FileNotFoundError:
-        os.close(log_fd)
-        if stdout_file is not None:
-            stdout_file.close()
+    # cwd = the worktree (spec §4.3 step 4), not /tmp -- unlike a doc review, this
+    # reviewer's cwd is the real repo whose commits it is reviewing.
+    status, child, child_log_text = _spawn_and_drain(
+        popen, argv, cwd=str(worktree), prompt_path=prompt_path, env=env, log_path=log_path,
+        child_box=child_box, terminated=terminated, stdout_target=stdout_target,
+        stderr_target=stderr_target, stdout_file=stdout_file, drain_stderr=runtime == "claude",
+    )
+    if status == "missing-cli":
         return _refuse_diff_run(
             f"missing-cli: {argv[0]}", manifest=manifest, run=run, post=post, manifest_path=manifest_path,
         )
-    child_box["child"] = child
-    if stdout_file is not None:
-        stdout_file.close()
-
-    _capture_child_output(child.stderr if runtime == "claude" else child.stdout, log_fd)
-    child.wait()
-    if terminated["flag"]:
-        os.close(log_fd)
+    if status == "terminated":
         return 0
-    child_log_text = _finalize_child_log(log_fd, log_path)
 
     contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
     exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
@@ -4426,31 +4432,17 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
         log_path=log_path, child_box=child_box, terminated=terminated,
     )
 
-    log_fd = _open_child_log(log_path)
-    try:
-        with prompt_path.open("rb") as stdin_source:
-            child = popen(
-                argv, cwd="/tmp", stdin=stdin_source,
-                stdout=stdout_target, stderr=stderr_target,
-                start_new_session=True, env=env,
-            )
-    except FileNotFoundError:
-        os.close(log_fd)
-        if stdout_file is not None:
-            stdout_file.close()
+    status, child, child_log_text = _spawn_and_drain(
+        popen, argv, cwd="/tmp", prompt_path=prompt_path, env=env, log_path=log_path,
+        child_box=child_box, terminated=terminated, stdout_target=stdout_target,
+        stderr_target=stderr_target, stdout_file=stdout_file, drain_stderr=runtime == "claude",
+    )
+    if status == "missing-cli":
         return _refuse_diff_run(
             f"missing-cli: {argv[0]}", manifest=manifest, run=run, post=post, manifest_path=manifest_path,
         )
-    child_box["child"] = child
-    if stdout_file is not None:
-        stdout_file.close()
-
-    _capture_child_output(child.stderr if runtime == "claude" else child.stdout, log_fd)
-    child.wait()
-    if terminated["flag"]:
-        os.close(log_fd)
+    if status == "terminated":
         return 0
-    child_log_text = _finalize_child_log(log_fd, log_path)
 
     contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
     exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
