@@ -178,13 +178,14 @@ def _request(url, method="GET", body=None, headers=None):
 
 # ---- main (split so a forward-pending failure can never skip the staleness check — Finding 11) ----
 
-def _forward_pending():
+def _forward_pending(settings=None):
     """Best-effort: pull pending events, forward each to the owner's notification webhook,
     ack what was delivered. Never raises (see the module docstring's guard rationale). MOA-498
     D3: gated end to end by integrations.webhook, read fresh (general_settings.read_settings()
     never raises per its own contract); URL/secret read fresh via jev_client.api_key() every
     tick — no cached/persisted destination, so a retargeted webhook is honored immediately."""
-    settings = general_settings.read_settings()
+    if settings is None:
+        settings = general_settings.read_settings()
     if not settings.get("ok") or not settings.get("data", {}).get("integrations", {}).get("webhook"):
         print("workflow-poll: integrations.webhook is off, skipping forward", file=sys.stderr)
         return
@@ -340,7 +341,7 @@ def _default_shadow(row_id, source, classifier, jev_result, jev_error):
         print(f"workflow-poll: jev shadow write failed: {e}", file=sys.stderr)
 
 
-def _drain_deferred(get=None, classify=None, post=None, shadow=None, jev=None):
+def _drain_deferred(get=None, classify=None, post=None, shadow=None, jev=None, settings=None):
     """Settle every queued rung-7 row. Jev is the PRIMARY classifier: exactly one call per row,
     and its `choice` posts as-is (no confidence threshold — shadow data showed a threshold made
     accuracy worse). Only when the Jev call itself raises (transport, shape, missing key) does
@@ -349,7 +350,8 @@ def _drain_deferred(get=None, classify=None, post=None, shadow=None, jev=None):
     `failed`. A bad row never stops the loop — one bad row must not strand the rest of the
     queue. `shadow` gets the single Jev answer (or its error) already produced here — it makes
     no second Jev call and can never change what was already posted."""
-    settings = general_settings.read_settings()
+    if settings is None:
+        settings = general_settings.read_settings()
     classifier_on = bool(settings.get("ok") and settings["data"]["integrations"]["classifier"])
     for row in (get or _get_deferred)(DEFERRED_URL):
         if not classifier_on:
@@ -606,7 +608,11 @@ def _reap_stale_runs(db_path=None, *, run=None, now=None, allowlist_root=None):
 
 def main():
     try:
-        _forward_pending()
+        settings = general_settings.read_settings()  # once per tick (lean spec D16), shared below
+    except Exception:
+        settings = None  # each phase falls back to its own guarded read, exactly as before
+    try:
+        _forward_pending(settings)
     except Exception as e:
         # _forward_pending is structured to never raise (see its own docstring); this is a
         # belt-and-suspenders backstop, not the primary defense — Finding 4.
@@ -619,7 +625,7 @@ def main():
         # phase below (spec §10.3's own framing).
         print(f"workflow-poll: reap crashed unexpectedly: {e}", file=sys.stderr)
     try:
-        _drain_deferred()
+        _drain_deferred(settings=settings)
     except Exception as e:
         print(f"workflow-poll: deferred drain crashed unexpectedly: {e}", file=sys.stderr)
     return 0
