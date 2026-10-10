@@ -67,6 +67,8 @@ explicit merge approval.
    "enforce_admins":true,"required_pull_request_reviews":null,"restrictions":null}
   JSON
   ```
+- "Delete head branches after merge" is the other ONE-TIME per-repo GitHub setting; without it
+  every merged branch stays on GitHub: `gh api -X PATCH repos/<owner>/<repo> -f delete_branch_on_merge=true`.
 - Verification deployment target: none.
 
 **Preset: `dual-branch`** — environment branches: `staging` + `main`, local merge into `staging`.
@@ -97,6 +99,8 @@ explicit merge approval.
    "enforce_admins":true,"required_pull_request_reviews":null,"restrictions":null}
   JSON
   ```
+- "Delete head branches after merge" is the other ONE-TIME per-repo GitHub setting; without it
+  every merged branch stays on GitHub: `gh api -X PATCH repos/<owner>/<repo> -f delete_branch_on_merge=true`.
 - Verification deployment target: none.
 
 **Preset: `bubble-buildprint`** — Bubble via Buildprint: Bubble.io app built through Buildprint.
