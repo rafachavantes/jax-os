@@ -24,6 +24,10 @@ import pytest
 
 import general_settings
 import jaxflow
+import jaxflow_common
+import uuid
+import shlex
+import jaxflow_hook
 import jaxflow_run as jr
 import jaxflow_settings as jset
 import jax_init as ji
@@ -77,7 +81,7 @@ def _isolate_callbacks(tmp_path, monkeypatch):
     hook entry (cold review round 1 F6 -- D9 checks structure, not a substring), so that
     warning is silent by default across the whole suite; the tests that specifically
     exercise D9 override this locally."""
-    monkeypatch.setattr(jaxflow, "CALLBACKS_ROOT", tmp_path / "callbacks")
+    monkeypatch.setattr(jaxflow_common, "CALLBACKS_ROOT", tmp_path / "callbacks")
     settings_path = tmp_path / "claude-settings.json"
     settings_path.write_text(json.dumps({
         "hooks": {
@@ -96,7 +100,7 @@ def _isolate_callbacks(tmp_path, monkeypatch):
             ]
         }
     }), encoding="utf-8")
-    monkeypatch.setattr(jaxflow, "CLAUDE_SETTINGS_PATH", settings_path)
+    monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", settings_path)
 
 
 _SETTINGS_FIXTURE = Path(__file__).resolve().parents[1] / "workflow" / "fixtures" / "agent-settings-v1.json"
@@ -328,22 +332,22 @@ def _plan_file(root):
 
 
 def test_split_spec_fragment_handles_no_hash_malformed_and_well_formed():
-    assert jaxflow._split_spec_fragment("spec.md") == ("spec.md", None)
-    assert jaxflow._split_spec_fragment("spec.md#Heading") == ("spec.md", "Heading")
+    assert jaxflow_common._split_spec_fragment("spec.md") == ("spec.md", None)
+    assert jaxflow_common._split_spec_fragment("spec.md#Heading") == ("spec.md", "Heading")
     # malformed -- empty fragment: treated as no fragment, whole raw string as path
-    assert jaxflow._split_spec_fragment("spec.md#") == ("spec.md#", None)
+    assert jaxflow_common._split_spec_fragment("spec.md#") == ("spec.md#", None)
     # malformed -- fragment containing '..': same treatment
-    assert jaxflow._split_spec_fragment("spec.md#../escape") == ("spec.md#../escape", None)
+    assert jaxflow_common._split_spec_fragment("spec.md#../escape") == ("spec.md#../escape", None)
     # split at the LAST '#' when there is more than one
-    assert jaxflow._split_spec_fragment("spec.md#one#two") == ("spec.md#one", "two")
+    assert jaxflow_common._split_spec_fragment("spec.md#one#two") == ("spec.md#one", "two")
 
 
 def test_find_heading_matches_any_level_case_sensitively():
     text = "# T\n\n## Right Case\ntext\n\n###### Deep\nmore\n"
-    assert jaxflow._find_heading(text, "Right Case") is True
-    assert jaxflow._find_heading(text, "Deep") is True
-    assert jaxflow._find_heading(text, "right case") is False
-    assert jaxflow._find_heading(text, "Nope") is False
+    assert jaxflow_common._find_heading(text, "Right Case") is True
+    assert jaxflow_common._find_heading(text, "Deep") is True
+    assert jaxflow_common._find_heading(text, "right case") is False
+    assert jaxflow_common._find_heading(text, "Nope") is False
 
 
 def test_iso8601_matches_stdlib_isoformat_seconds():
@@ -357,7 +361,7 @@ def test_iso8601_matches_stdlib_isoformat_seconds():
         datetime(2026, 9, 6, 10, 0, 0, tzinfo=timezone(timedelta(hours=-3))),
         datetime(2026, 1, 1, 0, 0, 0, 123456, tzinfo=timezone.utc),
     ):
-        assert jaxflow._iso8601(dt) == dt.isoformat(timespec="seconds")
+        assert jaxflow_common._iso8601(dt) == dt.isoformat(timespec="seconds")
 
 
 def _review_args(**kw):
@@ -371,16 +375,16 @@ def _review_args(**kw):
 # ---- caller detection ----
 
 def test_resolve_caller_from_env_and_from_flag():
-    assert jaxflow.resolve_caller({"CLAUDECODE": "1"}, None) == "claude"
-    assert jaxflow.resolve_caller({"CODEX_THREAD_ID": "1"}, None) == "codex"
+    assert jaxflow_common.resolve_caller({"CLAUDECODE": "1"}, None) == "claude"
+    assert jaxflow_common.resolve_caller({"CODEX_THREAD_ID": "1"}, None) == "codex"
     for bad_env in ({}, {"CLAUDECODE": "1", "CODEX_THREAD_ID": "1"}):
         try:
-            jaxflow.resolve_caller(bad_env, None)
+            jaxflow_common.resolve_caller(bad_env, None)
         except ji.Refusal as exc:
             assert exc.code == "caller-unknown"
         else:
             raise AssertionError("caller-unknown not raised")
-    assert jaxflow.resolve_caller({"CLAUDECODE": "1", "CODEX_THREAD_ID": "1"}, "codex") == "codex"
+    assert jaxflow_common.resolve_caller({"CLAUDECODE": "1", "CODEX_THREAD_ID": "1"}, "codex") == "codex"
 
 
 # ---- caller-session-missing (acceptance smoke 2026-09-06, fix 4) ----
@@ -404,7 +408,7 @@ def test_dispatch_refuses_caller_session_missing_before_manifest_and_post(capsys
             run=_run_with_tmux(fake, real_cwd=root), post=post, env={}, allowlist_root=allow_root,
         )
         err = capsys.readouterr().err.strip().splitlines()
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert err[0] == "caller-session-missing"
         assert "CODEX_THREAD_ID" in err[1]
         assert posted == []
@@ -437,19 +441,19 @@ def test_dispatch_proceeds_when_caller_session_present(monkeypatch):
 # ---- project slug ----
 
 def test_slugify_project_bounds_and_fallback():
-    assert jaxflow.slugify_project("Acme.AI") == "acme-ai"
-    assert jaxflow.slugify_project("comenta.ia.br") == "comenta-ia-br"
+    assert jaxflow_common.slugify_project("Acme.AI") == "acme-ai"
+    assert jaxflow_common.slugify_project("comenta.ia.br") == "comenta-ia-br"
     long_name = "a" * 70 + "---"
-    slug = jaxflow.slugify_project(long_name)
+    slug = jaxflow_common.slugify_project(long_name)
     # 40, not 64 (fixes cold review F2): jax-<slug>-<kind>-<run_id> must stay under the
     # ledger's 80-char `session` bound -- 4 + 40 + 1 + 5("build") + 1 + 12 = 63 < 80.
     assert len(slug) == 40
     assert not slug.endswith("-")
-    assert jaxflow.slugify_project("___") == "repo"
+    assert jaxflow_common.slugify_project("___") == "repo"
 
 
 def test_slug_keeps_session_name_within_ledger_bound():
-    slug = jaxflow.slugify_project("a" * 70)
+    slug = jaxflow_common.slugify_project("a" * 70)
     session = f"jax-{slug}-build-{'a' * 12}"
     assert len(session) <= 80
 
@@ -461,11 +465,11 @@ def test_slug_keeps_session_name_within_ledger_bound():
 # input that could pick a disallowed runtime — arrives in slice b, so this unit test on
 # `_map_refusal` is the only coverage this code path gets in this slice.
 def test_map_refusal_translates_known_messages_and_passes_through_unknown():
-    assert jaxflow._map_refusal("detached HEAD") == "detached-head"
-    assert jaxflow._map_refusal("builder cannot run on default branch") == "builder-on-default-branch"
-    assert jaxflow._map_refusal("runtime not allowed") == "runtime-not-allowed"
-    assert jaxflow._map_refusal("dirty-tracked-tree") == "dirty-tracked-tree"
-    assert jaxflow._map_refusal("malformed project") == "malformed project"
+    assert jaxflow_common._map_refusal("detached HEAD") == "detached-head"
+    assert jaxflow_common._map_refusal("builder cannot run on default branch") == "builder-on-default-branch"
+    assert jaxflow_common._map_refusal("runtime not allowed") == "runtime-not-allowed"
+    assert jaxflow_common._map_refusal("dirty-tracked-tree") == "dirty-tracked-tree"
+    assert jaxflow_common._map_refusal("malformed project") == "malformed project"
 
 
 # ---- not-a-git-toplevel ----
@@ -479,7 +483,7 @@ def test_dispatch_refuses_not_a_git_toplevel(capsys, monkeypatch):
             ["review", "--spec", str(root / "x.md")], run=_run_real, post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1"},
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "not-a-git-toplevel"
 
 
@@ -527,7 +531,7 @@ def test_dispatch_refuses_path_outside_allowlist(capsys, monkeypatch):
             ["review", "--spec", str(target)], run=_run_with_tmux(fake), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
 
 
@@ -552,7 +556,7 @@ def test_dispatch_refuses_secret_target_before_manifest_and_post(capsys, monkeyp
                 ["review", "--spec", str(target)], run=_run_with_tmux(fake, real_cwd=root), post=post,
                 env={"CLAUDECODE": "1"}, allowlist_root=allow_root,
             )
-            assert code == jaxflow.REFUSED
+            assert code == jaxflow_common.REFUSED
             assert capsys.readouterr().err.strip() == f"secret-detected: {target}"
         assert posted == []
         assert not (root / ".local" / "runs").exists()
@@ -573,7 +577,7 @@ def test_dispatch_refuses_secret_target_case_insensitive(capsys, monkeypatch):
             ["review", "--spec", str(target)], run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == f"secret-detected: {target}"
 
 
@@ -593,7 +597,7 @@ def test_worker_refuses_secret_manifest_target_without_reading_or_posting(capsys
         code = jaxflow.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen, allowlist_root=root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == f"secret-detected: {target}"
         assert events == []
         assert not (root / ".local" / "reports").exists()
@@ -620,7 +624,7 @@ def test_worker_refuses_secret_target_via_symlink_using_resolved_path(capsys):
         code = jaxflow.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen, allowlist_root=root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == f"secret-detected: {secret.resolve()}"
         assert events == []
         assert not (root / ".local" / "reports").exists()
@@ -647,7 +651,7 @@ def test_worker_refuses_target_outside_allowlist_root(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=post, popen=FakePopen,
             allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert events == []
         assert not (root / ".local" / "reports").exists()
@@ -674,7 +678,7 @@ def test_dispatch_posts_run_started_before_tmux_and_prints_run_id(capsys, monkey
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
         out = capsys.readouterr().out.strip()
-        assert code == jaxflow.OK
+        assert code == jaxflow_common.OK
         run_id = out
         assert len(run_id) == 12
         assert len(events) == 1
@@ -712,7 +716,7 @@ def test_dispatch_from_codex_caller_defaults_to_claude_sonnet_xhigh(capsys, monk
             env={"CODEX_THREAD_ID": "thr-1"}, allowlist_root=allow_root,
         )
         capsys.readouterr()
-        assert code == jaxflow.OK
+        assert code == jaxflow_common.OK
         payload = events[0]["payload"]
         assert payload["caller"] == "codex"
         assert payload["caller_session"] == "thr-1"
@@ -872,7 +876,7 @@ def test_dispatch_writes_pointer_for_claude_caller(monkeypatch):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
             now=_fixed_now, allowlist_root=allow_root,
         )
-        pointer_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{run_id}.json"
+        pointer_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{run_id}.json"
         data = json.loads(pointer_path.read_text(encoding="utf-8"))
         assert data == {"run_id": run_id, "kind": "spec"}
 
@@ -891,13 +895,13 @@ def test_dispatch_writes_pointer_for_build(monkeypatch):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
             now=_fixed_now, allowlist_root=allow_root,
         )
-        pointer_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{run_id}.json"
+        pointer_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{run_id}.json"
         data = json.loads(pointer_path.read_text(encoding="utf-8"))
         assert data == {"run_id": run_id, "kind": "build"}
 
 
 def test_dispatch_writes_pointer_for_build_resume(monkeypatch, tmp_path):
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
     _E2EBuilderPopen.launches = 0
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
@@ -931,7 +935,7 @@ def test_dispatch_writes_pointer_for_build_resume(monkeypatch, tmp_path):
             _build_args(resume=first_id), run=_run_with_tmux(fake, real_cwd=root),
             post=post, env=env, now=_fixed_now, allowlist_root=allow_root, db_path=db,
         )
-        pointer_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{second_id}.json"
+        pointer_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{second_id}.json"
         data = json.loads(pointer_path.read_text(encoding="utf-8"))
         assert data == {"run_id": second_id, "kind": "build"}
 
@@ -955,7 +959,7 @@ def test_dispatch_writes_pointer_for_diff_review(monkeypatch):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
         )
-        pointer_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{run_id}.json"
+        pointer_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / f"{run_id}.json"
         data = json.loads(pointer_path.read_text(encoding="utf-8"))
         assert data == {"run_id": run_id, "kind": "diff"}
 
@@ -974,7 +978,7 @@ def test_dispatch_no_pointer_on_no_callback(monkeypatch):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
             now=_fixed_now, allowlist_root=allow_root,
         )
-        assert not jaxflow.CALLBACKS_ROOT.exists()
+        assert not jaxflow_common.CALLBACKS_ROOT.exists()
 
 
 def test_dispatch_no_pointer_for_codex_caller(monkeypatch):
@@ -990,7 +994,7 @@ def test_dispatch_no_pointer_for_codex_caller(monkeypatch):
             post=lambda e: {"ok": True}, env={"CODEX_THREAD_ID": _CAPTURED_THREAD},
             now=_fixed_now, allowlist_root=allow_root,
         )
-        assert not jaxflow.CALLBACKS_ROOT.exists()
+        assert not jaxflow_common.CALLBACKS_ROOT.exists()
 
 
 def test_dispatch_no_pointer_for_noncanonical_session(monkeypatch, capsys):
@@ -1007,7 +1011,7 @@ def test_dispatch_no_pointer_for_noncanonical_session(monkeypatch, capsys):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "not-a-uuid"},
             now=_fixed_now, allowlist_root=allow_root,
         )
-        assert not jaxflow.CALLBACKS_ROOT.exists()
+        assert not jaxflow_common.CALLBACKS_ROOT.exists()
         err = capsys.readouterr().err
         # Cold review round 2 F4: run_id itself is a valid, canonical run id here (only caller_session is
         # forged) -- `ascii(run_id)[:80]` still applies and simply adds the repr quotes.
@@ -1036,7 +1040,7 @@ def test_dispatch_review_writes_no_pointer_on_tmux_failure(monkeypatch):
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
                 now=_fixed_now, allowlist_root=allow_root,
             )
-        session_dir = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
+        session_dir = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
         assert not session_dir.exists() or not any(session_dir.glob("*.json"))
 
 
@@ -1058,7 +1062,7 @@ def test_dispatch_build_writes_no_pointer_on_tmux_failure(monkeypatch):
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
                 now=_fixed_now, allowlist_root=allow_root,
             )
-        session_dir = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
+        session_dir = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
         assert not session_dir.exists() or not any(session_dir.glob("*.json"))
 
 
@@ -1086,12 +1090,12 @@ def test_dispatch_review_refuses_on_a_tmux_launch_exception_same_as_a_nonzero_ex
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
             allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert any(
             e["type"] == "run-finished" and e["payload"]["contract_status"] == "cancelled"
             for e in events
         )
-        session_dir = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
+        session_dir = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
         assert not session_dir.exists() or not any(session_dir.glob("*.json"))
 
 
@@ -1117,7 +1121,7 @@ def test_dispatch_build_writes_no_pointer_when_launcher_raises(monkeypatch):
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
                 now=_fixed_now, allowlist_root=allow_root,
             )
-        session_dir = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
+        session_dir = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
         assert not session_dir.exists() or not any(session_dir.glob("*.json"))
 
 
@@ -1149,7 +1153,7 @@ def test_dispatch_warns_when_hook_missing(monkeypatch, tmp_path, capsys):
         target = _spec_file(root)
         monkeypatch.chdir(root)
         missing = tmp_path / "settings.json"  # never written -- read raises OSError
-        monkeypatch.setattr(jaxflow, "CLAUDE_SETTINGS_PATH", missing)
+        monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", missing)
         fake = FakeTmux()
         run_id = jaxflow.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
@@ -1193,7 +1197,7 @@ def test_dispatch_warns_when_hook_settings_malformed_json(monkeypatch, tmp_path,
         monkeypatch.chdir(root)
         bad_settings = tmp_path / "settings.json"
         bad_settings.write_text("{not json", encoding="utf-8")
-        monkeypatch.setattr(jaxflow, "CLAUDE_SETTINGS_PATH", bad_settings)
+        monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", bad_settings)
         fake = FakeTmux()
         run_id = jaxflow.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
@@ -1223,7 +1227,7 @@ def test_dispatch_warns_when_hook_settings_have_a_malformed_shape(monkeypatch, t
         monkeypatch.chdir(root)
         settings_path = tmp_path / "settings.json"
         settings_path.write_text(json.dumps(settings), encoding="utf-8")
-        monkeypatch.setattr(jaxflow, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", settings_path)
         fake = FakeTmux()
         run_id = jaxflow.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
@@ -1240,7 +1244,7 @@ def test_dispatch_warns_when_hook_settings_have_a_malformed_shape(monkeypatch, t
 def test_dispatch_rejects_unsafe_run_id_for_pointer(monkeypatch, capsys, unsafe_hex):
     # §5.1: dispatch run ids come from uuid4, so this gate is defense in depth -- an
     # injected non-canonical id still dispatches, writes no pointer, and warns once.
-    monkeypatch.setattr(jaxflow.uuid, "uuid4", lambda: SimpleNamespace(hex=unsafe_hex))
+    monkeypatch.setattr(uuid, "uuid4", lambda: SimpleNamespace(hex=unsafe_hex))
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
@@ -1255,7 +1259,7 @@ def test_dispatch_rejects_unsafe_run_id_for_pointer(monkeypatch, capsys, unsafe_
             now=_fixed_now, allowlist_root=allow_root,
         )
         assert run_id == unsafe_hex[:12]
-        assert not jaxflow.CALLBACKS_ROOT.exists()
+        assert not jaxflow_common.CALLBACKS_ROOT.exists()
         err = capsys.readouterr().err
         warning = f"callback pointer write failed: {ascii(run_id)[:80]} path-unsafe; use jaxflow status/result"
         assert err.count(warning) == 1
@@ -1292,7 +1296,7 @@ def test_dispatch_warns_when_hook_present_but_not_structurally(monkeypatch, tmp_
                 ],
             }
         }), encoding="utf-8")
-        monkeypatch.setattr(jaxflow, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", settings_path)
         fake = FakeTmux()
         run_id = jaxflow.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
@@ -1320,7 +1324,7 @@ def test_dispatch_detached_head_maps_to_kebab_code(capsys, monkeypatch):
             ["review", "--spec", str(target)], run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "detached-head"
 
 
@@ -1348,9 +1352,9 @@ def test_dispatch_quotes_tmux_command_for_space_and_semicolon_in_repo_path(monke
         assert ";" in cmd
         # fixes cold review F4: the worker PROCESS is sealed from birth via an `env`
         # prefix in the launch command itself, not by writing os.environ after the fact.
-        assert jaxflow.shlex.split(cmd) == [
+        assert shlex.split(cmd) == [
             "env", "HONCHO_ENABLED=false", "JAXFLOW_ONESHOT=1",
-            jaxflow.sys.executable, str(jaxflow.SCRIPT_PATH), "--run-worker", str(manifest_path),
+            sys.executable, str(jaxflow_common.SCRIPT_PATH), "--run-worker", str(manifest_path),
         ]
 
 
@@ -1571,7 +1575,7 @@ def test_doc_review_file_inputs_and_directory_grants(monkeypatch, caller, runtim
                 captured["child"] = self
 
         monkeypatch.setattr(
-            jaxflow, "_update_status_md",
+            jaxflow_common, "_update_status_md",
             lambda state, **kwargs: captured.update(gate=state.get("spec_gate_required")),
         )
         assert jaxflow.run_worker(
@@ -1613,7 +1617,7 @@ def test_doc_review_refuses_outside_repo_before_directory_grant(capsys):
         assert jaxflow.run_worker(
             str(manifest_path), popen=no_child, post=lambda event: {"ok": True},
             allowlist_root=allowed,
-        ) == jaxflow.REFUSED
+        ) == jaxflow_common.REFUSED
         assert "path-outside-allowlist" in capsys.readouterr().err
 
 
@@ -2078,9 +2082,9 @@ def test_worker_builder_signal_posts_interrupted_with_real_head_and_checkpoint(m
         assert payload["stage"] == "worker"
         assert payload["diagnostic"] == "worker interrupted by SIGTERM"
         assert payload["head_sha"] == head_sha
-        spool_path = jaxflow._spool_path(root, manifest["run_id"])
+        spool_path = jaxflow_common._spool_path(root, manifest["run_id"])
         assert not spool_path.exists()  # delivered (post returned {"ok": True}) -> deleted
-        assert not (jaxflow._manifest_dir(root, manifest["run_id"]) / "resume-checkpoint.json").exists()
+        assert not (jaxflow_common._manifest_dir(root, manifest["run_id"]) / "resume-checkpoint.json").exists()
 
 
 def test_worker_builder_signal_writes_checkpoint_for_managed_run(tmp_path, monkeypatch):
@@ -2118,7 +2122,7 @@ def test_worker_builder_signal_writes_checkpoint_for_managed_run(tmp_path, monke
         popen=popen, killpg=lambda pgid, sig: None, allowlist_root=allow_root,
     )
     assert [e["payload"]["contract_status"] for e in events] == ["interrupted"]
-    checkpoint_path = jaxflow._manifest_dir(root, manifest["run_id"]) / "resume-checkpoint.json"
+    checkpoint_path = jaxflow_common._manifest_dir(root, manifest["run_id"]) / "resume-checkpoint.json"
     assert checkpoint_path.exists()
     assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["outcome"] == "failure"
 
@@ -2283,7 +2287,7 @@ def test_worker_post_failure_prints_delivery_failed_and_leaves_callback_line_exa
             str(manifest_path), run=_run_with_tmux(fake), post=post, popen=FakePopen, allowlist_root=root,
         )
         assert code == 0
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / "aaaabbbbcccc.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / "aaaabbbbcccc.line"
         line = line_path.read_text(encoding="utf-8").rstrip("\n")
         report = root / ".local" / "reports" / "aaaabbbbcccc.md"
         assert line == (
@@ -2301,7 +2305,7 @@ def test_worker_no_callback_flag_sends_nothing(monkeypatch, caller):
         target = _spec_file(root)
         fake = FakeTmux()
         monkeypatch.setattr(
-            jaxflow.subprocess, "run",
+            subprocess, "run",
             lambda argv, **kwargs: pytest.fail(f"queue invoked under no_callback: {argv}"),
         )
         manifest_path, manifest = _write_manifest_for_worker(
@@ -2312,7 +2316,7 @@ def test_worker_no_callback_flag_sends_nothing(monkeypatch, caller):
             allowlist_root=root,
         )
         assert not any(c[1] == "send-keys" for c in fake.calls)
-        assert not jaxflow.CALLBACKS_ROOT.exists() or not any(jaxflow.CALLBACKS_ROOT.rglob("*.line"))
+        assert not jaxflow_common.CALLBACKS_ROOT.exists() or not any(jaxflow_common.CALLBACKS_ROOT.rglob("*.line"))
 
 
 _CAPTURED_THREAD = "11111111-2222-4333-8444-555555555555"
@@ -2326,14 +2330,14 @@ def _forbidden_tmux(argv, cwd=None):
 
 
 def _intercept_codex_queue(monkeypatch, impl):
-    original = jaxflow.subprocess.run
+    original = subprocess.run
 
     def wrapped(argv, **kwargs):
         if list(argv[:2]) == ["codex", "queue"]:
             return impl(argv, **kwargs)
         return original(argv, **kwargs)
 
-    monkeypatch.setattr(jaxflow.subprocess, "run", wrapped)
+    monkeypatch.setattr(subprocess, "run", wrapped)
 
 
 @pytest.mark.parametrize("kind", ["spec", "plan", "diff", "build"])
@@ -2341,14 +2345,14 @@ def _intercept_codex_queue(monkeypatch, impl):
 def test_codex_callback_targets_captured_thread(monkeypatch, kind, pane):
     captured = _CAPTURED_THREAD
     monkeypatch.setenv("CODEX_THREAD_ID", _WORKER_THREAD)
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
+    monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
     calls = []
 
     def queue(argv, **kwargs):
         calls.append((argv, kwargs))
         return CompletedProcess(argv, 0, b"accepted", b"")
 
-    monkeypatch.setattr(jaxflow.subprocess, "run", queue)
+    monkeypatch.setattr(subprocess, "run", queue)
     manifest = dict(run_id="aaaabbbbcccc", caller="codex",
                     caller_session=captured, caller_pane=pane,
                     caller_incarnation="111:222")
@@ -2366,10 +2370,10 @@ def test_codex_callback_targets_captured_thread(monkeypatch, kind, pane):
 ])
 def test_no_callback_skips_queue_and_tmux(monkeypatch, caller, session):
     monkeypatch.setattr(
-        jaxflow.subprocess, "run",
+        subprocess, "run",
         lambda argv, **kwargs: pytest.fail(f"queue invoked under no_callback: {argv}"),
     )
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: pytest.fail("sleep under no_callback"))
+    monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("sleep under no_callback"))
     manifest = dict(run_id="aaaabbbbcccc", caller=caller, caller_session=session,
                     caller_pane="%3", caller_incarnation="111:222", no_callback=True)
     jaxflow._send_callback(
@@ -2388,10 +2392,10 @@ def test_no_callback_skips_queue_and_tmux(monkeypatch, caller, session):
 ])
 def test_codex_callback_invalid_session_warns_without_delivery(monkeypatch, capsys, session):
     monkeypatch.setattr(
-        jaxflow.subprocess, "run",
+        subprocess, "run",
         lambda argv, **kwargs: pytest.fail(f"queue invoked for invalid session: {argv}"),
     )
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: pytest.fail("sleep on invalid session"))
+    monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("sleep on invalid session"))
     manifest = dict(run_id="aaaabbbbcccc", caller="codex", caller_session=session,
                     caller_pane="%3", caller_incarnation="111:222")
     jaxflow._send_callback(
@@ -2412,7 +2416,7 @@ def test_codex_callback_invalid_session_warns_without_delivery(monkeypatch, caps
 ])
 def test_codex_callback_queue_failures_warn_once_without_tmux(monkeypatch, capsys, mode, category):
     monkeypatch.setenv("CODEX_THREAD_ID", _WORKER_THREAD)
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
+    monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
     calls = []
 
     def queue(argv, **kwargs):
@@ -2426,7 +2430,7 @@ def test_codex_callback_queue_failures_warn_once_without_tmux(monkeypatch, capsy
             raise subprocess.TimeoutExpired(argv, 10, output=secret, stderr=secret)
         raise OSError(_CALLBACK_SECRET)
 
-    monkeypatch.setattr(jaxflow.subprocess, "run", queue)
+    monkeypatch.setattr(subprocess, "run", queue)
     manifest = dict(run_id="aaaabbbbcccc", caller="codex",
                     caller_session=_CAPTURED_THREAD, caller_pane="%3",
                     caller_incarnation="111:222")
@@ -2459,7 +2463,7 @@ def test_post_event_treats_409_as_delivered_not_a_failure():
             def __exit__(self_, *a):
                 return False
         return Resp()
-    result = jaxflow._post_event({"x": 1}, opener=opener)
+    result = jaxflow_common._post_event({"x": 1}, opener=opener)
     # The plan's draft test asserted the decoded body here; the plan's own Step 1.4
     # implementation returns this explicit marker instead, so a caller can never
     # confuse a 409 with a 200 {ok:false} (which still raises and keeps the spool).
@@ -2478,17 +2482,17 @@ def test_post_event_still_raises_on_a_real_500():
                 return False
         return Resp()
     with pytest.raises(RuntimeError):
-        jaxflow._post_event({"x": 1}, opener=opener)
+        jaxflow_common._post_event({"x": 1}, opener=opener)
 
 
 def test_spool_write_read_delete_roundtrip(tmp_path):
     repo = tmp_path / "demo"
     repo.mkdir()
     event = {"run_id": "aaaabbbbcccc", "payload": {"result": "failure"}}
-    path = jaxflow._write_spool(repo, "aaaabbbbcccc", event)
-    assert path == jaxflow._spool_path(repo, "aaaabbbbcccc")
+    path = jaxflow_common._write_spool(repo, "aaaabbbbcccc", event)
+    assert path == jaxflow_common._spool_path(repo, "aaaabbbbcccc")
     assert json.loads(path.read_text(encoding="utf-8")) == event
-    jaxflow._delete_spool(repo, "aaaabbbbcccc")
+    jaxflow_common._delete_spool(repo, "aaaabbbbcccc")
     assert not path.exists()
 
 
@@ -2500,7 +2504,7 @@ def test_refusal_paths_spool_before_post_keep_on_failure_delete_on_delivery(tmp_
     root = tmp_path / "demo"
     _init_repo(root)
     run_id = "aaaabbbbcccc"
-    run_dir = jaxflow._manifest_dir(root, run_id)
+    run_dir = jaxflow_common._manifest_dir(root, run_id)
     run_dir.mkdir(parents=True)
     manifest_path = run_dir / "manifest.json"
     manifest = dict(run_id=run_id, project="demo", phase="P1", kind="build")
@@ -2547,7 +2551,7 @@ def test_send_callback_omits_stage_segment_on_the_happy_path(kind):
         manifest, run=_forbidden_tmux, kind=kind, outcome="success",
         summary="done", report_path="/report.md",
     )
-    line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
+    line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
         f"[JAXFLOW] {kind} aaaabbbbcccc finished — success — /report.md\n"
     )
@@ -2560,7 +2564,7 @@ def test_send_callback_renders_stage_diagnostic_and_report_flag():
         summary="unused", report_path="/report.md", stage="runtime",
         diagnostic="APIError 403 budget exceeded", contract_status="invalid",
     )
-    line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
+    line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
         "[JAXFLOW] build aaaabbbbcccc finished — failure · runtime — "
         "APIError 403 budget exceeded [report invalid] — /report.md\n"
@@ -2574,7 +2578,7 @@ def test_send_callback_renders_no_report_literal_and_ledger_pending():
         report_path=None, stage="worker", diagnostic="worker interrupted by SIGTERM",
         ledger_pending=True,
     )
-    line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
+    line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
         "[JAXFLOW] build aaaabbbbcccc finished — failure · worker — "
         "worker interrupted by SIGTERM — no report · ledger pending\n"
@@ -2588,7 +2592,7 @@ def test_send_callback_never_flags_report_status_on_ok_cancelled_or_interrupted(
             manifest, run=_forbidden_tmux, kind="build", outcome="x", summary="unused",
             report_path=None, contract_status=status,
         )
-        line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
         assert "[report" not in line_path.read_text(encoding="utf-8")
 
 
@@ -2600,7 +2604,7 @@ def test_send_callback_claude_skips_line_for_noncanonical_session(capsys):
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
-    assert not (jaxflow.CALLBACKS_ROOT / "not-a-uuid").exists()
+    assert not (jaxflow_common.CALLBACKS_ROOT / "not-a-uuid").exists()
     err = capsys.readouterr().err.strip()
     assert err == "callback delivery failed: 'aaaabbbbcccc' path-unsafe; use jaxflow status/result"
 
@@ -2620,7 +2624,7 @@ def test_send_callback_claude_rejects_unsafe_run_id(capsys, bad_run_id):
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
-    session_dir = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
+    session_dir = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
     assert not session_dir.exists() or not any(session_dir.iterdir())
     err = capsys.readouterr().err.strip()
     assert err == (
@@ -2634,10 +2638,10 @@ def test_send_callback_publish_failure_does_not_affect_result(monkeypatch, capsy
     # A CALLBACKS_ROOT that is itself a FILE makes `session_dir.mkdir()` raise
     # NotADirectoryError (an OSError subclass) -- the write-error branch, not the
     # path-safety gate (caller_session/run_id are both well-formed here).
-    blocked = jaxflow.CALLBACKS_ROOT.parent / "callbacks-is-a-file"
+    blocked = jaxflow_common.CALLBACKS_ROOT.parent / "callbacks-is-a-file"
     blocked.parent.mkdir(parents=True, exist_ok=True)
     blocked.write_text("", encoding="utf-8")
-    monkeypatch.setattr(jaxflow, "CALLBACKS_ROOT", blocked / "unreachable")
+    monkeypatch.setattr(jaxflow_common, "CALLBACKS_ROOT", blocked / "unreachable")
     manifest = dict(
         run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID,
     )
@@ -2663,7 +2667,7 @@ def test_send_callback_codex_path_unchanged_with_no_pane_fields(monkeypatch):
         calls.append((argv, kwargs))
         return CompletedProcess(argv, 0, b"accepted", b"")
 
-    monkeypatch.setattr(jaxflow.subprocess, "run", queue)
+    monkeypatch.setattr(subprocess, "run", queue)
     manifest = dict(run_id="aaaabbbbcccc", caller="codex", caller_session=_CAPTURED_THREAD)
     jaxflow._send_callback(
         manifest, run=_forbidden_tmux, kind="build", outcome="success",
@@ -2673,7 +2677,7 @@ def test_send_callback_codex_path_unchanged_with_no_pane_fields(monkeypatch):
         "codex", "queue", "--thread", _CAPTURED_THREAD, "--message",
         "[JAXFLOW] build aaaabbbbcccc finished — success — /report.md",
     ], dict(stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False))]
-    assert not jaxflow.CALLBACKS_ROOT.exists()
+    assert not jaxflow_common.CALLBACKS_ROOT.exists()
 
 
 def test_send_callback_claude_writes_line_file_on_builder_success():
@@ -2688,7 +2692,7 @@ def test_send_callback_claude_writes_line_file_on_builder_success():
             post=lambda e: {"ok": True}, popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
         assert code == 0
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
         assert line_path.read_text(encoding="utf-8").startswith(
             f"[JAXFLOW] build {manifest['run_id']} finished — success"
         )
@@ -2712,7 +2716,7 @@ def test_send_callback_claude_writes_line_file_on_diff_review_success():
             post=lambda e: {"ok": True}, popen=FakePopen, allowlist_root=root.parent,
         )
         assert code == 0
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
         assert line_path.read_text(encoding="utf-8").startswith(
             f"[JAXFLOW] diff {manifest['run_id']} finished — approve"
         )
@@ -2729,7 +2733,7 @@ def test_send_callback_claude_writes_line_file_on_doc_review_success():
             popen=FakePopen, allowlist_root=root,
         )
         assert code == 0
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
         assert line_path.read_text(encoding="utf-8").startswith(
             f"[JAXFLOW] spec {manifest['run_id']} finished — approve"
         )
@@ -2742,7 +2746,7 @@ def test_worker_codex_callback_queue_failure_still_finalizes(monkeypatch, capsys
         target = _spec_file(root)
         fake = FakeTmux()
         monkeypatch.setenv("CODEX_THREAD_ID", _WORKER_THREAD)
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
+        monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
         queue_calls = []
 
         def queue(argv, **kwargs):
@@ -2752,7 +2756,7 @@ def test_worker_codex_callback_queue_failure_still_finalizes(monkeypatch, capsys
         _intercept_codex_queue(monkeypatch, queue)
         status_calls = []
         monkeypatch.setattr(
-            jaxflow, "_update_status_md",
+            jaxflow_common, "_update_status_md",
             lambda manifest, **kwargs: status_calls.append(dict(manifest)),
         )
         events = []
@@ -3216,7 +3220,7 @@ def test_result_builder_reads_worktree_report(case, code):
 
 
 def test_cancel_unknown_already_finished_and_happy_path(monkeypatch):
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
     with TemporaryDirectory() as raw:
         db = Path(raw) / "jaxos.db"
         con = _fresh_db(db)
@@ -3273,7 +3277,7 @@ def test_cancel_post_status_outcomes(monkeypatch):
     raising only on a transport error), so cmd_cancel can tell a real 409 (someone else's
     terminal row won the race, §2.4) apart from a plain server error or a dropped
     connection -- the earlier draft mapped every one of those to `already-finished`."""
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
     with TemporaryDirectory() as raw:
         db = Path(raw) / "jaxos.db"
         con = _fresh_db(db)
@@ -3324,7 +3328,7 @@ def test_cancel_post_status_outcomes(monkeypatch):
 
 
 def test_cancel_older_attempt_does_not_kill_resumed_session(monkeypatch):
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
     with TemporaryDirectory() as raw:
         db = Path(raw) / "jaxos.db"
         con = _fresh_db(db)
@@ -3356,7 +3360,7 @@ def test_cancel_older_attempt_does_not_kill_resumed_session(monkeypatch):
 
 
 def test_cancel_succeeds_while_worktree_claim_held(tmp_path, monkeypatch):
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
     import jaxflow_resume as jresume
 
     db = tmp_path / "jaxos.db"
@@ -3413,7 +3417,7 @@ def test_cancel_reports_finalized_by_worker_when_the_row_lands_before_the_deadli
                 })
                 con2.close()
 
-        monkeypatch.setattr(jaxflow.time, "sleep", fake_sleep)
+        monkeypatch.setattr(time, "sleep", fake_sleep)
         out = jaxflow.cmd_cancel(
             "aaaabbbbcccc", run=_run_with_tmux(fake),
             post=lambda url, body: pytest.fail("must not double-post once the worker won"),
@@ -3445,8 +3449,8 @@ def test_cancel_reposts_the_spool_when_no_row_landed_but_a_spool_file_did(monkey
                 "diagnostic": "worker interrupted by SIGHUP", "head_sha": None, "result": "failure",
             },
         }
-        jaxflow._write_spool(repo, "aaaabbbbcccc", spooled_event)
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+        jaxflow_common._write_spool(repo, "aaaabbbbcccc", spooled_event)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
         posted = []
 
         def post(url, body):
@@ -3456,7 +3460,7 @@ def test_cancel_reposts_the_spool_when_no_row_landed_but_a_spool_file_did(monkey
         out = jaxflow.cmd_cancel("aaaabbbbcccc", run=_run_with_tmux(fake), post=post, now=now, db_path=db)
         assert out == "finalized from spool — failure · worker — worker interrupted by SIGHUP"
         assert posted == [spooled_event]
-        assert not jaxflow._spool_path(repo, "aaaabbbbcccc").exists()
+        assert not jaxflow_common._spool_path(repo, "aaaabbbbcccc").exists()
 
 
 def test_cancel_refuses_hub_unreachable_instead_of_overwriting_a_pending_spool(monkeypatch):
@@ -3484,19 +3488,19 @@ def test_cancel_refuses_hub_unreachable_instead_of_overwriting_a_pending_spool(m
                 "diagnostic": "worker interrupted by SIGHUP", "head_sha": None, "result": "failure",
             },
         }
-        jaxflow._write_spool(repo, "aaaabbbbcccc", spooled_event)
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+        jaxflow_common._write_spool(repo, "aaaabbbbcccc", spooled_event)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
         posted = []
 
         def post(url, body):
             posted.append(body)
             return 200, {"ok": False, "error": "invalid event"}
 
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_cancel("aaaabbbbcccc", run=_run_with_tmux(FakeTmux()), post=post, now=now, db_path=db)
         assert exc.value.code == "hub-rejected: 200 invalid event"
         assert posted == [spooled_event]  # the spool was tried, the cancelled row never was
-        assert jaxflow._spool_path(repo, "aaaabbbbcccc").exists()
+        assert jaxflow_common._spool_path(repo, "aaaabbbbcccc").exists()
 
 
 def test_cancel_falls_back_to_a_plain_cancelled_row_when_neither_a_row_nor_a_spool_exists(monkeypatch):
@@ -3510,7 +3514,7 @@ def test_cancel_falls_back_to_a_plain_cancelled_row_when_neither_a_row_nor_a_spo
         fake = FakeTmux()
         import datetime as _dt
         now = lambda: _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+        monkeypatch.setattr(time, "sleep", lambda s: None)
         events = []
 
         def post(url, body):
@@ -3538,7 +3542,7 @@ def test_build_refuses_not_a_git_toplevel(capsys, monkeypatch):
             run=_run_with_tmux(fake, real_cwd=outside), post=lambda e: {"ok": True},
             env={}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "not-a-git-toplevel"
         assert fake.calls == []
 
@@ -3561,7 +3565,7 @@ def test_build_refuses_caller_unknown_with_no_side_effects(capsys, monkeypatch):
             run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
             env={}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "caller-unknown"
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
@@ -3584,7 +3588,7 @@ def test_build_refuses_caller_session_missing_before_worktree_reservation(capsys
             env={}, allowlist_root=allow_root,
         )
         err = capsys.readouterr().err.strip().splitlines()
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert err[0] == "caller-session-missing"
         assert "CODEX_THREAD_ID" in err[1]
         assert fake.calls == []
@@ -3608,7 +3612,7 @@ def test_build_refuses_plan_path_outside_allowlist(capsys, monkeypatch):
             run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
@@ -3633,7 +3637,7 @@ def test_build_refuses_secret_plan_path_variants(capsys, monkeypatch):
                 run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
             )
-            assert code == jaxflow.REFUSED
+            assert code == jaxflow_common.REFUSED
             assert capsys.readouterr().err.strip() == f"secret-detected: {plan}"
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
@@ -3658,7 +3662,7 @@ def test_build_refuses_secret_plan_path_via_symlink(capsys, monkeypatch):
             run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == f"secret-detected: {secret.resolve()}"
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
@@ -3690,7 +3694,7 @@ def test_build_refuses_effort_override_for_opencode_runtime_before_reservation(c
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
             )
             expected_runtime = builder or jaxflow.BUILDER_DEFAULT
-            assert code == jaxflow.REFUSED
+            assert code == jaxflow_common.REFUSED
             assert capsys.readouterr().err.strip() == f"effort-not-supported: {expected_runtime}"
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
@@ -3801,7 +3805,7 @@ def test_build_fallback_cli_uninitialized(capsys, monkeypatch):
             run=_run_with_tmux(FakeTmux(), real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "agent-settings-uninitialized"
         assert not (allow_root / "demo-feat-x").exists()
 
@@ -3913,7 +3917,7 @@ def test_build_refuses_codex_as_a_builder_runtime(capsys, monkeypatch):
             run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert "runtime-not-allowed" in capsys.readouterr().err
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
@@ -4689,7 +4693,7 @@ def test_fresh_build_refuses_missing_required_flags(monkeypatch, tmp_path, capsy
         env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
         now=_fixed_now, allowlist_root=tmp_path,
     )
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     captured = capsys.readouterr()
     assert captured.err.strip() == "build-missing-required-flags"
     assert captured.out == ""
@@ -4936,7 +4940,7 @@ class _E2EBuilderPopen:
 def test_build_resume_fallback_e2e_reuses_worktree_and_keeps_original_base(monkeypatch, tmp_path):
     import jaxflow_resume as jresume
 
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
     _E2EBuilderPopen.launches = 0
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
@@ -5017,7 +5021,7 @@ def test_build_resume_fallback_e2e_reuses_worktree_and_keeps_original_base(monke
         assert (worktree / ".local" / "reports" / f"{first_id}.tests.txt").read_bytes() == first_tests
         assert _checkpoint_path(root, first_id).read_bytes() == first_checkpoint
         caller_session = second_manifest["caller_session"]
-        session_dir = jaxflow.CALLBACKS_ROOT / caller_session
+        session_dir = jaxflow_common.CALLBACKS_ROOT / caller_session
         first_line = (session_dir / f"{first_id}.line").read_text(encoding="utf-8")
         second_line = (session_dir / f"{second_id}.line").read_text(encoding="utf-8")
         assert first_id in first_line
@@ -5026,7 +5030,7 @@ def test_build_resume_fallback_e2e_reuses_worktree_and_keeps_original_base(monke
 
 
 def test_build_resume_uses_current_saved_profile_after_settings_change(monkeypatch, tmp_path):
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
     _E2EBuilderPopen.launches = 0
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
@@ -5345,8 +5349,8 @@ def _tl2_bind(cfg):
     jr.DB_PATH = Path(cfg["db"])
     jset.SETTINGS_PATH = Path(cfg["settings"])
     # A spawned child re-imports jaxflow, so the autouse callback isolation does not reach it.
-    jaxflow.CALLBACKS_ROOT = Path(cfg["callbacks"])
-    jaxflow.CLAUDE_SETTINGS_PATH = Path(cfg["claude_settings"])
+    jaxflow_common.CALLBACKS_ROOT = Path(cfg["callbacks"])
+    jaxflow_common.CLAUDE_SETTINGS_PATH = Path(cfg["claude_settings"])
     os.chdir(cfg["root"])
 
 
@@ -5733,9 +5737,9 @@ def test_build_quotes_tmux_command_for_space_and_semicolon_in_repo_path(monkeypa
         new_session_call = next(c for c in fake.calls if c[1] == "new-session")
         cmd = new_session_call[-1]
         manifest_path = root / ".local" / "runs" / run_id / "manifest.json"
-        assert jaxflow.shlex.split(cmd) == [
+        assert shlex.split(cmd) == [
             "env", "HONCHO_ENABLED=false", "JAXFLOW_ONESHOT=1",
-            jaxflow.sys.executable, str(jaxflow.SCRIPT_PATH), "--run-worker", str(manifest_path),
+            sys.executable, str(jaxflow_common.SCRIPT_PATH), "--run-worker", str(manifest_path),
         ]
 
 
@@ -5775,7 +5779,7 @@ def test_build_builder_override_and_runtime_not_allowed_end_to_end(capsys, monke
             run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "runtime-not-allowed"
         assert not (allow_root / "demo-feat-z").exists()
 
@@ -5862,7 +5866,7 @@ def test_status_md_missing_file_is_a_silent_noop():
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve()
         manifest = {"repo": str(root), "kind": "build", "runtime": "opencode-grok"}
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         assert not (root / ".jax-os").exists()
 
 
@@ -5881,7 +5885,7 @@ def test_status_md_forged_repo_outside_allowlist_is_skipped_before_any_read(caps
             "worker_summary": "built the thing", "worker_contract_status": "ok",
             "worker_outcome": "success",
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=allow_root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=allow_root)
         assert status_path.read_text(encoding="utf-8") == before
         assert "status.md: skipped (repo outside allowlist)" in capsys.readouterr().out
 
@@ -5896,7 +5900,7 @@ def test_status_md_build_run_preserves_unmanaged_fields_and_residuals():
             "worker_summary": "built the thing", "worker_contract_status": "ok",
             "worker_outcome": "success",
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         text = status_path.read_text(encoding="utf-8")
         assert "project: Demo Project" in text
         assert "tmux: demo-session" in text
@@ -5922,7 +5926,7 @@ def test_status_md_stale_write_guard_skips_when_file_is_newer(capsys):
             "worker_summary": "built the thing", "worker_contract_status": "ok",
             "worker_outcome": "success",
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         assert status_path.read_text(encoding="utf-8") == before
         assert "status.md: skipped stale write" in capsys.readouterr().out
 
@@ -5941,13 +5945,13 @@ def test_status_md_gate_rules_for_diff_verdict_and_no_gate_otherwise():
             "worker_summary": "reject — 1 HIGH", "worker_contract_status": "ok",
             "worker_outcome": "reject",
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         assert "gate:" not in status_path.read_text(encoding="utf-8")
 
         status_path2 = _write_status_md(root)
         manifest["worker_outcome"] = "approve"
         manifest["worker_summary"] = "approve — clean"
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         text = status_path2.read_text(encoding="utf-8")
         assert "gate: awaiting-approval" in text
         assert "stage: review" in text
@@ -5967,19 +5971,19 @@ def test_status_md_spec_review_gate_requires_both_no_high_and_header_opt_in():
         # verdict approve, but the reviewed doc did NOT opt in -> no gate.
         status_path = _write_status_md(root)
         manifest = dict(base_manifest, spec_gate_required=False)
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         assert "gate:" not in status_path.read_text(encoding="utf-8")
 
         # verdict reject, doc DID opt in -> still no gate (HIGH findings exist).
         status_path2 = _write_status_md(root)
         manifest2 = dict(base_manifest, worker_outcome="reject", spec_gate_required=True)
-        jaxflow._update_status_md(manifest2, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest2, run=_run_real, allowlist_root=root)
         assert "gate:" not in status_path2.read_text(encoding="utf-8")
 
         # both true -> gate.
         status_path3 = _write_status_md(root)
         manifest3 = dict(base_manifest, worker_outcome="approve-with-changes", spec_gate_required=True)
-        jaxflow._update_status_md(manifest3, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest3, run=_run_real, allowlist_root=root)
         assert "gate: awaiting-approval" in status_path3.read_text(encoding="utf-8")
         assert "stage: spec" in status_path3.read_text(encoding="utf-8")
 
@@ -5995,7 +5999,7 @@ def test_status_md_unparseable_frontmatter_is_a_silent_skip(capsys):
             "branch": "feat/demo", "dispatch_start": _AFTER_TEMPLATE_UPDATED,
             "worker_summary": "x", "worker_contract_status": "ok", "worker_outcome": "success",
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         assert status_path.read_text(encoding="utf-8") == "not frontmatter at all\n"
         assert "status.md: unparseable frontmatter" in capsys.readouterr().out
 
@@ -6015,7 +6019,7 @@ def test_status_md_malformed_timestamp_does_not_crash_and_proceeds():
             "worker_summary": "built the thing", "worker_contract_status": "ok",
             "worker_outcome": "success",
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         text = status_path.read_text(encoding="utf-8")
         assert "## Now\nbuilt the thing" in text
         assert "stage: build" in text
@@ -6037,7 +6041,7 @@ def test_status_md_current_branch_run_error_is_a_silent_skip(capsys):
         def raising_run(argv, cwd=None):
             raise OSError("git not found")
 
-        jaxflow._update_status_md(manifest, run=raising_run, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=raising_run, allowlist_root=root)
         assert status_path.read_text(encoding="utf-8") == before
         assert "status.md: skipped" in capsys.readouterr().out
 
@@ -6057,7 +6061,7 @@ def test_status_md_write_oserror_is_a_silent_skip(capsys):
         }
         os.chmod(status_path, 0o400)  # read-only
         try:
-            jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+            jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         finally:
             os.chmod(status_path, 0o600)  # restore so TemporaryDirectory can clean up
         assert status_path.read_text(encoding="utf-8") == _STATUS_TEMPLATE
@@ -6091,7 +6095,7 @@ def test_status_md_byte_preserves_unmanaged_frontmatter_with_crlf_and_noncanonic
             "worker_summary": "built the thing", "worker_contract_status": "ok",
             "worker_outcome": "success",
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root)
         # fixture fix (execution rule): `Path.read_text` without `newline=""` applies
         # universal-newline translation, silently converting the CRLF this assertion is
         # trying to observe back to LF -- the same gap the production read needed fixing
@@ -6224,7 +6228,7 @@ def test_worker_builder_refuses_forged_run_id_before_any_path_construction(capsy
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         err_lines = capsys.readouterr().err.strip().splitlines()
         assert err_lines[0] == "path-outside-allowlist"
         assert err_lines[1] == (
@@ -6266,7 +6270,7 @@ def test_worker_builder_refuses_worktree_mismatched_from_manifest_derivation(cap
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert fake.calls == []
         assert len(events) == 1
@@ -6275,7 +6279,7 @@ def test_worker_builder_refuses_worktree_mismatched_from_manifest_derivation(cap
         # neither the real worktree nor the forged "other" path is ever touched.
         assert worktree.is_dir()
         assert other.is_dir()
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
         assert line_path.read_text(encoding="utf-8").startswith(
             f"[JAXFLOW] build {manifest['run_id']} finished — cancelled — no report"
         )
@@ -6303,7 +6307,7 @@ def test_worker_builder_refuses_worktree_outside_allowlist_root(capsys):
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert fake.calls == []
         assert len(events) == 1
@@ -6338,7 +6342,7 @@ def test_worker_builder_refuses_branch_target_mismatch_before_validation_leaves_
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
@@ -6373,7 +6377,7 @@ def test_worker_builder_refusal_after_validation_cleans_up_the_validated_target_
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
         # the real worktree/branch this run owns (feat/x, derived from "target") is
@@ -6409,13 +6413,13 @@ def test_worker_builder_manifest_missing_plan_path_is_a_cleaned_refusal(capsys):
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         capsys.readouterr()
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
         assert events[0]["payload"]["summary"] == "manifest missing plan_path"
 
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
         assert line_path.read_text(encoding="utf-8").rstrip("\n") == (
             f"[JAXFLOW] build {manifest['run_id']} finished — cancelled — no report"
         )
@@ -6604,7 +6608,7 @@ def _run_failing_builder(root, worktree, fake, *, verify):
         post=lambda event: events.append(event) or {"ok": True},
         popen=FailingReportPopen, allowlist_root=root.parent,
     )
-    line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+    line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
     return events[0]["payload"], line_path.read_text(encoding="utf-8").rstrip("\n")
 
 
@@ -6613,7 +6617,7 @@ def test_worker_builder_failure_with_passing_verify_flags_the_contradiction(monk
     builder's claimed failure, because the builder can know something the verify cannot
     see. That asymmetry stays; what changes is that the disagreement stops being
     invisible. The ledger `result` is untouched: only the callback line says so."""
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
         _init_repo(root)
@@ -6632,7 +6636,7 @@ def test_worker_builder_failure_with_passing_verify_flags_the_contradiction(monk
 def test_worker_builder_failure_with_failing_verify_stays_a_plain_failure(monkeypatch):
     """The other half of MOA-455: when both agree, the note must NOT appear. Without
     this the fix passes by appending the note unconditionally."""
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
         _init_repo(root)
@@ -7301,7 +7305,7 @@ def test_worker_builder_report_chmod_failure_is_invalid_not_ok(monkeypatch):
         def failing_fchmod(fd, mode, *a, **kw):
             raise OSError("lock failed")
 
-        monkeypatch.setattr(jaxflow.os, "fchmod", failing_fchmod)
+        monkeypatch.setattr(os, "fchmod", failing_fchmod)
 
         jaxflow.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
@@ -7338,7 +7342,7 @@ def test_worker_builder_report_symlink_planted_between_read_and_lock_never_chmod
 
         report_path = worktree / ".local" / "reports" / "bbbbccccdddd.md"
         outside = worktree / ".local" / "outside-report.md"
-        real_validate_report = jaxflow.jr.validate_report
+        real_validate_report = jr.validate_report
 
         def swap_after_validating(text, *a, **kw):
             status, parsed, outcome = real_validate_report(text, *a, **kw)
@@ -7348,7 +7352,7 @@ def test_worker_builder_report_symlink_planted_between_read_and_lock_never_chmod
                 report_path.symlink_to(outside)
             return status, parsed, outcome
 
-        monkeypatch.setattr(jaxflow.jr, "validate_report", swap_after_validating)
+        monkeypatch.setattr(jr, "validate_report", swap_after_validating)
 
         jaxflow.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree), post=post,
@@ -7441,7 +7445,7 @@ def test_worker_managed_refuses_deleted_or_malformed_settings(tmp_path, monkeypa
     _stub_launch_paths(tmp_path, monkeypatch, settings=False)
     allow_root, root, worktree, manifest_path, _ = _managed_worker_repo(tmp_path, monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert events[0]["payload"]["summary"] == "agent-settings-uninitialized"
     assert not worktree.exists()
@@ -7453,7 +7457,7 @@ def test_worker_managed_refuses_deleted_or_malformed_settings(tmp_path, monkeypa
     monkeypatch.setattr(jset, "SETTINGS_PATH", broken)
     allow_root, root, worktree, manifest_path, _ = _managed_worker_repo(tmp_path / "malformed", monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["summary"] == "agent-settings-malformed"
     assert not worktree.exists()
 
@@ -7466,7 +7470,7 @@ def test_worker_managed_refuses_missing_alias_and_routing_conflict(tmp_path, mon
     del config["provider"]["fixture"]["models"]["jaxflow-builder-default"]
     allow_root, root, worktree, manifest_path, _ = _managed_worker_repo(tmp_path, monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["summary"] == "agent-profile-conflict"
     assert not worktree.exists()
 
@@ -7475,7 +7479,7 @@ def test_worker_managed_refuses_missing_alias_and_routing_conflict(tmp_path, mon
     monkeypatch.setattr(jset, "read_effective_opencode_config", lambda **kw: config)
     allow_root, root, worktree, manifest_path, _ = _managed_worker_repo(tmp_path / "routing", monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["summary"] == "agent-profile-conflict"
     assert not worktree.exists()
 
@@ -7563,7 +7567,7 @@ def test_worker_history_write_failure_refuses_before_launch(tmp_path, monkeypatc
 
     allow_root, root, worktree, manifest_path, _ = _managed_worker_repo(tmp_path, monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert not worktree.exists()
     assert not manifest_path.exists()
@@ -7591,7 +7595,7 @@ def test_worker_forged_reservation_owned_cannot_delete_resumed_worktree(tmp_path
     con.close()
     captured, popen = _capture_builder_popen()
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert "argv" not in captured
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert marker.is_file()
@@ -7617,7 +7621,7 @@ def test_worker_resume_prelaunch_refusal_keeps_inherited_worktree(tmp_path, monk
         raise AssertionError("popen must never be called")
 
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert marker.is_file()
     assert worktree.is_dir()
@@ -7640,7 +7644,7 @@ def test_worker_resume_state_changed_refuses_before_popen(tmp_path, monkeypatch)
     (worktree / "moved.py").write_text("x\n", encoding="utf-8")
     captured, popen = _capture_builder_popen()
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert "argv" not in captured
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert worktree.is_dir()
@@ -7664,7 +7668,7 @@ def test_worker_newer_attempt_refuses_before_popen(tmp_path, monkeypatch):
     con.close()
     captured, popen = _capture_builder_popen()
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert "argv" not in captured
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert worktree.is_dir()
@@ -7678,7 +7682,7 @@ def test_worker_worktree_claim_refuses_when_held(tmp_path, monkeypatch):
     captured, popen = _capture_builder_popen()
     with jresume.worktree_claim(root, worktree):
         code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert "argv" not in captured
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert worktree.is_dir()
@@ -7693,8 +7697,8 @@ def _spy_cleanup(monkeypatch):
     def fake_rmtree(path, ignore_errors=False):
         cleaned["rmtree"].append(Path(path).resolve())
 
-    monkeypatch.setattr(jaxflow, "_cleanup_worktree", fake_cleanup)
-    monkeypatch.setattr(jaxflow.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(jaxflow_common, "_cleanup_worktree", fake_cleanup)
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
     return cleaned
 
 
@@ -7721,7 +7725,7 @@ def test_unvalidated_and_uncertain_refusals_do_not_request_cleanup(tmp_path, mon
     con.commit()
     con.close()
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["contract_status"] == "cancelled"
     _assert_no_reservation_cleanup(cleaned, worktree, manifest_path.parent)
     assert marker.is_file()
@@ -7744,7 +7748,7 @@ def test_malformed_and_unavailable_started_do_not_request_cleanup(tmp_path, monk
     con.close()
     cleaned = _spy_cleanup(monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["contract_status"] == "cancelled"
     _assert_no_reservation_cleanup(cleaned, worktree, manifest_path.parent)
     assert marker.is_file()
@@ -7758,10 +7762,10 @@ def test_malformed_and_unavailable_started_do_not_request_cleanup(tmp_path, monk
     def boom(*a, **k):
         raise sqlite3.Error("unavailable")
 
-    monkeypatch.setattr(jaxflow, "_open_ro", boom)
+    monkeypatch.setattr(jaxflow_common, "_open_ro", boom)
     cleaned = _spy_cleanup(monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     _assert_no_reservation_cleanup(cleaned, worktree, manifest_path.parent)
     assert marker.is_file()
 
@@ -7777,7 +7781,7 @@ def test_claim_refusal_and_replayed_checkpoint_do_not_request_cleanup(tmp_path, 
     cleaned = _spy_cleanup(monkeypatch)
     with jresume.worktree_claim(root, worktree):
         code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert "argv" not in captured
     _assert_no_reservation_cleanup(cleaned, worktree, manifest_path.parent)
     assert marker.is_file()
@@ -7806,7 +7810,7 @@ def test_claim_refusal_and_replayed_checkpoint_do_not_request_cleanup(tmp_path, 
     monkeypatch.setattr(jaxflow, "_persist_launch_selection", boom)
     cleaned = _spy_cleanup(monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     _assert_no_reservation_cleanup(cleaned, worktree, manifest_path.parent)
     assert marker.is_file()
     assert _checkpoint_path(root, manifest["run_id"]).is_file()
@@ -7874,10 +7878,10 @@ def test_managed_runtime_uncertain_evidence_does_not_request_cleanup(
     if evidence == "unavailable":
         def boom(*a, **k):
             raise sqlite3.Error("unavailable")
-        monkeypatch.setattr(jaxflow, "_open_ro", boom)
+        monkeypatch.setattr(jaxflow_common, "_open_ro", boom)
     cleaned = _spy_cleanup(monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["contract_status"] == "cancelled"
     _assert_no_reservation_cleanup(cleaned, worktree, manifest_path.parent)
     assert marker.is_file()
@@ -7899,7 +7903,7 @@ def test_fresh_owner_prelaunch_refusal_requests_cleanup(tmp_path, monkeypatch):
 
     cleaned = _spy_cleanup(monkeypatch)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert events[0]["payload"]["contract_status"] == "cancelled"
     assert worktree.resolve() in cleaned["worktree"]
     assert manifest_path.parent.resolve() in cleaned["rmtree"]
@@ -8155,8 +8159,8 @@ def test_worker_copied_manifest_is_not_a_write_destination(tmp_path, monkeypatch
     copied.write_bytes(manifest_path.read_bytes())
     copied.chmod(0o600)
     cleaned = []
-    monkeypatch.setattr(jaxflow, "_cleanup_worktree", lambda *a, **k: cleaned.append("worktree"))
-    real_rmtree = jaxflow.shutil.rmtree
+    monkeypatch.setattr(jaxflow_common, "_cleanup_worktree", lambda *a, **k: cleaned.append("worktree"))
+    real_rmtree = shutil.rmtree
 
     def fake_rmtree(path, ignore_errors=False):
         resolved = Path(path).resolve()
@@ -8164,10 +8168,10 @@ def test_worker_copied_manifest_is_not_a_write_destination(tmp_path, monkeypatch
             raise AssertionError(f"cleanup of real run {path}")
         return real_rmtree(path, ignore_errors=ignore_errors)
 
-    monkeypatch.setattr(jaxflow.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
     captured, popen = _capture_builder_popen()
     code, events = _run_builder_worker_test(worktree, copied, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert "argv" not in captured
     assert cleaned == []
     assert worktree.is_dir()
@@ -8184,8 +8188,8 @@ def test_worker_symlinked_manifest_is_not_a_write_destination(tmp_path, monkeypa
     via.symlink_to(root / ".local" / "runs")
     linked = via / manifest["run_id"] / "manifest.json"
     cleaned = []
-    monkeypatch.setattr(jaxflow, "_cleanup_worktree", lambda *a, **k: cleaned.append("worktree"))
-    real_rmtree = jaxflow.shutil.rmtree
+    monkeypatch.setattr(jaxflow_common, "_cleanup_worktree", lambda *a, **k: cleaned.append("worktree"))
+    real_rmtree = shutil.rmtree
 
     def fake_rmtree(path, ignore_errors=False):
         resolved = Path(path).resolve()
@@ -8193,10 +8197,10 @@ def test_worker_symlinked_manifest_is_not_a_write_destination(tmp_path, monkeypa
             raise AssertionError(f"cleanup of real run {path}")
         return real_rmtree(path, ignore_errors=ignore_errors)
 
-    monkeypatch.setattr(jaxflow.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
     captured, popen = _capture_builder_popen()
     code, events = _run_builder_worker_test(worktree, linked, allow_root, popen)
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     assert "argv" not in captured
     assert cleaned == []
     assert worktree.is_dir()
@@ -8697,7 +8701,7 @@ def test_worker_builder_refuses_plan_outside_the_allowlist(capsys):
             post=lambda e: events.append(e) or {"ok": True}, popen=popen,
             allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
@@ -8809,7 +8813,7 @@ def test_worker_builder_refuses_a_missing_plan_file(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
 
 
@@ -8835,7 +8839,7 @@ def test_worker_builder_refuses_symlinked_secret_plan_path(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == f"secret-detected: {root / '.env'}"
 
 
@@ -8990,14 +8994,14 @@ def test_worker_builder_refuses_declared_spec_outside_allowlist_posts_cancelled_
         ))
         manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
 
-        real_resolve = jaxflow._resolve_handoff_spec_path
+        real_resolve = jaxflow_common._resolve_handoff_spec_path
         calls = []
 
         def spy(*a, **kw):
             calls.append((a, kw))
             return real_resolve(*a, **kw)
 
-        monkeypatch.setattr(jaxflow, "_resolve_handoff_spec_path", spy)
+        monkeypatch.setattr(jaxflow_common, "_resolve_handoff_spec_path", spy)
 
         def popen(*a, **kw):
             raise AssertionError("popen must never be called once the declared spec refuses")
@@ -9012,7 +9016,7 @@ def test_worker_builder_refuses_declared_spec_outside_allowlist_posts_cancelled_
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=post, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(calls) == 1  # the builder-role spec resolver actually ran
 
@@ -9045,7 +9049,7 @@ def test_worker_builder_refuses_declared_secret_spec(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=FakeBuilderPopen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == f"secret-detected: {secret_spec}"
 
 
@@ -9077,13 +9081,13 @@ def test_worker_builder_refusal_sends_jaxflow_callback_and_sets_worker_fields(ca
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         capsys.readouterr()
         # `_refuse_builder_run` already deleted this run's own manifest dir (it "owns"
         # the reservation, no started row for it -- see its own docstring) BEFORE calling
         # `_send_callback` -- proving delivery survives that cleanup (D6).
         assert not manifest_path.parent.exists()
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
         assert line_path.read_text(encoding="utf-8").rstrip("\n") == (
             f"[JAXFLOW] build {manifest['run_id']} finished — cancelled — no report"
         )
@@ -9111,7 +9115,7 @@ def test_worker_builder_refusal_codex_callback_attempts_queue_once(monkeypatch, 
             return CompletedProcess(argv, 1, _CALLBACK_SECRET.encode(), _CALLBACK_SECRET.encode())
 
         _intercept_codex_queue(monkeypatch, queue)
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
+        monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
         manifest_path, manifest = _write_manifest_for_builder_worker(
             root, worktree, caller="codex", caller_session=_CAPTURED_THREAD,
             caller_pane="%3", caller_incarnation=fake.incarnation,
@@ -9125,7 +9129,7 @@ def test_worker_builder_refusal_codex_callback_attempts_queue_once(monkeypatch, 
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         err = capsys.readouterr().err
         assert "path-outside-allowlist" in err
         assert _CALLBACK_SECRET not in err
@@ -9163,9 +9167,9 @@ def test_worker_diff_review_refusal_sends_jaxflow_callback_line(capsys):
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         capsys.readouterr()
-        line_path = jaxflow.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
+        line_path = jaxflow_common.CALLBACKS_ROOT / manifest["caller_session"] / f"{manifest['run_id']}.line"
         assert line_path.read_text(encoding="utf-8").rstrip("\n") == (
             f"[JAXFLOW] diff {manifest['run_id']} finished — cancelled — no report"
         )
@@ -9189,7 +9193,7 @@ def test_worker_diff_review_refusal_codex_callback_attempts_queue_once(monkeypat
             return CompletedProcess(argv, 1, _CALLBACK_SECRET.encode(), _CALLBACK_SECRET.encode())
 
         _intercept_codex_queue(monkeypatch, queue)
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
+        monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("Codex callback slept"))
         manifest_path, manifest = _write_manifest_for_diff_worker(
             root, worktree, base_sha=base_sha, head_sha=head_sha,
             caller="codex", caller_session=_CAPTURED_THREAD,
@@ -9204,7 +9208,7 @@ def test_worker_diff_review_refusal_codex_callback_attempts_queue_once(monkeypat
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         err = capsys.readouterr().err
         assert "secret-detected: id_rsa" in err
         assert _CALLBACK_SECRET not in err
@@ -9244,9 +9248,9 @@ def test_worker_builder_refusal_no_callback_flag_sends_nothing():
             str(manifest_path), run=_run_with_tmux(fake, real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert not any(c[1] == "send-keys" for c in fake.calls)
-        assert not jaxflow.CALLBACKS_ROOT.exists() or not any(jaxflow.CALLBACKS_ROOT.rglob("*.line"))
+        assert not jaxflow_common.CALLBACKS_ROOT.exists() or not any(jaxflow_common.CALLBACKS_ROOT.rglob("*.line"))
 
 
 def test_worker_builder_refusal_updates_status_md_now_and_stage_with_no_gate():
@@ -9273,7 +9277,7 @@ def test_worker_builder_refusal_updates_status_md_now_and_stage_with_no_gate():
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         text = status_path.read_text(encoding="utf-8")
         assert "stage: build" in text
         assert "## Now\npath-outside-allowlist" in text
@@ -9396,7 +9400,7 @@ def test_status_md_linked_worktree_run_updates_only_the_control_repo(kind, targe
             "worker_contract_status": "ok", "worker_outcome": "approve",
             **target_kw,
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=root.parent)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=root.parent)
         control_text = control_status.read_text(encoding="utf-8")
         assert "stage:" in control_text, kind
         assert "## Now\ns" in control_text, kind
@@ -9440,7 +9444,7 @@ def test_status_md_skips_write_when_the_owner_lookup_fails(kind, target_kw):
             return _run_real(argv, cwd)
 
         for probe in (failing_probe, raising_probe):
-            jaxflow._update_status_md(manifest, run=probe, allowlist_root=root.parent)
+            jaxflow_common._update_status_md(manifest, run=probe, allowlist_root=root.parent)
             assert sentinel.read_text(encoding="utf-8") == sentinel_before, kind
             assert control_status.read_text(encoding="utf-8") == control_before, kind
 
@@ -9468,7 +9472,7 @@ def test_status_md_separate_git_dir_main_repo_owns_its_card(kind, target_kw):
             "worker_outcome": "success",
             **target_kw,
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=Path(raw).resolve())
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=Path(raw).resolve())
         text = status_path.read_text(encoding="utf-8")
         assert "stage:" in text, kind
         assert "## Now\nbuilt the thing" in text, kind
@@ -9487,8 +9491,8 @@ def test_control_owner_separate_git_dir_main_and_linked_worktree():
         gitdir = Path(raw).resolve() / "sep-gitdir"
         _init_separate_git_dir_repo(main, gitdir)
         worktree = _init_worktree(main, "feat/x")
-        assert jaxflow._control_owner(main, _run_real, allow_root) == (main.resolve(), True)
-        assert jaxflow._control_owner(worktree, _run_real, allow_root) == (worktree.resolve(), False)
+        assert jaxflow_common._control_owner(main, _run_real, allow_root) == (main.resolve(), True)
+        assert jaxflow_common._control_owner(worktree, _run_real, allow_root) == (worktree.resolve(), False)
         assert jaxflow._control_repo_of(worktree, _run_real, allow_root) == worktree.resolve()
 
 
@@ -9538,7 +9542,7 @@ def test_status_md_separate_git_dir_worktree_run_never_redirects_to_the_worktree
             "worker_contract_status": "ok", "worker_outcome": "approve",
             **target_kw,
         }
-        jaxflow._update_status_md(manifest, run=_run_real, allowlist_root=allow_root)
+        jaxflow_common._update_status_md(manifest, run=_run_real, allowlist_root=allow_root)
         assert sentinel.read_text(encoding="utf-8") == sentinel_before, kind
         assert control_status.read_text(encoding="utf-8") == control_before, kind
 
@@ -9727,27 +9731,27 @@ def test_diff_dispatch_reruns_both_commands_and_rewrites_the_evidence(monkeypatc
 
 def test_decide_verify_reuse_pure_conditions():
     ok_frames = [{"exit_code": 0}]
-    assert jaxflow._decide_verify_reuse(
+    assert jaxflow_common._decide_verify_reuse(
         head_matches=False, porcelain_clean=True, commands_match=True,
         frames=ok_frames, parse_error=None,
     ) == (False, "head-sha-changed")
-    assert jaxflow._decide_verify_reuse(
+    assert jaxflow_common._decide_verify_reuse(
         head_matches=True, porcelain_clean=False, commands_match=True,
         frames=ok_frames, parse_error=None,
     ) == (False, "worktree-dirty")
-    assert jaxflow._decide_verify_reuse(
+    assert jaxflow_common._decide_verify_reuse(
         head_matches=True, porcelain_clean=True, commands_match=False,
         frames=ok_frames, parse_error=None,
     ) == (False, "verify-command-changed")
-    assert jaxflow._decide_verify_reuse(
+    assert jaxflow_common._decide_verify_reuse(
         head_matches=True, porcelain_clean=True, commands_match=True,
         frames=None, parse_error="frame-2-missing",
     ) == (False, "frame-2-missing")
-    assert jaxflow._decide_verify_reuse(
+    assert jaxflow_common._decide_verify_reuse(
         head_matches=True, porcelain_clean=True, commands_match=True,
         frames=[{"exit_code": 0}, {"exit_code": 1}], parse_error=None,
     ) == (False, "prior-verify-failed")
-    assert jaxflow._decide_verify_reuse(
+    assert jaxflow_common._decide_verify_reuse(
         head_matches=True, porcelain_clean=True, commands_match=True,
         frames=ok_frames, parse_error=None,
     ) == (True, "all-conditions-met")
@@ -9903,12 +9907,12 @@ def test_diff_dispatch_command_mismatch_only_inside_redacted_token_still_reuses(
         con = _fresh_db(db)
         head = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
         verify_cmd = "API_KEY=aaaaaaaa1 true"
-        assert jaxflow.redact(verify_cmd) != verify_cmd  # sanity: the token really masks
+        assert jaxflow_hook.redact(verify_cmd) != verify_cmd  # sanity: the token really masks
         _seed_finished_build(con, "b1", root, worktree, verify=verify_cmd, head_sha=head)
         con.close()
         tests_path = worktree / ".local" / "reports" / "b1.tests.txt"
         tests_path.parent.mkdir(parents=True, exist_ok=True)
-        tests_path.write_text(f"COMMAND: {jaxflow.redact(verify_cmd)}\n\nEXIT: 0\n", encoding="utf-8")
+        tests_path.write_text(f"COMMAND: {jaxflow_hook.redact(verify_cmd)}\n\nEXIT: 0\n", encoding="utf-8")
         monkeypatch.chdir(root)
         run_id = jaxflow.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
@@ -10156,8 +10160,8 @@ def test_guard_approve_blocks_and_full_or_since_bypasses(monkeypatch):
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=head)
         _seed_diff_review(con, "aaaaaaaaaaa1", root, worktree, verdict="approve", ts="2026-01-01T00:00:00+00:00")
         con.close()
-        (jaxflow._manifest_dir(root, "aaaaaaaaaaa1")).mkdir(parents=True, exist_ok=True)
-        (jaxflow._manifest_dir(root, "aaaaaaaaaaa1") / "manifest.json").write_text(
+        (jaxflow_common._manifest_dir(root, "aaaaaaaaaaa1")).mkdir(parents=True, exist_ok=True)
+        (jaxflow_common._manifest_dir(root, "aaaaaaaaaaa1") / "manifest.json").write_text(
             json.dumps({"head_sha": head, "base_sha": head}), encoding="utf-8",
         )
         monkeypatch.chdir(root)
@@ -10253,8 +10257,8 @@ def test_guard_reject_proceeds_with_or_without_since(monkeypatch):
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=head)
         _seed_diff_review(con, "aaaaaaaaaaa1", root, worktree, verdict="reject")
         con.close()
-        (jaxflow._manifest_dir(root, "aaaaaaaaaaa1")).mkdir(parents=True, exist_ok=True)
-        (jaxflow._manifest_dir(root, "aaaaaaaaaaa1") / "manifest.json").write_text(
+        (jaxflow_common._manifest_dir(root, "aaaaaaaaaaa1")).mkdir(parents=True, exist_ok=True)
+        (jaxflow_common._manifest_dir(root, "aaaaaaaaaaa1") / "manifest.json").write_text(
             # "kind": "diff" (F1): a real dispatch_diff_review manifest always has it.
             json.dumps({"kind": "diff", "head_sha": head, "base_sha": head, "builder_run_id": "b1"}),
             encoding="utf-8",
@@ -11675,7 +11679,7 @@ def test_diff_dispatch_handoff_stub_and_manifest_name_plan_before_test_output(mo
                 captured["stub"] = Path(args_ns.prompt_file).read_text(encoding="utf-8")
             return real_preflight(args_ns, **kw)
 
-        monkeypatch.setattr(jaxflow.jr, "preflight", spy_preflight)
+        monkeypatch.setattr(jr, "preflight", spy_preflight)
 
         run_id = jaxflow.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
@@ -11845,7 +11849,7 @@ def test_worker_diff_review_refuses_forged_run_id_before_any_path_construction(c
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         err_lines = capsys.readouterr().err.strip().splitlines()
         assert err_lines[0] == "path-outside-allowlist"
         assert err_lines[1] == (
@@ -11880,7 +11884,7 @@ def test_worker_diff_review_refuses_repo_outside_allowlist_root(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
@@ -11906,7 +11910,7 @@ def test_worker_diff_review_refuses_worktree_mismatched_from_manifest_derivation
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(events) == 1
         # never touches the worktree -- a diff review never owns it (unlike the builder's
@@ -11937,7 +11941,7 @@ def test_worker_diff_review_refuses_forged_plan_path_outside_allowlist(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=allow_root,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
@@ -11966,7 +11970,7 @@ def test_worker_diff_review_refuses_forged_tests_path_never_reaches_prompt(capsy
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
@@ -12078,7 +12082,7 @@ def test_worker_diff_review_refuses_a_spec_not_named_by_the_plan(capsys):
             post=lambda e: events.append(e) or {"ok": True}, popen=popen,
             allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
         assert len(events) == 1
         assert events[0]["payload"]["contract_status"] == "cancelled"
@@ -12101,7 +12105,7 @@ def test_worker_diff_review_refuses_a_missing_plan_file(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == "path-outside-allowlist"
 
 
@@ -12124,7 +12128,7 @@ def test_worker_diff_review_refuses_symlinked_secret_plan(capsys):
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=popen, allowlist_root=root.parent,
         )
-        assert code == jaxflow.REFUSED
+        assert code == jaxflow_common.REFUSED
         assert capsys.readouterr().err.strip() == f"secret-detected: {root / '.env'}"
 
 
@@ -12234,7 +12238,7 @@ def test_worker_diff_review_refuses_secret_named_changed_paths(capsys):
                 str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
                 post=lambda e: events.append(e) or {"ok": True}, popen=popen, allowlist_root=root.parent,
             )
-            assert code == jaxflow.REFUSED, name
+            assert code == jaxflow_common.REFUSED, name
             assert capsys.readouterr().err.strip() == f"secret-detected: {name}", name
             assert len(events) == 1, name
             assert events[0]["payload"]["contract_status"] == "cancelled", name
@@ -12563,7 +12567,7 @@ def test_delivery_target_reads_the_dual_branch_pr_preset_block(tmp_path):
 ])
 def test_delivery_target_refuses_with_preset_unknown(tmp_path, agents_text):
     repo = _agents(tmp_path, agents_text)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
     assert exc.value.code == "preset-unknown"
 
@@ -12585,7 +12589,7 @@ def test_delivery_target_resolves_each_of_the_five_presets(tmp_path, preset, tar
 @pytest.mark.parametrize("old", ["strict", "simple", "greenfield"])  # old-name-ok
 def test_delivery_target_refuses_an_old_preset_name_and_lists_the_five(tmp_path, old):
     repo = _agents(tmp_path, f"**Preset: `{old}`** — a.\n\nDelivery target: `main`.\n")
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
     assert exc.value.code == "preset-unknown"
     assert all(name in exc.value.hint for name in _FIVE_PRESETS)
@@ -12618,7 +12622,7 @@ _PRODUCTION_REFUSALS = [
 @pytest.mark.parametrize("agents_text", _PRODUCTION_REFUSALS)
 def test_production_target_refuses(tmp_path, agents_text):
     repo = _agents(tmp_path, agents_text)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._resolve_production_target(repo)
     assert exc.value.code == "production-target-unconfigured"
 
@@ -12647,7 +12651,7 @@ def test_required_target_for_branch_on_a_local_preset_refuses_a_release_head(tmp
     # A release/* branch on a local preset has no Production target configured at all —
     # this only matters once `merge`/`pr open` actually route a release/* head through here
     # (Task 6/7); this test pins the helper's own behavior in isolation.
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._required_target_for_branch(
             repo, "release/x", run=lambda argv, cwd=None: _completed(1, ""),
         )
@@ -12892,7 +12896,7 @@ def test_pr_open_refuses_github_integration_disabled_before_any_gh_call(tmp_path
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_pr_open(_pr_open_args(), run=fake_run, env=_merge_env())
     assert exc.value.code == "github-integration-disabled"
     assert not any(c[:2] == ["gh", "pr"] or c[:2] == ["git", "push"] for c in calls), calls
@@ -12906,7 +12910,7 @@ def test_merge_pr_refuses_github_integration_disabled_before_any_gh_call(tmp_pat
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(target="staging"), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "github-integration-disabled"
@@ -12921,7 +12925,7 @@ def test_release_refuses_github_integration_disabled_before_any_gh_call(tmp_path
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_release(SimpleNamespace(from_caller="claude"), run=fake_run, env=_merge_env())
     assert exc.value.code == "github-integration-disabled"
     assert not any(c[:2] == ["gh", "pr"] or c[:2] == ["git", "push"] for c in calls), calls
@@ -12947,14 +12951,14 @@ def test_preset_matrix_pr_open_and_release_refusals(
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{'a' * 40}\n"),
         ("git", "check-ref-format",): _completed(0, ""),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_pr_open(
             _pr_open_args(target="not-the-target"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
     assert exc.value.code == ("preset-not-pr" if pr_refused else "target-mismatch")
     if release_refused:
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_release(
                 SimpleNamespace(from_caller="claude"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -12983,7 +12987,7 @@ def test_github_repo_slug_refuses_when_origin_is_unreadable_or_not_github(tmp_pa
                    # "github.com" substring alone -- _GH_REMOTE_RE is anchored to the real host.
                    _completed(0, "https://evilgithub.com/acme/x.git\n")):
         run = lambda argv, cwd=None, result=result: result
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow._github_repo_slug(run, tmp_path)
         assert exc.value.code == "github-unreachable"
 
@@ -13009,7 +13013,7 @@ def test_gh_pr_view_parses_json_and_passes_the_exact_argv():
 def test_gh_pr_view_refuses_github_unreachable_on_failure_or_bad_json(tmp_path):
     for result in (_completed(1, ""), _completed(0, "not json")):
         run = lambda argv, cwd=None, result=result: result
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow._gh_pr_view(run, tmp_path, "acme/x", 7)
         assert exc.value.code == "github-unreachable"
 
@@ -13019,7 +13023,7 @@ def test_resolve_pr_number_zero_one_and_ambiguous_matches(tmp_path):
         return lambda argv, cwd=None: _completed(0, json.dumps(matches))
     assert jaxflow._resolve_pr_number(run_for([]), tmp_path, "acme/x", "feat/x", "staging") is None
     assert jaxflow._resolve_pr_number(run_for([{"number": 9}]), tmp_path, "acme/x", "feat/x", "staging") == 9
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._resolve_pr_number(run_for([{"number": 9}, {"number": 10}]), tmp_path, "acme/x", "feat/x", "staging")
     assert exc.value.code == "pr-ambiguous"
 
@@ -13027,7 +13031,7 @@ def test_resolve_pr_number_zero_one_and_ambiguous_matches(tmp_path):
 def test_resolve_pr_number_refuses_github_unreachable_on_failure_or_bad_json(tmp_path):
     for result in (_completed(1, ""), _completed(0, "not json")):
         run = lambda argv, cwd=None, result=result: result
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow._resolve_pr_number(run, tmp_path, "acme/x", "feat/x", "staging")
         assert exc.value.code == "github-unreachable"
 
@@ -13094,7 +13098,7 @@ def test_pr_open_happy_path_pushes_creates_and_records(tmp_path, monkeypatch):
         # `_open_ro` -- a stray earlier attempt to do that as `jaxflow._open_ro = lambda path:
         # jaxflow._open_ro(db)` was self-referential and would recurse forever the moment it
         # actually ran).
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13118,7 +13122,7 @@ def test_pr_open_resumes_at_the_same_sha_with_no_mutation(tmp_path, monkeypatch)
     # repo.name is tmp_path's own pytest-generated basename) — a hardcoded "demo" would never
     # match and _find_recorded_pr would silently see nothing (same convention as
     # scripts/test_jaxflow.py:13158's existing resume-ineligible fixture).
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened",
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": "feat/x", "sha": "a" * 40, "base": "staging",
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
     con.close()
@@ -13132,7 +13136,7 @@ def test_pr_open_resumes_at_the_same_sha_with_no_mutation(tmp_path, monkeypatch)
         })),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13146,7 +13150,7 @@ def test_pr_open_fast_forward_fix_pushes_and_refreshes_the_record(tmp_path, monk
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "jaxos.db"
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened",
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": "feat/x", "sha": "a" * 40, "base": "staging",
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
     con.close()
@@ -13164,7 +13168,7 @@ def test_pr_open_fast_forward_fix_pushes_and_refreshes_the_record(tmp_path, monk
     })
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         jaxflow.cmd_pr_open(
             _pr_open_args(sha=new_sha), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13177,7 +13181,7 @@ def test_pr_open_refuses_a_diverged_remote_head(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "jaxos.db"
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened",
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": "feat/x", "sha": "a" * 40, "base": "staging",
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
     con.close()
@@ -13192,8 +13196,8 @@ def test_pr_open_refuses_a_diverged_remote_head(tmp_path, monkeypatch):
         ("git", "merge-base", "--is-ancestor", "a" * 40, other_sha): _completed(1, ""),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_pr_open(
                 _pr_open_args(sha=other_sha), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13206,7 +13210,7 @@ def test_pr_open_reports_a_closed_unmerged_pr_never_reopening_it(tmp_path, monke
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "jaxos.db"
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened",
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": "feat/x", "sha": "a" * 40, "base": "staging",
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
     con.close()
@@ -13217,8 +13221,8 @@ def test_pr_open_reports_a_closed_unmerged_pr_never_reopening_it(tmp_path, monke
         ("gh", "pr", "view"): _completed(0, json.dumps({**_GH_PR_VIEW_BODY, "state": "CLOSED"})),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13234,7 +13238,7 @@ def test_pr_open_refuses_a_base_mismatch_on_a_recorded_pr_before_any_push_or_eve
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "jaxos.db"
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened",
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": "feat/x", "sha": "a" * 40, "base": "staging",
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
     con.close()
@@ -13245,8 +13249,8 @@ def test_pr_open_refuses_a_base_mismatch_on_a_recorded_pr_before_any_push_or_eve
         ("gh", "pr", "view"): _completed(0, json.dumps({**_GH_PR_VIEW_BODY, "baseRefName": "wrong-base"})),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13262,7 +13266,7 @@ def test_pr_open_refuses_a_head_branch_mismatch_on_a_recorded_pr_before_any_push
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "jaxos.db"
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened",
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": "feat/x", "sha": "a" * 40, "base": "staging",
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
     con.close()
@@ -13273,8 +13277,8 @@ def test_pr_open_refuses_a_head_branch_mismatch_on_a_recorded_pr_before_any_push
         ("gh", "pr", "view"): _completed(0, json.dumps({**_GH_PR_VIEW_BODY, "headRefName": "feat/other"})),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13300,7 +13304,7 @@ def test_pr_open_refuses_target_mismatch(tmp_path, monkeypatch, agents, target, 
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{'a' * 40}\n"),
         ("git", "check-ref-format",): _completed(0, ""),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_pr_open(
             _pr_open_args(target=target), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13317,7 +13321,7 @@ def test_pr_open_argparse_wiring_end_to_end(monkeypatch, tmp_path):
         return {"number": 1, "url": "https://github.com/acme/x/pull/1", "repo_slug": "acme/x"}
     monkeypatch.setattr(jaxflow, "cmd_pr_open", fake_cmd_pr_open)
     argv = ["pr", "open", "feat/x", "--sha", "a" * 40, "--target", "staging", "--title", "Ship it"]
-    assert jaxflow.main(argv) == jaxflow.OK
+    assert jaxflow.main(argv) == jaxflow_common.OK
     assert seen == {"branch": "feat/x", "title": "Ship it"}
 
 
@@ -13335,7 +13339,7 @@ def test_pr_open_refuses_a_local_preset_before_any_push_or_gh_call(tmp_path, mon
             ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{'a' * 40}\n"),
             ("git", "check-ref-format",): _completed(0, ""),
         })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13355,7 +13359,7 @@ def test_pr_open_refuses_a_no_preset_repo_before_any_push_or_gh_call(tmp_path, m
             ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{'a' * 40}\n"),
             ("git", "check-ref-format",): _completed(0, ""),
         })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13382,7 +13386,7 @@ def test_pr_open_refuses_preset_not_pr_for_a_release_head_before_target_resoluti
         ("git", "rev-parse", "--verify", f"{head}^{{commit}}"): _completed(0, f"{'a' * 40}\n"),
         ("git", "check-ref-format",): _completed(0, ""),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_pr_open(
             _pr_open_args(branch=head, target="main"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13405,7 +13409,7 @@ def test_pr_open_single_branch_pr_targets_main_and_records_the_pr(tmp_path, monk
         ("gh", "pr", "create"): _completed(0, "https://github.com/acme/x/pull/7\n"),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_pr_open(
             _pr_open_args(target="main"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13429,7 +13433,7 @@ def test_pr_open_single_branch_pr_refuses_a_release_head_even_with_a_production_
             ("git", "rev-parse", "--verify", f"{head}^{{commit}}"): _completed(0, f"{'a' * 40}\n"),
             ("git", "check-ref-format",): _completed(0, ""),
         })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_pr_open(
             _pr_open_args(branch=head, target="main"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13452,7 +13456,7 @@ def _pr_merge_setup(tmp_path, db, *, pr_state="OPEN", mergeable="MERGEABLE", tar
     # the existing `_worktree_path` helper (scripts/test_jaxflow.py:12971-12973) for the exact
     # same reason every OTHER merge test does: a literal like "demo" would never match.
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened",
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened",
             {"repo": "acme/x", "branch": branch, "sha": sha, "base": target,
              "pr_number": 7, "pr_url": "https://github.com/acme/x/pull/7", "kind": "feature"})
     con.close()
@@ -13513,12 +13517,12 @@ def test_merge_pr_happy_path_verifies_checks_merges_and_syncs(tmp_path, monkeypa
         return fake_run(argv, cwd)
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_merge(
             _MergeArgs(target="staging"), run=run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
-    assert result == jaxflow.OK
+    assert result == jaxflow_common.OK
     merge_call = next(c for c in calls if c[:3] == ["gh", "pr", "merge"])
     assert merge_call == ["gh", "pr", "merge", "7", "--repo", "acme/x", "--merge",
                            "--match-head-commit", "a" * 40, "--subject", "feat: Phase X (merge feat/x)"]
@@ -13536,8 +13540,8 @@ def test_merge_pr_github_merge_refused_leaves_nothing_recorded(tmp_path, monkeyp
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_ledger_post(db, events),
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13555,8 +13559,8 @@ def test_merge_pr_merge_queue_required(tmp_path, monkeypatch):
     script[("gh", "pr", "checks",)] = _completed(0, "")
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13588,8 +13592,8 @@ def test_merge_pr_reports_a_success_that_did_not_actually_merge(tmp_path, monkey
         return fake_run(argv, cwd)
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=run, post=_ledger_post(db, events),
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13608,8 +13612,8 @@ def test_merge_pr_identity_mismatch_on_base(tmp_path, monkeypatch):
     script[("gh", "pr", "view")] = _completed(0, json.dumps(view))
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13631,8 +13635,8 @@ def test_merge_pr_refuses_a_head_branch_mismatch(tmp_path, monkeypatch):
     script[("gh", "pr", "view")] = _completed(0, json.dumps(view))
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13652,8 +13656,8 @@ def test_merge_pr_head_moved_since_approval(tmp_path, monkeypatch):
     script[("gh", "pr", "view")] = _completed(0, json.dumps(view))
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13666,10 +13670,10 @@ def test_merge_pr_mergeability_unknown_after_bounded_retries_mutates_nothing(tmp
     db = tmp_path / "jaxos.db"
     script, _ = _pr_merge_setup(tmp_path, db, mergeable="UNKNOWN")
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
-    monkeypatch.setattr(jaxflow.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13686,12 +13690,12 @@ def test_merge_pr_rerun_after_a_real_github_merge_is_recording_only(tmp_path, mo
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_merge(
             _MergeArgs(target="staging"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
-    assert result == jaxflow.OK
+    assert result == jaxflow_common.OK
     assert not any(c[:3] == ["gh", "pr", "merge"] for c in calls)
     assert not any(c[:2] == ["/bin/bash", "-lc"] for c in calls)
     assert events[-1]["payload"]["merge_sha"] == "d" * 40
@@ -13710,8 +13714,8 @@ def test_merge_pr_already_merged_head_mismatch_refuses_pr_head_moved(tmp_path, m
     script[("gh", "pr", "view")] = _completed(0, json.dumps({**_GH_PR_VIEW_MERGED, "headRefOid": "e" * 40}))
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13763,16 +13767,16 @@ def test_merge_pr_target_mutual_exclusion_by_head_shape(tmp_path, monkeypatch, b
         run = fake_run
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         if expected:
             result = jaxflow.cmd_merge(
                 _MergeArgs(branch=branch, sha=sha, target=target), run=run,
                 post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
                 allowlist_root=tmp_path.parent,
             )
-            assert result == jaxflow.OK
+            assert result == jaxflow_common.OK
         else:
-            with pytest.raises(jaxflow.Refusal) as exc:
+            with pytest.raises(ji.Refusal) as exc:
                 jaxflow.cmd_merge(
                     _MergeArgs(branch=branch, sha=sha, target=target), run=run,
                     post=_never_post, env=_merge_env(), now=_fixed_now,
@@ -13805,13 +13809,13 @@ def test_merge_single_branch_pr_feature_head_takes_the_pr_path(tmp_path, monkeyp
         return fake_run(argv, cwd)
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_merge(
             _MergeArgs(branch="feat/x", sha=sha, target="main"), run=run,
             post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent,
         )
-    assert result == jaxflow.OK
+    assert result == jaxflow_common.OK
     assert any(c[:3] == ["gh", "pr", "merge"] for c in calls)
     # Local delivery is `git merge --no-ff`. The PR path's best-effort sync (decision 10)
     # does call `git merge --ff-only origin/<target>`, so that prefix is not the local path.
@@ -13825,7 +13829,7 @@ def test_merge_single_branch_pr_refuses_a_release_head(tmp_path, monkeypatch):
     fake_run, calls = _merge_runner(tmp_path, agents=agents, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(
             _MergeArgs(branch="release/2026-10-07", sha="a" * 40, target="main"),
             run=fake_run, post=_never_post, env=_merge_env(), now=_fixed_now,
@@ -13852,8 +13856,8 @@ def test_merge_pr_no_recorded_pr_and_zero_gh_list_matches_refuses_pr_not_found(t
         ("gh", "pr", "list"): _completed(0, "[]"),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13875,8 +13879,8 @@ def test_merge_pr_no_recorded_pr_and_ambiguous_gh_list_refuses(tmp_path, monkeyp
         ("gh", "pr", "list"): _completed(0, json.dumps([{"number": 7}, {"number": 8}])),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13897,8 +13901,8 @@ def test_merge_pr_checks_dirtied_tree_refuses(tmp_path, monkeypatch):
             return _completed(0, "" if dirty_calls["n"] == 1 else " M dirty.txt\n")
         return fake_run(argv, cwd)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(target="staging"), run=run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13937,7 +13941,7 @@ def test_release_happy_path_fetches_snapshots_and_opens_the_pr(tmp_path, monkeyp
     })
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13970,7 +13974,7 @@ def test_release_name_collision_same_day_gets_a_numeric_suffix(tmp_path, monkeyp
         ("gh", "pr", "create"): _completed(0, "https://github.com/acme/x/pull/12\n"),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -13997,7 +14001,7 @@ def test_release_name_collision_local_ref_gets_a_numeric_suffix(tmp_path, monkey
         ("gh", "pr", "create"): _completed(0, "https://github.com/acme/x/pull/14\n"),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -14010,7 +14014,7 @@ def test_release_reuses_an_open_release_pr_without_advancing_the_snapshot(tmp_pa
     db = tmp_path / "jaxos.db"
     old_snapshot = "b" * 40
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened", {
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened", {
         "repo": "acme/x", "branch": "release/2026-09-20-staging-promotion", "sha": old_snapshot,
         "base": "main", "pr_number": 9, "pr_url": "https://github.com/acme/x/pull/9",
         "kind": "release", "snapshot_sha": old_snapshot,
@@ -14026,7 +14030,7 @@ def test_release_reuses_an_open_release_pr_without_advancing_the_snapshot(tmp_pa
         })),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -14060,7 +14064,7 @@ def test_release_reconciles_an_interrupted_attempt_instead_of_duplicating(tmp_pa
     })
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -14077,7 +14081,7 @@ def test_release_refuses_a_repo_outside_the_allowlist_before_any_mutation(tmp_pa
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path / "elsewhere",
@@ -14093,7 +14097,7 @@ def test_release_does_not_reuse_a_same_numbered_pr_recorded_for_another_repo(tmp
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "jaxos.db"
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened", {
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened", {
         "repo": "acme/other", "branch": "release/2026-09-20-staging-promotion", "sha": "b" * 40,
         "base": "main", "pr_number": 9, "pr_url": "https://github.com/acme/other/pull/9",
         "kind": "release", "snapshot_sha": "b" * 40,
@@ -14110,7 +14114,7 @@ def test_release_does_not_reuse_a_same_numbered_pr_recorded_for_another_repo(tmp
         ("gh", "pr", "create"): _completed(0, "https://github.com/acme/x/pull/20\n"),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -14130,7 +14134,7 @@ def test_release_does_not_reuse_when_the_live_pr_head_no_longer_matches_the_reco
     db = tmp_path / "jaxos.db"
     old_snapshot = "b" * 40
     con = _fresh_db(db)
-    _insert(con, None, jaxflow.slugify_project(tmp_path.name), "lead", "pr-opened", {
+    _insert(con, None, jaxflow_common.slugify_project(tmp_path.name), "lead", "pr-opened", {
         "repo": "acme/x", "branch": "release/2026-09-20-staging-promotion", "sha": old_snapshot,
         "base": "main", "pr_number": 9, "pr_url": "https://github.com/acme/x/pull/9",
         "kind": "release", "snapshot_sha": old_snapshot,
@@ -14152,7 +14156,7 @@ def test_release_does_not_reuse_when_the_live_pr_head_no_longer_matches_the_reco
         ("gh", "pr", "create"): _completed(0, "https://github.com/acme/x/pull/21\n"),
     })
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         result = jaxflow.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -14168,7 +14172,7 @@ def test_release_argparse_wiring_end_to_end(monkeypatch):
         return {"number": 1, "url": "https://github.com/acme/x/pull/1",
                 "snapshot_sha": "a" * 40, "branch": "release/x"}
     monkeypatch.setattr(jaxflow, "cmd_release", fake_cmd_release)
-    assert jaxflow.main(["release", "--from", "claude"]) == jaxflow.OK
+    assert jaxflow.main(["release", "--from", "claude"]) == jaxflow_common.OK
     assert seen == {"from_caller": "claude"}
 
 
@@ -14252,7 +14256,7 @@ def test_merge_refuses_a_sha_that_is_not_full_40_hex(tmp_path, monkeypatch):
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")}
     )
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha="abc1234"), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
@@ -14272,7 +14276,7 @@ def test_merge_refuses_when_head_is_not_the_approved_sha(tmp_path, monkeypatch):
         ("git", "rev-parse", "--verify"): _completed(128, ""),      # not a resume
         ("git", "branch", "--show-current"): _completed(0, "feat/x\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
@@ -14290,7 +14294,7 @@ def test_merge_refuses_a_dirty_tracked_tree_untracked_files_pass(tmp_path, monke
     }
     dirty = {**base, ("git", "status", "--porcelain"): _completed(0, " M src/app.py\n")}
     fake_run, calls = _merge_runner(tmp_path, script=dirty)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "dirty-tracked-tree"
@@ -14302,7 +14306,7 @@ def test_merge_refuses_a_dirty_tracked_tree_untracked_files_pass(tmp_path, monke
     broken = {**base, ("git", "status", "--porcelain"):
               _completed(128, "", "fatal: not a git repository\n")}
     fake_run3, calls3 = _merge_runner(tmp_path, script=broken)
-    with pytest.raises(jaxflow.Refusal) as exc3:
+    with pytest.raises(ji.Refusal) as exc3:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run3, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc3.value.code == "dirty-tracked-tree"
@@ -14339,7 +14343,7 @@ def test_merge_refuses_when_the_target_switch_lands_elsewhere(tmp_path, monkeypa
         # target-mismatch guards against
         ("git", "branch", "--show-current"): _completed(0, "feat/x\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-mismatch"
@@ -14348,7 +14352,7 @@ def test_merge_refuses_when_the_target_switch_lands_elsewhere(tmp_path, monkeypa
 
 def _worktree_path(tmp_path, branch="feat/x"):
     """The path `build` derives for a branch — and the only one `merge` may ever remove."""
-    return tmp_path.parent / f"{jaxflow.slugify_project(tmp_path.name)}-{branch.replace('/', '-')}"
+    return tmp_path.parent / f"{jaxflow_common.slugify_project(tmp_path.name)}-{branch.replace('/', '-')}"
 
 
 def _merge_happy_script(tmp_path, sha, *, remote=True, target="main"):
@@ -14453,7 +14457,7 @@ def test_merge_happy_path_call_order_and_printed_outcome_with_remote(tmp_path, m
     rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=fake_run,
                            post=record_post, env=_merge_env(), now=_fixed_now,
                            allowlist_root=tmp_path.parent)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     flat = [" ".join(c) for c in calls]
 
     def idx(pred):
@@ -14517,7 +14521,7 @@ def test_merge_refuses_when_worktree_claim_held(tmp_path, monkeypatch):
     worktree.mkdir(parents=True)
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     with jresume.worktree_claim(tmp_path, worktree):
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(
                 _MergeArgs(sha=sha, checks="true"), run=fake_run,
                 post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
@@ -14534,14 +14538,14 @@ def test_merge_refuses_nonterminal_newer_build(tmp_path, monkeypatch):
     db = tmp_path / "jaxos.db"
     monkeypatch.setattr(jr, "DB_PATH", db)
     con = _fresh_db(db)
-    _insert(con, "bbbbbbbbbbbb", jaxflow.slugify_project(tmp_path.name), "builder", "run-started", {
+    _insert(con, "bbbbbbbbbbbb", jaxflow_common.slugify_project(tmp_path.name), "builder", "run-started", {
         "phase": "P", "runtime": "opencode-builder", "kind": "build",
         "target": "feat/x", "session": "jax-demo-build-bbbbbbbbbbbb",
         "repo": str(tmp_path.resolve()),
     })
     con.close()
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(
             _MergeArgs(sha=sha, checks="true"), run=fake_run,
             post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
@@ -14559,7 +14563,7 @@ def test_merge_runs_checks_on_a_non_fast_forward_merge(tmp_path, monkeypatch, ca
     rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=fake_run,
                            post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
                            allowlist_root=tmp_path.parent)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     flat = [" ".join(c) for c in calls]
     assert any("pytest -q" in f for f in flat), "a non-fast-forward merge must still run checks_cmd"
     assert any(f.startswith("git diff --quiet") for f in flat)
@@ -14572,7 +14576,7 @@ def test_merge_still_refuses_checks_failed_on_a_non_fast_forward(tmp_path, monke
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("/bin/bash", "-lc"): _completed(1, "boom")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
@@ -14596,7 +14600,7 @@ def test_merge_refuses_an_equal_tip_merge_as_merge_failed(tmp_path, monkeypatch)
             ("git", "commit"): _completed(1, "nothing to commit, working tree clean"),
         },
     )
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="true"), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
@@ -14654,7 +14658,7 @@ def test_merge_a_non_fast_forward_target_does_not_skip_checks(tmp_path, monkeypa
     rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=wrapped,
                            post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
                            allowlist_root=tmp_path.parent)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     flat = [" ".join(c) for c in calls]
     assert any("pytest -q" in f for f in flat), \
         "the correct direction finds no fast-forward, so checks_cmd must still run"
@@ -14702,7 +14706,7 @@ def test_merge_aborts_cleanly_with_zero_further_calls(tmp_path, monkeypatch, fai
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha,
                                            overrides={failing: _completed(1, "boom")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
@@ -14726,7 +14730,7 @@ def test_merge_post_failure_keeps_the_commit_and_prints_the_resume_line(tmp_path
     def failing_post(event):
         raise RuntimeError("hub down")
 
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=failing_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "hub-unreachable"
@@ -14742,7 +14746,7 @@ def test_merge_push_failure_keeps_everything_and_cleans_nothing(tmp_path, monkey
     posted = []
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("git", "push"): _completed(1, "rejected")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "push-failed"
@@ -14755,7 +14759,7 @@ def test_merge_copies_worktree_reports_before_removing_it(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
     # the worktree `build` would have created for this branch, with a builder report in it
-    worktree = tmp_path.parent / f"{jaxflow.slugify_project(tmp_path.name)}-feat-x"
+    worktree = tmp_path.parent / f"{jaxflow_common.slugify_project(tmp_path.name)}-feat-x"
     (worktree / ".local" / "reports").mkdir(parents=True)
     (worktree / ".local" / "reports" / "abc123abc123.md").write_text("report", encoding="utf-8")
     # the spec requires the verification evidence to survive the removal too, not just the
@@ -14867,7 +14871,7 @@ def test_merge_reports_when_the_abort_could_not_clean_the_checkout(tmp_path, mon
             ("git", "merge", "--abort"): _completed(128, "fatal: could not abort"),
             ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(0, "e" * 40 + "\n"),
         })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
@@ -14886,7 +14890,7 @@ def test_merge_abort_that_succeeds_cleanly_adds_no_state_note(tmp_path, monkeypa
             ("/bin/bash", "-lc"): _completed(1, "boom"),
             ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(1, ""),
         })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
@@ -14907,7 +14911,7 @@ def test_merge_abort_that_exits_zero_still_reports_a_modified_tracked_file(tmp_p
             ("git", "merge", "--abort"): _completed(0, ""),          # the abort SUCCEEDED
             ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(1, ""),
         })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
@@ -14929,7 +14933,7 @@ def test_merge_refuses_when_the_checks_stage_a_tracked_change(tmp_path, monkeypa
         # checks" actually means.
         tmp_path, sha, trees=["3" * 40, "4" * 40],
         overrides={("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(1, "")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-dirtied-tree"
@@ -14955,7 +14959,7 @@ def test_merge_refuses_a_branch_the_audit_event_cannot_carry(tmp_path, monkeypat
     # under test is never reached (round-6 F15)
     fake_run, calls = _merge_runner(tmp_path, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(branch=branch), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
@@ -14972,7 +14976,7 @@ def test_merge_refuses_a_delivery_target_the_audit_event_cannot_carry(tmp_path, 
                       "Delivery target: `" + "y" * 513 + "`.\n")
     fake_run, calls = _merge_runner(tmp_path, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "preset-unknown"
@@ -14993,7 +14997,7 @@ def test_merge_resume_refuses_when_the_subject_read_fails_but_prints_the_right_t
         # non-zero, but printing exactly what the caller wanted to see
         ("git", "log", "-1", "--format=%s"): _completed(128, "feat: Phase X (merge feat/x)\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
@@ -15009,7 +15013,7 @@ def test_merge_refuses_when_the_post_switch_branch_read_fails_but_prints_the_tar
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha,
         overrides={("git", "branch", "--show-current"): _completed(128, "main\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-mismatch"
@@ -15027,7 +15031,7 @@ def test_merge_refuses_when_a_git_read_fails_but_prints_a_plausible_value(tmp_pa
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha,
         overrides={("git", "rev-parse", "HEAD"): _completed(128, "c" * 40 + "\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
@@ -15046,7 +15050,7 @@ def test_merge_refuses_a_write_tree_value_that_is_not_a_tree_object(tmp_path, mo
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha, trees=trees)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
@@ -15064,7 +15068,7 @@ def test_merge_refuses_when_the_remote_probe_itself_fails(tmp_path, monkeypatch)
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha,
         overrides={("git", "remote", "get-url"): _completed(128, "", "fatal: not a git repo")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "push-failed"
@@ -15088,7 +15092,7 @@ def test_merge_resume_refuses_when_the_branch_read_fails_rather_than_being_gone(
         ("git", "log", "-1", "--format=%s"): _completed(0, "feat: Phase X (merge feat/x)\n"),
         ("git", "show-ref", "--verify"): _completed(128, "", "fatal: not a git repository"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
@@ -15135,7 +15139,7 @@ def test_merge_refuses_an_unusable_phase_title(tmp_path, monkeypatch, phase):
     monkeypatch.chdir(tmp_path)
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(phase=phase), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "phase-invalid"
@@ -15163,7 +15167,7 @@ def test_merge_refuses_when_the_merged_index_cannot_be_fingerprinted(tmp_path, m
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, trees=[_completed(128, "", "fatal: unable to write new index file")])
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
@@ -15261,7 +15265,7 @@ def test_merge_report_copy_refuses_every_escape(tmp_path, monkeypatch, capsys, p
         elif plant == "wrong-name":
             (reports / ".env").write_text("TOKEN=1", encoding="utf-8")
         elif plant == "oversize":
-            (reports / "abc123abc123.md").write_bytes(b"x" * (jaxflow.REPORT_COPY_MAX + 1))
+            (reports / "abc123abc123.md").write_bytes(b"x" * (jaxflow_common.REPORT_COPY_MAX + 1))
         elif plant == "dest-symlink":
             (reports / "abc123abc123.md").write_text("real report", encoding="utf-8")
             (tmp_path / ".local" / "reports").mkdir(parents=True)
@@ -15274,7 +15278,7 @@ def test_merge_report_copy_refuses_every_escape(tmp_path, monkeypatch, capsys, p
 
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
     if plant == "dest-symlinked-ancestor":
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                               env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
         assert exc.value.code == "agent-settings-symlink"
@@ -15345,7 +15349,7 @@ def test_merge_refuses_when_the_commit_sha_cannot_be_read(tmp_path, monkeypatch)
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("git", "rev-parse", "HEAD"): _completed(128, "")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
@@ -15400,7 +15404,7 @@ def test_merge_keeps_the_worktree_when_a_report_copy_fails(tmp_path, monkeypatch
     sha = "a" * 40
     reports = _worktree_path(tmp_path) / ".local" / "reports"
     reports.mkdir(parents=True)
-    (reports / "abc123abc123.md").write_bytes(b"x" * (jaxflow.REPORT_COPY_MAX + 1))
+    (reports / "abc123abc123.md").write_bytes(b"x" * (jaxflow_common.REPORT_COPY_MAX + 1))
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
@@ -15419,7 +15423,7 @@ def test_merge_refuses_an_agents_md_that_exists_but_cannot_be_read(tmp_path, mon
     policy.write_bytes(b"**Preset: `dual-branch-pr`**\n\xff\xfe not utf-8\n")
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "preset-unknown"
@@ -15472,7 +15476,7 @@ def test_merge_refuses_when_the_switch_to_the_target_fails(tmp_path, monkeypatch
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha, switch_fails="main")
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-mismatch"
@@ -15495,7 +15499,7 @@ def test_merge_resume_refuses_a_subject_that_merely_contains_the_branch(tmp_path
             0, "feat: Release (merge feat/x) (merge other)\n"),
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{sha}\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha, phase="Release (merge feat/x)"), run=fake_run,
                           post=_never_post, env=_merge_env(), now=_fixed_now,
                           allowlist_root=tmp_path.parent)
@@ -15519,7 +15523,7 @@ def test_merge_resume_refuses_a_branch_the_merge_commit_does_not_name(tmp_path, 
         ("git", "log", "-1", "--format=%s"): _completed(0, "feat: Phase X (merge feat/x)\n"),
         ("git", "rev-parse", "--verify", "alias^{commit}"): _completed(0, f"{sha}\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(branch="alias", sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
@@ -15540,7 +15544,7 @@ def test_merge_resume_refuses_when_the_branch_no_longer_names_the_approved_sha(t
         # the caller-named branch points somewhere else entirely
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, "9" * 40 + "\n"),
     })
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
@@ -15574,7 +15578,7 @@ def test_merge_never_removes_a_worktree_git_does_not_register_for_that_branch(tm
     """F2, second half: the derived path must be the REGISTERED worktree of that branch."""
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
-    worktree = tmp_path.parent / f"{jaxflow.slugify_project(tmp_path.name)}-feat-x"
+    worktree = tmp_path.parent / f"{jaxflow_common.slugify_project(tmp_path.name)}-feat-x"
     worktree.mkdir()
     # git knows this path, but as the worktree of a DIFFERENT branch
     fake_run, calls = _switch_aware_runner(tmp_path, sha, overrides={
@@ -15594,7 +15598,7 @@ def test_merge_commit_failure_aborts_and_never_audits_or_pushes(tmp_path, monkey
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha, overrides={
         ("git", "commit",): _completed(1, "hook refused: Co-Authored-By is banned")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
@@ -15633,7 +15637,7 @@ def test_merge_refuses_when_approved_target_differs_from_policy(
         ("git", "symbolic-ref"): _completed(0, "refs/remotes/origin/release\n"),
     }
     fake_run, calls = _merge_runner(tmp_path, script=script, agents=_RELEASE_POLICY)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha, target="main"), run=fake_run,
                           post=_never_post, env=_merge_env(), now=_fixed_now,
                           allowlist_root=tmp_path.parent)
@@ -15662,7 +15666,7 @@ def test_merge_refuses_an_unusable_approved_target(tmp_path, monkeypatch, target
     monkeypatch.chdir(tmp_path)
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(target=target), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-invalid"
@@ -15674,7 +15678,7 @@ def test_merge_direct_call_missing_target_is_target_invalid(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_merge_args_without_target(), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-invalid"
@@ -15693,7 +15697,7 @@ def test_merge_approved_target_uses_real_check_ref_format(tmp_path, monkeypatch,
     monkeypatch.chdir(tmp_path)
     fake_run, calls = _merge_run_real_ref_format(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(target=target), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
@@ -15710,7 +15714,7 @@ def test_merge_gates_win_over_an_invalid_target(tmp_path, monkeypatch, override,
     monkeypatch.chdir(tmp_path)
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(target="-nope", **override), run=fake_run,
                           post=_never_post, env=_merge_env(), now=_fixed_now,
                           allowlist_root=tmp_path.parent)
@@ -15725,7 +15729,7 @@ def test_merge_identical_retry_resumes_after_push_failure(tmp_path, monkeypatch)
     posted = []
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("git", "push"): _completed(1, "rejected")})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "push-failed"
@@ -15759,7 +15763,7 @@ def test_merge_identical_retry_resumes_after_audit_failure(tmp_path, monkeypatch
         raise RuntimeError("hub down")
 
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=failing_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "hub-unreachable"
@@ -15836,7 +15840,7 @@ def _seed_reusable_review(tmp_path, db, *, branch="feat/x", verify="pnpm test", 
     `tests`: "ok" = both frames EXIT 0; None = no evidence file; any other str = written raw.
     `manifest`: True = regular file; False = none; "symlink" = `manifest.json` is a symlink to a
     valid manifest OUTSIDE the run directory (the escape the helper must refuse)."""
-    project = jaxflow.slugify_project(tmp_path.name)
+    project = jaxflow_common.slugify_project(tmp_path.name)
     builder_id = "b" * 12
     con = sqlite3.connect(db)
     if not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'workflow_events'").fetchone():
@@ -15892,7 +15896,7 @@ def _reuse_run(worktree, *, porcelain="", registered=True):
 def _call_reuse(tmp_path, db, *, checks="pnpm test", sha=_REUSE_SHA, recheck=False, **run_kw):
     worktree = _worktree_path(tmp_path)
     return jaxflow._merge_checks_reuse(
-        _reuse_run(worktree, **run_kw), tmp_path, jaxflow.slugify_project(tmp_path.name),
+        _reuse_run(worktree, **run_kw), tmp_path, jaxflow_common.slugify_project(tmp_path.name),
         worktree, "feat/x", sha, checks, allowlist_root=tmp_path.parent, recheck=recheck,
         db_path=db)
 
@@ -15978,7 +15982,7 @@ def test_merge_checks_reuse_asks_git_for_untracked_files_explicitly(tmp_path):
         return inner(argv, cwd)
 
     jaxflow._merge_checks_reuse(
-        run, tmp_path, jaxflow.slugify_project(tmp_path.name), worktree, "feat/x", _REUSE_SHA,
+        run, tmp_path, jaxflow_common.slugify_project(tmp_path.name), worktree, "feat/x", _REUSE_SHA,
         "pnpm test", allowlist_root=tmp_path.parent, db_path=db)
     assert ["git", "status", "--porcelain", "--untracked-files=all"] in seen
 
@@ -16030,13 +16034,13 @@ def _run_pr_merge(tmp_path, monkeypatch, *, seed=None, setup_kw=None, dirty_untr
 
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         try:
             rc = jaxflow.cmd_merge(
                 _MergeArgs(target="staging", checks="pnpm test", **args_kw), run=run,
                 post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
                 allowlist_root=tmp_path.parent)
-        except jaxflow.Refusal as exc:
+        except ji.Refusal as exc:
             rc = exc
     return rc, calls, events
 
@@ -16047,7 +16051,7 @@ def _bash_ran(calls):
 
 def test_merge_pr_reuses_the_review_evidence_and_audits_it(tmp_path, monkeypatch, capsys):
     rc, calls, events = _run_pr_merge(tmp_path, monkeypatch, seed={})
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     assert not _bash_ran(calls), "the checks command must not run when the evidence is reusable"
     assert events[-1]["payload"]["checks"] == {
         "mode": "reused", "source_review_run_id": "e" * 12, "head_sha": _REUSE_SHA}
@@ -16067,7 +16071,7 @@ def test_merge_pr_reuses_the_review_evidence_and_audits_it(tmp_path, monkeypatch
 ])
 def test_merge_pr_runs_the_checks_when_reuse_does_not_hold(tmp_path, monkeypatch, capsys, seed, args_kw):
     rc, calls, events = _run_pr_merge(tmp_path, monkeypatch, seed=seed, **args_kw)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     assert _bash_ran(calls)
     assert events[-1]["payload"]["checks"] == {"mode": "run"}
     assert capsys.readouterr().out.strip().splitlines()[-1] == "checks: pnpm test exit 0"
@@ -16076,20 +16080,20 @@ def test_merge_pr_runs_the_checks_when_reuse_does_not_hold(tmp_path, monkeypatch
 def test_merge_pr_untracked_dirt_runs_the_checks_without_a_refusal(tmp_path, monkeypatch):
     # Review Focus 3: the PR guard ignores untracked files, so untracked dirt only disables reuse.
     rc, calls, events = _run_pr_merge(tmp_path, monkeypatch, seed={}, dirty_untracked=True)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     assert _bash_ran(calls)
     assert events[-1]["payload"]["checks"] == {"mode": "run"}
 
 
 def test_merge_pr_tracked_dirt_still_refuses_even_with_reusable_evidence(tmp_path, monkeypatch):
     rc, calls, _ = _run_pr_merge(tmp_path, monkeypatch, seed={}, dirty_tracked=True)
-    assert isinstance(rc, jaxflow.Refusal) and rc.code == "dirty-tracked-tree"
+    assert isinstance(rc, ji.Refusal) and rc.code == "dirty-tracked-tree"
     assert not _bash_ran(calls)
 
 
 def test_merge_pr_missing_build_worktree_still_refuses_checks_failed(tmp_path, monkeypatch):
     rc, calls, _ = _run_pr_merge(tmp_path, monkeypatch, seed={}, setup_kw={"worktree_registered": False})
-    assert isinstance(rc, jaxflow.Refusal) and rc.code == "checks-failed"
+    assert isinstance(rc, ji.Refusal) and rc.code == "checks-failed"
 
 
 def test_merge_pr_failing_checks_still_refuse_when_reuse_does_not_hold(tmp_path, monkeypatch):
@@ -16100,8 +16104,8 @@ def test_merge_pr_failing_checks_still_refuse_when_reuse_does_not_hold(tmp_path,
     _seed_reusable_review(tmp_path, db, review_head="9" * 40)
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        m.setattr(jr, "DB_PATH", db)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_merge(_MergeArgs(target="staging", checks="pnpm test"), run=fake_run,
                               post=_never_post, env=_merge_env(), now=_fixed_now,
                               allowlist_root=tmp_path.parent)
@@ -16120,12 +16124,12 @@ def test_merge_pr_already_merged_recovery_audits_checks_resumed(tmp_path, monkey
     fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         rc = jaxflow.cmd_merge(
             _MergeArgs(target="staging", checks="pnpm test", recheck=recheck), run=fake_run,
             post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     assert not _bash_ran(calls)
     assert events[-1]["payload"]["checks"] == {"mode": "resumed"}
     assert not any(line.startswith("checks:") for line in capsys.readouterr().out.splitlines())
@@ -16143,12 +16147,12 @@ def test_merge_pr_release_head_never_consults_the_reuse_lookup(tmp_path, monkeyp
     inner = _pr_stateful_run(fake_run, calls, json.loads(script[("gh", "pr", "view")].stdout))
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         rc = jaxflow.cmd_merge(
             _MergeArgs(branch="release/x", target="main", checks="pnpm test"), run=inner,
             post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     assert _bash_ran(calls)
     assert events[-1]["payload"]["checks"] == {"mode": "run"}
 
@@ -16195,20 +16199,20 @@ def _run_local_ff(tmp_path, monkeypatch, *, seed=None, make_worktree=True, dirty
 
     events = []
     with monkeypatch.context() as m:
-        m.setattr(jaxflow.jr, "DB_PATH", db)
+        m.setattr(jr, "DB_PATH", db)
         try:
             rc = jaxflow.cmd_merge(
                 _MergeArgs(sha=sha, checks="pnpm test", **args_kw), run=run,
                 post=lambda e: events.append(e) or {"ok": True}, env=_merge_env(),
                 now=_fixed_now, allowlist_root=tmp_path.parent)
-        except jaxflow.Refusal as exc:
+        except ji.Refusal as exc:
             rc = exc
     return rc, calls, events
 
 
 def test_merge_local_fast_forward_reuses_the_review_evidence_and_prints_why(tmp_path, monkeypatch, capsys):
     rc, calls, events = _run_local_ff(tmp_path, monkeypatch, seed={})
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     flat = [" ".join(c) for c in calls]
     assert not any(f.startswith("/bin/bash -lc") for f in flat), "no checks call on reuse"
     assert not any(f.startswith("git diff --quiet") for f in flat)
@@ -16235,7 +16239,7 @@ def test_merge_local_fast_forward_reuses_the_review_evidence_and_prints_why(tmp_
 ])
 def test_merge_local_fast_forward_runs_the_checks_when_reuse_does_not_hold(tmp_path, monkeypatch, capsys, kw):
     rc, calls, events = _run_local_ff(tmp_path, monkeypatch, **kw)
-    assert rc == jaxflow.OK, "a failed reuse lookup must never refuse the merge"
+    assert rc == jaxflow_common.OK, "a failed reuse lookup must never refuse the merge"
     assert any(" ".join(c).startswith("/bin/bash -lc pnpm test") for c in calls)
     assert events[-1]["payload"]["checks"] == {"mode": "run"}
     assert capsys.readouterr().out.strip().splitlines()[-1] == "checks: pnpm test exit 0"
@@ -16245,7 +16249,7 @@ def test_merge_local_fast_forward_runs_the_checks_when_the_build_worktree_is_mis
     # Review Focus 3: the local path has no build-worktree prerequisite; a missing one only
     # disables reuse. (`_seed_reusable_review` would create the directory, so seed nothing.)
     rc, calls, events = _run_local_ff(tmp_path, monkeypatch, seed=None, make_worktree=False)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     assert any(" ".join(c).startswith("/bin/bash -lc") for c in calls)
     assert events[-1]["payload"]["checks"] == {"mode": "run"}
 
@@ -16255,7 +16259,7 @@ def test_merge_local_fast_forward_after_a_post_review_commit_runs_and_refuses_on
     # longer merges untested.
     rc, calls, events = _run_local_ff(
         tmp_path, monkeypatch, seed={"review_head": "9" * 40}, bash=_completed(1, "boom"))
-    assert isinstance(rc, jaxflow.Refusal) and rc.code == "checks-failed"
+    assert isinstance(rc, ji.Refusal) and rc.code == "checks-failed"
     flat = [" ".join(c) for c in calls]
     assert any(f.startswith("git merge --abort") for f in flat), "the merge must be aborted"
     assert not any(f.startswith("git commit") for f in flat)
@@ -16266,21 +16270,21 @@ def test_main_routes_merge_and_maps_a_refusal_to_exit_2(monkeypatch, capsys):
 
     def fake_cmd_merge(args, **kwargs):
         seen["branch"] = args.branch
-        return jaxflow.OK
+        return jaxflow_common.OK
 
     monkeypatch.setattr(jaxflow, "cmd_merge", fake_cmd_merge)
     argv = ["merge", "feat/x", "--sha", "a" * 40, "--phase", "P", "--checks", "true",
             "--target", "main"]
-    assert jaxflow.main(argv) == jaxflow.OK
+    assert jaxflow.main(argv) == jaxflow_common.OK
     assert seen["branch"] == "feat/x"
 
     def refusing(args, **kwargs):
-        exc = jaxflow.Refusal("preset-unsupported")
+        exc = ji.Refusal("preset-unsupported")
         exc.hint = "hint: PR preset"
         raise exc
 
     monkeypatch.setattr(jaxflow, "cmd_merge", refusing)
-    assert jaxflow.main(argv) == jaxflow.REFUSED
+    assert jaxflow.main(argv) == jaxflow_common.REFUSED
     err = capsys.readouterr().err
     assert "preset-unsupported" in err and "hint: PR preset" in err
 
@@ -16857,7 +16861,7 @@ def test_worker_diff_review_real_subprocess_drains_before_wait(monkeypatch):
                 root, worktree, runtime=runtime, base_sha=base_sha, head_sha=head_sha,
             )
             script = CHILD_FLOOD_SCRIPT.format(stdout_n=stdout_n, stderr_n=stderr_n)
-            monkeypatch.setattr(jr, "runtime_argv", lambda *a, **k: [jaxflow.sys.executable, "-c", script])
+            monkeypatch.setattr(jr, "runtime_argv", lambda *a, **k: [sys.executable, "-c", script])
 
             old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
             signal.alarm(15)
@@ -17002,7 +17006,7 @@ def test_result_older_missing_invalid_row_with_neither_key_is_unaffected():
 def test_merge_leaves_child_log_in_control_repo_and_excludes_it_from_report_copy(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
-    worktree = tmp_path.parent / f"{jaxflow.slugify_project(tmp_path.name)}-feat-x"
+    worktree = tmp_path.parent / f"{jaxflow_common.slugify_project(tmp_path.name)}-feat-x"
     (worktree / ".local" / "reports").mkdir(parents=True)
     (worktree / ".local" / "reports" / "abc123abc123.md").write_text("report", encoding="utf-8")
     # child.log for this run already lives in the CONTROL repo -- written there by the
@@ -17230,7 +17234,7 @@ def test_latest_builder_attempt_breaks_ts_tie_by_id(tmp_path):
     same_ts = "2026-09-01T00:00:00+00:00"
     _insert(con, "aaaa", "demo", "builder", "run-started", {"target": "feat/x", "repo": "/home/rafa/repos/demo"}, ts=same_ts)
     _insert(con, "bbbb", "demo", "builder", "run-started", {"target": "feat/x", "repo": "/home/rafa/repos/demo"}, ts=same_ts)
-    assert jaxflow._latest_builder_attempt(con, "demo", "/home/rafa/repos/demo", "feat/x") == "bbbb"
+    assert jaxflow_common._latest_builder_attempt(con, "demo", "/home/rafa/repos/demo", "feat/x") == "bbbb"
     con.close()
 
 
@@ -17257,8 +17261,8 @@ def test_copy_run_reports_failure_paths(tmp_path, plant, expected_failed):
         if plant == "invalid-shape":
             os.mkfifo(worktree / ".local" / "reports" / "aaaabbbbcccc.md")
         elif plant == "oversized":
-            (worktree / ".local" / "reports" / "aaaabbbbcccc.md").write_bytes(b"x" * (jaxflow.REPORT_COPY_MAX + 1))
-    result = jaxflow._copy_run_reports(worktree, repo, "aaaabbbbcccc")
+            (worktree / ".local" / "reports" / "aaaabbbbcccc.md").write_bytes(b"x" * (jaxflow_common.REPORT_COPY_MAX + 1))
+    result = jaxflow_common._copy_run_reports(worktree, repo, "aaaabbbbcccc")
     assert result == {"failed": expected_failed, "existed": False}
     assert not (repo / ".local" / "reports" / "aaaabbbbcccc.md").exists()
 
@@ -17278,8 +17282,8 @@ def test_copy_run_reports_fails_closed_on_existing_file_copy_error(tmp_path, mon
             raise OSError("simulated read failure")
         return real_open(path, flags, *a, **kw)
 
-    monkeypatch.setattr(jaxflow.os, "open", failing_open)
-    result = jaxflow._copy_run_reports(worktree, repo, "aaaabbbbcccc")
+    monkeypatch.setattr(os, "open", failing_open)
+    result = jaxflow_common._copy_run_reports(worktree, repo, "aaaabbbbcccc")
     assert result == {"failed": True, "existed": True}
     assert not (repo / ".local" / "reports" / "aaaabbbbcccc.md").exists()
 
@@ -17297,7 +17301,7 @@ def test_copy_run_reports_existing_destination_shape(tmp_path, plant, expected_f
     (worktree / ".local" / "reports" / "aaaabbbbcccc.md").write_text(body, encoding="utf-8")
     dest = repo / ".local" / "reports" / "aaaabbbbcccc.md"
     dest.mkdir() if plant == "directory" else dest.write_text(body, encoding="utf-8")
-    result = jaxflow._copy_run_reports(worktree, repo, "aaaabbbbcccc")
+    result = jaxflow_common._copy_run_reports(worktree, repo, "aaaabbbbcccc")
     assert result == {"failed": expected_failed, "existed": True}
 
 
@@ -17306,9 +17310,9 @@ def test_copy_run_reports_no_report_is_not_a_failure_then_copies_once_written(tm
     repo = tmp_path / "repo"
     (worktree / ".local" / "reports").mkdir(parents=True)
     (repo / ".local" / "reports").mkdir(parents=True)
-    assert jaxflow._copy_run_reports(worktree, repo, "aaaabbbbcccc") == {"failed": False, "existed": False}
+    assert jaxflow_common._copy_run_reports(worktree, repo, "aaaabbbbcccc") == {"failed": False, "existed": False}
     (worktree / ".local" / "reports" / "aaaabbbbcccc.md").write_text("x\n", encoding="utf-8")
-    result = jaxflow._copy_run_reports(worktree, repo)  # merge's own call shape: no run_id
+    result = jaxflow_common._copy_run_reports(worktree, repo)  # merge's own call shape: no run_id
     assert result == {"failed": False, "existed": False}
     assert (repo / ".local" / "reports" / "aaaabbbbcccc.md").read_text(encoding="utf-8") == "x\n"
 
@@ -17483,10 +17487,10 @@ def test_cmd_gc_refuses_both_modes_and_bad_duration(tmp_path, monkeypatch):
     _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     now = lambda: datetime(2026, 9, 19, tzinfo=timezone.utc)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_gc(SimpleNamespace(older_than="7d", dry_run=True, yes=True, force=False), run=_run_real, post=_never_post, now=now, db_path=tmp_path / "x.db")
     assert exc.value.code == "gc-both-modes"
-    with pytest.raises(jaxflow.Refusal) as exc2:
+    with pytest.raises(ji.Refusal) as exc2:
         jaxflow.cmd_gc(SimpleNamespace(older_than="7hours", dry_run=True, yes=False, force=False), run=_run_real, post=_never_post, now=now, db_path=tmp_path / "x.db")
     assert exc2.value.code == "gc-duration-invalid"
 
@@ -17496,13 +17500,13 @@ def test_redeliver_gc_spools_retries_only_gc_removed_and_deletes_on_success(tmp_
     repo.mkdir()
     gc_event = {"project": "demo", "role": "lead", "type": "gc-removed", "source": "deterministic", "emitter": "wrapper", "payload": {"run_id": "aaaabbbbcccc", "branch": "feat/x", "worktree": "/x", "reason": "success", "age_days": 9}}
     other_event = {"run_id": "ffffeeeedddd", "project": "demo", "role": "builder", "type": "run-finished", "source": "deterministic", "emitter": "wrapper", "payload": {"contract_status": "ok"}}
-    jaxflow._write_spool(repo, "aaaabbbbcccc", gc_event)
-    jaxflow._write_spool(repo, "ffffeeeedddd", other_event)  # NOT a gc-removed spool -- must survive
+    jaxflow_common._write_spool(repo, "aaaabbbbcccc", gc_event)
+    jaxflow_common._write_spool(repo, "ffffeeeedddd", other_event)  # NOT a gc-removed spool -- must survive
     posted = []
     jaxflow._redeliver_gc_spools(repo, post=lambda e: posted.append(e) or {"ok": True})
     assert posted == [gc_event]
-    assert not jaxflow._spool_path(repo, "aaaabbbbcccc").exists()
-    assert jaxflow._spool_path(repo, "ffffeeeedddd").exists()  # untouched
+    assert not jaxflow_common._spool_path(repo, "aaaabbbbcccc").exists()
+    assert jaxflow_common._spool_path(repo, "ffffeeeedddd").exists()  # untouched
     jaxflow._redeliver_gc_spools(tmp_path / "no-such-repo", post=_never_post)  # must not raise
 
 
@@ -17510,20 +17514,20 @@ def test_redeliver_gc_spools_leaves_spool_on_post_failure_and_retries_next_call(
     repo = tmp_path / "demo"
     repo.mkdir()
     gc_event = {"project": "demo", "role": "lead", "type": "gc-removed", "source": "deterministic", "emitter": "wrapper", "payload": {"run_id": "aaaabbbbcccc", "branch": "feat/x", "worktree": "/x", "reason": "success", "age_days": 9}}
-    jaxflow._write_spool(repo, "aaaabbbbcccc", gc_event)
+    jaxflow_common._write_spool(repo, "aaaabbbbcccc", gc_event)
 
     def failing_post(event):
         raise RuntimeError("event post failed: 500")
 
     jaxflow._redeliver_gc_spools(repo, post=failing_post)
-    assert jaxflow._spool_path(repo, "aaaabbbbcccc").exists()
+    assert jaxflow_common._spool_path(repo, "aaaabbbbcccc").exists()
 
     # F6: at-least-once -- the spool survives and the NEXT call redelivers; no
     # idempotency key, a duplicate is a harmless repeat (ledger row is the source of truth).
     posted = []
     jaxflow._redeliver_gc_spools(repo, post=lambda e: posted.append(e) or {"ok": True})
     assert posted == [gc_event]
-    assert not jaxflow._spool_path(repo, "aaaabbbbcccc").exists()
+    assert not jaxflow_common._spool_path(repo, "aaaabbbbcccc").exists()
 
 
 def test_dispatch_diff_review_started_payload_carries_builder_run_id(tmp_path, monkeypatch):
@@ -17549,7 +17553,7 @@ def test_dispatch_diff_review_started_payload_carries_builder_run_id(tmp_path, m
     args = SimpleNamespace(diff="aaaabbbbcccc", since=None, full=None, phase=None, model=None, effort=None,
                             from_caller="claude", no_callback=True, focus=None, reverify=False)
     monkeypatch.chdir(root)
-    with contextlib.suppress(jaxflow.Refusal):  # a subsequent tmux-launch failure is irrelevant -- post already fired
+    with contextlib.suppress(ji.Refusal):  # a subsequent tmux-launch failure is irrelevant -- post already fired
         jaxflow.dispatch_diff_review(
             args, run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: events.append(e) or {"ok": True},
@@ -17569,7 +17573,7 @@ def test_normalize_phase(raw, expected):
 
 
 def test_loop_refuses_short_prefix(tmp_path):
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_loop("abc", db_path=tmp_path / "x.db")
     assert exc.value.code == "loop-prefix-too-short"
 
@@ -17589,7 +17593,7 @@ def _loop_db(tmp_path):
 
 def test_loop_anchor_builds_and_diff_linking_by_builder_run_id(tmp_path):
     db = _loop_db(tmp_path)
-    ro = jaxflow._open_ro(db)
+    ro = jaxflow_common._open_ro(db)
     ro.row_factory = sqlite3.Row
     anchors = jaxflow._anchor_builds_for_prefix(ro, "moa474")
     assert [a["run_id"] for a in anchors] == ["b1"]
@@ -17614,7 +17618,7 @@ def test_loop_reviewer_rows_break_same_timestamp_ties_by_id(tmp_path):
     _insert(con, "d2", "demo", "reviewer", "run-started", {"phase": "moa-600-diff-r2", "kind": "diff", "target": "feat/moa-600", "builder_run_id": "b1"}, ts=same_ts)
     _insert(con, "d2", "demo", "reviewer", "run-finished", {"contract_status": "ok", "verdict": "approve"}, ts=same_ts)
     con.close()
-    ro = jaxflow._open_ro(db)
+    ro = jaxflow_common._open_ro(db)
     ro.row_factory = sqlite3.Row
     anchors = jaxflow._anchor_builds_for_prefix(ro, "moa600")
     diffs = jaxflow._diff_rows_for_builds(ro, anchors)
@@ -17631,7 +17635,7 @@ def test_loop_diff_linking_falls_back_to_branch_for_legacy_rows_without_builder_
     _insert(con, "b1", "demo", "builder", "run-finished", {"contract_status": "ok", "result": "success"})
     _insert(con, "d1", "demo", "reviewer", "run-started", {"phase": "moa467-claude-diff", "kind": "diff", "target": "feat/moa-467"})  # legacy: no builder_run_id
     con.close()
-    ro = jaxflow._open_ro(db)
+    ro = jaxflow_common._open_ro(db)
     ro.row_factory = sqlite3.Row
     anchors = jaxflow._anchor_builds_for_prefix(ro, "moa467")
     diffs = jaxflow._diff_rows_for_builds(ro, anchors)
@@ -17670,7 +17674,7 @@ def test_wall_time_falls_back_short_path_no_spec_review(tmp_path):
     _insert(con, "b1", "demo", "builder", "run-started", {"phase": "x", "kind": "build", "target": "feat/x"}, ts="2026-09-10T00:00:00+00:00")
     _insert(con, "m1", "demo", "wrapper", "merge-approved", {"branch": "feat/x"}, ts="2026-09-13T00:00:00+00:00")
     con.close()
-    ro = jaxflow._open_ro(db)
+    ro = jaxflow_common._open_ro(db)
     ro.row_factory = sqlite3.Row
     anchors = jaxflow._anchor_builds_for_prefix(ro, "x")
     days = jaxflow._wall_time_days(ro, anchors, [], [])  # no spec/plan matched -- falls back to the build itself
@@ -17694,7 +17698,7 @@ def test_wall_time_days_windows_the_merge_match_to_the_anchored_build(tmp_path):
     _insert(con, "m2", "demo", "lead", "merge-approved", {"branch": "feat/x"}, ts="2026-01-01T00:00:00+00:00")
     _insert(con, "b2", "demo", "builder", "run-started", {"phase": "moa-501", "kind": "build", "target": "feat/x"}, ts="2026-09-10T00:00:00+00:00")
     con.close()
-    ro = jaxflow._open_ro(db)
+    ro = jaxflow_common._open_ro(db)
     ro.row_factory = sqlite3.Row
     reused = jaxflow._anchor_builds_for_prefix(ro, "moa500")
     assert jaxflow._wall_time_days(ro, reused, [], []) == 5.0  # never the 2026-01 merge
@@ -17714,7 +17718,7 @@ def test_wall_time_days_null_when_trailing_review_is_after_the_merge(tmp_path):
     _insert(con, "m1", "trailing", "lead", "merge-approved", {"branch": "feat/moa-610"}, ts="2026-09-03T00:00:00+00:00")
     _insert(con, "p1", "trailing", "reviewer", "run-started", {"phase": "moa610", "kind": "plan", "target": "docs/plan.md"}, ts="2026-09-04T00:00:00+00:00")
     con.close()
-    ro = jaxflow._open_ro(db)
+    ro = jaxflow_common._open_ro(db)
     ro.row_factory = sqlite3.Row
     anchors = jaxflow._anchor_builds_for_prefix(ro, "moa610")
     build_phases_norm = [jaxflow._normalize_phase(b["payload"]["phase"]) for b in anchors]
@@ -17724,24 +17728,24 @@ def test_wall_time_days_null_when_trailing_review_is_after_the_merge(tmp_path):
 # ---- Phase 2: --from jaxos (spec §8, Decisions 6/23) ----
 
 def test_resolve_caller_accepts_jaxos_from_flag_without_env_markers():
-    assert jaxflow.resolve_caller({}, "jaxos") == "jaxos"
-    assert jaxflow._CALLER_SESSION_VAR["jaxos"] == "JAXOS_CALLER_SESSION"
+    assert jaxflow_common.resolve_caller({}, "jaxos") == "jaxos"
+    assert jaxflow_common._CALLER_SESSION_VAR["jaxos"] == "JAXOS_CALLER_SESSION"
 
 
 def test_main_accepts_from_jaxos_on_review_build_and_merge(monkeypatch):
     seen = []
     monkeypatch.setattr(jaxflow, "dispatch_review", lambda args, **kw: seen.append(("review", args.from_caller)) or "r1")
     monkeypatch.setattr(jaxflow, "dispatch_build", lambda args, **kw: seen.append(("build", args.from_caller)) or "b1")
-    monkeypatch.setattr(jaxflow, "cmd_merge", lambda args, **kw: seen.append(("merge", args.from_caller)) or jaxflow.OK)
-    assert jaxflow.main(["review", "--spec", "x.md", "--from", "jaxos"]) == jaxflow.OK
+    monkeypatch.setattr(jaxflow, "cmd_merge", lambda args, **kw: seen.append(("merge", args.from_caller)) or jaxflow_common.OK)
+    assert jaxflow.main(["review", "--spec", "x.md", "--from", "jaxos"]) == jaxflow_common.OK
     assert jaxflow.main([
         "build", "--plan", "p.md", "--phase", "P", "--branch", "feat/x", "--whitelist", "a",
         "--verify", "true", "--from", "jaxos",
-    ]) == jaxflow.OK
+    ]) == jaxflow_common.OK
     assert jaxflow.main([
         "merge", "feat/x", "--sha", "a" * 40, "--phase", "P", "--checks", "true",
         "--target", "main", "--from", "jaxos",
-    ]) == jaxflow.OK
+    ]) == jaxflow_common.OK
     assert seen == [("review", "jaxos"), ("build", "jaxos"), ("merge", "jaxos")]
 
 
@@ -17759,7 +17763,7 @@ def test_jaxos_review_dispatch_forces_no_callback_and_records_caller(monkeypatch
             events.append(event)
             return {"ok": True}
 
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.dispatch_review(
                 _review_args(spec=str(target), from_caller="jaxos"),
                 run=_run_with_tmux(fake, real_cwd=root), post=post,
@@ -17825,7 +17829,7 @@ def test_merge_from_jaxos_keeps_the_existing_builder_field(tmp_path, monkeypatch
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
     rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, from_caller="jaxos"), run=fake_run, post=lambda e: None,
                            env={}, now=_fixed_now, allowlist_root=tmp_path.parent)
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     text = status.read_text(encoding="utf-8")
     assert "stage: ship" in text
     assert "builder: codex" in text
@@ -17862,7 +17866,7 @@ def test_mission_start_refuses_with_no_milestones_before_any_post():
     def post(url, payload):
         raise AssertionError("must not post with zero milestones")
     args = SimpleNamespace(name="Ship it", goal="g", milestones=[])
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_start(args, post=post)
     assert exc.value.code == "malformed milestone"
 
@@ -17870,7 +17874,7 @@ def test_mission_start_refuses_with_no_milestones_before_any_post():
 def test_mission_start_reraises_the_route_error_verbatim():
     post, _ = _recording_post(200, {"ok": False, "error": "mission-active"})
     args = SimpleNamespace(name="Ship it", goal="g", milestones=["m1"])
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_start(args, post=post)
     assert exc.value.code == "mission-active"
 
@@ -17879,7 +17883,7 @@ def test_mission_start_reraises_every_field_shape_refusal_verbatim():
     for code in ("too-many-milestones", "malformed name", "malformed goal", "malformed milestone"):
         post, _ = _recording_post(200, {"ok": False, "error": code})
         args = SimpleNamespace(name="Ship it", goal="g", milestones=["m1"])
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_mission_start(args, post=post)
         assert exc.value.code == code
 
@@ -17894,15 +17898,15 @@ def test_cancel_spool_redelivery_hub_rejected_keeps_spool(monkeypatch):
             "session": "jax-demo-build-aaaabbbbcccc", "phase": "P", "caller": "claude", "repo": str(repo),
         })
         con.close()
-        jaxflow._write_spool(repo, "aaaabbbbcccc", {"run_id": "aaaabbbbcccc", "payload": {"result": "failure"}})
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
-        with pytest.raises(jaxflow.Refusal) as exc:
+        jaxflow_common._write_spool(repo, "aaaabbbbcccc", {"run_id": "aaaabbbbcccc", "payload": {"result": "failure"}})
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_cancel(
                 "aaaabbbbcccc", run=_run_with_tmux(FakeTmux()),
                 post=lambda url, body: (500, {}), now=lambda: None, db_path=db,
             )
         assert exc.value.code == "hub-rejected: 500"
-        assert jaxflow._spool_path(repo, "aaaabbbbcccc").exists()
+        assert jaxflow_common._spool_path(repo, "aaaabbbbcccc").exists()
 
 
 def test_cancel_spool_redelivery_transport_error_keeps_spool(monkeypatch):
@@ -17915,25 +17919,25 @@ def test_cancel_spool_redelivery_transport_error_keeps_spool(monkeypatch):
             "session": "jax-demo-build-aaaabbbbcccc", "phase": "P", "caller": "claude", "repo": str(repo),
         })
         con.close()
-        jaxflow._write_spool(repo, "aaaabbbbcccc", {"run_id": "aaaabbbbcccc", "payload": {"result": "failure"}})
-        monkeypatch.setattr(jaxflow.time, "sleep", lambda s: None)
+        jaxflow_common._write_spool(repo, "aaaabbbbcccc", {"run_id": "aaaabbbbcccc", "payload": {"result": "failure"}})
+        monkeypatch.setattr(time, "sleep", lambda s: None)
 
         def post(url, body):
             raise OSError("down")
 
-        with pytest.raises(jaxflow.Refusal) as exc:
+        with pytest.raises(ji.Refusal) as exc:
             jaxflow.cmd_cancel(
                 "aaaabbbbcccc", run=_run_with_tmux(FakeTmux()), post=post, now=lambda: None, db_path=db,
             )
         assert exc.value.code == "hub-unreachable"
-        assert jaxflow._spool_path(repo, "aaaabbbbcccc").exists()
+        assert jaxflow_common._spool_path(repo, "aaaabbbbcccc").exists()
 
 
 def test_mission_post_500_empty_body_is_mission_hub_rejected_status():
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._mission_post("http://127.0.0.1:9/mission", {"name": "n"}, post=lambda url, payload: (500, {}))
     assert exc.value.code == "mission-hub-rejected: 500"
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._mission_post(
             "http://127.0.0.1:9/mission", {"name": "n"},
             post=lambda url, payload: (400, {"ok": False, "error": "too-many-milestones"}),
@@ -17943,7 +17947,7 @@ def test_mission_post_500_empty_body_is_mission_hub_rejected_status():
     def down(url, payload):
         raise OSError("down")
 
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow._mission_post("http://127.0.0.1:9/mission", {"name": "n"}, post=down)
     assert exc.value.code == "mission-hub-unreachable"
 
@@ -17952,7 +17956,7 @@ def test_mission_start_transport_failure_is_mission_hub_unreachable():
     def post(url, payload):
         raise OSError("connection refused")
     args = SimpleNamespace(name="Ship it", goal="g", milestones=["m1"])
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_start(args, post=post)
     assert exc.value.code == "mission-hub-unreachable"
 
@@ -17962,14 +17966,14 @@ def test_mission_status_posts_status_line_and_reraises_no_active_mission():
     jaxflow.cmd_mission_status(SimpleNamespace(text="phase 1 merged"), post=post)
     assert calls == [(f"{jaxflow.MISSION_BASE_URL}/status", {"status_line": "phase 1 merged"})]
     post2, _ = _recording_post(200, {"ok": False, "error": "no-active-mission"})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_status(SimpleNamespace(text="x"), post=post2)
     assert exc.value.code == "no-active-mission"
 
 
 def test_mission_status_reraises_malformed_status_verbatim():
     post, _ = _recording_post(200, {"ok": False, "error": "malformed status"})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_status(SimpleNamespace(text=""), post=post)
     assert exc.value.code == "malformed status"
 
@@ -17983,7 +17987,7 @@ def test_mission_mark_resolves_index_and_title_forms_and_reraises_unknown_milest
         (f"{jaxflow.MISSION_BASE_URL}/milestone", {"milestone": "Phase 1", "state": "in-progress"}),
     ]
     post2, _ = _recording_post(200, {"ok": False, "error": "unknown-milestone"})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_mark(SimpleNamespace(milestone="nope", state="done"), post=post2)
     assert exc.value.code == "unknown-milestone"
 
@@ -17991,7 +17995,7 @@ def test_mission_mark_resolves_index_and_title_forms_and_reraises_unknown_milest
 def test_mission_mark_refuses_malformed_state_before_any_post():
     def post(url, payload):
         raise AssertionError("must not post an invalid state")
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_mark(SimpleNamespace(milestone="1", state="whatever"), post=post)
     assert exc.value.code == "malformed state"
 
@@ -18005,7 +18009,7 @@ def test_mission_done_and_cancel_post_the_matching_outcome_and_reraise_no_active
         (f"{jaxflow.MISSION_BASE_URL}/finish", {"outcome": "cancelled"}),
     ]
     post2, _ = _recording_post(200, {"ok": False, "error": "no-active-mission"})
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_finish("done", post=post2)
     assert exc.value.code == "no-active-mission"
 
@@ -18031,7 +18035,7 @@ def test_mission_show_formats_the_active_mission():
 def test_mission_show_transport_failure_is_mission_hub_unreachable():
     def get(url):
         raise OSError("unreachable")
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_mission_show(get=get)
     assert exc.value.code == "mission-hub-unreachable"
 
@@ -18041,16 +18045,16 @@ def test_mission_argparse_wiring_end_to_end(monkeypatch):
     def fake_post(url, payload):
         calls.append((url, payload))
         return 200, {"ok": True, "data": {"id": 1}}
-    monkeypatch.setattr(jaxflow, "_post", fake_post)
+    monkeypatch.setattr(jaxflow_common, "_post", fake_post)
     rc = jaxflow.main(["mission", "start", "--name", "Ship it", "--goal", "g", "--milestone", "M1", "--milestone", "M2"])
-    assert rc == jaxflow.OK
+    assert rc == jaxflow_common.OK
     assert calls == [(jaxflow.MISSION_BASE_URL, {"name": "Ship it", "goal": "g", "milestones": ["M1", "M2"]})]
 
     def fake_get(url):
         return 200, {"ok": True, "data": None}
     monkeypatch.setattr(jaxflow, "_get", fake_get)
     rc2 = jaxflow.main(["mission", "show"])
-    assert rc2 == jaxflow.OK
+    assert rc2 == jaxflow_common.OK
 
 
 def test_mission_argparse_requires_at_least_one_milestone_flag():
@@ -18065,9 +18069,9 @@ def test_mission_refusal_through_main_exits_refused_with_the_exact_stderr_code(m
     # code and stderr shape (main():5769-5774 -- `print(exc.code, file=sys.stderr); return REFUSED`).
     def fake_post(url, payload):
         return 200, {"ok": False, "error": "no-active-mission"}
-    monkeypatch.setattr(jaxflow, "_post", fake_post)
+    monkeypatch.setattr(jaxflow_common, "_post", fake_post)
     rc = jaxflow.main(["mission", "status", "phase 1 merged"])
-    assert rc == jaxflow.REFUSED
+    assert rc == jaxflow_common.REFUSED
     assert capsys.readouterr().err == "no-active-mission\n"
 
 # ---- slice e: model defaults (spec: One source of model defaults) ----
@@ -18132,7 +18136,7 @@ def test_builder_worker_refuses_missing_cli_with_no_traceback_and_cleans_up_the_
         post=lambda e: events.append(e) or {"ok": True}, popen=_MissingCliPopen,
         allowlist_root=allow_root,
     )
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     finished = [e for e in events if e["type"] == "run-finished"][0]
     assert finished["payload"]["contract_status"] == "cancelled"
     assert "missing-cli" in finished["payload"]["summary"]
@@ -18147,7 +18151,7 @@ def test_diff_reviewer_worker_refuses_missing_cli_with_no_worktree_cleanup_attem
         post=lambda e: events.append(e) or {"ok": True}, popen=_MissingCliPopen,
         allowlist_root=repo.parent,
     )
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     finished = [e for e in events if e["type"] == "run-finished"][0]
     assert finished["payload"]["contract_status"] == "cancelled"
     assert "missing-cli" in finished["payload"]["summary"]
@@ -18162,7 +18166,7 @@ def test_doc_review_worker_refuses_missing_cli(tmp_path):
         post=lambda e: events.append(e) or {"ok": True}, popen=_MissingCliPopen,
         allowlist_root=repo.parent,
     )
-    assert code == jaxflow.REFUSED
+    assert code == jaxflow_common.REFUSED
     finished = [e for e in events if e["type"] == "run-finished"][0]
     assert "missing-cli" in finished["payload"]["summary"]
 
@@ -18352,8 +18356,8 @@ def test_doctor_makes_no_write_and_no_gh_or_git_mutation(tmp_path, monkeypatch):
     def _forbidden(*args, **kwargs):
         raise AssertionError("cmd_doctor must never invoke subprocess.run/Popen")
 
-    monkeypatch.setattr(jaxflow.subprocess, "run", _forbidden)
-    monkeypatch.setattr(jaxflow.subprocess, "Popen", _forbidden)
+    monkeypatch.setattr(subprocess, "run", _forbidden)
+    monkeypatch.setattr(subprocess, "Popen", _forbidden)
 
     which = _doctor_which(repo_root, set())  # creates repo_root/bin fixtures BEFORE the snapshot
     before = set(repo_root.rglob("*"))
@@ -18461,8 +18465,8 @@ _EVENTS_URL = "http://127.0.0.1:9/events"
 
 
 def test_post_event_200_ok_false_raises_hub_rejected_with_error_text():
-    with pytest.raises(jaxflow.HubRejected) as exc:
-        jaxflow._post_event(
+    with pytest.raises(jaxflow_common.HubRejected) as exc:
+        jaxflow_common._post_event(
             {"x": 1}, url=_EVENTS_URL,
             opener=_json_opener(200, {"ok": False, "error": "invalid event: verify too long"}),
         )
@@ -18478,8 +18482,8 @@ def test_post_event_http_error_with_json_error_raises_hub_rejected_with_status()
                 io.BytesIO(json.dumps({"ok": False, "error": "nope"}).encode()),
             )
 
-        with pytest.raises(jaxflow.HubRejected) as exc:
-            jaxflow._post_event({"x": 1}, url=_EVENTS_URL, opener=opener)
+        with pytest.raises(jaxflow_common.HubRejected) as exc:
+            jaxflow_common._post_event({"x": 1}, url=_EVENTS_URL, opener=opener)
         assert exc.value.status == status
         assert str(exc.value).startswith(f"{status} ")
         assert "nope" in str(exc.value)
@@ -18489,14 +18493,14 @@ def test_post_event_http_error_undecodable_body_raises_hub_rejected_status_only(
     def opener(req, timeout):
         raise urllib.error.HTTPError(_EVENTS_URL, 502, "bad", None, io.BytesIO(b"\xff"))
 
-    with pytest.raises(jaxflow.HubRejected) as exc:
-        jaxflow._post_event({"x": 1}, url=_EVENTS_URL, opener=opener)
+    with pytest.raises(jaxflow_common.HubRejected) as exc:
+        jaxflow_common._post_event({"x": 1}, url=_EVENTS_URL, opener=opener)
     assert exc.value.status == 502
     assert str(exc.value) == "502"
 
 
 def test_post_event_409_still_returns_claimed_marker():
-    result = jaxflow._post_event(
+    result = jaxflow_common._post_event(
         {"x": 1}, url=_EVENTS_URL,
         opener=_json_opener(409, {"ok": False, "error": "already finished"}),
     )
@@ -18508,21 +18512,21 @@ def test_post_event_transport_error_propagates_not_hub_rejected():
         raise urllib.error.URLError("timed out")
 
     with pytest.raises(urllib.error.URLError):
-        jaxflow._post_event({"x": 1}, url=_EVENTS_URL, opener=url_opener)
+        jaxflow_common._post_event({"x": 1}, url=_EVENTS_URL, opener=url_opener)
 
     def os_opener(req, timeout):
         raise OSError("refused")
 
     with pytest.raises(OSError) as exc:
-        jaxflow._post_event({"x": 1}, url=_EVENTS_URL, opener=os_opener)
+        jaxflow_common._post_event({"x": 1}, url=_EVENTS_URL, opener=os_opener)
     assert not isinstance(exc.value, getattr(jaxflow, "HubRejected", ()))
 
 
 def test_hub_refusal_maps_hub_rejected_and_everything_else():
-    refused = jaxflow._hub_refusal(jaxflow.HubRejected(200, "invalid event: x"))
+    refused = jaxflow_common._hub_refusal(jaxflow_common.HubRejected(200, "invalid event: x"))
     assert refused.code.startswith("hub-rejected: 200 invalid event")
-    assert jaxflow._hub_refusal(RuntimeError("x")).code == "hub-unreachable"
-    assert jaxflow._hub_refusal(OSError("x")).code == "hub-unreachable"
+    assert jaxflow_common._hub_refusal(RuntimeError("x")).code == "hub-unreachable"
+    assert jaxflow_common._hub_refusal(OSError("x")).code == "hub-unreachable"
 
 
 def _dispatch_tail_kwargs(raw, post, fake):
@@ -18546,11 +18550,11 @@ def test_dispatch_run_hub_rejected_refuses_cleans_manifest_dir_and_never_calls_t
         fake = FakeTmux()
 
         def post(event):
-            raise jaxflow.HubRejected(200, "invalid event: verify too long")
+            raise jaxflow_common.HubRejected(200, "invalid event: verify too long")
 
         kw, manifest_dir, cleanup = _dispatch_tail_kwargs(raw, post, fake)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow._dispatch_run(**kw)
+            jaxflow_common._dispatch_run(**kw)
         assert exc.value.code.startswith("hub-rejected: 200")
         assert not manifest_dir.exists()
         assert not cleanup.exists()
@@ -18566,7 +18570,7 @@ def test_dispatch_run_oserror_is_hub_unreachable():
 
         kw, manifest_dir, cleanup = _dispatch_tail_kwargs(raw, post, fake)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow._dispatch_run(**kw)
+            jaxflow_common._dispatch_run(**kw)
         assert exc.value.code == "hub-unreachable"
         assert not manifest_dir.exists()
         assert not cleanup.exists()
@@ -18601,7 +18605,7 @@ def _review_hub(monkeypatch, post):
 
 def test_dispatch_review_hub_rejected_refuses_and_cleans(monkeypatch):
     def post(event):
-        raise jaxflow.HubRejected(200, "invalid event: verify too long")
+        raise jaxflow_common.HubRejected(200, "invalid event: verify too long")
 
     exc, runs_gone, tests_gone, preflight_only = _review_hub(monkeypatch, post)
     assert exc.code.startswith("hub-rejected: 200")
@@ -18617,7 +18621,7 @@ def test_dispatch_review_oserror_is_hub_unreachable(monkeypatch):
 
 
 def _event_post_rejected(event):
-    return jaxflow._post_event(
+    return jaxflow_common._post_event(
         event, url=_EVENTS_URL,
         opener=_json_opener(200, {"ok": False, "error": "invalid event: verify too long"}),
     )
@@ -18641,19 +18645,19 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
     def pr_open(post):
         fake_run, _calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
         with monkeypatch.context() as m:
-            m.setattr(jaxflow.jr, "DB_PATH", db)
+            m.setattr(jr, "DB_PATH", db)
             jaxflow.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
 
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         pr_open(_event_post_rejected)
     assert exc.value.code.startswith("hub-rejected:")
     assert "re-run" not in capsys.readouterr().out
     assert getattr(exc.value, "hint", None) is None
 
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         pr_open(lambda event: (_ for _ in ()).throw(OSError("down")))
     assert exc.value.code == "hub-unreachable"
     out = capsys.readouterr().out
@@ -18663,7 +18667,7 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
     (tmp_path / "AGENTS.md").unlink(missing_ok=True)
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(
             _MergeArgs(sha=sha), run=fake_run, post=_event_post_rejected,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -18674,7 +18678,7 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
     assert any(" ".join(c).startswith("git commit") for c in calls)
 
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(
             _MergeArgs(sha=sha), run=fake_run, post=lambda event: (_ for _ in ()).throw(OSError("down")),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
@@ -18686,10 +18690,10 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
 
     # A 5xx is a hub-side fault that may clear: keep the status, but still advise a retry.
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    with pytest.raises(jaxflow.Refusal) as exc:
+    with pytest.raises(ji.Refusal) as exc:
         jaxflow.cmd_merge(
             _MergeArgs(sha=sha), run=fake_run,
-            post=lambda event: (_ for _ in ()).throw(jaxflow.HubRejected(500, "boom")),
+            post=lambda event: (_ for _ in ()).throw(jaxflow_common.HubRejected(500, "boom")),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
     assert exc.value.code == "hub-rejected: 500 boom"
@@ -18795,7 +18799,7 @@ def test_build_verify_501_chars_refused_before_any_side_effect(monkeypatch):
 
 
 def test_check_hub_caps_ignores_uncapped_keys():
-    jaxflow._check_hub_caps({
+    jaxflow_common._check_hub_caps({
         "phase": "P", "runtime": "opencode-grok", "kind": "build", "target": "feat/demo",
         "caller": "claude", "caller_session": "abc", "model": "m", "effort": "n/a",
         "session": "jax-demo-build-abc", "repo": "/tmp/demo", "verify": "true",
@@ -18811,12 +18815,12 @@ def test_review_target_path_over_512_refused_early(monkeypatch):
         while True:
             cursor = cursor / ("d" * 80)
             candidate = cursor / "spec.md"
-            if jaxflow._utf16_len(str(candidate)) > 512:
+            if jaxflow_common._utf16_len(str(candidate)) > 512:
                 break
         candidate.parent.mkdir(parents=True)
         candidate.write_text("# Demo spec\n", encoding="utf-8")
         target = candidate.resolve()
-        n = jaxflow._utf16_len(str(target))
+        n = jaxflow_common._utf16_len(str(target))
         assert n > 512
         monkeypatch.chdir(root)
         events, exc = _probe_review(root, allow_root, target, phase="P")
@@ -18833,7 +18837,7 @@ def test_build_backstop_session_too_long_cleans_worktree(monkeypatch):
         plan = _plan_file(root)
         monkeypatch.chdir(root)
         monkeypatch.setattr(
-            jaxflow.jr, "_alloc_run",
+            jr, "_alloc_run",
             lambda project, role, repo, run, run_id=None: ("abcdef123456", "s" * 81, {}),
         )
         events = []
@@ -18856,9 +18860,9 @@ def test_build_backstop_session_too_long_cleans_worktree(monkeypatch):
 
 def test_check_hub_caps_counts_utf16_units():
     text = "\U0001F600" * 251
-    assert jaxflow._utf16_len(text) == 502
+    assert jaxflow_common._utf16_len(text) == 502
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._check_hub_caps({"verify": text})
+        jaxflow_common._check_hub_caps({"verify": text})
     assert exc.value.code == "verify-too-long (502 > 500)"
 
 
@@ -18880,7 +18884,7 @@ def test_review_early_check_oversized_repo_or_model_leaves_nothing(monkeypatch):
         allow_root = Path(raw) / ("r" * 180)
         root = allow_root / "demo"
         _init_repo(root)
-        n = jaxflow._utf16_len(str(root.resolve()))
+        n = jaxflow_common._utf16_len(str(root.resolve()))
         assert n > 200
         target = _spec_file(root)
         monkeypatch.chdir(root)
@@ -18912,7 +18916,7 @@ def test_dispatch_run_backstop_repo_too_long_refuses_before_mkdir(tmp_path):
     manifest_dir = repo / ".local" / "runs" / run_id
     posted = []
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._dispatch_run(
+        jaxflow_common._dispatch_run(
             run=lambda *a, **k: None,
             post=lambda e: posted.append(e) or {"ok": True},
             repo=repo, project="demo", phase="P", kind="build", role="builder",
@@ -18928,12 +18932,12 @@ def test_dispatch_run_backstop_repo_too_long_refuses_before_mkdir(tmp_path):
 
 
 def test_check_hub_caps_skips_none_and_maps_caller_labels():
-    jaxflow._check_hub_caps({"verify": None, "build": None, "callerPane": None})
+    jaxflow_common._check_hub_caps({"verify": None, "build": None, "callerPane": None})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._check_hub_caps({"callerSession": "s" * 129})
+        jaxflow_common._check_hub_caps({"callerSession": "s" * 129})
     assert exc.value.code == "caller-session-too-long (129 > 128)"
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._check_hub_caps({"callerPane": "p" * 129})
+        jaxflow_common._check_hub_caps({"callerPane": "p" * 129})
     assert exc.value.code == "caller-pane-too-long (129 > 128)"
 
 
@@ -18949,7 +18953,7 @@ def test_hub_caps_match_workflow_ts_limits():
         if match.group(3):
             value *= int(match.group(3))
         limits[match.group(1)] = value
-    for key, cap in jaxflow.HUB_CAPS.items():
+    for key, cap in jaxflow_common.HUB_CAPS.items():
         assert key in limits
         assert cap == limits[key]
 
@@ -19225,7 +19229,7 @@ def test_cmd_result_still_prints_the_fallback_line_when_the_report_is_missing(ca
 def test_send_callback_appends_the_fallback_suffix_as_the_last_segment():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID, fallback="codex off")
     jaxflow._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x", report_path="/report.md")
-    line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
+    line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
         "[JAXFLOW] spec aaaabbbbcccc finished — approve — /report.md (fallback: codex off)\n")
     jaxflow._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x",
