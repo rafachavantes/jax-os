@@ -23,7 +23,12 @@ export function MissionBlock() {
   const { mission, goalLine, statusText } = state;
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-line bg-surface px-5 py-[18px]">
-      <span className="text-[15px] font-semibold text-ink min-w-0 [overflow-wrap:anywhere]">{mission.name}</span>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="text-[15px] font-semibold text-ink min-w-0 [overflow-wrap:anywhere]">{mission.name}</span>
+        {mission.autonomous ? (
+          <span className="flex-none rounded-full border border-accent-soft-border bg-brand-soft px-2 py-0 text-[10px] font-bold uppercase text-brand">{t("autonomous")}</span>
+        ) : null}
+      </div>
       {goalLine ? <p className="text-[12px] text-muted min-w-0 [overflow-wrap:anywhere]">{goalLine}</p> : null}
       <p className="line-clamp-2 text-[13px] text-body-ink min-w-0 [overflow-wrap:anywhere]">{statusText}</p>
       <div role="list" aria-label={t("milestonesLabel")} className="flex flex-wrap gap-1.5">

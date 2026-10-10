@@ -349,6 +349,7 @@
   },
   "missionBlock": {
     "milestonesLabel": "Mission milestones",
+    "autonomous": "autonomous",
     "milestoneState": {
       "done": "done",
       "inProgress": "in progress",
