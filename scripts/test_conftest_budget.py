@@ -36,3 +36,21 @@ def test_wrapped_popen_and_run_each_count_once(tmp_path, monkeypatch):
     assert len(conftest.OPENCODE_CALLS) == 1
     subprocess.Popen([str(fake)]).wait()
     assert len(conftest.OPENCODE_CALLS) == 2
+
+
+_SKIP_SITES = [
+    ("test_jaxflow_settings", "test_saved_profiles_forward_model_reasoning_and_full_routing", lambda m: (None, None)),
+    ("test_jaxflow_settings", "test_native_xai_captured_request_uses_own_wire_format", lambda m: (None, None)),
+    ("test_jaxflow_settings", "test_writer_produced_aliases_capture_supported_transports",
+     lambda m: (None, m._WRITER_CASES[2])),
+]
+
+
+@pytest.mark.parametrize("module,name,args", _SKIP_SITES, ids=[site[1] for site in _SKIP_SITES])
+def test_opencode_marker_skips_without_binary(monkeypatch, module, name, args):
+    """With PATH emptied the real-binary tests must SKIP (never fail) before touching anything."""
+    monkeypatch.setenv("PATH", "")
+    mod = importlib.import_module(module)
+    fn = getattr(mod, name)
+    with pytest.raises(pytest.skip.Exception):
+        fn(*args(mod))
