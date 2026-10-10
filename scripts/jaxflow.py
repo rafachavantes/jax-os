@@ -273,6 +273,15 @@ def _iso8601(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+def _branch_worktree_path(allowlist_root, project, branch, *, resolve=True):
+    """`<allowlist_root>/<project>-<branch with '/' as '-'>` -- the build worktree `build`
+    reserves for a branch. `resolve=False` for the two callers that must NOT canonicalize
+    (`dispatch_build` reserves a path that does not exist yet; `cmd_result` compares the
+    string form before it resolves anything)."""
+    path = allowlist_root / f"{project}-{branch.replace('/', '-')}"
+    return path.resolve() if resolve else path
+
+
 def _manifest_dir(repo: Path, run_id: str) -> Path:
     return repo / ".local" / "runs" / run_id
 
@@ -1634,7 +1643,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise
     except Exception as exc:
         raise Refusal("resume-ineligible") from exc
-    expected = (allowlist_root / f"{project}-{branch.replace('/', '-')}").resolve()
+    expected = _branch_worktree_path(allowlist_root, project, branch)
     if worktree != expected or not _contained(worktree, allowlist_root) or not worktree.is_dir():
         raise Refusal("resume-ineligible")
     whitelist = prior.get("whitelist")
@@ -1922,8 +1931,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
             raise Refusal("base-invalid")
         base_sha = resolved
     whitelist = [p.strip() for p in args.whitelist.split(",") if p.strip()]
-    branch_slug = args.branch.replace("/", "-")
-    worktree = allowlist_root / f"{project}-{branch_slug}"
+    worktree = _branch_worktree_path(allowlist_root, project, args.branch, resolve=False)
 
     # Exclusive reservation FIRST (fixes cold review G8/RECURRENCE(F19), spec §4.2 step 1;
     # reordered ahead of `_default_branch()` per Part 1 diff-review F2): `git worktree add
@@ -2292,14 +2300,13 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # `.get`, never a subscript: every build recorded before MOA-454 has no `build` key
     # (spec §2.6), and `review --diff` must keep working on those.
     build_cmd = started_payload.get("build")
-    branch_slug = branch.replace("/", "-")
     phase = args.phase or started_payload["phase"]
 
     # fixes cold review F2: resolve and confine the derived worktree path (§6 I10) and
     # require it to still exist -- a removed/never-created worktree must refuse cleanly
     # (a NEW code, distinct from `unknown-run`: the RUN is known and finished, only its
     # worktree is gone) instead of an uncaught FileNotFoundError from the verify call below.
-    worktree = (allowlist_root / f"{project}-{branch_slug}").resolve()
+    worktree = _branch_worktree_path(allowlist_root, project, branch)
     if not _contained(worktree, allowlist_root) or not worktree.is_dir():
         raise Refusal("worktree-missing")
 
@@ -3368,7 +3375,7 @@ def _validate_run_paths(manifest, *, allowlist_root):
         return None
     control_repo = Path(manifest["repo"]).resolve()
     worktree = Path(manifest["worktree"]).resolve()
-    expected_worktree = (allowlist_root / f"{manifest['project']}-{manifest['target'].replace('/', '-')}").resolve()
+    expected_worktree = _branch_worktree_path(allowlist_root, manifest["project"], manifest["target"])
     branch = manifest.get("branch")
     if (
         not _contained(control_repo, allowlist_root)
@@ -4996,7 +5003,7 @@ def cmd_result(run_id, *, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if tally is not None:
         print(f"{tally}\n", flush=True)
     if started["role"] == "builder":
-        root = allowlist_root / f"{started['project']}-{started_payload['target'].replace('/', '-')}"
+        root = _branch_worktree_path(allowlist_root, started["project"], started_payload["target"], resolve=False)
     else:
         root = Path(started_payload["repo"])
     expected = root / ".local" / "reports" / f"{run_id}.md"
@@ -6086,7 +6093,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
 
         is_release = args.branch.startswith("release/")
         if not is_release:
-            checks_dir = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
+            checks_dir = _branch_worktree_path(allowlist_root, project, args.branch)
             if not (_contained(checks_dir, allowlist_root) and checks_dir.is_dir()
                     and _is_registered_worktree(run, repo, checks_dir, args.branch)):
                 exc = Refusal("checks-failed")
@@ -6255,7 +6262,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
             print(f"local {target} not synced (tracked tree not clean)")
 
     if not args.branch.startswith("release/"):
-        worktree = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
+        worktree = _branch_worktree_path(allowlist_root, project, args.branch)
         if (_contained(worktree, allowlist_root) and worktree.is_dir()
                 and _is_registered_worktree(run, repo, worktree, args.branch)):
             copy_result = _copy_run_reports(worktree, repo)
@@ -6402,7 +6409,7 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
             return _cmd_merge_pr(args, repo=repo, project=project, caller=caller,
                                   target=required_target, phase=phase, run=run, post=post,
                                   env=env, now=now, allowlist_root=allowlist_root)
-        worktree = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
+        worktree = _branch_worktree_path(allowlist_root, project, args.branch)
         with jresume.worktree_claim(repo, worktree):
             return _cmd_merge_pr(args, repo=repo, project=project, caller=caller,
                                        target=required_target, phase=phase, run=run, post=post,
@@ -6414,7 +6421,7 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
                     f"differs from policy target {jr._bound(target, 120)}")
         raise exc
 
-    worktree = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
+    worktree = _branch_worktree_path(allowlist_root, project, args.branch)
     with jresume.worktree_claim(repo, worktree):
         _refuse_nonterminal_builder(project, repo, args.branch)
         # Resume check (§5.2). `--verify` rather than a bare rev-parse: the bare form exits
