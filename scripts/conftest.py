@@ -145,3 +145,16 @@ def pytest_sessionfinish(session, exitstatus):
         reporter.write_line(message, red=True)
     else:
         print(message)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_mission_lookup(monkeypatch):
+    """`jaxflow merge` GETs /api/mission/current before its audit POST. Without this, every
+    merge test would query the REAL cockpit on 127.0.0.1:3100 and could pick up a live
+    autonomous mission. A test that wants a mission passes `get=` explicitly."""
+    import jaxflow_common
+
+    def no_hub(*args, **kwargs):
+        raise OSError("no hub in tests")
+
+    monkeypatch.setattr(jaxflow_common, "_get", no_hub)

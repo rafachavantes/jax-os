@@ -10,8 +10,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -139,20 +137,7 @@ def _hub_rejected_code(status, decoded):
 MISSION_BASE_URL = f"{jenv.api_base_url()}/api/mission"
 
 
-def _get(url, *, opener=urllib.request.urlopen, timeout=5):
-    """GET counterpart to `_post` -- same (status, decoded_body) return shape, raising only on
-    a transport error. The one mission subcommand that reads instead of posting (`show`) uses
-    this instead of `_post`."""
-    req = urllib.request.Request(url, method="GET")
-    try:
-        with opener(req, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        try:
-            decoded = json.loads(exc.read().decode("utf-8"))
-        except (ValueError, OSError):
-            decoded = {}
-        return exc.code, decoded
+_get = jc._get  # moved to jaxflow_common so jaxflow_merge can reach it (the cli imports merge)
 
 
 _DOCTOR_SKILL_DIRS = {
