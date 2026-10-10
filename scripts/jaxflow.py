@@ -2317,6 +2317,25 @@ def _load_build_inputs(repo, builder_run_id, worktree, allowlist_root):
     return builder_manifest, plan_path, spec_dest
 
 
+def _evidence_path(worktree, builder_run_id):
+    """The build's `.tests.txt` evidence path with its reports directory created. Refuses a
+    symlink or a non-regular file BEFORE the path is ever snapshotted, read or written
+    through (F3). Only the file itself is checked: parent dirs are the operator's own
+    worktree, trusted (diff review 4884f63bdd16 F2 rejected)."""
+    tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
+    # fixes cold review F1: the reports directory may not exist yet for a fresh worktree.
+    tests_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # fixes F3 (HIGH, NEW): a builder-planted symlink (or any non-regular file) at the
+    # evidence path must be refused BEFORE it is ever snapshotted, read, or written
+    # through -- checked here, before ANY of that happens.
+    # ponytail: parent dirs are the operator's own worktree, trusted; only the evidence
+    # file itself is checked (diff review 4884f63bdd16 F2 rejected).
+    if tests_path.is_symlink() or (tests_path.exists() and not tests_path.is_file()):
+        raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
+    return tests_path
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2354,18 +2373,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         raise Refusal("worktree-missing")
 
     builder_manifest, plan_path, spec_dest = _load_build_inputs(repo, builder_run_id, worktree, allowlist_root)
-    tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
-    # fixes cold review F1: the reports directory may not exist yet for a fresh worktree.
-    tests_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # fixes F3 (HIGH, NEW): a builder-planted symlink (or any non-regular file) at the
-    # evidence path must be refused BEFORE it is ever snapshotted, read, or written
-    # through -- checked here, before ANY of that happens.
-    # ponytail: parent dirs are the operator's own worktree, trusted; only the evidence
-    # file itself is checked (diff review 4884f63bdd16 F2 rejected).
-    if tests_path.is_symlink() or (tests_path.exists() and not tests_path.is_file()):
-        raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
-
+    tests_path = _evidence_path(worktree, builder_run_id)
     # MOA-471 item 7: the CONCURRENCY lock always runs first and is never bypassed.
     guard_con = _open_ro(db_path)
     guard_con.row_factory = sqlite3.Row
