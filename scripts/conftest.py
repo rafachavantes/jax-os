@@ -47,3 +47,101 @@ for _sp in glob.glob(os.path.expanduser("~/.jax-os/inventory-venv/lib/python3.*/
     if _sp not in sys.path:
         sys.path.append(_sp)  # append, not insert: the system interpreter's own packages still win
     os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [os.environ.get("PYTHONPATH", ""), _sp]))
+
+
+# ---- opencode spawn counter (jaxflow lean spec D12/D13/A7) ---------------------------------
+# The real `opencode` binary is slow (75 s of the old 139 s suite). Every process whose
+# executable is `opencode` is recorded in OPENCODE_CALLS; more than OPENCODE_BUDGET fails the session (see `pytest_sessionfinish`). Tests that
+# need the binary carry `@pytest.mark.opencode` and skip when it is absent.
+import shlex
+import shutil
+import subprocess
+
+import pytest
+
+OPENCODE_BUDGET = 5
+OPENCODE_CALLS = []
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "opencode: needs the real `opencode` binary (skipped when it is not installed)")
+
+
+def _argv0(args, shell):
+    """The executable `Popen` would start. shell=False: argv[0] of a list, or a scalar
+    str/bytes/PathLike taken WHOLE (never split: `Path('/tmp/a b/opencode')` is one path).
+    shell=True: `sh -c <command>`, so the executable is the first shell token."""
+    if isinstance(args, (str, bytes, os.PathLike)):
+        first = os.fsdecode(args)
+    else:
+        first = os.fsdecode(args[0]) if args else ""
+    if not shell:
+        return first
+    try:
+        tokens = shlex.split(first)
+    except ValueError:  # unbalanced quote: no executable we can name
+        return ""
+    return tokens[0] if tokens else ""
+
+
+def _real_opencode():
+    """Realpath of the real `opencode` binary on PATH, or None when it is not installed."""
+    found = shutil.which("opencode")
+    return os.path.realpath(found) if found else None
+
+
+def _count_opencode(args, shell=False, env=None):
+    """Record `args` only when its executable IS the real `opencode` binary (realpath match).
+    A fake stand-in script merely named `opencode` (e.g. the `.opencode/bin/opencode` fixture in
+    `test_jaxflow_settings_io.py::test_default_pure_run_resolves_user_opencode_without_mutating_inputs`)
+    does not count: the budget measures real-binary time. Bare `opencode` is resolved on the
+    child's PATH (`env`), not the session PATH — that fixture keeps argv as `opencode` and points
+    PATH at the stand-in."""
+    real = _real_opencode()
+    if real is None:
+        return
+    exe = _argv0(args, shell)
+    if not exe:
+        return
+    if env is None:
+        found = shutil.which(exe)
+    else:
+        found = shutil.which(exe, path=env.get("PATH", os.defpath) if hasattr(env, "get") else os.defpath)
+    if os.path.realpath(found or exe) == real:
+        OPENCODE_CALLS.append(args)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def opencode_spawn_counter():
+    """Count every `opencode` process the session starts. `subprocess.run` builds a
+    `Popen`, so wrapping `Popen` alone sees both without double counting."""
+    real_popen = subprocess.Popen
+
+    class _CountingPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            # ponytail: `shell` passed positionally (9th argument) is not seen; nobody does that.
+            _count_opencode(
+                args[0] if args else kwargs.get("args"), kwargs.get("shell", False), kwargs.get("env"),
+            )
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = _CountingPopen
+    yield OPENCODE_CALLS
+    subprocess.Popen = real_popen
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """More than OPENCODE_BUDGET real invocations of any kind (run, models, config probe) in one
+    session fails it. The mechanism is the exit status: `session.exitstatus` is what
+    `pytest.main` returns after this hook. Without the binary nothing is enforced."""
+    if shutil.which("opencode") is None or len(OPENCODE_CALLS) <= OPENCODE_BUDGET:
+        return
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    message = (f"opencode invocation budget exceeded: {len(OPENCODE_CALLS)} > {OPENCODE_BUDGET} "
+               "real `opencode` processes in one session")
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter:
+        reporter.write_line(message, red=True)
+    else:
+        print(message)

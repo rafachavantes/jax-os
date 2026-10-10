@@ -2540,15 +2540,16 @@ def test_refusal_paths_spool_before_post_keep_on_failure_delete_on_delivery(tmp_
     assert not spool_path.exists()
 
 
-def test_send_callback_omits_stage_segment_on_the_happy_path():
+@pytest.mark.parametrize("kind", ["build", "spec"])
+def test_send_callback_omits_stage_segment_on_the_happy_path(kind):
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
     jaxflow._send_callback(
-        manifest, run=_forbidden_tmux, kind="build", outcome="success",
+        manifest, run=_forbidden_tmux, kind=kind, outcome="success",
         summary="done", report_path="/report.md",
     )
     line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
-        "[JAXFLOW] build aaaabbbbcccc finished — success — /report.md\n"
+        f"[JAXFLOW] {kind} aaaabbbbcccc finished — success — /report.md\n"
     )
 
 
@@ -2589,20 +2590,6 @@ def test_send_callback_never_flags_report_status_on_ok_cancelled_or_interrupted(
         )
         line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
         assert "[report" not in line_path.read_text(encoding="utf-8")
-
-
-def test_send_callback_claude_writes_line_file_direct():
-    manifest = dict(
-        run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID,
-    )
-    jaxflow._send_callback(
-        manifest, run=_forbidden_tmux, kind="spec", outcome="success",
-        summary="done", report_path="/report.md",
-    )
-    line_path = jaxflow.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
-    assert line_path.read_text(encoding="utf-8") == (
-        "[JAXFLOW] spec aaaabbbbcccc finished — success — /report.md\n"
-    )
 
 
 def test_send_callback_claude_skips_line_for_noncanonical_session(capsys):
@@ -6913,18 +6900,24 @@ def test_worker_reviewer_stage_two_only_report_posts_run_finished():
         assert payload["verdict"] == "approve"
 
 
-def test_builder_fallback_records_success_on_green_verify_and_a_commit_beyond_base():
+@pytest.mark.parametrize("commit,verify,result", [
+    pytest.param(True, None, "success", id="green-verify-and-a-commit-beyond-base"),
+    pytest.param(False, None, "failure", id="green-verify-with-no-commit-beyond-base"),
+    pytest.param(True, "false", "failure", id="red-verify-regardless-of-commits"),
+])
+def test_builder_fallback_records_the_result_from_verify_and_commits(commit, verify, result):
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
         _init_repo(root)
         worktree = _init_worktree(root)
         base_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
         _write_plan(worktree)
-        (worktree / "changed.txt").write_text("done\n", encoding="utf-8")
-        _git(worktree, "add", "changed.txt")
-        _git(worktree, "commit", "-m", "feat: task work")
+        if commit:
+            (worktree / "changed.txt").write_text("done\n", encoding="utf-8")
+            _git(worktree, "add", "changed.txt")
+            _git(worktree, "commit", "-m", "feat: task work")
         manifest_path, manifest = _write_manifest_for_builder_worker(
-            root, worktree, base_sha=base_sha)
+            root, worktree, base_sha=base_sha, **({} if verify is None else {"verify": verify}))
         events = []
         jaxflow.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
@@ -6933,50 +6926,7 @@ def test_builder_fallback_records_success_on_green_verify_and_a_commit_beyond_ba
         )
         payload = events[0]["payload"]
         assert payload["contract_status"] == "invalid"
-        assert payload["result"] == "success"
-
-
-def test_builder_fallback_records_failure_on_green_verify_with_no_commit_beyond_base():
-    with TemporaryDirectory() as raw:
-        root = Path(raw).resolve() / "demo"
-        _init_repo(root)
-        worktree = _init_worktree(root)
-        base_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
-        _write_plan(worktree)
-        manifest_path, manifest = _write_manifest_for_builder_worker(
-            root, worktree, base_sha=base_sha)
-        events = []
-        jaxflow.run_worker(
-            str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
-            post=lambda e: events.append(e) or {"ok": True},
-            popen=NoLabelReportPopen, allowlist_root=root.parent,
-        )
-        payload = events[0]["payload"]
-        assert payload["contract_status"] == "invalid"
-        assert payload["result"] == "failure"
-
-
-def test_builder_fallback_records_failure_on_red_verify_regardless_of_commits():
-    with TemporaryDirectory() as raw:
-        root = Path(raw).resolve() / "demo"
-        _init_repo(root)
-        worktree = _init_worktree(root)
-        base_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
-        _write_plan(worktree)
-        (worktree / "changed.txt").write_text("done\n", encoding="utf-8")
-        _git(worktree, "add", "changed.txt")
-        _git(worktree, "commit", "-m", "feat: task work")
-        manifest_path, manifest = _write_manifest_for_builder_worker(
-            root, worktree, base_sha=base_sha, verify="false")
-        events = []
-        jaxflow.run_worker(
-            str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
-            post=lambda e: events.append(e) or {"ok": True},
-            popen=NoLabelReportPopen, allowlist_root=root.parent,
-        )
-        payload = events[0]["payload"]
-        assert payload["contract_status"] == "invalid"
-        assert payload["result"] == "failure"
+        assert payload["result"] == result
 
 
 def test_builder_fallback_applies_when_the_only_result_label_is_out_of_enum():
@@ -12594,38 +12544,25 @@ def test_delivery_target_reads_the_dual_branch_pr_preset_block(tmp_path):
     ) == ("staging", False, "dual-branch-pr")
 
 
-def test_delivery_target_refuses_two_preset_lines(tmp_path):
-    repo = _agents(
-        tmp_path,
+@pytest.mark.parametrize("agents_text", [
+    pytest.param(
         "**Preset: `dual-branch`** — a.\n\nDelivery target: `staging`.\n\n"
         "**Preset: `single-branch`** — b.\n\nDelivery target: `main`.\n",
-    )
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
-    assert exc.value.code == "preset-unknown"
-
-
-def test_delivery_target_refuses_a_block_without_a_delivery_target(tmp_path):
-    repo = _agents(tmp_path, "**Preset: `dual-branch`** — a.\n\n- Base branch: `staging`.\n")
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
-    assert exc.value.code == "preset-unknown"
-
-
-def test_delivery_target_block_ends_at_the_next_heading(tmp_path):
-    """A `Delivery target:` that belongs to a LATER section must not be borrowed."""
-    repo = _agents(
-        tmp_path,
+        id="two-preset-lines"),
+    pytest.param(
+        "**Preset: `dual-branch`** — a.\n\n- Base branch: `staging`.\n",
+        id="block-without-a-delivery-target"),
+    # A `Delivery target:` that belongs to a LATER section must not be borrowed.
+    pytest.param(
         "**Preset: `dual-branch`** — a.\n\n- Base branch: `staging`.\n\n"
         "## Another section\n\nDelivery target: `production`.\n",
-    )
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
-    assert exc.value.code == "preset-unknown"
-
-
-def test_delivery_target_refuses_an_unknown_preset_name(tmp_path):
-    repo = _agents(tmp_path, "**Preset: `experimental`** — a.\n\nDelivery target: `main`.\n")
+        id="block-ends-at-the-next-heading"),
+    pytest.param(
+        "**Preset: `experimental`** — a.\n\nDelivery target: `main`.\n",
+        id="unknown-preset-name"),
+])
+def test_delivery_target_refuses_with_preset_unknown(tmp_path, agents_text):
+    repo = _agents(tmp_path, agents_text)
     with pytest.raises(jaxflow.Refusal) as exc:
         jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
     assert exc.value.code == "preset-unknown"
@@ -12660,19 +12597,27 @@ def test_preset_sets_partition_the_five_names():
     assert set(jaxflow._RELEASE_PRESETS) == {"dual-branch-pr"}
 
 
-def test_production_target_refuses_for_single_branch_pr_even_with_the_line_absent(tmp_path):
-    repo = _agents(tmp_path, "**Preset: `single-branch-pr`** — a.\n\nDelivery target: `main`.\n")
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow._resolve_production_target(repo)
-    assert exc.value.code == "production-target-unconfigured"
-
-
 # cold review e24e7fb33bc8 F1: the production target resolves for RELEASE presets only, so a stray
 # `Production target:` line in a non-release block must still refuse.
-@pytest.mark.parametrize("preset", ["single-branch", "single-branch-pr", "dual-branch", "bubble-buildprint"])
-def test_production_target_refuses_for_a_non_release_preset_even_with_the_line_configured(tmp_path, preset):
-    repo = _agents(tmp_path, f"**Preset: `{preset}`** — a.\n\nDelivery target: `main`.\n"
-                             "- Production target: `main`.\n")
+_PRODUCTION_REFUSALS = [
+    *(pytest.param(
+        f"**Preset: `{preset}`** — a.\n\nDelivery target: `main`.\n- Production target: `main`.\n",
+        id=f"{preset}-with-a-stray-production-line")
+      for preset in ("single-branch", "single-branch-pr", "dual-branch", "bubble-buildprint")),
+    *(pytest.param(
+        f"**Preset: `{preset}`** — a.\n\nDelivery target: `main`.\n",
+        id=f"{preset}-without-the-line")
+      for preset in ("dual-branch", "single-branch", "single-branch-pr", "bubble-buildprint")),
+    pytest.param(
+        "**Preset: `dual-branch-pr`** — a.\n\nDelivery target: `staging`.\n",
+        id="dual-branch-pr-missing-the-line"),
+    pytest.param("# AGENTS.md\n\nNo deploy policy here.\n", id="no-preset-block-at-all"),
+]
+
+
+@pytest.mark.parametrize("agents_text", _PRODUCTION_REFUSALS)
+def test_production_target_refuses(tmp_path, agents_text):
+    repo = _agents(tmp_path, agents_text)
     with pytest.raises(jaxflow.Refusal) as exc:
         jaxflow._resolve_production_target(repo)
     assert exc.value.code == "production-target-unconfigured"
@@ -12681,28 +12626,6 @@ def test_production_target_refuses_for_a_non_release_preset_even_with_the_line_c
 def test_production_target_reads_the_dual_branch_pr_block(tmp_path):
     repo = _agents(tmp_path, "**Preset: `dual-branch-pr`** — a.\n\nDelivery target: `staging`.\nProduction target: `main`.\n")
     assert jaxflow._resolve_production_target(repo) == "main"
-
-
-def test_production_target_refuses_when_missing_from_a_dual_branch_pr_block(tmp_path):
-    repo = _agents(tmp_path, "**Preset: `dual-branch-pr`** — a.\n\nDelivery target: `staging`.\n")
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow._resolve_production_target(repo)
-    assert exc.value.code == "production-target-unconfigured"
-
-
-@pytest.mark.parametrize("preset", ["dual-branch", "single-branch", "single-branch-pr", "bubble-buildprint"])
-def test_production_target_refuses_for_a_preset_without_a_production_target(tmp_path, preset):
-    repo = _agents(tmp_path, f"**Preset: `{preset}`** — a.\n\nDelivery target: `main`.\n")
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow._resolve_production_target(repo)
-    assert exc.value.code == "production-target-unconfigured"
-
-
-def test_production_target_refuses_with_no_preset_block_at_all(tmp_path):
-    repo = _agents(tmp_path, "# AGENTS.md\n\nNo deploy policy here.\n")
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow._resolve_production_target(repo)
-    assert exc.value.code == "production-target-unconfigured"
 
 
 def test_required_target_for_branch_is_delivery_for_a_feature_head(tmp_path):
@@ -13360,20 +13283,30 @@ def test_pr_open_refuses_a_head_branch_mismatch_on_a_recorded_pr_before_any_push
     assert not any(c[:2] == ["git", "push"] or c[:3] == ["gh", "pr", "create"] for c in calls)
 
 
-def test_pr_open_refuses_target_mismatch_for_a_feature_head_against_the_wrong_base(tmp_path, monkeypatch):
+@pytest.mark.parametrize("agents,target,pushed_or_opened", [
+    pytest.param(
+        _DUAL_PR_AGENTS, "main",
+        lambda c: c[:2] == ["git", "push"] or c[:3] == ["gh", "pr", "create"],
+        id="feature-head-against-the-wrong-base"),
+    pytest.param(
+        _SINGLE_PR_AGENTS, "staging",
+        lambda c: c[0] == "gh" or c[:2] == ["git", "push"],
+        id="single-branch-pr-refuses-a-staging-target"),
+])
+def test_pr_open_refuses_target_mismatch(tmp_path, monkeypatch, agents, target, pushed_or_opened):
     monkeypatch.chdir(tmp_path)
-    fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script={
+    fake_run, calls = _merge_runner(tmp_path, agents=agents, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{'a' * 40}\n"),
         ("git", "check-ref-format",): _completed(0, ""),
     })
     with pytest.raises(jaxflow.Refusal) as exc:
         jaxflow.cmd_pr_open(
-            _pr_open_args(target="main"), run=fake_run, post=_never_post,
+            _pr_open_args(target=target), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
     assert exc.value.code == "target-mismatch"
-    assert not any(c[:2] == ["git", "push"] or c[:3] == ["gh", "pr", "create"] for c in calls)
+    assert not any(pushed_or_opened(c) for c in calls)
 
 
 def test_pr_open_argparse_wiring_end_to_end(monkeypatch, tmp_path):
@@ -13481,22 +13414,6 @@ def test_pr_open_single_branch_pr_targets_main_and_records_the_pr(tmp_path, monk
     assert events[0]["type"] == "pr-opened" and events[0]["payload"]["base"] == "main"
     assert ["gh", "pr", "create", "--repo", "acme/x", "--head", "feat/x", "--base", "main",
             "--title", "Ship it"] in calls
-
-
-def test_pr_open_single_branch_pr_refuses_a_staging_target(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    fake_run, calls = _merge_runner(tmp_path, agents=_SINGLE_PR_AGENTS, script={
-        ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
-        ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{'a' * 40}\n"),
-        ("git", "check-ref-format",): _completed(0, ""),
-    })
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow.cmd_pr_open(
-            _pr_open_args(target="staging"), run=fake_run, post=_never_post,
-            env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
-        )
-    assert exc.value.code == "target-mismatch"
-    assert not any(c[0] == "gh" or c[:2] == ["git", "push"] for c in calls)
 
 
 def test_pr_open_single_branch_pr_refuses_a_release_head_even_with_a_production_target(
@@ -15206,6 +15123,10 @@ def test_merge_reports_a_branch_that_could_not_be_deleted(tmp_path, monkeypatch,
                                      # `strip()` does not, so only refusing it here keeps
                                      # the producer from being the looser side (part-2
                                      # cold review round 4)
+    pytest.param("\U0001f680" * 200,      # 200 emoji = 400 UTF-16 units; `len()` would accept it
+                 id="utf16-code-units-over-the-bound"),
+    pytest.param("Phase \udcff X",        # POSIX argv surrogateescape: `encode("utf-16-le")` raises
+                 id="undecodable-argv-byte"),
 ])
 def test_merge_refuses_an_unusable_phase_title(tmp_path, monkeypatch, phase):
     """F15/F16: one canonical title serves the commit subject, the audit payload and the
@@ -15275,20 +15196,6 @@ def test_merge_report_copy_skips_a_symlinked_entry(tmp_path, monkeypatch, capsys
     assert not (copied / "def456def456.md").exists(), "a symlinked report is never copied"
     assert "def456def456.md skipped" in capsys.readouterr().out
     assert secret.read_text(encoding="utf-8") == "SECRET"
-
-
-def test_merge_refuses_a_phase_the_typescript_validator_would_reject(tmp_path, monkeypatch):
-    """The validator is TypeScript and `String.length` counts UTF-16 code units: 200 emoji
-    are 200 to Python and 400 to it. Bounding by `len()` would let this title commit and
-    then fail its POST, and the documented retry would fail identically."""
-    monkeypatch.chdir(tmp_path)
-    fake_run, calls = _merge_runner(
-        tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(phase="\U0001f680" * 200), run=fake_run, post=_never_post,
-                          env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
-    assert exc.value.code == "phase-invalid"
-    _assert_no_mutation(calls)
 
 
 def test_merge_accepts_a_phase_at_exactly_the_utf16_bound(tmp_path, monkeypatch):
@@ -15558,20 +15465,6 @@ def test_merge_resume_writes_the_target_as_the_status_branch(tmp_path, monkeypat
     assert "stage: ship" in text
 
 
-def test_merge_refuses_a_phase_carrying_an_undecodable_argv_byte(tmp_path, monkeypatch):
-    """POSIX argv is decoded with `surrogateescape`, so an undecodable byte arrives as a
-    lone surrogate. `encode("utf-16-le")` RAISES on it — the refusal contract has to hold
-    instead of the process crashing past it."""
-    monkeypatch.chdir(tmp_path)
-    fake_run, calls = _merge_runner(
-        tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(phase="Phase \udcff X"), run=fake_run, post=_never_post,
-                          env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
-    assert exc.value.code == "phase-invalid"
-    _assert_no_mutation(calls)
-
-
 def test_merge_refuses_when_the_switch_to_the_target_fails(tmp_path, monkeypatch):
     """F8: a failed `git switch` returns non-zero while leaving the previous branch checked
     out, so the return code has to be checked and not just the branch afterwards. This is
@@ -15808,41 +15701,20 @@ def test_merge_approved_target_uses_real_check_ref_format(tmp_path, monkeypatch,
     _assert_no_delivery(calls, policy_target="main")
 
 
-def test_merge_sha_gate_wins_over_an_invalid_target(tmp_path, monkeypatch):
+@pytest.mark.parametrize("override,code", [
+    pytest.param({"sha": "abc1234"}, "sha-mismatch", id="sha"),
+    pytest.param({"branch": ""}, "branch-invalid", id="branch"),
+    pytest.param({"phase": ""}, "phase-invalid", id="phase"),
+])
+def test_merge_gates_win_over_an_invalid_target(tmp_path, monkeypatch, override, code):
     monkeypatch.chdir(tmp_path)
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha="abc1234", target="-nope"), run=fake_run,
+        jaxflow.cmd_merge(_MergeArgs(target="-nope", **override), run=fake_run,
                           post=_never_post, env=_merge_env(), now=_fixed_now,
                           allowlist_root=tmp_path.parent)
-    assert exc.value.code == "sha-mismatch"
-    _assert_no_mutation(calls)
-    assert not any(c[:2] == ["git", "check-ref-format"] for c in calls)
-
-
-def test_merge_branch_gate_wins_over_an_invalid_target(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    fake_run, calls = _merge_runner(
-        tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(branch="", target="-nope"), run=fake_run,
-                          post=_never_post, env=_merge_env(), now=_fixed_now,
-                          allowlist_root=tmp_path.parent)
-    assert exc.value.code == "branch-invalid"
-    _assert_no_mutation(calls)
-    assert not any(c[:2] == ["git", "check-ref-format"] for c in calls)
-
-
-def test_merge_phase_gate_wins_over_an_invalid_target(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    fake_run, calls = _merge_runner(
-        tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
-    with pytest.raises(jaxflow.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(phase="", target="-nope"), run=fake_run,
-                          post=_never_post, env=_merge_env(), now=_fixed_now,
-                          allowlist_root=tmp_path.parent)
-    assert exc.value.code == "phase-invalid"
+    assert exc.value.code == code
     _assert_no_mutation(calls)
     assert not any(c[:2] == ["git", "check-ref-format"] for c in calls)
 
