@@ -1662,12 +1662,10 @@ def _resume_load_prior(repo, resume_id, project, started, finished):
     return started_payload, finished_payload, prior_path, prior, checkpoint
 
 
-def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
-                           run, post, env, now, allowlist_root, db_path):
-    db_path = db_path or jr.DB_PATH
-    started, finished, _ = _resume_rows(db_path, resume_id)
-    started_payload, finished_payload, prior_path, prior, checkpoint = _resume_load_prior(
-        repo, resume_id, project, started, finished)
+def _resume_locate(repo, project, allowlist_root, started_payload, prior, checkpoint):
+    """`(branch, worktree)` of the run being resumed, refusing `resume-ineligible` unless the
+    recorded repos, branch and worktree agree with the checkpoint and the worktree is the
+    one `build` reserves for that branch, inside the allowlist and still a directory."""
     try:
         if Path(started_payload.get("repo", "")).resolve() != repo:
             raise Refusal("resume-ineligible")
@@ -1693,6 +1691,16 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
     expected = _branch_worktree_path(allowlist_root, project, branch)
     if worktree != expected or not _contained(worktree, allowlist_root) or not worktree.is_dir():
         raise Refusal("resume-ineligible")
+    return branch, worktree
+
+
+def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
+                           run, post, env, now, allowlist_root, db_path):
+    db_path = db_path or jr.DB_PATH
+    started, finished, _ = _resume_rows(db_path, resume_id)
+    started_payload, finished_payload, prior_path, prior, checkpoint = _resume_load_prior(
+        repo, resume_id, project, started, finished)
+    branch, worktree = _resume_locate(repo, project, allowlist_root, started_payload, prior, checkpoint)
     whitelist = prior.get("whitelist")
     verify = prior.get("verify")
     phase = prior.get("phase")
