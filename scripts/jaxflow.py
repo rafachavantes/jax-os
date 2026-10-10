@@ -6381,6 +6381,65 @@ def _pr_already_merged(view, number, sha):
     return merge_sha
 
 
+def _pr_run_checks(args, *, run, repo, project, allowlist_root):
+    """Run (or reuse) `--checks` for an open PR head. Feature heads run in their registered
+    build worktree (decision 7); a `release/*` head has no such worktree, so a detached
+    temporary checkout of the approved sha is created and torn down in `finally`, success
+    or failure. Returns the `checks` audit dict."""
+    is_release = args.branch.startswith("release/")
+    if not is_release:
+        checks_dir = _branch_worktree_path(allowlist_root, project, args.branch)
+        if not (_contained(checks_dir, allowlist_root) and checks_dir.is_dir()
+                and _is_registered_worktree(run, repo, checks_dir, args.branch)):
+            raise _refuse("checks-failed",
+                          f"hint: no registered build worktree for {args.branch} at {checks_dir}")
+    else:
+        checks_dir = (allowlist_root / f"{project}-release-checks-{args.sha[:12]}").resolve()
+        added = run(["git", "worktree", "add", "--detach", str(checks_dir), args.sha], cwd=repo)
+        if added.returncode != 0:
+            raise _refuse(
+                "merge-failed",
+                f"hint: could not create the release checks checkout: {jr._bound((added.stderr or added.stdout).strip(), 200)}")
+
+    try:
+        head = run(["git", "rev-parse", "HEAD"], cwd=checks_dir)
+        if head.returncode != 0 or head.stdout.strip() != args.sha:
+            raise _refuse("sha-mismatch", f"hint: {checks_dir} is not at the approved {args.sha}")
+        status = _status_tracked(run, checks_dir)
+        if status.returncode != 0 or status.stdout.strip():
+            raise _refuse(
+                "dirty-tracked-tree",
+                f"hint: git status failed: {jr._bound((status.stderr or status.stdout).strip(), 200)}"
+                if status.returncode != 0 else None)
+        # MOA-510 D7: AFTER the HEAD and clean-tracked-tree guards above; reuse only adds
+        # the review/evidence/command conditions and full-porcelain cleanliness.
+        if is_release:
+            reused, review_id = False, None
+        else:
+            reused, _reason, review_id = _merge_checks_reuse(
+                run, repo, project, checks_dir, args.branch, args.sha, args.checks,
+                allowlist_root=allowlist_root, recheck=args.recheck)
+        checks_audit = _checks_audit(reused, review_id, args.sha)
+        if not reused:
+            checked = run(["/bin/bash", "-lc", args.checks], cwd=checks_dir)
+            if checked.returncode != 0:
+                raise _refuse("checks-failed", f"hint: {args.checks} exit {checked.returncode}")
+            status_after = _status_tracked(run, checks_dir)
+            if status_after.returncode != 0 or status_after.stdout.strip():
+                raise _refuse("checks-dirtied-tree", "hint: the checks command modified a tracked file")
+        return checks_audit
+    finally:
+        if is_release:
+            # cold review 75e934eacdca F2: no --force (Global Constraints: jaxflow never
+            # forces a git/gh mutation). A normal removal can fail (e.g. the checks command
+            # left an untracked file); that is non-fatal to the delivery result -- the
+            # worktree is kept and its path reported, never force-discarded.
+            removed = run(["git", "worktree", "remove", str(checks_dir)], cwd=repo)
+            if removed.returncode != 0:
+                print(f"release checks worktree {checks_dir} kept "
+                      f"({jr._bound((removed.stderr or removed.stdout).strip(), 200)})")
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6430,64 +6489,8 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
             exc.hint = f"hint: PR #{number}'s head is {view['headRefOid'][:12]}, not the approved {args.sha[:12]}"
             raise exc
 
-        is_release = args.branch.startswith("release/")
-        if not is_release:
-            checks_dir = _branch_worktree_path(allowlist_root, project, args.branch)
-            if not (_contained(checks_dir, allowlist_root) and checks_dir.is_dir()
-                    and _is_registered_worktree(run, repo, checks_dir, args.branch)):
-                exc = Refusal("checks-failed")
-                exc.hint = f"hint: no registered build worktree for {args.branch} at {checks_dir}"
-                raise exc
-        else:
-            checks_dir = (allowlist_root / f"{project}-release-checks-{args.sha[:12]}").resolve()
-            added = run(["git", "worktree", "add", "--detach", str(checks_dir), args.sha], cwd=repo)
-            if added.returncode != 0:
-                exc = Refusal("merge-failed")
-                exc.hint = f"hint: could not create the release checks checkout: {jr._bound((added.stderr or added.stdout).strip(), 200)}"
-                raise exc
-
-        try:
-            head = run(["git", "rev-parse", "HEAD"], cwd=checks_dir)
-            if head.returncode != 0 or head.stdout.strip() != args.sha:
-                exc = Refusal("sha-mismatch")
-                exc.hint = f"hint: {checks_dir} is not at the approved {args.sha}"
-                raise exc
-            status = _status_tracked(run, checks_dir)
-            if status.returncode != 0 or status.stdout.strip():
-                exc = Refusal("dirty-tracked-tree")
-                if status.returncode != 0:
-                    exc.hint = f"hint: git status failed: {jr._bound((status.stderr or status.stdout).strip(), 200)}"
-                raise exc
-            # MOA-510 D7: AFTER the HEAD and clean-tracked-tree guards above; reuse only adds
-            # the review/evidence/command conditions and full-porcelain cleanliness.
-            if is_release:
-                reused, review_id = False, None
-            else:
-                reused, _reason, review_id = _merge_checks_reuse(
-                    run, repo, project, checks_dir, args.branch, args.sha, args.checks,
-                    allowlist_root=allowlist_root, recheck=args.recheck)
-            checks_audit = _checks_audit(reused, review_id, args.sha)
-            if not reused:
-                checked = run(["/bin/bash", "-lc", args.checks], cwd=checks_dir)
-                if checked.returncode != 0:
-                    exc = Refusal("checks-failed")
-                    exc.hint = f"hint: {args.checks} exit {checked.returncode}"
-                    raise exc
-                status_after = _status_tracked(run, checks_dir)
-                if status_after.returncode != 0 or status_after.stdout.strip():
-                    exc = Refusal("checks-dirtied-tree")
-                    exc.hint = "hint: the checks command modified a tracked file"
-                    raise exc
-        finally:
-            if is_release:
-                # cold review 75e934eacdca F2: no --force (Global Constraints: jaxflow never
-                # forces a git/gh mutation). A normal removal can fail (e.g. the checks command
-                # left an untracked file); that is non-fatal to the delivery result -- the
-                # worktree is kept and its path reported, never force-discarded.
-                removed = run(["git", "worktree", "remove", str(checks_dir)], cwd=repo)
-                if removed.returncode != 0:
-                    print(f"release checks worktree {checks_dir} kept "
-                          f"({jr._bound((removed.stderr or removed.stdout).strip(), 200)})")
+        checks_audit = _pr_run_checks(
+            args, run=run, repo=repo, project=project, allowlist_root=allowlist_root)
 
         def _revalidate_pr_identity(v):
             # cold review 75e934eacdca F3 (partial accept): --match-head-commit below pins
