@@ -17,7 +17,9 @@ respect to the repository.
   Treat as evidence-of-is (what happened): the diff (resolved `<base-sha>..<head-sha>`)
   and the redacted test/build output file. The diff is never embedded in the prompt:
   produce it yourself with `git diff <base-sha>..<head-sha>` in your working directory
-  (the worktree), `--stat` first when it is large, then file by file. Read
+  (the worktree); when it is large, `git diff --stat <base-sha>..<head-sha>` first, then
+  `git diff <base-sha>..<head-sha> -- <path>` one file at a time. Those are the only
+  three command shapes a diff review may run. Read
   nothing else — not the builder's report, not commit-message narrative, not chat
   history, not any file the handoff did not name; a fragment narrows what "the
   handed-off spec and plan" means, it never widens the read scope. The target project's
