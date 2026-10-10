@@ -1900,6 +1900,39 @@ def _validated_build_plan(args, allowlist_root):
     return plan_path
 
 
+def _select_build_profile(args):
+    """`(runtime, model, effort, requested_profile)` of a fresh build: the saved builder
+    profile (`requested_profile` set) or, with no saved profile, the legacy runtime/model
+    defaults (`requested_profile` None). Validates the hub caps on model and effort."""
+    _require_opencode_on()
+    settings = jset.read_settings()
+    selected = jset.select_builder(
+        settings,
+        fallback=getattr(args, "fallback", False),
+        builder=args.builder,
+        model=args.model,
+        effort=args.effort,
+    )
+    requested_profile = None
+    if selected is None:
+        runtime = args.builder or BUILDER_DEFAULT
+        model = args.model or jr.MODEL_BY_RUNTIME.get(runtime, "default")
+        effort = args.effort or "n/a"
+        if args.effort and runtime in jr.MODEL_BY_RUNTIME:
+            raise Refusal(f"effort-not-supported: {runtime}")
+    else:
+        runtime = selected["runtime"]
+        requested_profile = selected["profile_name"]
+        profile = settings["builders"][requested_profile]
+        model = f"{profile['connection']}/{profile['model']}"
+        effort = profile["effort"] if profile["effort"] is not None else "n/a"
+    if type(model) is not str or not 1 <= _utf16_len(model) <= HUB_CAPS["model"]:
+        raise Refusal("model-invalid")
+    if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
+        raise Refusal("effort-invalid")
+    return runtime, model, effort, requested_profile
+
+
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     cwd = Path.cwd().resolve()
     repo = _require_toplevel(run, cwd)
@@ -1932,32 +1965,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
 
     plan_path = _validated_build_plan(args, allowlist_root)
 
-    _require_opencode_on()
-    settings = jset.read_settings()
-    selected = jset.select_builder(
-        settings,
-        fallback=getattr(args, "fallback", False),
-        builder=args.builder,
-        model=args.model,
-        effort=args.effort,
-    )
-    requested_profile = None
-    if selected is None:
-        runtime = args.builder or BUILDER_DEFAULT
-        model = args.model or jr.MODEL_BY_RUNTIME.get(runtime, "default")
-        effort = args.effort or "n/a"
-        if args.effort and runtime in jr.MODEL_BY_RUNTIME:
-            raise Refusal(f"effort-not-supported: {runtime}")
-    else:
-        runtime = selected["runtime"]
-        requested_profile = selected["profile_name"]
-        profile = settings["builders"][requested_profile]
-        model = f"{profile['connection']}/{profile['model']}"
-        effort = profile["effort"] if profile["effort"] is not None else "n/a"
-    if type(model) is not str or not 1 <= _utf16_len(model) <= HUB_CAPS["model"]:
-        raise Refusal("model-invalid")
-    if type(effort) is not str or not 1 <= _utf16_len(effort) <= HUB_CAPS["effort"]:
-        raise Refusal("effort-invalid")
+    runtime, model, effort, requested_profile = _select_build_profile(args)
     _check_hub_caps({
         "phase": phase, "verify": args.verify, "build": args.build, "target": args.branch,
         "callerSession": caller_session, "callerPane": env.get("TMUX_PANE"),
