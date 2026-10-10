@@ -3775,6 +3775,126 @@ def _manifest_identity_error(manifest_path, control_repo, run_id):
     return None
 
 
+def _prepare_builder_launch(manifest, *, run, env, allowlist_root, manifest_path, control_repo,
+                            worktree, branch, whitelist, verify_cmd, build_cmd):
+    """Everything a builder launch needs BEFORE `popen`: worker-side preflight, plan-path
+    re-validation, resume-lineage checks, managed launch selection, the handoff and the
+    prompt file. Returns `(argv, prompt_path, paths, child_env)`. Any pre-launch failure
+    RAISES (`Refusal(code)`, `KeyError`, ...): the caller's single `except Exception` turns
+    it into one `_refuse_builder_run` (Refusal -> its code, KeyError -> `manifest missing
+    <key>`, anything else -> `str(exc)`)."""
+    run_id = manifest["run_id"]
+    project = manifest["project"]
+    phase = manifest["phase"]
+    runtime = manifest["runtime"]
+    handoff_branch = manifest.get("branch", branch)
+    child_env = env
+    launch_selection = None
+
+    # Worker-side preflight (fixes cold review round 2 F2, spec §2.4 worker step 2):
+    # the dispatcher already preflighted the worktree once, moments earlier, but the
+    # worker re-validates its own manifest independently -- the only guard against a
+    # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
+    # path.
+    args_ns = SimpleNamespace(
+        role="builder", project=project, phase=phase, repo=str(worktree),
+        prompt_file=None, runtime=runtime, callback=None,
+    )
+    try:
+        jr.preflight(args_ns, run=run, allow_untracked=True, require_feat_branch=False, skip_handoff=True)
+    except ValueError as exc:
+        raise Refusal(_map_refusal(str(exc))) from exc
+
+    # Defense-in-depth (fixes cold review round 2 F1; amended by the MOA-467
+    # acceptance fixes): the worker re-validates its own manifest's plan_path with
+    # the SAME policy `dispatch_build` applied -- canonicalized, non-secret,
+    # readable, inside the allowlist. A directly named plan path IS a read input,
+    # so an explicitly named external document (another allowlist repo, a related
+    # worktree) is legitimate: refusing it here while `build` accepted it was the
+    # regression. Forged paths outside the allowlist, secrets, missing files and
+    # symlink escapes all still refuse. Secret-shaped paths refuse FIRST -- a
+    # symlink planted inside the worktree that resolves to a control-repo `.env`
+    # must refuse even though it is "contained".
+    plan_path = Path(manifest["plan_path"]).resolve()
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
+        raise Refusal(f"secret-detected: {plan_path}")
+    if defect:
+        raise Refusal(defect)
+    resume_start = manifest.get("resume_start")
+    if resume_start is not None:
+        jresume.require_same_work_state(
+            resume_start, jresume.capture_work_state(worktree, plan_path, run=run),
+        )
+    if _treats_as_managed(manifest):
+        try:
+            con = _open_ro(jr.DB_PATH)
+        except sqlite3.Error as exc:
+            raise Refusal("resume-ineligible") from exc
+        con.row_factory = sqlite3.Row
+        try:
+            latest = _latest_builder_attempt(con, manifest["project"], control_repo, branch)
+        finally:
+            con.close()
+        if latest != run_id:
+            raise Refusal("resume-ineligible")
+
+    paths = jr.safe_run_paths(worktree, run_id)
+    paths["scratch"].mkdir(parents=True, exist_ok=True)
+
+    if runtime == "opencode-builder":
+        child_env, launch_selection = _resolve_managed_launch(
+            manifest, worktree, manifest_path, env, control_repo,
+        )
+
+    # Contract-valid builder handoff, derived from the plan's own text (round-1 cold
+    # review F2 -- MOA-467: the plan is the ORIGINAL document in the validated read
+    # scope, neither copied into the worktree nor re-copied here).
+    plan_text = plan_path.read_text(encoding="utf-8")
+    spec_dest, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
+    if spec_refusal:
+        # fixes cold review round 2 F5: a DECLARED but bad **Spec:** reference
+        # refuses loudly instead of silently handing the builder the plan itself as
+        # its own spec -- only the absence of a **Spec:** line at all falls back
+        # that way.
+        raise Refusal(spec_refusal)
+    head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
+    head_for_handoff = head_probe.stdout.strip() if head_probe.returncode == 0 else "unknown"
+    handoff = _build_builder_handoff(
+        plan_dest=plan_path, spec_dest=spec_dest,
+        agents_path=worktree / "AGENTS.md", branch=handoff_branch, head_sha=head_for_handoff,
+        whitelist=whitelist, verify_cmd=verify_cmd, build_cmd=build_cmd,
+        read_roots=_builder_read_roots(
+            control_repo, worktree, run=run, allowlist_root=allowlist_root,
+            documents=(plan_path, spec_dest),
+        ),
+    )
+    prompt_text = jr.assemble_prompt("builder", {
+        "run_id": run_id, "project": project, "role": "builder", "phase": phase,
+        "report": str(paths["report"]), "tests": str(paths["tests"]),
+        "scratch": str(paths["scratch"]), "repo": str(worktree),
+    }, handoff)
+    prompt_path = paths["scratch"] / "prompt.txt"
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+
+    # `model`/`effort` are converted back from their ledger sentinels to a real
+    # override-or-None here (fixes cold review F4) -- "default"/"n/a" mean "no
+    # override was given", never a literal value to pass to the runtime.
+    if launch_selection is not None:
+        model_override = launch_selection["runtime_model"]
+        effort_override = launch_selection["effort"]
+    else:
+        model = manifest["model"]
+        effort = manifest["effort"]
+        model_override = None if model == "default" else model
+        effort_override = None if effort == "n/a" else effort
+    argv = jr.runtime_argv(
+        runtime, "builder", worktree, prompt_path, paths["reviewer_output"],
+        model=model_override, effort=effort_override,
+    )
+    return argv, prompt_path, paths, child_env
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -3868,127 +3988,15 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
                 run=run, post=post,
             )
     try:
-        handoff_branch = manifest.get("branch", branch)
-        child_env = env
-        launch_selection = None
-
         # fixes F1, second half: every pre-launch failure from here through argv assembly
         # (a `safe_run_paths` collision, an unreadable `plan_path`, any other exception)
         # routes through `_refuse_builder_run` with the exception's own text as the message,
         # instead of an uncaught crash leaving the reservation behind.
         try:
-            # Worker-side preflight (fixes cold review round 2 F2, spec §2.4 worker step 2):
-            # the dispatcher already preflighted the worktree once, moments earlier, but the
-            # worker re-validates its own manifest independently -- the only guard against a
-            # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
-            # path.
-            args_ns = SimpleNamespace(
-                role="builder", project=project, phase=phase, repo=str(worktree),
-                prompt_file=None, runtime=runtime, callback=None,
-            )
-            try:
-                jr.preflight(args_ns, run=run, allow_untracked=True, require_feat_branch=False, skip_handoff=True)
-            except ValueError as exc:
-                return _refuse_builder_run(
-                    _map_refusal(str(exc)), manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-
-            # Defense-in-depth (fixes cold review round 2 F1; amended by the MOA-467
-            # acceptance fixes): the worker re-validates its own manifest's plan_path with
-            # the SAME policy `dispatch_build` applied -- canonicalized, non-secret,
-            # readable, inside the allowlist. A directly named plan path IS a read input,
-            # so an explicitly named external document (another allowlist repo, a related
-            # worktree) is legitimate: refusing it here while `build` accepted it was the
-            # regression. Forged paths outside the allowlist, secrets, missing files and
-            # symlink escapes all still refuse. Secret-shaped paths refuse FIRST -- a
-            # symlink planted inside the worktree that resolves to a control-repo `.env`
-            # must refuse even though it is "contained".
-            plan_path = Path(manifest["plan_path"]).resolve()
-            defect = _plan_path_defect(plan_path, allowlist_root)
-            if defect == "secret-detected":
-                return _refuse_builder_run(
-                    f"secret-detected: {plan_path}", manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-            if defect:
-                return _refuse_builder_run(
-                    defect, manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-            resume_start = manifest.get("resume_start")
-            if resume_start is not None:
-                jresume.require_same_work_state(
-                    resume_start, jresume.capture_work_state(worktree, plan_path, run=run),
-                )
-            if _treats_as_managed(manifest):
-                try:
-                    con = _open_ro(jr.DB_PATH)
-                except sqlite3.Error as exc:
-                    raise Refusal("resume-ineligible") from exc
-                con.row_factory = sqlite3.Row
-                try:
-                    latest = _latest_builder_attempt(con, manifest["project"], control_repo, branch)
-                finally:
-                    con.close()
-                if latest != run_id:
-                    raise Refusal("resume-ineligible")
-
-            paths = jr.safe_run_paths(worktree, run_id)
-            paths["scratch"].mkdir(parents=True, exist_ok=True)
-
-            if runtime == "opencode-builder":
-                child_env, launch_selection = _resolve_managed_launch(
-                    manifest, worktree, manifest_path, env, control_repo,
-                )
-
-            # Contract-valid builder handoff, derived from the plan's own text (round-1 cold
-            # review F2 -- MOA-467: the plan is the ORIGINAL document in the validated read
-            # scope, neither copied into the worktree nor re-copied here).
-            plan_text = plan_path.read_text(encoding="utf-8")
-            spec_dest, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
-            if spec_refusal:
-                # fixes cold review round 2 F5: a DECLARED but bad **Spec:** reference
-                # refuses loudly instead of silently handing the builder the plan itself as
-                # its own spec -- only the absence of a **Spec:** line at all falls back
-                # that way.
-                return _refuse_builder_run(
-                    spec_refusal, manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-            head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
-            head_for_handoff = head_probe.stdout.strip() if head_probe.returncode == 0 else "unknown"
-            handoff = _build_builder_handoff(
-                plan_dest=plan_path, spec_dest=spec_dest,
-                agents_path=worktree / "AGENTS.md", branch=handoff_branch, head_sha=head_for_handoff,
-                whitelist=whitelist, verify_cmd=verify_cmd, build_cmd=build_cmd,
-                read_roots=_builder_read_roots(
-                    control_repo, worktree, run=run, allowlist_root=allowlist_root,
-                    documents=(plan_path, spec_dest),
-                ),
-            )
-            prompt_text = jr.assemble_prompt("builder", {
-                "run_id": run_id, "project": project, "role": "builder", "phase": phase,
-                "report": str(paths["report"]), "tests": str(paths["tests"]),
-                "scratch": str(paths["scratch"]), "repo": str(worktree),
-            }, handoff)
-            prompt_path = paths["scratch"] / "prompt.txt"
-            prompt_path.write_text(prompt_text, encoding="utf-8")
-
-            # `model`/`effort` are converted back from their ledger sentinels to a real
-            # override-or-None here (fixes cold review F4) -- "default"/"n/a" mean "no
-            # override was given", never a literal value to pass to the runtime.
-            if launch_selection is not None:
-                model_override = launch_selection["runtime_model"]
-                effort_override = launch_selection["effort"]
-            else:
-                model = manifest["model"]
-                effort = manifest["effort"]
-                model_override = None if model == "default" else model
-                effort_override = None if effort == "n/a" else effort
-            argv = jr.runtime_argv(
-                runtime, "builder", worktree, prompt_path, paths["reviewer_output"],
-                model=model_override, effort=effort_override,
+            argv, prompt_path, paths, child_env = _prepare_builder_launch(
+                manifest, run=run, env=env, allowlist_root=allowlist_root,
+                manifest_path=manifest_path, control_repo=control_repo, worktree=worktree,
+                branch=branch, whitelist=whitelist, verify_cmd=verify_cmd, build_cmd=build_cmd,
             )
         except Exception as exc:
             # fixes F1 (RECURRENCE, tech-lead triage): anything that fails before the child
