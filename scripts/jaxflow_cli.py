@@ -1302,7 +1302,7 @@ def _add_pr_parser(sub):
                               "head) -- refuses target-mismatch otherwise.")
     popen_.add_argument("--title", required=True, type=_nonblank,
                          help="PR title, passed to gh pr create --title verbatim.")
-    popen_.add_argument("--body-file", help="Optional path passed to gh pr create --body-file.")
+    popen_.add_argument("--body-file", help="Optional path passed to gh pr create --body-file; without it gh gets --fill.")
     _add_from(popen_, _FROM_HELP_MERGE)
     popen_.set_defaults(func=_cli_pr_open)
 

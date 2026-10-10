@@ -417,8 +417,9 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
             raise jc._refuse("push-failed", f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}")
         create_argv = ["gh", "pr", "create", "--repo", repo_slug, "--head", branch,
                         "--base", target, "--title", title]
-        if body_file:
-            create_argv += ["--body-file", body_file]
+        # Without a body `gh pr create` opens an interactive editor and dies under jaxflow's
+        # non-tty child; `--fill` builds the body from the branch commits instead.
+        create_argv += ["--body-file", body_file] if body_file else ["--fill"]
         created = run(create_argv, cwd=repo)
         if created.returncode != 0:
             # Spec names no dedicated code for a failed `gh pr create` -- github-unreachable
