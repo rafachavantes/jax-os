@@ -3436,3 +3436,26 @@ def test_merge_help_documents_checks_reuse_and_recheck(capsys):
     out = " ".join(capsys.readouterr().out.split())
     assert "--recheck" in out
     assert "unless an up-to-date diff review already proved the same command on this exact SHA" in out
+
+
+def test_worker_diff_review_handoff_spills_a_diff_above_the_cap_to_a_file(monkeypatch):
+    monkeypatch.setattr(jaxflow_worker, "DIFF_INLINE_CAP", 0)
+    with TemporaryDirectory() as raw:
+        root = Path(raw).resolve() / "demo"
+        _init_repo(root)
+        worktree = _init_worktree(root, "feat/x")
+        (worktree / "changed.txt").write_text("x\n", encoding="utf-8")
+        _git(worktree, "add", "changed.txt")
+        _git(worktree, "commit", "-m", "change")
+        base_sha = _run_real(["git", "rev-parse", "HEAD~1"], worktree).stdout.strip()
+        head_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
+        manifest_path, manifest = _write_manifest_for_diff_worker(
+            root, worktree, base_sha=base_sha, head_sha=head_sha,
+        )
+        prompt = _run_diff_worker_and_capture_prompt(manifest_path, worktree, root)
+        assert "+++ b/changed.txt" not in prompt
+        line = next(l for l in prompt.splitlines() if l.startswith("  diff-file: "))
+        diff_file = Path(line.split(": ", 1)[1])
+        assert diff_file.name == "diff.patch"
+        assert "+++ b/changed.txt" in diff_file.read_text(encoding="utf-8")
+        assert "above the inline cap" in prompt

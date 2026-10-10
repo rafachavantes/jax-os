@@ -758,12 +758,19 @@ def _validate_diff_worker_inputs(manifest, *, run, allowlist_root, worktree, bui
     return None, tests_path, plan_path, spec_path
 
 
+# Codex rejects a turn input above 1,048,576 characters (`input_too_large`); the
+# reviewer preamble and contract take part of that budget. Above this cap the diff goes
+# to `<scratch>/diff.patch` and the handoff names it (MOA-506 P2 review 2a9efb9a5eb6).
+DIFF_INLINE_CAP = 400_000
+
+
 def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, tests_path,
-                        base_sha, head_sha):
+                        base_sha, head_sha, scratch):
     """The reviewer handoff text of a `--diff` review (grammar `parse_reviewer_handoff`
     parses: one `diff:` line, one `paths:` line, one indented `  test-output:` line).
     Runs `git diff base..head`; a failure RAISES RuntimeError (never a placeholder
-    review). Returns the handoff string."""
+    review). A diff above DIFF_INLINE_CAP is written to `scratch/diff.patch` and named
+    by a `  diff-file:` line instead of embedded. Returns the handoff string."""
     diff_result = run(["git", "diff", f"{base_sha}..{head_sha}"], cwd=worktree)
     if diff_result.returncode != 0:
         # fixes cold review F6: a diff-generation failure must not silently substitute
@@ -793,6 +800,15 @@ def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, 
             since_verdict = manifest.get("since_verdict", "unknown")
             correction_header = f"Correction review of {since_run_id} (verdict {since_verdict})\n"
             prior_review_line = f"  prior-review: {prior_report}\n"
+    diff_file_line = ""
+    if len(diff_text) > DIFF_INLINE_CAP:
+        # Same resolution as a doc review: the reviewer reads the file from disk. The
+        # patch lives in the run scratch of the CONTROL repo, next to the prompt.
+        diff_file = scratch / "diff.patch"
+        diff_file.write_text(diff_text, encoding="utf-8")
+        diff_file_line = f"  diff-file: {diff_file}\n"
+        diff_text = (f"The diff is {len(diff_text)} characters, above the inline cap of "
+                     f"{DIFF_INLINE_CAP}: read it from the diff-file path above.")
     handoff = (
         f"{correction_header}"
         f"diff: {base_sha}..{head_sha}\n"
@@ -801,12 +817,11 @@ def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, 
         f"  plan: {plan_path}\n"
         f"  test-output: {tests_path}\n"
         f"{prior_review_line}"
+        f"{diff_file_line}"
         "\n"
-        # ponytail: whole diff embedded inline, no size cap -- revisit if a --diff review
-        # ever times out on a huge diff. This is also the resolution to the Claude
-        # --tools Read,Glob,Grep containment (spec §6 I2): neither reviewer runtime needs
-        # to run `git diff` itself for a --diff review. Doc reviews name the file and
-        # read it from disk instead of embedding its contents.
+        # Below the cap the whole diff is embedded inline. This is also the resolution to
+        # the Claude --tools Read,Glob,Grep containment (spec §6 I2): neither reviewer
+        # runtime needs to run `git diff` itself for a --diff review.
         f"{diff_text}\n"
     )
     if manifest.get("threat_model"):
@@ -993,6 +1008,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     handoff = _build_diff_handoff(
         manifest, run=run, repo=repo, worktree=worktree, spec_path=spec_path,
         plan_path=plan_path, tests_path=tests_path, base_sha=base_sha, head_sha=head_sha,
+        scratch=paths["scratch"],
     )
     prompt_text = jk.REVIEWER_PROMPT_PREAMBLE + jr.assemble_prompt("reviewer", {
         "run_id": run_id, "project": project, "role": "reviewer", "phase": phase,
