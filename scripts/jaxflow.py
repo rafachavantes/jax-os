@@ -6488,6 +6488,48 @@ def _pr_await_mergeable(view, *, run, repo, repo_slug, number, sha, target, bran
     return view
 
 
+def _pr_merge_and_readback(args, *, run, repo, repo_slug, number, phase, target):
+    """`gh pr merge` pinned with `--match-head-commit`, then a FRESH `gh pr view` that must
+    read back as MERGED at the approved head/base (cold review 24597072c8ac F1: exit 0 does
+    not guarantee GitHub merged -- a merge queue or auto-merge can accept asynchronously;
+    that shape gets its own `merge-not-completed` and nothing is recorded as merged).
+    Returns `(view, merge_sha)`. Do not skip the post-merge read: it is what makes
+    `merge-not-completed` possible."""
+    merged = run(["gh", "pr", "merge", str(number), "--repo", repo_slug, "--merge",
+                  "--match-head-commit", args.sha, "--subject",
+                  f"feat: {phase} (merge {args.branch})"], cwd=repo)
+    if merged.returncode != 0:
+        stderr_text = merged.stderr or merged.stdout or ""
+        code = "merge-queue-required" if "merge queue" in stderr_text.lower() else "github-merge-refused"
+        checks_out = run(["gh", "pr", "checks", str(number), "--repo", repo_slug], cwd=repo)
+        raise _refuse(code, f"hint: {jr._bound(stderr_text.strip(), 300)}\nchecks: "
+                      f"{jr._bound((checks_out.stdout or checks_out.stderr or '').strip(), 300)}")
+    view = _gh_pr_view(run, repo, repo_slug, number)
+    # cold review 24597072c8ac F1 (downgraded to LOW -- no project here uses a merge queue
+    # -- relabelled): `gh pr merge` exiting 0 does not guarantee GitHub actually merged the
+    # PR (a merge queue or auto-merge can accept the request asynchronously). That specific
+    # shape -- success exit, still not MERGED -- gets its own refusal so the lead knows
+    # GitHub accepted the request without merging and to check the PR directly; nothing is
+    # recorded as merged either way.
+    if view["state"] != "MERGED":
+        raise _refuse(
+            "merge-not-completed",
+            f"hint: gh pr merge exited 0 but PR #{number} is still "
+            f"{view['state'].lower()}, not merged -- GitHub may have accepted the "
+            f"request without merging it yet (e.g. a merge queue or auto-merge); "
+            f"check the PR directly. Nothing was recorded as merged.")
+    if view["headRefOid"] != args.sha or view["baseRefName"] != target:
+        raise _refuse(
+            "github-unreachable",
+            f"hint: gh pr merge reported success but PR #{number} does not read back as merged")
+    merge_sha = (view.get("mergeCommit") or {}).get("oid")
+    if not merge_sha:
+        raise _refuse(
+            "github-unreachable",
+            f"hint: PR #{number} merged but no merge commit sha was reported")
+    return view, merge_sha
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6544,41 +6586,9 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
             view, run=run, repo=repo, repo_slug=repo_slug, number=number,
             sha=args.sha, target=target, branch=args.branch)
 
-        merged = run(["gh", "pr", "merge", str(number), "--repo", repo_slug, "--merge",
-                      "--match-head-commit", args.sha, "--subject",
-                      f"feat: {phase} (merge {args.branch})"], cwd=repo)
-        if merged.returncode != 0:
-            stderr_text = merged.stderr or merged.stdout or ""
-            code = "merge-queue-required" if "merge queue" in stderr_text.lower() else "github-merge-refused"
-            exc = Refusal(code)
-            checks_out = run(["gh", "pr", "checks", str(number), "--repo", repo_slug], cwd=repo)
-            exc.hint = (f"hint: {jr._bound(stderr_text.strip(), 300)}\nchecks: "
-                        f"{jr._bound((checks_out.stdout or checks_out.stderr or '').strip(), 300)}")
-            raise exc
-
-        view = _gh_pr_view(run, repo, repo_slug, number)
-        # cold review 24597072c8ac F1 (downgraded to LOW -- no project here uses a merge queue
-        # -- relabelled): `gh pr merge` exiting 0 does not guarantee GitHub actually merged the
-        # PR (a merge queue or auto-merge can accept the request asynchronously). That specific
-        # shape -- success exit, still not MERGED -- gets its own refusal so the lead knows
-        # GitHub accepted the request without merging and to check the PR directly; nothing is
-        # recorded as merged either way.
-        if view["state"] != "MERGED":
-            exc = Refusal("merge-not-completed")
-            exc.hint = (f"hint: gh pr merge exited 0 but PR #{number} is still "
-                        f"{view['state'].lower()}, not merged -- GitHub may have accepted the "
-                        f"request without merging it yet (e.g. a merge queue or auto-merge); "
-                        f"check the PR directly. Nothing was recorded as merged.")
-            raise exc
-        if view["headRefOid"] != args.sha or view["baseRefName"] != target:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: gh pr merge reported success but PR #{number} does not read back as merged"
-            raise exc
-        merge_sha = (view.get("mergeCommit") or {}).get("oid")
-        if not merge_sha:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: PR #{number} merged but no merge commit sha was reported"
-            raise exc
+        view, merge_sha = _pr_merge_and_readback(
+            args, run=run, repo=repo, repo_slug=repo_slug, number=number, phase=phase,
+            target=target)
 
     _post_merge_audit(
         post, env, project,
