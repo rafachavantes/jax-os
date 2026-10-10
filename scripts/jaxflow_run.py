@@ -365,7 +365,7 @@ def parse_tests_frames(text, expected_commands):
     return frames, None
 
 
-def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=None, effort=None, codex_cwd=None, extra_read_dirs=()):
+def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=None, effort=None, codex_cwd=None, extra_read_dirs=(), diff_range=None):
     if runtime == "opencode-builder" and role == "builder":
         if not model:
             raise ValueError("managed builder model missing")
@@ -406,8 +406,16 @@ def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=N
         # into the reviewer (verified: without it, `claude -p` answered in the tech lead's
         # own pt-BR voice from ~/.claude/CLAUDE.md). `--permission-mode plan` is DROPPED --
         # it made the model talk about exiting plan mode instead of emitting the report.
-        # `--tools Read,Glob,Grep` (no Bash, no write tools at all) with no permission mode
-        # produced the exact report; `--disallowedTools` is dropped along with it.
+        # `--tools Read,Glob,Grep` (no Bash, no write tools at all) for doc reviews. A diff
+        # review (`diff_range` given) adds Bash with EXACTLY three allowed command shapes,
+        # pinned to this run's SHAs: `git diff <base>..<head>`, `git diff --stat <base>..<head>`
+        # and `git diff <base>..<head> -- <path>` (after `--` every argument is a pathspec, so
+        # `--output=` cannot write). The reviewer produces the diff itself instead of
+        # receiving it inline (a 2.7M-char diff exceeded Codex's 1M input limit, MOA-506 P2).
+        # In `-p` mode every other Bash command is denied on the spot (smoke 2026-10-10:
+        # `--output=pwned.txt` denied, the three shapes ran). An open prefix
+        # `Bash(git diff:*)` is NOT read-only (review 85a6b2a16cfa); `--disallowedTools
+        # "Bash(*)"` removes Bash entirely (deny wins) and is not an option either.
         # MOA-467: the read dirs (control repo, worktree, validated external document
         # parents) are deduplicated here so a root never appears twice in argv; Codex has
         # no such mechanism and its argv is intentionally untouched by `extra_read_dirs`.
@@ -416,10 +424,18 @@ def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=N
         for entry in add_dirs:
             if entry not in seen:
                 seen.append(entry)
+        tools = ["--tools", "Read,Glob,Grep"]
+        if diff_range:
+            base_sha, head_sha = diff_range
+            tools = [
+                "--tools", "Read,Glob,Grep,Bash", "--allowedTools",
+                f"Bash(git diff {base_sha}..{head_sha})",
+                f"Bash(git diff --stat {base_sha}..{head_sha})",
+                f"Bash(git diff {base_sha}..{head_sha} -- :*)",
+            ]
         return [
             "claude", "-p", "--model", model, "--effort", effort, "--output-format", "text",
-            "--no-session-persistence", "--setting-sources", "", "--tools", "Read,Glob,Grep",
-            "--add-dir", *seen,
+            "--no-session-persistence", "--setting-sources", "", *tools, "--add-dir", *seen,
         ]
     raise ValueError("runtime not allowed")
 
