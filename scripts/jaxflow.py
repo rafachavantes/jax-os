@@ -3673,6 +3673,87 @@ def _spawn_and_drain(popen, argv, *, cwd, prompt_path, env, log_path, child_box,
     return "ok", child, _finalize_child_log(log_fd, log_path)
 
 
+def _reviewer_finish_payload(manifest, *, post, repo, paths, run_id, project, phase,
+                             child, child_log_text):
+    """Reviewer contract finalize through terminal-event delivery. Returns
+    `(payload, summary, contract_status, delivered)`."""
+    contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
+    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
+    stream_last_line = next(
+        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    )
+    payload = {
+        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
+        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
+    }
+    if contract_status == "ok":
+        # Row 3 (spec §8): the report's own verdict, unchanged -- derive_outcome is
+        # never called on this branch, it has nothing to decide (never synthesized).
+        payload["verdict"] = report_verdict
+        if findings is not None:
+            payload["findings"] = findings
+        # MOA-495 2.2: one-line tally against the immediately previous round of the
+        # same document/branch -- absent when there is none, or Jev fails/errs.
+        try:
+            new_report_text = paths["report"].read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            new_report_text = None
+        if new_report_text is not None:
+            tally = _review_round_tally(repo, project, manifest["kind"], manifest["target"], run_id, new_report_text)
+            if tally is not None:
+                payload["tally"] = tally
+    else:
+        outcome = jr.derive_outcome({
+            "role": "reviewer", "report_result": None, "contract_status": contract_status,
+            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
+            "verify_frames": [], "tests_written": True,
+            "head_sha": None, "base_sha": None, "is_descendant": False,
+            "last_stream_text": jr._last_stream_text_line(child_log_text),
+        })
+        if outcome["stage"] is not None:
+            payload["stage"] = outcome["stage"]
+            payload["diagnostic"] = outcome["diagnostic"]
+    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
+    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
+    # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
+    # but the guard covers both), if the payload still overflows it.
+    jr.cap_payload_bytes(payload)
+    finished_event = {
+        "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
+        "source": "deterministic", "emitter": "wrapper", "payload": payload,
+    }
+    delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
+    return payload, summary, contract_status, delivered
+
+
+def _finish_reviewer_worker(manifest, *, run, post, repo, paths, run_id, project, phase,
+                            kind, child, child_log_text, status_first, allowlist_root):
+    """Terminal half of a reviewer worker. `status_first=True` (the DOC path) runs
+    `_update_status_md` BETWEEN the manifest `worker_*` fields and the callback;
+    `status_first=False` (the DIFF path) does not run it here -- `run_worker` runs it after
+    this returns. The ORDER is the contract: unifying the two would be a behaviour change
+    (Decision 7)."""
+    payload, summary, contract_status, delivered = _reviewer_finish_payload(
+        manifest, post=post, repo=repo, paths=paths, run_id=run_id, project=project,
+        phase=phase, child=child, child_log_text=child_log_text,
+    )
+    manifest["worker_summary"] = summary
+    manifest["worker_contract_status"] = contract_status
+    manifest["worker_outcome"] = payload.get("verdict")
+    if status_first:
+        # Fixes branch review F6: the callback line stays fixed regardless of whether this
+        # POST succeeds -- a delivery failure is reported separately, to the worker's own
+        # stdout (the pane), never by mutating the callback line; `ledger_pending` below is
+        # the one sanctioned addition (MOA-474 §12.1).
+        _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
+    _send_callback(
+        manifest, run=run, kind=kind, outcome=payload.get("verdict", "no verdict"), summary=summary,
+        report_path=paths["report"], stage=payload.get("stage"), diagnostic=payload.get("diagnostic"),
+        contract_status=contract_status, ledger_pending=not delivered,
+    )
+    return 0
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -4240,65 +4321,11 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     if status == "terminated":
         return 0
 
-    contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
-    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
-    stream_last_line = next(
-        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    return _finish_reviewer_worker(
+        manifest, run=run, post=post, repo=repo, paths=paths, run_id=run_id, project=project,
+        phase=phase, kind="diff", child=child, child_log_text=child_log_text,
+        status_first=False, allowlist_root=allowlist_root,
     )
-    payload = {
-        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
-        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
-    }
-    if contract_status == "ok":
-        # Row 3 (spec §8): the report's own verdict, unchanged -- derive_outcome is
-        # never called on this branch, it has nothing to decide (never synthesized).
-        payload["verdict"] = report_verdict
-        if findings is not None:
-            payload["findings"] = findings
-        # MOA-495 2.2: one-line tally against the immediately previous round of the
-        # same document/branch -- absent when there is none, or Jev fails/errs.
-        try:
-            new_report_text = paths["report"].read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            new_report_text = None
-        if new_report_text is not None:
-            tally = _review_round_tally(repo, project, manifest["kind"], manifest["target"], run_id, new_report_text)
-            if tally is not None:
-                payload["tally"] = tally
-    else:
-        outcome = jr.derive_outcome({
-            "role": "reviewer", "report_result": None, "contract_status": contract_status,
-            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
-            "verify_frames": [], "tests_written": True,
-            "head_sha": None, "base_sha": None, "is_descendant": False,
-            "last_stream_text": jr._last_stream_text_line(child_log_text),
-        })
-        if outcome["stage"] is not None:
-            payload["stage"] = outcome["stage"]
-            payload["diagnostic"] = outcome["diagnostic"]
-    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
-
-    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
-    # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
-    # but the guard covers both), if the payload still overflows it.
-    jr.cap_payload_bytes(payload)
-    finished_event = {
-        "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
-        "source": "deterministic", "emitter": "wrapper", "payload": payload,
-    }
-    delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
-
-    manifest["worker_summary"] = summary
-    manifest["worker_contract_status"] = contract_status
-    manifest["worker_outcome"] = payload.get("verdict")
-
-    verdict_text = payload.get("verdict", "no verdict")
-    _send_callback(
-        manifest, run=run, kind="diff", outcome=verdict_text, summary=summary,
-        report_path=paths["report"], stage=payload.get("stage"), diagnostic=payload.get("diagnostic"),
-        contract_status=contract_status, ledger_pending=not delivered,
-    )
-    return 0
 
 
 def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=subprocess.Popen,
@@ -4444,69 +4471,11 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
     if status == "terminated":
         return 0
 
-    contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
-    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
-    stream_last_line = next(
-        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    return _finish_reviewer_worker(
+        manifest, run=run, post=post, repo=repo, paths=paths, run_id=run_id, project=project,
+        phase=phase, kind=kind, child=child, child_log_text=child_log_text,
+        status_first=True, allowlist_root=allowlist_root,
     )
-    payload = {
-        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
-        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
-    }
-    if contract_status == "ok":
-        # Row 3 (spec §8): the report's own verdict, unchanged -- derive_outcome is
-        # never called on this branch, it has nothing to decide (never synthesized).
-        payload["verdict"] = report_verdict
-        if findings is not None:
-            payload["findings"] = findings
-        # MOA-495 2.2: one-line tally against the immediately previous round of the
-        # same document/branch -- absent when there is none, or Jev fails/errs.
-        try:
-            new_report_text = paths["report"].read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            new_report_text = None
-        if new_report_text is not None:
-            tally = _review_round_tally(repo, project, manifest["kind"], manifest["target"], run_id, new_report_text)
-            if tally is not None:
-                payload["tally"] = tally
-    else:
-        outcome = jr.derive_outcome({
-            "role": "reviewer", "report_result": None, "contract_status": contract_status,
-            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
-            "verify_frames": [], "tests_written": True,
-            "head_sha": None, "base_sha": None, "is_descendant": False,
-            "last_stream_text": jr._last_stream_text_line(child_log_text),
-        })
-        if outcome["stage"] is not None:
-            payload["stage"] = outcome["stage"]
-            payload["diagnostic"] = outcome["diagnostic"]
-    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
-    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
-    # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
-    # but the guard covers both), if the payload still overflows it.
-    jr.cap_payload_bytes(payload)
-    finished_event = {
-        "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
-        "source": "deterministic", "emitter": "wrapper", "payload": payload,
-    }
-    delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
-
-    manifest["worker_summary"] = summary
-    manifest["worker_contract_status"] = contract_status
-    manifest["worker_outcome"] = payload.get("verdict")
-    # Fixes branch review F6: the callback line stays fixed regardless of whether this
-    # POST succeeds -- a delivery failure is reported separately, to the worker's own
-    # stdout (the pane), never by mutating the callback line; `ledger_pending` below is
-    # the one sanctioned addition (MOA-474 §12.1).
-    _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
-
-    verdict_text = payload.get("verdict", "no verdict")
-    _send_callback(
-        manifest, run=run, kind=kind, outcome=verdict_text, summary=summary,
-        report_path=paths["report"], stage=payload.get("stage"), diagnostic=payload.get("diagnostic"),
-        contract_status=contract_status, ledger_pending=not delivered,
-    )
-    return 0
 
 
 def _open_ro(db_path):
