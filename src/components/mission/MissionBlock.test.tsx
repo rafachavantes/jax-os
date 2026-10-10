@@ -2,6 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserMission } from "@/server/db/missions";
+import en from "../../../messages/en-US.json";
+import pt from "../../../messages/pt-BR.json";
 
 // No QueryClientProvider exists in a renderToStaticMarkup test — @tanstack/react-query
 // itself is mocked, keyed by queryKey, exactly as ServerPanel.test.tsx:8-19 already does.
@@ -108,5 +110,18 @@ describe("MissionBlock (spec §10)", () => {
     // F1: the spec guarantees no exact line-count, only natural wrapping when the
     // rail overflows its row — `flex-wrap` is the mechanism, not a forced wrap.
     expect(html).toContain("flex flex-wrap");
+  });
+  it("renders the autonomous badge only when the mission is autonomous, with DS tokens and no raw hex", () => {
+    harness.results.set("mission-block:current", { data: { ok: true, data: { ...MISSION, autonomous: true } }, isError: false });
+    const on = renderToStaticMarkup(createElement(MissionBlock));
+    expect(on).toContain(">autonomous<");
+    expect(on).toContain("bg-brand-soft");
+    expect(on).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+    harness.results.set("mission-block:current", { data: { ok: true, data: MISSION }, isError: false });
+    expect(renderToStaticMarkup(createElement(MissionBlock))).not.toContain(">autonomous<");
+  });
+  it("the autonomous string exists in both locales", () => {
+    expect(en.missionBlock.autonomous).toBeTruthy();
+    expect(pt.missionBlock.autonomous).toBeTruthy();
   });
 });
