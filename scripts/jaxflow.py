@@ -2423,6 +2423,62 @@ def _snapshot_evidence(tests_path):
     return restore, evidence_before
 
 
+def _verify_or_reuse(run, worktree, tests_path, existing, restore, *, builder_run_id,
+                     verify_cmd, build_cmd, finished_payload, reverify):
+    """The verification step of `review --diff`: reuse the builder's own evidence when
+    HEAD/tree/commands/tests.txt still match (MOA-471 item 8), else re-run and rewrite
+    `.tests.txt`. Returns the manifest's `verify` field. `existing` is the snapshotted
+    evidence bytes (None when absent). The path-outside-allowlist refusal restores the
+    snapshot (F3); `verify-failed` raises WITHOUT restoring, and this helper is called
+    OUTSIDE the parent's `try`, so no verify-step refusal can ever reach the parent's
+    `except Refusal` restore (Decision 10)."""
+    # MOA-471 item 8: skip the foreground re-run when HEAD/tree/commands/tests.txt
+    # evidence all still match the builder's own finished run (see spec item 8).
+    head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
+    current_head = head_probe.stdout.strip() if head_probe.returncode == 0 else None
+    porcelain = run(["git", "status", "--porcelain"], cwd=worktree)
+    requested_cmds = [verify_cmd] + ([build_cmd] if build_cmd else [])
+    frames_parsed, parse_error = None, "tests-file-missing"
+    if existing is not None:
+        try:
+            existing_text = existing.decode("utf-8")
+        except UnicodeDecodeError:
+            frames_parsed, parse_error = None, "tests-file-not-utf8"
+        else:
+            frames_parsed, parse_error = jr.parse_tests_frames(
+                existing_text, [redact(c) for c in requested_cmds],
+            )
+    should_reuse, verify_reason = _decide_verify_reuse(
+        head_matches=bool(current_head) and current_head == finished_payload.get("head_sha"),
+        porcelain_clean=(porcelain.returncode == 0 and porcelain.stdout == ""),
+        # ponytail: always True on every real call (verify_cmd/build_cmd ARE
+        # started_payload's own fields); kept as an explicit input, its False branch
+        # exercised directly by `_decide_verify_reuse`'s own unit tests.
+        commands_match=True,
+        frames=frames_parsed, parse_error=parse_error,
+    )
+    if reverify:
+        should_reuse, verify_reason = False, "reverify-forced"
+    if should_reuse:
+        print(f"verification reused from build `{builder_run_id}` at `{current_head}`")
+        return {
+            "mode": "reused", "reason": verify_reason,
+            "source_build_run_id": builder_run_id, "head_sha": current_head,
+        }
+    print(f"verification rerun: {verify_reason}")
+    verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
+    if not _write_verify_tests_file(tests_path, verify_frames, worktree=worktree):
+        # fixes F3 (TOCTOU symlink race): refuse, restoring the snapshotted evidence.
+        restore()
+        raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
+    if any(r.returncode != 0 for _, r in verify_frames):
+        raise Refusal("verify-failed")
+    return {
+        "mode": "rerun", "reason": verify_reason,
+        "source_build_run_id": builder_run_id, "head_sha": current_head,
+    }
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2467,53 +2523,11 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         phase=phase, builder_run_id=builder_run_id, now=now,
     )
     restore_evidence, existing_evidence = _snapshot_evidence(tests_path)
-    # MOA-471 item 8: skip the foreground re-run when HEAD/tree/commands/tests.txt
-    # evidence all still match the builder's own finished run (see spec item 8).
-    head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
-    current_head = head_probe.stdout.strip() if head_probe.returncode == 0 else None
-    porcelain = run(["git", "status", "--porcelain"], cwd=worktree)
-    requested_cmds = [verify_cmd] + ([build_cmd] if build_cmd else [])
-    frames_parsed, parse_error = None, "tests-file-missing"
-    if existing_evidence is not None:
-        try:
-            existing_text = existing_evidence.decode("utf-8")
-        except UnicodeDecodeError:
-            frames_parsed, parse_error = None, "tests-file-not-utf8"
-        else:
-            frames_parsed, parse_error = jr.parse_tests_frames(
-                existing_text, [redact(c) for c in requested_cmds],
-            )
-    should_reuse, verify_reason = _decide_verify_reuse(
-        head_matches=bool(current_head) and current_head == finished_payload.get("head_sha"),
-        porcelain_clean=(porcelain.returncode == 0 and porcelain.stdout == ""),
-        # ponytail: always True on every real call (verify_cmd/build_cmd ARE
-        # started_payload's own fields); kept as an explicit input, its False branch
-        # exercised directly by `_decide_verify_reuse`'s own unit tests.
-        commands_match=True,
-        frames=frames_parsed, parse_error=parse_error,
+    verify_field = _verify_or_reuse(
+        run, worktree, tests_path, existing_evidence, restore_evidence,
+        builder_run_id=builder_run_id, verify_cmd=verify_cmd, build_cmd=build_cmd,
+        finished_payload=finished_payload, reverify=args.reverify,
     )
-    if args.reverify:
-        should_reuse, verify_reason = False, "reverify-forced"
-    if should_reuse:
-        print(f"verification reused from build `{builder_run_id}` at `{current_head}`")
-        verify_field = {
-            "mode": "reused", "reason": verify_reason,
-            "source_build_run_id": builder_run_id, "head_sha": current_head,
-        }
-    else:
-        print(f"verification rerun: {verify_reason}")
-        verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
-        if not _write_verify_tests_file(tests_path, verify_frames, worktree=worktree):
-            # fixes F3 (TOCTOU symlink race): refuse, restoring the snapshotted evidence.
-            restore_evidence()
-            raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
-        if any(r.returncode != 0 for _, r in verify_frames):
-            raise Refusal("verify-failed")
-        verify_field = {
-            "mode": "rerun", "reason": verify_reason,
-            "source_build_run_id": builder_run_id, "head_sha": current_head,
-        }
-
     try:
         head = run(["git", "rev-parse", "HEAD"], cwd=worktree)
         head_sha = head.stdout.strip() if head.returncode == 0 else None
