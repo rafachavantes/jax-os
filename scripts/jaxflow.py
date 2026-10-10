@@ -2394,6 +2394,35 @@ def _review_guards(args, *, run, repo, db_path, project, branch, phase, builder_
     return {"prior_review_run_id": prior_run_id, "prior_verdict": verdict, "override": override}
 
 
+def _snapshot_evidence(tests_path):
+    """Snapshot any PRE-EXISTING evidence before the verify re-run overwrites it. Returns
+    `(restore, existing)`: `existing` is the bytes (None when there was no file) and
+    `restore()` puts the snapshot back (or removes the new file), leaving a symlink planted
+    after the guard alone (F3). The caller invokes `restore` itself: from the
+    path-outside-allowlist refusal in `_verify_or_reuse` and from the parent's single
+    `except Refusal`. `verify-failed` never restores: the fresh evidence IS its point."""
+    # fixes Part 2 diff-review F5: snapshot any PRE-EXISTING evidence before the verify
+    # re-run overwrites it, so a refusal further down this function -- after verify has
+    # already PASSED -- can restore it instead of leaving a stale/unlogged artifact behind
+    # in the builder's worktree. `verify-failed` itself is excluded on purpose: that
+    # refusal's whole point IS the fresh evidence this write is about to produce (spec
+    # §4.3 step 2/3 -- "fresher... since it was just re-run"), so it is never undone.
+    evidence_existed = tests_path.is_file()
+    evidence_before = tests_path.read_bytes() if evidence_existed else None
+
+    def restore():
+        # Re-checked immediately before acting (fixes F3): a symlink planted after the
+        # guard above must never be followed for the restore write/unlink either -- a
+        # symlinked path here is simply left alone.
+        if tests_path.is_symlink():
+            return
+        if evidence_existed:
+            tests_path.write_bytes(evidence_before)
+        else:
+            tests_path.unlink(missing_ok=True)
+    return restore, evidence_before
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2437,26 +2466,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         args, run=run, repo=repo, db_path=db_path, project=project, branch=branch,
         phase=phase, builder_run_id=builder_run_id, now=now,
     )
-    # fixes Part 2 diff-review F5: snapshot any PRE-EXISTING evidence before the verify
-    # re-run overwrites it, so a refusal further down this function -- after verify has
-    # already PASSED -- can restore it instead of leaving a stale/unlogged artifact behind
-    # in the builder's worktree. `verify-failed` itself is excluded on purpose: that
-    # refusal's whole point IS the fresh evidence this write is about to produce (spec
-    # §4.3 step 2/3 -- "fresher... since it was just re-run"), so it is never undone.
-    evidence_existed = tests_path.is_file()
-    evidence_before = tests_path.read_bytes() if evidence_existed else None
-
-    def _restore_evidence():
-        # Re-checked immediately before acting (fixes F3): a symlink planted after the
-        # guard above must never be followed for the restore write/unlink either -- a
-        # symlinked path here is simply left alone.
-        if tests_path.is_symlink():
-            return
-        if evidence_existed:
-            tests_path.write_bytes(evidence_before)
-        else:
-            tests_path.unlink(missing_ok=True)
-
+    restore_evidence, existing_evidence = _snapshot_evidence(tests_path)
     # MOA-471 item 8: skip the foreground re-run when HEAD/tree/commands/tests.txt
     # evidence all still match the builder's own finished run (see spec item 8).
     head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
@@ -2464,9 +2474,9 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     porcelain = run(["git", "status", "--porcelain"], cwd=worktree)
     requested_cmds = [verify_cmd] + ([build_cmd] if build_cmd else [])
     frames_parsed, parse_error = None, "tests-file-missing"
-    if evidence_existed:
+    if existing_evidence is not None:
         try:
-            existing_text = evidence_before.decode("utf-8")
+            existing_text = existing_evidence.decode("utf-8")
         except UnicodeDecodeError:
             frames_parsed, parse_error = None, "tests-file-not-utf8"
         else:
@@ -2495,7 +2505,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
         if not _write_verify_tests_file(tests_path, verify_frames, worktree=worktree):
             # fixes F3 (TOCTOU symlink race): refuse, restoring the snapshotted evidence.
-            _restore_evidence()
+            restore_evidence()
             raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
         if any(r.returncode != 0 for _, r in verify_frames):
             raise Refusal("verify-failed")
@@ -2652,7 +2662,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         # fires AFTER the verify re-run above already overwrote `.tests.txt` -- restore
         # whatever evidence existed before it (or remove the new file entirely) so a
         # refused dispatch never leaves a stale/unlogged artifact behind.
-        _restore_evidence()
+        restore_evidence()
         raise
 
 
