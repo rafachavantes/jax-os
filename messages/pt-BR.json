@@ -242,6 +242,7 @@
       "replyMergeBranch": "pode fazer o merge de {branch}",
       "replyMerge": "pode fazer o merge",
       "replyDeny": "não",
+      "mergeTarget": "{branch} em {target}",
       "answerSent": "Resposta enviada",
       "cancel": "Cancelar",
       "dispatch": "Disparar",
