@@ -404,7 +404,8 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       // MOA-465: two OPTIONAL keys added for a PR-preset merge's PR metadata — a local-preset merge
       // omits them, unchanged from today.
       // MOA-510: the OPTIONAL checks object records how --checks was satisfied (reused|run|resumed).
-      onlyKeys(p, ["phase", "branch", "sha", "target", "approved_by", "merge_sha", "pr_number", "pr_url", "checks"], "payload");
+      // MOA-508: OPTIONAL mission_id (positive integer) ties an autonomous-mission merge to its mission.
+      onlyKeys(p, ["phase", "branch", "sha", "target", "approved_by", "merge_sha", "pr_number", "pr_url", "checks", "mission_id"], "payload");
       // `phase` here is a human phase TITLE (free text, spec §5.1), not the TOKEN-shaped
       // `phase` of a run event. It carries a PATTERN, not just a bound, so this validator
       // enforces the same contract `cmd_merge` enforces before it commits (part-2 cold
@@ -428,6 +429,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       }
       if (p.approved_by !== "rafa") fail("approved_by must be rafa");
       if ("pr_number" in p) posInt(p, "pr_number");
+      if ("mission_id" in p) posInt(p, "mission_id");
       if ("pr_url" in p) reqStr(p, "pr_url", LIMITS.prUrl, GITHUB_PR_URL_RE);
       if ("checks" in p) {
         const c = p.checks;

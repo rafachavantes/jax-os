@@ -14,6 +14,7 @@ import jaxflow_resume as jresume
 from jax_init import ALLOWLIST_ROOT_DEFAULT, Refusal, _contained
 from jaxflow_hook import redact
 import jaxflow_common as jc
+import jaxflow_env as jenv
 
 
 def _hub_retryable(exc):
@@ -646,6 +647,33 @@ def _cleanup_merged_worktree(run, repo, worktree, branch, allowlist_root):
         print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
 
 
+def _active_autonomous_mission_id(get=None):
+    """The active mission's id when it is autonomous, else None (spec §6 #2). Lookup-only and
+    best-effort: ANY failure (hub down, timeout, non-2xx, malformed body) just drops the id;
+    it never blocks a merge. `get` resolves at call time so a patched `jc._get` applies."""
+    get = get or jc._get
+    try:
+        status, body = get(f"{jenv.api_base_url()}/api/mission/current")
+        data = body["data"]
+        mission_id = data["id"]
+        if (200 <= status < 300 and body.get("ok") is True and data.get("autonomous") is True
+                and type(mission_id) is int and mission_id > 0):
+            return mission_id
+    except Exception:  # ponytail: audit tie is advisory; any lookup failure means "no tie"
+        pass
+    return None
+
+
+def _attach_mission_id(payload, *, resumed, get):
+    """Adds `mission_id` to a merge-approved payload. A resumed delivery never looks it up: a
+    mission that started after the delivery must not be credited with it (spec §6 #2)."""
+    if not resumed:
+        mission_id = _active_autonomous_mission_id(get)
+        if mission_id is not None:
+            payload["mission_id"] = mission_id
+    return payload
+
+
 def _post_merge_audit(post, env, project, payload, *, retry_msg, warn_bad_pane):
     """Post the `merge-approved` audit event. The delivery is already durable, so a failed
     POST becomes the hub refusal; when the failure is retryable `retry_msg` is printed and
@@ -1168,7 +1196,7 @@ def _sync_local_target(run, repo, target):
 
 
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
-                   allowlist_root):
+                   allowlist_root, get=None):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
     No local git merge at all -- delivery happens on GitHub via `gh pr merge`. Feature heads
     run --checks in their registered build worktree (decision 7); a release/* head has no
@@ -1194,6 +1222,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
     if view["headRefName"] != args.branch:
         raise jc._refuse("pr-identity-mismatch", f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {args.branch!r}")
 
+    resumed = view["state"] == "MERGED"
     merge_sha = None
     if view["state"] == "MERGED":
         # Recovery table: already merged, local recording failed -- skip checks/merge, just
@@ -1219,9 +1248,11 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
 
     _post_merge_audit(
         post, env, project,
-        {"phase": phase, "branch": args.branch, "sha": args.sha, "target": target,
-         "approved_by": "rafa", "merge_sha": merge_sha, "pr_number": number,
-         "pr_url": view["url"], "checks": checks_audit},
+        _attach_mission_id(
+            {"phase": phase, "branch": args.branch, "sha": args.sha, "target": target,
+             "approved_by": "rafa", "merge_sha": merge_sha, "pr_number": number,
+             "pr_url": view["url"], "checks": checks_audit},
+            resumed=resumed, get=get),
         retry_msg=f"PR #{number} merged as {merge_sha}; re-run the same jaxflow merge to resume",
         warn_bad_pane=False)
 
@@ -1239,7 +1270,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
         checks_audit=checks_audit, checks_cmd=args.checks)
 
 
-def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, env=None, now=None,
+def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=None, now=None,
               allowlist_root=ALLOWLIST_ROOT_DEFAULT):
     """Delivers an approved branch (spec §5). Synchronous and foreground by design: Rafa's
     approval already named this phase/branch/sha, and the tech lead is waiting right here
@@ -1278,12 +1309,12 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, env=None, now=No
         if args.branch.startswith("release/"):
             return _cmd_merge_pr(args, repo=repo, project=project, caller=caller,
                                   target=required_target, phase=phase, run=run, post=post,
-                                  env=env, now=now, allowlist_root=allowlist_root)
+                                  env=env, now=now, allowlist_root=allowlist_root, get=get)
         worktree = jc._branch_worktree_path(allowlist_root, project, args.branch)
         with jresume.worktree_claim(repo, worktree):
             return _cmd_merge_pr(args, repo=repo, project=project, caller=caller,
                                        target=required_target, phase=phase, run=run, post=post,
-                                       env=env, now=now, allowlist_root=allowlist_root)
+                                       env=env, now=now, allowlist_root=allowlist_root, get=get)
 
     if approved_target != target:
         raise jc._refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} "
@@ -1325,9 +1356,11 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, env=None, now=No
 
         _post_merge_audit(
             post, env, project,
-            {"phase": phase, "branch": args.branch, "sha": args.sha,   # already <= 200
-             "target": target, "approved_by": "rafa", "merge_sha": merge_sha,
-             "checks": checks_audit},
+            _attach_mission_id(
+                {"phase": phase, "branch": args.branch, "sha": args.sha,   # already <= 200
+                 "target": target, "approved_by": "rafa", "merge_sha": merge_sha,
+                 "checks": checks_audit},
+                resumed=resuming, get=get),
             retry_msg=f"merge commit {merge_sha} kept; re-run the same jaxflow merge to resume",
             warn_bad_pane=True)
 

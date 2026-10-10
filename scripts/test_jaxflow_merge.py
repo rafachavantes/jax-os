@@ -13,6 +13,7 @@ import jaxflow_cli
 import jaxflow_merge
 import jaxflow_common
 import jaxflow_run as jr
+import jaxflow_env as jenv
 import jax_init as ji
 
 from testkit import (  # noqa: F401  (autouse fixtures included on purpose)
@@ -3470,3 +3471,152 @@ def test_main_routes_merge_and_maps_a_refusal_to_exit_2(monkeypatch, capsys):
     assert jaxflow_cli.main(argv) == jaxflow_common.REFUSED
     err = capsys.readouterr().err
     assert "preset-unsupported" in err and "hint: PR preset" in err
+
+
+# ---- MOA-508: mission_id on merge-approved ------------------------------------------------
+
+_MISSION_URL = f"{jenv.api_base_url()}/api/mission/current"
+_AUTONOMOUS = {"ok": True, "data": {"id": 7, "autonomous": True}}
+
+
+def _fake_get(body=None, *, status=200, exc=None, seen=None):
+    def get(url):
+        if seen is not None:
+            seen.append(url)
+        if exc is not None:
+            raise exc
+        return status, body
+    return get
+
+
+@pytest.mark.parametrize("body,status,exc", [
+    ({"ok": True, "data": None}, 200, None),                                   # no mission
+    ({"ok": True, "data": {"id": 7, "autonomous": False}}, 200, None),         # normal mission
+    ({"ok": True, "data": {"id": 7, "autonomous": "yes"}}, 200, None),         # not the boolean True
+    ({"ok": True, "data": {"id": 0, "autonomous": True}}, 200, None),          # id not positive
+    ({"ok": True, "data": {"id": True, "autonomous": True}}, 200, None),       # bool is not an id
+    ({"ok": True, "data": {"autonomous": True}}, 200, None),                   # no id
+    ({"ok": False, "error": "x"}, 200, None),
+    (_AUTONOMOUS, 500, None),                                                  # non-2xx
+    ([1, 2], 200, None),                                                       # not a dict
+    (None, 200, None),
+    (None, 200, OSError("hub down")),                                          # getter raises
+])
+def test_active_autonomous_mission_id_is_none_unless_the_active_mission_is_autonomous(body, status, exc):
+    assert jaxflow_merge._active_autonomous_mission_id(_fake_get(body, status=status, exc=exc)) is None
+
+
+def test_active_autonomous_mission_id_returns_the_id_and_asks_the_current_route():
+    seen = []
+    assert jaxflow_merge._active_autonomous_mission_id(_fake_get(_AUTONOMOUS, seen=seen)) == 7
+    assert seen == [_MISSION_URL]
+
+
+def test_active_autonomous_mission_id_defaults_to_the_common_getter(monkeypatch):
+    monkeypatch.setattr(jaxflow_common, "_get", lambda url: (200, _AUTONOMOUS))
+    assert jaxflow_merge._active_autonomous_mission_id() == 7
+
+
+def _local_merge(tmp_path, monkeypatch, *, get, post):
+    monkeypatch.chdir(tmp_path)
+    sha = "a" * 40
+    _worktree_path(tmp_path).mkdir(parents=True)
+    fake_run, calls = _switch_aware_runner(tmp_path, sha)
+    return jaxflow_merge.cmd_merge(
+        _MergeArgs(sha=sha), run=fake_run, post=post, get=get, env=_merge_env(),
+        now=_fixed_now, allowlist_root=tmp_path.parent), calls
+
+
+def test_merge_local_path_adds_mission_id_for_an_autonomous_mission(tmp_path, monkeypatch):
+    posted = []
+    rc, _ = _local_merge(tmp_path, monkeypatch, get=_fake_get(_AUTONOMOUS), post=posted.append)
+    assert rc == jaxflow_common.OK
+    assert posted[0]["payload"]["mission_id"] == 7
+    assert posted[0]["payload"]["approved_by"] == "rafa"
+
+
+@pytest.mark.parametrize("get", [
+    _fake_get({"ok": True, "data": {"id": 7, "autonomous": False}}),
+    _fake_get({"ok": True, "data": None}),
+    _fake_get(exc=OSError("hub down")),
+    _fake_get(exc=TimeoutError("slow")),
+    _fake_get("not json at all"),
+])
+def test_merge_local_path_omits_mission_id_and_still_merges_otherwise(tmp_path, monkeypatch, get):
+    posted = []
+    rc, _ = _local_merge(tmp_path, monkeypatch, get=get, post=posted.append)
+    assert rc == jaxflow_common.OK
+    assert "mission_id" not in posted[0]["payload"]
+
+
+def test_merge_local_audit_post_failure_still_refuses_with_an_autonomous_mission(tmp_path, monkeypatch, capsys):
+    def failing_post(event):
+        raise RuntimeError("hub down")
+    with pytest.raises(ji.Refusal) as exc:
+        _local_merge(tmp_path, monkeypatch, get=_fake_get(_AUTONOMOUS), post=failing_post)
+    assert exc.value.code == "hub-unreachable"
+    assert "kept; re-run the same jaxflow merge to resume" in capsys.readouterr().out
+
+
+def test_merge_local_resumed_delivery_never_looks_up_the_mission(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sha, posted, seen = "a" * 40, [], []
+    fake_run, _ = _merge_runner(tmp_path, script={
+        ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
+        ("git", "symbolic-ref"): _completed(0, "refs/remotes/origin/main\n"),
+        ("git", "rev-parse", "--verify", "main^2"): _completed(0, f"{sha}\n"),
+        ("git", "rev-parse", "main^{commit}"): _completed(0, "c" * 40 + "\n"),
+        ("git", "log", "-1", "--format=%s"): _completed(0, "feat: Phase X (merge feat/x)\n"),
+        ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{sha}\n"),
+        ("git", "remote", "get-url"): _completed(2, ""),
+    })
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
+                            get=_fake_get(_AUTONOMOUS, seen=seen), env=_merge_env(),
+                            now=_fixed_now, allowlist_root=tmp_path.parent)
+    assert seen == [], "a resumed delivery never queries the mission"
+    assert posted[0]["payload"]["checks"] == {"mode": "resumed"}
+    assert "mission_id" not in posted[0]["payload"]
+
+
+def _pr_merge(tmp_path, monkeypatch, *, get, merged_already=False):
+    monkeypatch.chdir(tmp_path)
+    db = tmp_path / "jaxos.db"
+    script, _ = _pr_merge_setup(tmp_path, db)
+    if merged_already:
+        script[("gh", "pr", "view")] = _completed(0, json.dumps(_GH_PR_VIEW_MERGED))
+    fake_run, calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
+    run = fake_run if merged_already else _pr_stateful_run(
+        fake_run, calls, json.loads(script[("gh", "pr", "view")].stdout))
+    events = []
+    with monkeypatch.context() as m:
+        m.setattr(jr, "DB_PATH", db)
+        rc = jaxflow_merge.cmd_merge(
+            _MergeArgs(target="staging"), run=run, post=_ledger_post(db, events), get=get,
+            env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
+    return rc, events
+
+
+def test_merge_pr_path_adds_mission_id_for_an_autonomous_mission(tmp_path, monkeypatch):
+    rc, events = _pr_merge(tmp_path, monkeypatch, get=_fake_get(_AUTONOMOUS))
+    assert rc == jaxflow_common.OK
+    assert events[-1]["payload"]["mission_id"] == 7
+    assert events[-1]["payload"]["approved_by"] == "rafa"
+
+
+@pytest.mark.parametrize("get", [
+    _fake_get({"ok": True, "data": {"id": 7, "autonomous": False}}),
+    _fake_get({"ok": True, "data": None}),
+    _fake_get(exc=OSError("hub down")),
+])
+def test_merge_pr_path_omits_mission_id_and_still_merges_otherwise(tmp_path, monkeypatch, get):
+    rc, events = _pr_merge(tmp_path, monkeypatch, get=get)
+    assert rc == jaxflow_common.OK
+    assert "mission_id" not in events[-1]["payload"]
+
+
+def test_merge_pr_resumed_already_merged_never_looks_up_the_mission(tmp_path, monkeypatch):
+    seen = []
+    rc, events = _pr_merge(tmp_path, monkeypatch, get=_fake_get(_AUTONOMOUS, seen=seen), merged_already=True)
+    assert rc == jaxflow_common.OK
+    assert seen == []
+    assert "mission_id" not in events[-1]["payload"]
