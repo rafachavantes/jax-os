@@ -705,7 +705,7 @@ def _resolve_handoff_spec_path(plan_text, plan_dest, worktree, allowlist_root):
     `spec-fragment-not-found` refusal code. On success `spec_dest` becomes the STRING
     `f"{candidate}#{fragment}"` instead of the bare `Path` -- every caller only ever
     formats it (`f"...{spec_dest}..."`) or re-derives it a second time for a str-vs-str
-    comparison (see the diff-review worker's own fix, scripts/jaxflow.py:1731), never
+    comparison (see the diff-review worker's own fix, `scripts/jaxflow_review.py`, `dispatch_diff_review`'s worker), never
     compares it directly against a `Path`. No fragment: byte-for-byte the old
     behavior -- `candidate` returned as a `Path`, unchanged."""
     m = _SPEC_LINE_RE.search(plan_text)

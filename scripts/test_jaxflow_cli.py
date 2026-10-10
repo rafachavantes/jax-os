@@ -1190,7 +1190,7 @@ def test_latest_builder_attempt_breaks_ts_tie_by_id(tmp_path):
 @pytest.mark.parametrize("plant,expected_failed", [
     ("missing-dir", False),    # nothing to preserve at all -- not a failure
     ("unreadable-dir", True),  # exists but wrong type (permission denied looks the same)
-    ("invalid-shape", True),   # FIFO: not a regular, single-linked file (jaxflow.py:4896)
+    ("invalid-shape", True),   # FIFO: not a regular, single-linked file (`_copy_run_reports`, `scripts/jaxflow_common.py`)
     ("oversized", True),
 ])
 def test_copy_run_reports_failure_paths(tmp_path, plant, expected_failed):

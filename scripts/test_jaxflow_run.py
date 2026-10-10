@@ -1764,7 +1764,7 @@ def test_derive_outcome_verify_diagnostic_redacts_secrets():
 
 def test_derive_outcome_row11_build_red_reports_build_stage_over_a_red_verify():
     # Table order (spec §7 Part 2/3 notes): build is checked BEFORE verify when both
-    # are red -- frames[1] is the build frame (jaxflow.py:2105-2108's own emission
+    # are red -- frames[1] is the build frame (`_run_verify_commands`' own emission
     # order is verify-then-build; the DECISION order is the reverse).
     out = jr.derive_outcome(_builder_evidence(
         stream_last_line=_CLEAN_STREAM_LAST_LINE,
@@ -2016,7 +2016,7 @@ def _run_started_event(run_id, role, repo="/home/rafa/repos/demo", kind="build")
     elif kind == "diff":
         # F7 (round 4): `builder_run_id` is now required at ingress for every diff
         # run-started row -- `dispatch_diff_review` always sets it for real
-        # (`scripts/jaxflow.py:2074`), so a fixture claiming to be current ingress
+        # (`scripts/jaxflow_review.py`), so a fixture claiming to be current ingress
         # output must carry one too.
         payload["builder_run_id"] = "aaaabbbbcccc"
     return {

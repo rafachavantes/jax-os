@@ -364,7 +364,7 @@ export async function collectCodexSnapshot(
 // ---- Native answer delivery (native-answer-delivery spec D3) --------------------------------
 
 // The exact mechanism jaxflow's own completion callback already uses for a codex caller
-// (scripts/jaxflow.py:2650-2660: subprocess.run(["codex","queue","--thread",session,"--message",
+// (`scripts/jaxflow_workerkit.py`: subprocess.run(["codex","queue","--thread",session,"--message",
 // line], timeout=10)). This is a plain CLI call, not the read-only RPC connector above
 // (collectCodexSnapshot) — that boundary is about the RPC session, not this separate `codex
 // queue` CLI surface (spec §2's D3, "no starting or steering turns" refers to the RPC only).

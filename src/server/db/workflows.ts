@@ -1745,7 +1745,7 @@ export type LoopSummary = {
 // Auto-derived from the latest run-started row's ANCHOR BUILD (L1/L6, round 3 F4) --
 // never the latest row's own raw phase (a diff's longer suffix is never a useful anchor).
 // F4 (round 4): ports the CLI's own full anchor/fallback grouping (`cmd_loop`,
-// `_anchor_builds_for_prefix`/`_direct_phase_match`, `scripts/jaxflow.py:5285-5440`) --
+// `_anchor_builds_for_prefix`/`_direct_phase_match`, `scripts/jaxflow_cli.py`) --
 // once a prefix is resolved, the WHOLE matching family is counted (every build whose own
 // normalized phase contains it -- a `--resume` attempt included -- and, with no anchor
 // build yet, every spec/plan row directly matching the seed's own phase), never just the
@@ -1764,7 +1764,7 @@ export function getLoopSummary(db: Database.Database, project: string): LoopSumm
          ?? [...builds].reverse().find((b) => b.branch === seed.branch) ?? null)
       // F4 (round 5): a trailing spec/plan review dispatched AFTER a build already
       // exists must still resolve to that build (same containment join as the CLI's
-      // `_anchor_builds_for_prefix`, scripts/jaxflow.py:5289 -- a spec/plan's own
+      // `_anchor_builds_for_prefix`, `scripts/jaxflow_cli.py` -- a spec/plan's own
       // normalized phase is naturally a substring of the real build's phase). Without
       // this, seedAnchor stayed null and the no-build fallback below dropped the
       // whole existing build/diff/merge family.

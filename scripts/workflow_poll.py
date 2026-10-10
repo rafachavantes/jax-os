@@ -531,8 +531,8 @@ def _reap_run(row, *, db_path, run=None, now=None, allowlist_root=None):
         # F2 (cold review 938043c1d949): `result` MUST be set before
         # `_persist_resume_checkpoint` is called -- that helper reads
         # `payload.get("result")` as the checkpoint's own `outcome` field
-        # (jaxflow.py:777-800), and `--resume` later refuses a checkpoint whose
-        # `outcome` isn't `failure`/`blocked` (jaxflow.py:999-1000-ish, Task 4 below).
+        # (`_persist_resume_checkpoint`, `scripts/jaxflow_workerkit.py`), and `--resume` later refuses a checkpoint whose
+        # `outcome` isn't `failure`/`blocked` (`_resume_load_prior`, `scripts/jaxflow_build.py`).
         payload["result"] = "failure"
         head_sha = None
         if isinstance(worktree, str) and Path(worktree).exists():
