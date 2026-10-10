@@ -3754,6 +3754,27 @@ def _finish_reviewer_worker(manifest, *, run, post, repo, paths, run_id, project
     return 0
 
 
+def _manifest_identity_error(manifest_path, control_repo, run_id):
+    """Why `manifest_path` is not the genuine manifest of this run, as a refusal code, or
+    None. It must be the path `build` wrote for `run_id` in the control repo, a regular file
+    (never a symlink, never behind a symlinked parent) owned by this user."""
+    expected_manifest = _manifest_dir(control_repo, run_id) / "manifest.json"
+    if os.path.abspath(str(manifest_path)) != os.path.abspath(str(expected_manifest)):
+        return "path-outside-allowlist"
+    try:
+        jset._reject_symlink_parents(Path(manifest_path))
+        info = Path(manifest_path).lstat()
+        if stat.S_ISLNK(info.st_mode):
+            return "agent-settings-symlink"
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            return "agent-settings-permissions"
+    except Refusal as exc:
+        return exc.code
+    except OSError:
+        return "agent-settings-permissions"
+    return None
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -3818,22 +3839,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
             run=run, post=post,
         )
     control_repo, worktree = validated
-    expected_manifest = _manifest_dir(control_repo, run_id) / "manifest.json"
-    identity_error = None
-    if os.path.abspath(str(manifest_path)) != os.path.abspath(str(expected_manifest)):
-        identity_error = "path-outside-allowlist"
-    else:
-        try:
-            jset._reject_symlink_parents(Path(manifest_path))
-            info = Path(manifest_path).lstat()
-            if stat.S_ISLNK(info.st_mode):
-                identity_error = "agent-settings-symlink"
-            elif not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                identity_error = "agent-settings-permissions"
-        except Refusal as exc:
-            identity_error = exc.code
-        except OSError:
-            identity_error = "agent-settings-permissions"
+    identity_error = _manifest_identity_error(manifest_path, control_repo, run_id)
     if identity_error:
         return _refuse_unvalidated_builder_run(
             identity_error, manifest=manifest, manifest_path=manifest_path,
