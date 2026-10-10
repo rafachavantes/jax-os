@@ -1629,10 +1629,10 @@ def _resume_rows(db_path, resume_id, latest_of=None):
     return started, finished, latest
 
 
-def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
-                           run, post, env, now, allowlist_root, db_path):
-    db_path = db_path or jr.DB_PATH
-    started, finished, _ = _resume_rows(db_path, resume_id)
+def _resume_load_prior(repo, resume_id, project, started, finished):
+    """Decode the recorded payloads, read the prior manifest and the resume checkpoint, and
+    refuse `resume-ineligible` unless they all describe ONE finished-failed opencode build of
+    `project`. Returns `(started_payload, finished_payload, prior_path, prior, checkpoint)`."""
     try:
         started_payload = json.loads(started["payload"])
         finished_payload = json.loads(finished["payload"])
@@ -1659,6 +1659,15 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             or checkpoint["run_id"] != resume_id
             or checkpoint["outcome"] not in ("failure", "blocked")):
         raise Refusal("resume-ineligible")
+    return started_payload, finished_payload, prior_path, prior, checkpoint
+
+
+def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
+                           run, post, env, now, allowlist_root, db_path):
+    db_path = db_path or jr.DB_PATH
+    started, finished, _ = _resume_rows(db_path, resume_id)
+    started_payload, finished_payload, prior_path, prior, checkpoint = _resume_load_prior(
+        repo, resume_id, project, started, finished)
     try:
         if Path(started_payload.get("repo", "")).resolve() != repo:
             raise Refusal("resume-ineligible")
