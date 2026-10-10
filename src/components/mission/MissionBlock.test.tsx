@@ -27,7 +27,7 @@ beforeEach(() => {
 const MISSION: UserMission = {
   id: 1, name: "Ship 6 phases tonight", goal: "Merge and review all six phases before sleep",
   statusLine: "Fases 1 e 2 merged, rodando review da fase 3", state: "active",
-  startedAt: "2026-09-19T10:00:00.000Z", endedAt: null,
+  startedAt: "2026-09-19T10:00:00.000Z", endedAt: null, autonomous: false,
   milestones: [
     { title: "Fase 1", state: "done" },
     { title: "Fase 2", state: "done" },

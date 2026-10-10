@@ -214,6 +214,9 @@ export const MIGRATIONS: readonly string[] = [
     milestones  TEXT NOT NULL
   );
   CREATE UNIQUE INDEX missions_one_active ON missions (state) WHERE state = 'active';`,
+  `-- MOA-508 (migration 12): missions.autonomous -- the owner's opt-in to the autonomous mission
+  -- mode (spec §6 #1). One bit; existing rows read 0 (normal mission).
+  ALTER TABLE missions ADD COLUMN autonomous INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 export function migrate(db: Database.Database): void {

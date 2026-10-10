@@ -45,13 +45,13 @@ describe("db migrations", () => {
     const db = new Database(":memory:");
     migrate(db);
     migrate(db); // would throw "table mutations already exists" if not guarded by user_version
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     db.close();
   });
 
   it("migration 4 brings the re-keyed workflow schema (openDb also runs migrations 5–6 — see the dedicated tests)", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     // Finding 1 (cold review round 3): these two exact-list assertions stay on table_info and stay
     // WITHOUT pane_key — table_info omits generated columns entirely (it never contained pane_key
     // to begin with, migration 5 or not), and the ordinary columns here are unchanged by migration
@@ -81,7 +81,7 @@ describe("db migrations", () => {
 
   it("migration 5 adds generated pane_key columns, derived from pane + tmux_incarnation", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     // PRAGMA table_info OMITS generated columns entirely — verified on the real stack (SQLite
     // 3.53.2 via better-sqlite3): table_info(workflow_events) here still returns exactly
     // ["pane","tmux_incarnation"] as its last two names, with no pane_key at all. Only
@@ -134,7 +134,7 @@ describe("db migrations", () => {
 
   it("migration 6 creates rule_docs with slot as PRIMARY KEY, empty until seeded", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     expect(db.prepare("SELECT COUNT(*) AS c FROM rule_docs").get()).toEqual({ c: 0 });
     db.prepare("INSERT INTO rule_docs (slot, content, updated_at) VALUES ('global', 'a', 't')").run();
     expect(() =>
@@ -145,7 +145,7 @@ describe("db migrations", () => {
 
   it("migration 9 adds project_prefs (hidden_at is a timestamp, not a boolean), archive_after_days on workflow_afk, and the (project, ts) heartbeat index", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     const pcols = db.prepare("PRAGMA table_info(project_prefs)").all() as { name: string; type: string; pk: number; dflt_value: string | null }[];
     expect(pcols.map((c) => c.name)).toEqual(["project", "pinned", "hidden_at"]);
     expect(pcols.find((c) => c.name === "project")?.pk).toBe(1);
@@ -169,7 +169,7 @@ describe("migration 10 adds forward_types (MOA-487 §5 Decision 1)", () => {
       "INSERT INTO workflow_afk (id, enabled, updated_at, archive_after_days) VALUES (1, 1, '2026-09-19T00:00:00.000Z', 21)",
     ).run();
     migrate(db);
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     const row = db.prepare("SELECT enabled, archive_after_days, forward_types FROM workflow_afk WHERE id = 1").get() as
       { enabled: number; archive_after_days: number; forward_types: string };
     expect(row.enabled).toBe(1);
@@ -180,7 +180,7 @@ describe("migration 10 adds forward_types (MOA-487 §5 Decision 1)", () => {
 
   it("a fresh install lands at user_version 10 with no seed row", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     expect(db.prepare("SELECT COUNT(*) AS n FROM workflow_afk").get()).toEqual({ n: 0 });
     db.close();
   });
@@ -235,7 +235,7 @@ describe("migration 5 upgrade path from a real v4 db", () => {
     ).run();
 
     migrate(db);
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
 
     const ev = db.prepare("SELECT project, pane_key FROM workflow_events WHERE pane = '%1'").get() as {
       project: string;
@@ -272,7 +272,7 @@ describe("migration 4 fixtures", () => {
        VALUES ('tu_1', ?, '2026-08-01T00:01:00.000Z', 'done', 1)`,
     ).run(qid.id);
     migrate(db);
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     expect(db.prepare("SELECT COUNT(*) AS n FROM workflow_sessions").get()).toEqual({ n: 0 }); // dropped, not migrated (§3.1b)
     const claim = db.prepare("SELECT * FROM workflow_answer_claims").get() as Record<string, unknown>;
     expect(claim.source_event_id).toBe(qid.id);
@@ -304,7 +304,7 @@ describe("migration 4 fixtures", () => {
        VALUES ('2026-08-01T00:02:00.000Z', NULL, 'p1', 'lead', 'question-resolved', 'deterministic', 'claude-posttool', ?, 'local')`,
     ).run(JSON.stringify({ tool_use_id: "tu_2" }));
     expect(() => migrate(db)).not.toThrow();
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     const row1 = db.prepare("SELECT delivery FROM workflow_events WHERE id = ?").get(qid.id) as { delivery: string };
     expect(row1.delivery).toBe("local"); // malformed resolution treated as non-matching → expired
     const audit1 = db.prepare(
@@ -336,7 +336,7 @@ describe("migration 4 fixtures", () => {
        VALUES ('tu_1_retry', ?, '2026-08-01T00:02:00.000Z', 'done', 2)`,
     ).run(qid.id);
     expect(() => migrate(db)).not.toThrow();
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     const rows = db.prepare("SELECT tool_use_id FROM workflow_answer_claims WHERE source_event_id = ?").all(qid.id);
     expect(rows).toEqual([{ tool_use_id: "tu_1_retry" }]); // later claimed_at wins
 
@@ -370,7 +370,7 @@ describe("migration 4 fixtures", () => {
     ).run(JSON.stringify({ tool_use_id: "tu_orphan", questions: [] }));
     const qid = db.prepare("SELECT id FROM workflow_events WHERE type='question'").get() as { id: number };
     migrate(db);
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     const ev = db.prepare("SELECT delivery, pane, tmux_incarnation FROM workflow_events WHERE id = ?").get(qid.id);
     expect(ev).toEqual({ delivery: "local", pane: null, tmux_incarnation: null }); // finding 27: delivery actually moved
     expect(db.prepare("SELECT COUNT(*) AS n FROM workflow_answer_claims WHERE source_event_id = ?").get(qid.id)).toEqual({ n: 0 });
@@ -419,7 +419,7 @@ describe("migration 8 provider-credential indexes", () => {
 
   it("lands at user_version 8 with two typed partial unique indexes", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     const idx = (db.prepare("PRAGMA index_list(mutations)").all() as { name: string }[]).map((i) => i.name).sort();
     expect(idx).toEqual([
       "mutations_kind",
@@ -446,11 +446,11 @@ describe("migration 8 provider-credential indexes", () => {
 });
 
 describe("migration 11 creates missions (spec §6 Decisions 1-3, 6)", () => {
-  it("lands at user_version 11 with an empty table and the one-active partial unique index", () => {
+  it("lands at the latest user_version with an empty table and the one-active partial unique index", () => {
     const db = openDb(":memory:");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     const cols = (db.prepare("PRAGMA table_info(missions)").all() as { name: string }[]).map((c) => c.name);
-    expect(cols).toEqual(["id", "name", "goal", "status_line", "state", "started_at", "ended_at", "milestones"]);
+    expect(cols).toEqual(["id", "name", "goal", "status_line", "state", "started_at", "ended_at", "milestones", "autonomous"]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM missions").get()).toEqual({ n: 0 });
     const idx = (db.prepare("PRAGMA index_list(missions)").all() as { name: string }[]).map((i) => i.name);
     expect(idx).toEqual(["missions_one_active"]);
@@ -473,6 +473,30 @@ describe("migration 11 creates missions (spec §6 Decisions 1-3, 6)", () => {
     const db = openDb(":memory:");
     expect(() => db.prepare(
       "INSERT INTO missions (name, goal, status_line, state, started_at, ended_at, milestones) VALUES ('m', 'g', '', 'bogus', '2026-09-19T00:00:00.000Z', NULL, '[]')",
+    ).run()).toThrow();
+    db.close();
+  });
+});
+
+describe("migration 12 adds missions.autonomous", () => {
+  it("a v11 database with an existing mission reaches 12 and the old row reads autonomous = 0", () => {
+    const db = new Database(":memory:");
+    for (let i = 0; i < 11; i += 1) {
+      db.transaction(() => { db.exec(MIGRATIONS[i]); db.pragma(`user_version = ${i + 1}`); })();
+    }
+    db.prepare(
+      "INSERT INTO missions (name, goal, status_line, state, started_at, ended_at, milestones) VALUES ('old', 'g', '', 'active', '2026-09-19T00:00:00.000Z', NULL, '[]')",
+    ).run();
+    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    migrate(db);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
+    expect(db.prepare("SELECT autonomous FROM missions WHERE name = 'old'").get()).toEqual({ autonomous: 0 });
+    db.close();
+  });
+  it("the column is NOT NULL", () => {
+    const db = openDb(":memory:");
+    expect(() => db.prepare(
+      "INSERT INTO missions (name, goal, status_line, state, started_at, ended_at, milestones, autonomous) VALUES ('m', 'g', '', 'done', 'x', NULL, '[]', NULL)",
     ).run()).toThrow();
     db.close();
   });
