@@ -406,8 +406,13 @@ def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=N
         # into the reviewer (verified: without it, `claude -p` answered in the tech lead's
         # own pt-BR voice from ~/.claude/CLAUDE.md). `--permission-mode plan` is DROPPED --
         # it made the model talk about exiting plan mode instead of emitting the report.
-        # `--tools Read,Glob,Grep` (no Bash, no write tools at all) with no permission mode
-        # produced the exact report; `--disallowedTools` is dropped along with it.
+        # `--tools Read,Glob,Grep,Bash` with `--allowedTools "Bash(git diff:*)"`: the
+        # reviewer produces the diff under review itself (`git diff <base>..<head>` in the
+        # worktree) instead of receiving it inline (a 2.7M-char diff exceeded Codex's 1M
+        # input limit, MOA-506 P2). In `-p` mode every other Bash command that would need
+        # approval is denied on the spot (smoke 2026-10-10: `touch` denied, `git diff` ran),
+        # so the reviewer still cannot write. `--disallowedTools "Bash(*)"` is NOT an option:
+        # deny wins over allow and removes Bash entirely.
         # MOA-467: the read dirs (control repo, worktree, validated external document
         # parents) are deduplicated here so a root never appears twice in argv; Codex has
         # no such mechanism and its argv is intentionally untouched by `extra_read_dirs`.
@@ -418,8 +423,8 @@ def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=N
                 seen.append(entry)
         return [
             "claude", "-p", "--model", model, "--effort", effort, "--output-format", "text",
-            "--no-session-persistence", "--setting-sources", "", "--tools", "Read,Glob,Grep",
-            "--add-dir", *seen,
+            "--no-session-persistence", "--setting-sources", "", "--tools", "Read,Glob,Grep,Bash",
+            "--allowedTools", "Bash(git diff:*)", "--add-dir", *seen,
         ]
     raise ValueError("runtime not allowed")
 

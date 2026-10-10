@@ -758,34 +758,16 @@ def _validate_diff_worker_inputs(manifest, *, run, allowlist_root, worktree, bui
     return None, tests_path, plan_path, spec_path
 
 
-# Codex rejects a turn input above 1,048,576 characters (`input_too_large`); the
-# reviewer preamble and contract take part of that budget. Above this cap the diff goes
-# to `<scratch>/diff.patch` and the handoff names it (MOA-506 P2 review 2a9efb9a5eb6).
-DIFF_INLINE_CAP = 400_000
-
-
-def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, tests_path,
-                        base_sha, head_sha, scratch):
+def _build_diff_handoff(manifest, *, repo, spec_path, plan_path, tests_path, base_sha, head_sha):
     """The reviewer handoff text of a `--diff` review (grammar `parse_reviewer_handoff`
     parses: one `diff:` line, one `paths:` line, one indented `  test-output:` line).
-    Runs `git diff base..head`; a failure RAISES RuntimeError (never a placeholder
-    review). A diff above DIFF_INLINE_CAP is written to `scratch/diff.patch` and named
-    by a `  diff-file:` line instead of embedded. Returns the handoff string."""
-    diff_result = run(["git", "diff", f"{base_sha}..{head_sha}"], cwd=worktree)
-    if diff_result.returncode != 0:
-        # fixes cold review F6: a diff-generation failure must not silently substitute
-        # placeholder text and dispatch a review anyway -- the reviewer would be judging
-        # a diff that never actually happened. An uncaught crash here ends the tmux
-        # session with no run-finished event, surfacing as `dead` via `jaxflow status
-        # <run_id>` (spec §2.5's existing status vocabulary) -- an honest signal over a
-        # corrupted review.
-        raise RuntimeError(f"git diff {base_sha}..{head_sha} failed: {diff_result.stderr}")
-    diff_text = diff_result.stdout
-
+    The diff itself is NOT embedded: the reviewer runs `git diff base..head` in the
+    worktree (its cwd; Codex has a read-only shell, Claude has `Bash(git diff:*)`). A 2.7M
+    character diff exceeded Codex's 1M input limit (MOA-506 P2). Returns the handoff string."""
     # Grammar `parse_reviewer_handoff` parses: exactly one `diff:` line, exactly one
     # `paths:` line, and exactly one indented `  test-output:` line in the block right
     # after it -- everything else in this text (the framing, the `spec:`/`plan:` lines
-    # below, the actual diff, --focus) is free-form and never scanned by that parser
+    # below, the instruction, --focus) is free-form and never scanned by that parser
     # (spec §4.3 step 3). fixes S2: `spec:`/`plan:` name the SAME evidence-of-should the
     # builder's own handoff named -- the reviewer contract's required spec/plan inputs.
     since_run_id = manifest.get("since_review_run_id")
@@ -800,15 +782,6 @@ def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, 
             since_verdict = manifest.get("since_verdict", "unknown")
             correction_header = f"Correction review of {since_run_id} (verdict {since_verdict})\n"
             prior_review_line = f"  prior-review: {prior_report}\n"
-    diff_file_line = ""
-    if len(diff_text) > DIFF_INLINE_CAP:
-        # Same resolution as a doc review: the reviewer reads the file from disk. The
-        # patch lives in the run scratch of the CONTROL repo, next to the prompt.
-        diff_file = scratch / "diff.patch"
-        diff_file.write_text(diff_text, encoding="utf-8")
-        diff_file_line = f"  diff-file: {diff_file}\n"
-        diff_text = (f"The diff is {len(diff_text)} characters, above the inline cap of "
-                     f"{DIFF_INLINE_CAP}: read it from the diff-file path above.")
     handoff = (
         f"{correction_header}"
         f"diff: {base_sha}..{head_sha}\n"
@@ -817,12 +790,11 @@ def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, 
         f"  plan: {plan_path}\n"
         f"  test-output: {tests_path}\n"
         f"{prior_review_line}"
-        f"{diff_file_line}"
         "\n"
-        # Below the cap the whole diff is embedded inline. This is also the resolution to
-        # the Claude --tools Read,Glob,Grep containment (spec §6 I2): neither reviewer
-        # runtime needs to run `git diff` itself for a --diff review.
-        f"{diff_text}\n"
+        "The diff under review is NOT embedded in this prompt. Produce it yourself: run "
+        f"`git diff {base_sha}..{head_sha}` in your working directory (the worktree); for a "
+        f"large change start with `git diff --stat {base_sha}..{head_sha}` and then diff "
+        "file by file. That output is the evidence-of-is the reviewer contract names.\n"
     )
     if manifest.get("threat_model"):
         handoff = f"{handoff}\n{jk.threat_model_line(manifest['threat_model'])}\n"
@@ -1006,9 +978,8 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     paths["scratch"].mkdir(parents=True, exist_ok=True)
 
     handoff = _build_diff_handoff(
-        manifest, run=run, repo=repo, worktree=worktree, spec_path=spec_path,
-        plan_path=plan_path, tests_path=tests_path, base_sha=base_sha, head_sha=head_sha,
-        scratch=paths["scratch"],
+        manifest, repo=repo, spec_path=spec_path, plan_path=plan_path, tests_path=tests_path,
+        base_sha=base_sha, head_sha=head_sha,
     )
     prompt_text = jk.REVIEWER_PROMPT_PREAMBLE + jr.assemble_prompt("reviewer", {
         "run_id": run_id, "project": project, "role": "reviewer", "phase": phase,

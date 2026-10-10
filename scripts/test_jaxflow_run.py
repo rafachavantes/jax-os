@@ -943,8 +943,8 @@ def test_runtime_argv_model_effort_override_and_claude_branch_and_legacy_bytes_i
     claude_argv = jr.runtime_argv("claude", "reviewer", "/repo", Path("/p"), Path("/o"), model="sonnet", effort="high")
     assert claude_argv == [
         "claude", "-p", "--model", "sonnet", "--effort", "high", "--output-format", "text",
-        "--no-session-persistence", "--setting-sources", "", "--tools", "Read,Glob,Grep",
-        "--add-dir", "/repo",
+        "--no-session-persistence", "--setting-sources", "", "--tools", "Read,Glob,Grep,Bash",
+        "--allowedTools", "Bash(git diff:*)", "--add-dir", "/repo",
     ]
 
 

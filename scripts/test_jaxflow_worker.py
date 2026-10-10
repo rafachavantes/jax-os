@@ -242,7 +242,8 @@ def test_doc_review_file_inputs_and_directory_grants(monkeypatch, caller, runtim
         if runtime == "claude":
             granted = child.argv[child.argv.index("--add-dir") + 1:]
             assert granted == [str(root)] + ([str(target.parent)] if external else [])
-            assert child.argv[child.argv.index("--tools") + 1] == "Read,Glob,Grep"
+            assert child.argv[child.argv.index("--tools") + 1] == "Read,Glob,Grep,Bash"
+            assert child.argv[child.argv.index("--allowedTools") + 1] == "Bash(git diff:*)"
             assert child.argv[child.argv.index("--setting-sources") + 1] == ""
         else:
             assert "--add-dir" not in child.argv
@@ -5003,7 +5004,7 @@ def test_worker_diff_review_refuses_secret_named_changed_paths(capsys):
             assert not (root / ".local" / "scratch" / manifest["run_id"]).exists(), name
 
 
-def test_worker_diff_review_prompt_embeds_diff_text_and_grammar_for_both_runtimes():
+def test_worker_diff_review_prompt_names_the_git_diff_command_and_never_embeds_the_diff():
     for runtime in ("codex", "claude"):
         with TemporaryDirectory() as raw:
             root = Path(raw).resolve() / "demo"
@@ -5045,8 +5046,9 @@ def test_worker_diff_review_prompt_embeds_diff_text_and_grammar_for_both_runtime
             assert prompt.startswith(jaxflow_workerkit.REVIEWER_PROMPT_PREAMBLE), runtime
             assert f"diff: {base_sha}..{head_sha}" in prompt, runtime
             assert f"  test-output: {tests_path}" in prompt, runtime
-            assert "CHANGED-MARKER-TEXT" in prompt, runtime  # the embedded diff text
-            assert captured["cwd"] == str(worktree), runtime
+            assert "CHANGED-MARKER-TEXT" not in prompt, runtime  # never embedded
+            assert f"run `git diff {base_sha}..{head_sha}` in your working directory" in prompt, runtime
+            assert captured["cwd"] == str(worktree), runtime  # where that command resolves
             if runtime == "codex":
                 assert captured["argv"][captured["argv"].index("-C") + 1] == str(worktree), runtime
             if runtime == "claude":
@@ -5082,56 +5084,6 @@ def test_worker_diff_review_prompt_embeds_diff_text_and_grammar_for_both_runtime
             assert parsed["head_sha"] == head_sha, runtime
             assert parsed["test_output"] == str(tests_path), runtime
             assert parsed["builder_run_id"] == "b1b1b1b1b1b1", runtime
-
-
-def test_worker_diff_review_prompt_survives_diff_containing_test_output_literal():
-    # fixes cold review round 2 F9: a coincidental "test-output:" line INSIDE the embedded
-    # diff text (e.g. a doc change describing this very handoff grammar) must not confuse
-    # the fixed-block isolation technique the test above relies on -- proving the slicing
-    # fix, not a worker code path (the worker never re-parses its own composed prompt;
-    # only the dispatch-time stub is parsed, by preflight()).
-    with TemporaryDirectory() as raw:
-        root = Path(raw).resolve() / "demo"
-        _init_repo(root)
-        worktree = _init_worktree(root, "feat/x")
-        (worktree / "changed.txt").write_text("  test-output: /some/unrelated/path\n", encoding="utf-8")
-        _git(worktree, "add", "changed.txt")
-        _git(worktree, "commit", "-m", "the change under review")
-        base_sha = _run_real(["git", "rev-parse", "HEAD~1"], worktree).stdout.strip()
-        head_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
-        tests_dir = worktree / ".local" / "reports"
-        tests_dir.mkdir(parents=True, exist_ok=True)
-        # fixes F6: must match the default builder_run_id ("b1b1b1b1b1b1") this manifest
-        # carries -- see the sibling test above for why.
-        tests_path = tests_dir / "b1b1b1b1b1b1.tests.txt"
-        tests_path.write_text("COMMAND: true\n\nEXIT: 0\n", encoding="utf-8")
-
-        manifest_path, manifest = _write_manifest_for_diff_worker(
-            root, worktree, runtime="codex", base_sha=base_sha, head_sha=head_sha,
-            tests_path=str(tests_path),
-        )
-        captured = {}
-
-        class CapturePopen(FakePopen):
-            def __init__(self, argv, cwd=None, stdin=None, stdout=None, stderr=None, start_new_session=None, env=None):
-                super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
-                captured["stdin_bytes"] = self.stdin_bytes
-
-        code = jaxflow_worker.run_worker(
-            str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
-            post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
-        )
-        assert code == 0
-        prompt = captured["stdin_bytes"].decode("utf-8")
-        # the embedded diff really does carry the coincidental literal.
-        assert "test-output: /some/unrelated/path" in prompt
-        handoff_start = prompt.index(f"diff: {base_sha}..{head_sha}")
-        test_output_line = f"  test-output: {tests_path}"
-        handoff_end = prompt.index(test_output_line, handoff_start) + len(test_output_line)
-        isolated = prompt[handoff_start:handoff_end]
-        parsed = jr.parse_reviewer_handoff(isolated)
-        assert parsed["head_sha"] == head_sha
-        assert parsed["test_output"] == str(tests_path)
 
 
 def test_worker_diff_review_finalizes_report_via_control_repo_paths():
