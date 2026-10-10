@@ -27,6 +27,10 @@ pnpm install --frozen-lockfile
 (`scripts/copy-monaco.mjs`), which vendors the editor bundle and its license
 files into `public/`.
 
+If `pnpm install` fails on `@swc/core` with a cache permission error, your shell
+has a restrictive `umask` (for example `077`): run `umask 022` and repeat the
+install in the same shell.
+
 Every later step that needs the checkout refers to `$JAXOS_REPO` — keep it
 exported in the same shell, or re-export the same value.
 
