@@ -6337,6 +6337,33 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, pha
     return merge_sha, checks_audit
 
 
+def _merge_push(run, repo, target):
+    """Push the delivered target to `origin` when there is one. Exit 2 of `git remote
+    get-url` is "No such remote" and NOTHING else is (verified on real git, round-5 F4):
+    any other non-zero result refuses `push-failed` -- the commit is already durable and the
+    documented resume finishes the job. Returns whether a push happened."""
+    pushed = False
+    # Exit 2 is "No such remote" and NOTHING else is (verified on real git, round-5 F4).
+    # Treating every non-zero result as "no remote" would let a broken repository, a
+    # permission error or a git that failed to start report a complete local delivery and
+    # skip the push entirely. The commit is already durable here, so the refusal is
+    # `push-failed` and the documented resume finishes the job.
+    remote = run(["git", "remote", "get-url", "origin"], cwd=repo)
+    if remote.returncode not in (0, 2):
+        exc = Refusal("push-failed")
+        exc.hint = (f"hint: could not probe origin: "
+                    f"{jr._bound((remote.stderr or remote.stdout).strip(), 200)}")
+        raise exc
+    if remote.returncode == 0:
+        push = run(["git", "push", "origin", target], cwd=repo)
+        if push.returncode != 0:
+            exc = Refusal("push-failed")
+            exc.hint = f"hint: {jr._bound(push.stderr.strip(), 200)}"
+            raise exc
+        pushed = True
+    return pushed
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6670,25 +6697,7 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
             retry_msg=f"merge commit {merge_sha} kept; re-run the same jaxflow merge to resume",
             warn_bad_pane=True)
 
-        pushed = False
-        # Exit 2 is "No such remote" and NOTHING else is (verified on real git, round-5 F4).
-        # Treating every non-zero result as "no remote" would let a broken repository, a
-        # permission error or a git that failed to start report a complete local delivery and
-        # skip the push entirely. The commit is already durable here, so the refusal is
-        # `push-failed` and the documented resume finishes the job.
-        remote = run(["git", "remote", "get-url", "origin"], cwd=repo)
-        if remote.returncode not in (0, 2):
-            exc = Refusal("push-failed")
-            exc.hint = (f"hint: could not probe origin: "
-                        f"{jr._bound((remote.stderr or remote.stdout).strip(), 200)}")
-            raise exc
-        if remote.returncode == 0:
-            push = run(["git", "push", "origin", target], cwd=repo)
-            if push.returncode != 0:
-                exc = Refusal("push-failed")
-                exc.hint = f"hint: {jr._bound(push.stderr.strip(), 200)}"
-                raise exc
-            pushed = True
+        pushed = _merge_push(run, repo, target)
 
         # Everything below is best-effort: the delivery is durable and pushed, and a failure
         # here must never turn a completed merge into a refusal.
