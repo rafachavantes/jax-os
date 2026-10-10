@@ -242,8 +242,8 @@ def test_doc_review_file_inputs_and_directory_grants(monkeypatch, caller, runtim
         if runtime == "claude":
             granted = child.argv[child.argv.index("--add-dir") + 1:]
             assert granted == [str(root)] + ([str(target.parent)] if external else [])
-            assert child.argv[child.argv.index("--tools") + 1] == "Read,Glob,Grep,Bash"
-            assert child.argv[child.argv.index("--allowedTools") + 1] == "Bash(git diff:*)"
+            assert child.argv[child.argv.index("--tools") + 1] == "Read,Glob,Grep"  # doc review: no Bash
+            assert "--allowedTools" not in child.argv
             assert child.argv[child.argv.index("--setting-sources") + 1] == ""
         else:
             assert "--add-dir" not in child.argv
@@ -5057,6 +5057,13 @@ def test_worker_diff_review_prompt_names_the_git_diff_command_and_never_embeds_t
                 # canonical control repo (the default-manifest plan/spec live in the
                 # worktree here, so no extra document parent is added).
                 assert granted == [str(worktree), str(root)]
+                argv = captured["argv"]
+                assert argv[argv.index("--tools") + 1] == "Read,Glob,Grep,Bash"
+                assert argv[argv.index("--allowedTools") + 1:argv.index("--add-dir")] == [
+                    f"Bash(git diff {base_sha}..{head_sha})",
+                    f"Bash(git diff --stat {base_sha}..{head_sha})",
+                    f"Bash(git diff {base_sha}..{head_sha} -- :*)",
+                ]
                 for key in ("spec_path", "plan_path", "tests_path"):
                     assert Path(manifest[key]).is_relative_to(worktree)
             else:

@@ -943,9 +943,21 @@ def test_runtime_argv_model_effort_override_and_claude_branch_and_legacy_bytes_i
     claude_argv = jr.runtime_argv("claude", "reviewer", "/repo", Path("/p"), Path("/o"), model="sonnet", effort="high")
     assert claude_argv == [
         "claude", "-p", "--model", "sonnet", "--effort", "high", "--output-format", "text",
-        "--no-session-persistence", "--setting-sources", "", "--tools", "Read,Glob,Grep,Bash",
-        "--allowedTools", "Bash(git diff:*)", "--add-dir", "/repo",
+        "--no-session-persistence", "--setting-sources", "", "--tools", "Read,Glob,Grep",
+        "--add-dir", "/repo",
     ]
+    diff_argv = jr.runtime_argv("claude", "reviewer", "/repo", Path("/p"), Path("/o"), model="sonnet", effort="high",
+                                diff_range=("a" * 40, "b" * 40))
+    # a diff review gets Bash pinned to three exact shapes on this run's SHAs -- never an
+    # open `Bash(git diff:*)` prefix (`--output=` would write; review 85a6b2a16cfa)
+    assert diff_argv[diff_argv.index("--tools") + 1] == "Read,Glob,Grep,Bash"
+    allowed = diff_argv[diff_argv.index("--allowedTools") + 1:diff_argv.index("--add-dir")]
+    assert allowed == [
+        f"Bash(git diff {'a' * 40}..{'b' * 40})",
+        f"Bash(git diff --stat {'a' * 40}..{'b' * 40})",
+        f"Bash(git diff {'a' * 40}..{'b' * 40} -- :*)",
+    ]
+    assert "Bash(git diff:*)" not in diff_argv
 
 
 def test_reviewer_head_matches_ancestor_via_repo_and_legacy_exact_equality():

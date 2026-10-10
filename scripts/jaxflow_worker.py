@@ -792,9 +792,10 @@ def _build_diff_handoff(manifest, *, repo, spec_path, plan_path, tests_path, bas
         f"{prior_review_line}"
         "\n"
         "The diff under review is NOT embedded in this prompt. Produce it yourself: run "
-        f"`git diff {base_sha}..{head_sha}` in your working directory (the worktree); for a "
-        f"large change start with `git diff --stat {base_sha}..{head_sha}` and then diff "
-        "file by file. That output is the evidence-of-is the reviewer contract names.\n"
+        f"`git diff {base_sha}..{head_sha}` in your working directory (the worktree). For a "
+        f"large change start with `git diff --stat {base_sha}..{head_sha}`, then one file at "
+        f"a time with `git diff {base_sha}..{head_sha} -- <path>`. Only these three command "
+        "shapes are allowed; the output is the evidence-of-is the reviewer contract names.\n"
     )
     if manifest.get("threat_model"):
         handoff = f"{handoff}\n{jk.threat_model_line(manifest['threat_model'])}\n"
@@ -998,7 +999,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     # untouched by these grants.
     argv = jr.runtime_argv(
         runtime, "reviewer", worktree, prompt_path, paths["reviewer_output"],
-        model=model, effort=effort, codex_cwd=worktree,
+        model=model, effort=effort, codex_cwd=worktree, diff_range=(base_sha, head_sha),
         extra_read_dirs=jk._review_read_roots(
             worktree, repo, run=run, allowlist_root=allowlist_root,
             documents=(plan_path, spec_path),
