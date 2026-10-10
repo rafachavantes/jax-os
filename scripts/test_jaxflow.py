@@ -24,6 +24,7 @@ import pytest
 
 import general_settings
 import jaxflow
+import jaxflow_workerkit
 import jaxflow_common
 import uuid
 import shlex
@@ -1515,7 +1516,7 @@ def test_worker_prompt_starts_with_preamble_and_names_test_evidence_path():
             allowlist_root=root,
         )
         prompt_text = captured["stdin_bytes"].decode("utf-8")
-        assert prompt_text.startswith(jaxflow.REVIEWER_PROMPT_PREAMBLE)
+        assert prompt_text.startswith(jaxflow_workerkit.REVIEWER_PROMPT_PREAMBLE)
         tests_path = root / ".local" / "reports" / f"{manifest['run_id']}.tests.txt"
         assert f"Test-output evidence: {tests_path}" in prompt_text
 
@@ -1891,13 +1892,13 @@ def test_terminate_child_sends_term_then_kill_on_timeout():
         calls.append((pgid, sig))
 
     child = FakeChild()
-    jaxflow._terminate_child(child, 999, killpg=fake_killpg, timeout=0.01)
+    jaxflow_workerkit._terminate_child(child, 999, killpg=fake_killpg, timeout=0.01)
     assert calls == [(999, signal.SIGTERM), (999, signal.SIGKILL)]
     assert child.waited == 2
 
 
 def test_interrupted_payload_builder_with_no_worktree_has_null_head_sha():
-    payload = jaxflow._interrupted_payload(role="builder", phase="P1", signal_name="SIGTERM")
+    payload = jaxflow_workerkit._interrupted_payload(role="builder", phase="P1", signal_name="SIGTERM")
     assert payload == {
         "phase": "P1", "exit_code": None, "contract_status": "interrupted",
         "report_path": None, "stage": "worker", "diagnostic": "worker interrupted by SIGTERM",
@@ -1913,7 +1914,7 @@ def test_interrupted_payload_builder_reads_real_head_when_descendant(tmp_path):
     _git(worktree, "add", "f.txt")
     _git(worktree, "commit", "-m", "feat: work")
     head_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
-    payload = jaxflow._interrupted_payload(
+    payload = jaxflow_workerkit._interrupted_payload(
         role="builder", phase="P1", signal_name="SIGHUP",
         worktree=worktree, base_sha=base_sha, run=jr.run_command,
     )
@@ -1922,7 +1923,7 @@ def test_interrupted_payload_builder_reads_real_head_when_descendant(tmp_path):
 
 
 def test_interrupted_payload_reviewer_has_no_builder_only_fields():
-    payload = jaxflow._interrupted_payload(role="reviewer", phase="P1", signal_name="SIGTERM")
+    payload = jaxflow_workerkit._interrupted_payload(role="reviewer", phase="P1", signal_name="SIGTERM")
     assert "head_sha" not in payload
     assert "result" not in payload
     assert payload["stage"] == "worker"
@@ -1935,7 +1936,7 @@ def test_interrupted_payload_uses_a_terminal_error_last_line_when_given():
         "type": "error", "sessionID": "ses_x",
         "error": {"name": "APIError", "data": {"statusCode": 403, "message": "spending limit reached"}},
     })
-    payload = jaxflow._interrupted_payload(
+    payload = jaxflow_workerkit._interrupted_payload(
         role="builder", phase="P1", signal_name="SIGTERM", last_line=last_line,
     )
     assert payload["stage"] == "runtime"
@@ -1944,7 +1945,7 @@ def test_interrupted_payload_uses_a_terminal_error_last_line_when_given():
 
 
 def test_interrupted_payload_falls_back_to_plain_text_on_a_non_error_last_line():
-    payload = jaxflow._interrupted_payload(
+    payload = jaxflow_workerkit._interrupted_payload(
         role="builder", phase="P1", signal_name="SIGTERM",
         last_line=json.dumps({"type": "step_finish", "reason": "stop"}),
     )
@@ -2356,7 +2357,7 @@ def test_codex_callback_targets_captured_thread(monkeypatch, kind, pane):
     manifest = dict(run_id="aaaabbbbcccc", caller="codex",
                     caller_session=captured, caller_pane=pane,
                     caller_incarnation="111:222")
-    jaxflow._send_callback(manifest, run=_forbidden_tmux, kind=kind,
+    jaxflow_workerkit._send_callback(manifest, run=_forbidden_tmux, kind=kind,
                            outcome="success", summary="done", report_path="/report.md")
     assert calls == [([
         "codex", "queue", "--thread", captured, "--message",
@@ -2376,7 +2377,7 @@ def test_no_callback_skips_queue_and_tmux(monkeypatch, caller, session):
     monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("sleep under no_callback"))
     manifest = dict(run_id="aaaabbbbcccc", caller=caller, caller_session=session,
                     caller_pane="%3", caller_incarnation="111:222", no_callback=True)
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2398,7 +2399,7 @@ def test_codex_callback_invalid_session_warns_without_delivery(monkeypatch, caps
     monkeypatch.setattr(time, "sleep", lambda seconds: pytest.fail("sleep on invalid session"))
     manifest = dict(run_id="aaaabbbbcccc", caller="codex", caller_session=session,
                     caller_pane="%3", caller_incarnation="111:222")
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2434,7 +2435,7 @@ def test_codex_callback_queue_failures_warn_once_without_tmux(monkeypatch, capsy
     manifest = dict(run_id="aaaabbbbcccc", caller="codex",
                     caller_session=_CAPTURED_THREAD, caller_pane="%3",
                     caller_incarnation="111:222")
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2530,7 +2531,7 @@ def test_refusal_paths_spool_before_post_keep_on_failure_delete_on_delivery(tmp_
                 run=jr.run_command, post=post_fn,
             )
         manifest["kind"] = "diff"
-        return jaxflow._refuse_diff_run(
+        return jaxflow_workerkit._refuse_diff_run(
             "boom", manifest=manifest, run=jr.run_command, post=post_fn,
             manifest_path=manifest_path,
         )
@@ -2547,7 +2548,7 @@ def test_refusal_paths_spool_before_post_keep_on_failure_delete_on_delivery(tmp_
 @pytest.mark.parametrize("kind", ["build", "spec"])
 def test_send_callback_omits_stage_segment_on_the_happy_path(kind):
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind=kind, outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2559,7 +2560,7 @@ def test_send_callback_omits_stage_segment_on_the_happy_path(kind):
 
 def test_send_callback_renders_stage_diagnostic_and_report_flag():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="build", outcome="failure",
         summary="unused", report_path="/report.md", stage="runtime",
         diagnostic="APIError 403 budget exceeded", contract_status="invalid",
@@ -2573,7 +2574,7 @@ def test_send_callback_renders_stage_diagnostic_and_report_flag():
 
 def test_send_callback_renders_no_report_literal_and_ledger_pending():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="build", outcome="failure", summary="unused",
         report_path=None, stage="worker", diagnostic="worker interrupted by SIGTERM",
         ledger_pending=True,
@@ -2588,7 +2589,7 @@ def test_send_callback_renders_no_report_literal_and_ledger_pending():
 def test_send_callback_never_flags_report_status_on_ok_cancelled_or_interrupted():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
     for status in ("ok", "cancelled", "interrupted"):
-        jaxflow._send_callback(
+        jaxflow_workerkit._send_callback(
             manifest, run=_forbidden_tmux, kind="build", outcome="x", summary="unused",
             report_path=None, contract_status=status,
         )
@@ -2600,7 +2601,7 @@ def test_send_callback_claude_skips_line_for_noncanonical_session(capsys):
     manifest = dict(
         run_id="aaaabbbbcccc", caller="claude", caller_session="not-a-uuid",
     )
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2620,7 +2621,7 @@ def test_send_callback_claude_rejects_unsafe_run_id(capsys, bad_run_id):
     manifest = dict(
         run_id=bad_run_id, caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID,
     )
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2648,7 +2649,7 @@ def test_send_callback_publish_failure_does_not_affect_result(monkeypatch, capsy
     # `_send_callback` itself never returns a result -- this proves it does not raise,
     # which is what a worker relies on (its own `worker_outcome` is set BEFORE this
     # call, per every one of the 6 real call sites read in Task 1's investigation).
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="spec", outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2669,7 +2670,7 @@ def test_send_callback_codex_path_unchanged_with_no_pane_fields(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", queue)
     manifest = dict(run_id="aaaabbbbcccc", caller="codex", caller_session=_CAPTURED_THREAD)
-    jaxflow._send_callback(
+    jaxflow_workerkit._send_callback(
         manifest, run=_forbidden_tmux, kind="build", outcome="success",
         summary="done", report_path="/report.md",
     )
@@ -2835,12 +2836,12 @@ def test_build_review_tally_reports_repeated_and_new_findings():
             (n, p): (0.89 if "misleading empty-file" in new_findings[n] else 0.1)
             for n in new_ids for p in prev_ids
         }
-    tally = jaxflow.build_review_tally(new_text, prev_text, noul_batch=noul_batch)
+    tally = jaxflow_workerkit.build_review_tally(new_text, prev_text, noul_batch=noul_batch)
     assert tally == "tally: 2 findings — 1 repeated (F2≈prev F1 0.89), 1 new"
 
 
 def test_build_review_tally_all_new_when_previous_report_has_no_findings():
-    tally = jaxflow.build_review_tally(
+    tally = jaxflow_workerkit.build_review_tally(
         "F1. HIGH — something bad\n", "approve, nothing to report\n",
         noul_batch=lambda *a: (_ for _ in ()).throw(AssertionError("no pairs to compare")),
     )
@@ -2848,19 +2849,19 @@ def test_build_review_tally_all_new_when_previous_report_has_no_findings():
 
 
 def test_build_review_tally_none_when_new_report_has_no_findings():
-    assert jaxflow.build_review_tally("approve\n", "F1. HIGH — x\n", noul_batch=_all_pairs_noul(1.0)) is None
+    assert jaxflow_workerkit.build_review_tally("approve\n", "F1. HIGH — x\n", noul_batch=_all_pairs_noul(1.0)) is None
 
 
 def test_build_review_tally_none_on_jev_error():
     def raising(*_a):
         raise RuntimeError("jev down")
-    assert jaxflow.build_review_tally("F1. HIGH — x\n", "F1. HIGH — y\n", noul_batch=raising) is None
+    assert jaxflow_workerkit.build_review_tally("F1. HIGH — x\n", "F1. HIGH — y\n", noul_batch=raising) is None
 
 
 def test_build_review_tally_threshold_is_inclusive_at_0_3():
-    at_threshold = jaxflow.build_review_tally("F1. HIGH — x\n", "F1. HIGH — y\n", noul_batch=_all_pairs_noul(0.3))
+    at_threshold = jaxflow_workerkit.build_review_tally("F1. HIGH — x\n", "F1. HIGH — y\n", noul_batch=_all_pairs_noul(0.3))
     assert at_threshold == "tally: 1 findings — 1 repeated (F1≈prev F1 0.30), 0 new"
-    below_threshold = jaxflow.build_review_tally("F1. HIGH — x\n", "F1. HIGH — y\n", noul_batch=_all_pairs_noul(0.29))
+    below_threshold = jaxflow_workerkit.build_review_tally("F1. HIGH — x\n", "F1. HIGH — y\n", noul_batch=_all_pairs_noul(0.29))
     assert below_threshold == "tally: 1 findings — 0 repeated, 1 new"
 
 
@@ -2874,7 +2875,7 @@ def test_build_review_tally_makes_exactly_one_batched_call_for_all_pairs():
     def noul_batch(new_ids, new_findings, prev_ids, prev_findings):
         calls.append((tuple(new_ids), tuple(prev_ids)))
         return {(n, p): 0.0 for n in new_ids for p in prev_ids}
-    jaxflow.build_review_tally(new_text, prev_text, noul_batch=noul_batch)
+    jaxflow_workerkit.build_review_tally(new_text, prev_text, noul_batch=noul_batch)
     assert len(calls) == 1
     assert calls[0] == (("F1", "F2", "F3"), ("F1", "F2"))
 
@@ -2884,8 +2885,8 @@ def test_build_review_tally_skips_when_pairs_exceed_the_cap():
     # the tally rather than risk an oversized batch (worst case must stay 1 call).
     new_text = "".join(f"F{i}. HIGH — bug {i}\n" for i in range(1, 12))  # 11 new
     prev_text = "".join(f"F{i}. HIGH — old bug {i}\n" for i in range(1, 11))  # 10 previous
-    assert 11 * 10 > jaxflow._TALLY_MAX_PAIRS
-    tally = jaxflow.build_review_tally(
+    assert 11 * 10 > jaxflow_workerkit._TALLY_MAX_PAIRS
+    tally = jaxflow_workerkit.build_review_tally(
         new_text, prev_text, noul_batch=lambda *a: (_ for _ in ()).throw(AssertionError("must not call Jev")),
     )
     assert tally is None
@@ -2895,7 +2896,7 @@ def test_build_review_tally_caps_the_rendered_line_to_300_chars_dropping_trailin
     # Cold review F3: ~20 repeated findings render past the validator's 300-char limit.
     new_text = "".join(f"F{i}. HIGH — bug variant {i} in the writer\n" for i in range(1, 21))
     prev_text = "F1. HIGH — original bug in the writer\n"
-    tally = jaxflow.build_review_tally(new_text, prev_text, noul_batch=_all_pairs_noul(0.9))
+    tally = jaxflow_workerkit.build_review_tally(new_text, prev_text, noul_batch=_all_pairs_noul(0.9))
     assert tally is not None
     assert len(tally) <= 300
     assert tally.startswith("tally: 20 findings — 20 repeated")
@@ -2918,7 +2919,7 @@ def test_build_review_tally_omits_the_line_with_zero_jev_calls_when_classifier_i
         return {("F1", "F1"): 0.9}
     new_text = "F1. HIGH — a\n"
     prev_text = "F1. HIGH — a\n"
-    assert jaxflow.build_review_tally(new_text, prev_text, noul_batch=counting_noul) is None
+    assert jaxflow_workerkit.build_review_tally(new_text, prev_text, noul_batch=counting_noul) is None
     assert calls == []
 
 
@@ -2932,7 +2933,7 @@ def test_previous_ok_review_finds_the_most_recent_matching_ok_round():
         _insert(con, "d2", "demo", "reviewer", "run-started", {"kind": "diff", "target": "feat/x"}, ts="2")
         _insert(con, "d2", "demo", "reviewer", "run-finished", {"contract_status": "invalid"}, ts="2")
         _insert(con, "d3", "demo", "reviewer", "run-started", {"kind": "diff", "target": "feat/x"}, ts="3")
-        assert jaxflow._previous_ok_review(con, "demo", "diff", "feat/x", "d3") == "d1"
+        assert jaxflow_workerkit._previous_ok_review(con, "demo", "diff", "feat/x", "d3") == "d1"
         con.close()
 
 
@@ -2943,12 +2944,12 @@ def test_previous_ok_review_ignores_other_kind_target_project_or_unfinished():
         con.row_factory = sqlite3.Row
         _insert(con, "s1", "demo", "reviewer", "run-started", {"kind": "spec", "target": "/a.md"}, ts="1")
         _insert(con, "s1", "demo", "reviewer", "run-finished", {"contract_status": "ok"}, ts="1")
-        assert jaxflow._previous_ok_review(con, "demo", "plan", "/a.md", "s2") is None
-        assert jaxflow._previous_ok_review(con, "demo", "spec", "/other.md", "s2") is None
-        assert jaxflow._previous_ok_review(con, "other-project", "spec", "/a.md", "s2") is None
+        assert jaxflow_workerkit._previous_ok_review(con, "demo", "plan", "/a.md", "s2") is None
+        assert jaxflow_workerkit._previous_ok_review(con, "demo", "spec", "/other.md", "s2") is None
+        assert jaxflow_workerkit._previous_ok_review(con, "other-project", "spec", "/a.md", "s2") is None
         _insert(con, "s3", "demo", "reviewer", "run-started", {"kind": "spec", "target": "/a.md"}, ts="2")
         # no run-finished row for s3 at all -- an in-flight round is never "previous".
-        assert jaxflow._previous_ok_review(con, "demo", "spec", "/a.md", "s4") == "s1"
+        assert jaxflow_workerkit._previous_ok_review(con, "demo", "spec", "/a.md", "s4") == "s1"
         con.close()
 
 
@@ -2962,8 +2963,8 @@ def test_review_round_tally_reads_the_previous_report_off_disk(monkeypatch, tmp_
     _insert(con, "aaaaaaaaaaaa", "demo", "reviewer", "run-started", {"kind": "diff", "target": "feat/x"}, ts="1")
     _insert(con, "aaaaaaaaaaaa", "demo", "reviewer", "run-finished", {"contract_status": "ok"}, ts="1")
     con.close()
-    monkeypatch.setattr(jaxflow, "_same_problem_noul_batch", _all_pairs_noul(0.9))
-    tally = jaxflow._review_round_tally(
+    monkeypatch.setattr(jaxflow_workerkit, "_same_problem_noul_batch", _all_pairs_noul(0.9))
+    tally = jaxflow_workerkit._review_round_tally(
         repo, "demo", "diff", "feat/x", "bbbbbbbbbbbb", "F1. HIGH — old bug reworded\n", db_path=db,
     )
     assert tally == "tally: 1 findings — 1 repeated (F1≈prev F1 0.90), 0 new"
@@ -2972,13 +2973,13 @@ def test_review_round_tally_reads_the_previous_report_off_disk(monkeypatch, tmp_
 def test_review_round_tally_none_without_a_previous_round(tmp_path):
     db = tmp_path / "jaxos.db"
     _fresh_db(db).close()
-    assert jaxflow._review_round_tally(
+    assert jaxflow_workerkit._review_round_tally(
         tmp_path, "demo", "diff", "feat/x", "bbbbbbbbbbbb", "F1. HIGH — x\n", db_path=db,
     ) is None
 
 
 def test_review_round_tally_none_when_db_missing(tmp_path):
-    assert jaxflow._review_round_tally(
+    assert jaxflow_workerkit._review_round_tally(
         tmp_path, "demo", "diff", "feat/x", "bbbbbbbbbbbb", "F1. HIGH — x\n",
         db_path=tmp_path / "does-not-exist.db",
     ) is None
@@ -3008,7 +3009,7 @@ def test_worker_doc_review_ok_row_gets_a_tally_against_the_previous_ok_round(mon
         _insert(con, "1111aaaa2222", "demo", "reviewer", "run-finished", {"contract_status": "ok"}, ts="1")
         con.close()
         monkeypatch.setattr(jr, "DB_PATH", db)
-        monkeypatch.setattr(jaxflow, "_same_problem_noul_batch", _all_pairs_noul(0.9))
+        monkeypatch.setattr(jaxflow_workerkit, "_same_problem_noul_batch", _all_pairs_noul(0.9))
 
         events = []
         code = jaxflow.run_worker(
@@ -8902,7 +8903,7 @@ def test_write_verify_tests_file_redacts_secrets_in_command_and_output():
         path = worktree / "run.tests.txt"
         verify_cmd = 'echo "Authorization: Bearer sekret-tok-999"'
         result = _run_real(["/bin/sh", "-c", verify_cmd], raw)
-        jaxflow._write_verify_tests_file(path, [(verify_cmd, result)], worktree=worktree)
+        jaxflow_workerkit._write_verify_tests_file(path, [(verify_cmd, result)], worktree=worktree)
         text = path.read_text(encoding="utf-8")
         assert "sekret-tok-999" not in text
         assert "[REDACTED]" in text
@@ -8920,7 +8921,7 @@ def test_write_verify_tests_file_writes_one_frame_per_command_test_then_build():
             ("pnpm test", CompletedProcess(args=[], returncode=1, stdout="test out\n", stderr="")),
             ("pnpm build", CompletedProcess(args=[], returncode=0, stdout="build out\n", stderr="")),
         ]
-        assert jaxflow._write_verify_tests_file(path, frames, worktree=worktree) is True
+        assert jaxflow_workerkit._write_verify_tests_file(path, frames, worktree=worktree) is True
         assert path.read_text(encoding="utf-8") == (
             "COMMAND: pnpm test\ntest out\nEXIT: 1\n"
             "COMMAND: pnpm build\nbuild out\nEXIT: 0\n"
@@ -8935,7 +8936,7 @@ def test_write_verify_tests_file_single_frame_is_byte_identical_to_the_old_forma
         worktree = Path(raw).resolve()
         path = worktree / "out.tests.txt"
         result = CompletedProcess(args=[], returncode=0, stdout="hello\n", stderr="")
-        assert jaxflow._write_verify_tests_file(path, [("true", result)], worktree=worktree) is True
+        assert jaxflow_workerkit._write_verify_tests_file(path, [("true", result)], worktree=worktree) is True
         assert path.read_text(encoding="utf-8") == "COMMAND: true\nhello\nEXIT: 0\n"
 
 
@@ -8948,7 +8949,7 @@ def test_run_verify_commands_always_runs_the_build_even_when_the_test_fails():
         calls.append(argv[-1])
         return CompletedProcess(args=argv, returncode=1 if argv[-1] == "T" else 0, stdout="", stderr="")
 
-    frames = jaxflow._run_verify_commands(fake_run, Path("/tmp"), "T", "B")
+    frames = jaxflow_workerkit._run_verify_commands(fake_run, Path("/tmp"), "T", "B")
     assert calls == ["T", "B"]
     assert [c for c, _ in frames] == ["T", "B"]
     assert [r.returncode for _, r in frames] == [1, 0]
@@ -8961,7 +8962,7 @@ def test_run_verify_commands_runs_only_the_test_when_there_is_no_build_command()
         calls.append(argv[-1])
         return CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
-    frames = jaxflow._run_verify_commands(fake_run, Path("/tmp"), "T", None)
+    frames = jaxflow_workerkit._run_verify_commands(fake_run, Path("/tmp"), "T", None)
     assert calls == ["T"]
     assert len(frames) == 1
 
@@ -9493,7 +9494,7 @@ def test_control_owner_separate_git_dir_main_and_linked_worktree():
         worktree = _init_worktree(main, "feat/x")
         assert jaxflow_common._control_owner(main, _run_real, allow_root) == (main.resolve(), True)
         assert jaxflow_common._control_owner(worktree, _run_real, allow_root) == (worktree.resolve(), False)
-        assert jaxflow._control_repo_of(worktree, _run_real, allow_root) == worktree.resolve()
+        assert jaxflow_workerkit._control_repo_of(worktree, _run_real, allow_root) == worktree.resolve()
 
 
 def test_builder_read_roots_separate_git_dir_main_resolves_to_the_checkout():
@@ -12287,7 +12288,7 @@ def test_worker_diff_review_prompt_embeds_diff_text_and_grammar_for_both_runtime
             )
             assert code == 0, runtime
             prompt = captured["stdin_bytes"].decode("utf-8")
-            assert prompt.startswith(jaxflow.REVIEWER_PROMPT_PREAMBLE), runtime
+            assert prompt.startswith(jaxflow_workerkit.REVIEWER_PROMPT_PREAMBLE), runtime
             assert f"diff: {base_sha}..{head_sha}" in prompt, runtime
             assert f"  test-output: {tests_path}" in prompt, runtime
             assert "CHANGED-MARKER-TEXT" in prompt, runtime  # the embedded diff text
@@ -12708,11 +12709,11 @@ def test_parse_threat_model_stops_at_the_next_heading():
 
 
 def test_threat_model_line_exact_text():
-    assert jaxflow.threat_model_line("internal-single-user") == (
+    assert jaxflow_workerkit.threat_model_line("internal-single-user") == (
         "threat-model: internal-single-user — hostile local writer out of scope; "
         "traversal, symlink escape and secrets in scope."
     )
-    assert jaxflow.threat_model_line("public-app") == (
+    assert jaxflow_workerkit.threat_model_line("public-app") == (
         "threat-model: public-app — untrusted users reach this app; full OWASP scope."
     )
 
@@ -12817,7 +12818,7 @@ def test_worker_doc_review_handoff_threat_model_line_before_focus():
         )
         assert code == 0
         prompt = captured["stdin_bytes"].decode("utf-8")
-        threat_line = jaxflow.threat_model_line("internal-single-user")
+        threat_line = jaxflow_workerkit.threat_model_line("internal-single-user")
         assert threat_line in prompt
         assert "--focus: extra scrutiny" in prompt
         assert prompt.index(threat_line) < prompt.index("--focus: extra scrutiny")
@@ -12859,7 +12860,7 @@ def test_worker_diff_review_handoff_threat_model_line_before_focus():
             focus="extra scrutiny", threat_model="public-app",
         )
         prompt = _run_diff_worker_and_capture_prompt(manifest_path, worktree, root)
-        threat_line = jaxflow.threat_model_line("public-app")
+        threat_line = jaxflow_workerkit.threat_model_line("public-app")
         assert threat_line in prompt
         assert "--focus: extra scrutiny" in prompt
         assert prompt.index(threat_line) < prompt.index("--focus: extra scrutiny")
@@ -16294,7 +16295,7 @@ def test_main_routes_merge_and_maps_a_refusal_to_exit_2(monkeypatch, capsys):
 def test_open_child_log_creates_the_file_mode_0600_before_anything_is_written():
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "runs" / "r1" / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         try:
             assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o600
             assert log_path.stat().st_size == 0
@@ -16305,40 +16306,40 @@ def test_open_child_log_creates_the_file_mode_0600_before_anything_is_written():
 def test_open_child_log_refuses_to_reuse_an_existing_file():
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "runs" / "r1" / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         os.close(fd)
         with pytest.raises(FileExistsError):
-            jaxflow._open_child_log(log_path)
+            jaxflow_workerkit._open_child_log(log_path)
 
 
 def test_capture_child_output_writes_head_marker_and_tail_when_over_cap():
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         # head_cap=10, tail_cap=5: 20 raw bytes total, 5 over the 15-byte cap.
         stream = io.BytesIO(b"0123456789abcdefghij")
-        jaxflow._capture_child_output(stream, fd, head_cap=10, tail_cap=5)
-        jaxflow._finalize_child_log(fd, log_path)
+        jaxflow_workerkit._capture_child_output(stream, fd, head_cap=10, tail_cap=5)
+        jaxflow_workerkit._finalize_child_log(fd, log_path)
         assert log_path.read_bytes() == b"0123456789[jaxflow: 5 bytes omitted]\nfghij"
 
 
 def test_capture_child_output_boundary_exact_cap_has_no_marker():
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         stream = io.BytesIO(b"0123456789ABCDE")  # exactly head(10) + tail(5)
-        jaxflow._capture_child_output(stream, fd, head_cap=10, tail_cap=5)
-        jaxflow._finalize_child_log(fd, log_path)
+        jaxflow_workerkit._capture_child_output(stream, fd, head_cap=10, tail_cap=5)
+        jaxflow_workerkit._finalize_child_log(fd, log_path)
         assert log_path.read_bytes() == b"0123456789ABCDE"
 
 
 def test_capture_child_output_boundary_one_byte_over_marks_n_equal_1():
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         stream = io.BytesIO(b"0123456789ABCDEF")  # head(10) + tail(6): one byte over
-        jaxflow._capture_child_output(stream, fd, head_cap=10, tail_cap=5)
-        jaxflow._finalize_child_log(fd, log_path)
+        jaxflow_workerkit._capture_child_output(stream, fd, head_cap=10, tail_cap=5)
+        jaxflow_workerkit._finalize_child_log(fd, log_path)
         assert log_path.read_bytes() == b"0123456789[jaxflow: 1 bytes omitted]\nBCDEF"
 
 
@@ -16347,20 +16348,20 @@ def test_capture_child_output_tolerates_a_none_stream():
     # no stderr wired at all) may hand back `None` for the other stream.
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "child.log"
-        fd = jaxflow._open_child_log(log_path)
-        jaxflow._capture_child_output(None, fd)
-        jaxflow._finalize_child_log(fd, log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
+        jaxflow_workerkit._capture_child_output(None, fd)
+        jaxflow_workerkit._finalize_child_log(fd, log_path)
         assert log_path.read_bytes() == b""
 
 
 def test_finalize_child_log_redacts_secret_shaped_text_and_keeps_surrounding_bytes():
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         secret = b"Authorization: Bearer sk-abcdefghijklmnopqrstuvwx0123456789ABCDEF\n"
         stream = io.BytesIO(b"before\n" + secret + b"after\n")
-        jaxflow._capture_child_output(stream, fd)
-        text = jaxflow._finalize_child_log(fd, log_path)
+        jaxflow_workerkit._capture_child_output(stream, fd)
+        text = jaxflow_workerkit._finalize_child_log(fd, log_path)
         assert "sk-abcdefghijklmnopqrstuvwx0123456789ABCDEF" not in text
         assert "before\n" in text and "after\n" in text
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
@@ -16369,10 +16370,10 @@ def test_finalize_child_log_redacts_secret_shaped_text_and_keeps_surrounding_byt
 def test_finalize_child_log_is_a_noop_rewrite_when_nothing_is_secret_shaped():
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         stream = io.BytesIO(b"nothing secret here\n")
-        jaxflow._capture_child_output(stream, fd)
-        text = jaxflow._finalize_child_log(fd, log_path)
+        jaxflow_workerkit._capture_child_output(stream, fd)
+        text = jaxflow_workerkit._finalize_child_log(fd, log_path)
         assert text == "nothing secret here\n"
         assert log_path.read_bytes() == b"nothing secret here\n"
 
@@ -16383,7 +16384,7 @@ def test_finalize_child_log_is_lossless_for_non_secret_bytes_crlf_and_invalid_ut
     # promises to preserve. Only the secret-shaped substring may differ after finalize.
     with TemporaryDirectory() as raw:
         log_path = Path(raw) / "child.log"
-        fd = jaxflow._open_child_log(log_path)
+        fd = jaxflow_workerkit._open_child_log(log_path)
         secret = b"Authorization: Bearer sk-abcdefghijklmnopqrstuvwx0123456789ABCDEF"
         raw_bytes = (
             b"line one\r\n"
@@ -16392,8 +16393,8 @@ def test_finalize_child_log_is_lossless_for_non_secret_bytes_crlf_and_invalid_ut
             b"end\r\n"
         )
         stream = io.BytesIO(raw_bytes)
-        jaxflow._capture_child_output(stream, fd)
-        jaxflow._finalize_child_log(fd, log_path)
+        jaxflow_workerkit._capture_child_output(stream, fd)
+        jaxflow_workerkit._finalize_child_log(fd, log_path)
         result = log_path.read_bytes()
         assert b"sk-abcdefghijklmnopqrstuvwx0123456789ABCDEF" not in result
         expected = raw_bytes.replace(
@@ -16482,11 +16483,11 @@ def test_worker_builder_call_order_is_open_then_popen_then_capture_then_wait_the
     # regression would break.
     calls = []
     real_open, real_capture, real_finalize = (
-        jaxflow._open_child_log, jaxflow._capture_child_output, jaxflow._finalize_child_log,
+        jaxflow_workerkit._open_child_log, jaxflow_workerkit._capture_child_output, jaxflow_workerkit._finalize_child_log,
     )
-    monkeypatch.setattr(jaxflow, "_open_child_log", lambda p: (calls.append("open"), real_open(p))[1])
-    monkeypatch.setattr(jaxflow, "_capture_child_output", lambda s, f, **kw: (calls.append("capture"), real_capture(s, f, **kw))[1])
-    monkeypatch.setattr(jaxflow, "_finalize_child_log", lambda f, p: (calls.append("finalize"), real_finalize(f, p))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_open_child_log", lambda p: (calls.append("open"), real_open(p))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_capture_child_output", lambda s, f, **kw: (calls.append("capture"), real_capture(s, f, **kw))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_finalize_child_log", lambda f, p: (calls.append("finalize"), real_finalize(f, p))[1])
 
     class RecordingPopen(FakeBuilderPopen):
         def __init__(self, *args, **kwargs):
@@ -16764,11 +16765,11 @@ def test_worker_diff_review_call_order_is_open_then_popen_then_capture_then_wait
     # risk itself, not per-site ordering (see that test's own comment).
     calls = []
     real_open, real_capture, real_finalize = (
-        jaxflow._open_child_log, jaxflow._capture_child_output, jaxflow._finalize_child_log,
+        jaxflow_workerkit._open_child_log, jaxflow_workerkit._capture_child_output, jaxflow_workerkit._finalize_child_log,
     )
-    monkeypatch.setattr(jaxflow, "_open_child_log", lambda p: (calls.append("open"), real_open(p))[1])
-    monkeypatch.setattr(jaxflow, "_capture_child_output", lambda s, f, **kw: (calls.append("capture"), real_capture(s, f, **kw))[1])
-    monkeypatch.setattr(jaxflow, "_finalize_child_log", lambda f, p: (calls.append("finalize"), real_finalize(f, p))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_open_child_log", lambda p: (calls.append("open"), real_open(p))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_capture_child_output", lambda s, f, **kw: (calls.append("capture"), real_capture(s, f, **kw))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_finalize_child_log", lambda f, p: (calls.append("finalize"), real_finalize(f, p))[1])
 
     class RecordingPopen(FakePopen):
         def __init__(self, *args, **kwargs):
@@ -16802,11 +16803,11 @@ def test_worker_doc_review_call_order_is_open_then_popen_then_capture_then_wait_
     # Same wiring assertion, third launch site (cold review 786debd43314 F4).
     calls = []
     real_open, real_capture, real_finalize = (
-        jaxflow._open_child_log, jaxflow._capture_child_output, jaxflow._finalize_child_log,
+        jaxflow_workerkit._open_child_log, jaxflow_workerkit._capture_child_output, jaxflow_workerkit._finalize_child_log,
     )
-    monkeypatch.setattr(jaxflow, "_open_child_log", lambda p: (calls.append("open"), real_open(p))[1])
-    monkeypatch.setattr(jaxflow, "_capture_child_output", lambda s, f, **kw: (calls.append("capture"), real_capture(s, f, **kw))[1])
-    monkeypatch.setattr(jaxflow, "_finalize_child_log", lambda f, p: (calls.append("finalize"), real_finalize(f, p))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_open_child_log", lambda p: (calls.append("open"), real_open(p))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_capture_child_output", lambda s, f, **kw: (calls.append("capture"), real_capture(s, f, **kw))[1])
+    monkeypatch.setattr(jaxflow_workerkit, "_finalize_child_log", lambda f, p: (calls.append("finalize"), real_finalize(f, p))[1])
 
     class RecordingPopen(FakePopen):
         def __init__(self, *args, **kwargs):
@@ -19228,11 +19229,11 @@ def test_cmd_result_still_prints_the_fallback_line_when_the_report_is_missing(ca
 
 def test_send_callback_appends_the_fallback_suffix_as_the_last_segment():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID, fallback="codex off")
-    jaxflow._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x", report_path="/report.md")
+    jaxflow_workerkit._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x", report_path="/report.md")
     line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
         "[JAXFLOW] spec aaaabbbbcccc finished — approve — /report.md (fallback: codex off)\n")
-    jaxflow._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x",
+    jaxflow_workerkit._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x",
                            report_path="/report.md", ledger_pending=True)
     assert line_path.read_text(encoding="utf-8") == (
         "[JAXFLOW] spec aaaabbbbcccc finished — approve — /report.md · ledger pending (fallback: codex off)\n")
