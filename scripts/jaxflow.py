@@ -7261,21 +7261,7 @@ def _add_merge_parser(sub):
     _add_from(merge, _FROM_HELP_MERGE)
 
 
-def parse_args(argv):
-    parser = argparse.ArgumentParser(
-        prog="jaxflow",
-        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
-                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    _add_review_parser(sub)
-    _add_build_parser(sub)
-
-    _add_pr_parser(sub)
-    _add_release_parser(sub)
-    _add_merge_parser(sub)
-
+def _add_run_query_parsers(sub):
     status = sub.add_parser(
         "status",
         help="Print a run's current state.",
@@ -7299,6 +7285,9 @@ def parse_args(argv):
     )
     cancel.add_argument("run_id", help=_RUN_ID_HELP)
     sub.add_parser("doctor", help="Read-only health check: what is and isn't wired up.")
+
+
+def _add_gc_loop_parsers(sub):
     gc = sub.add_parser(
         "gc",
         help="Remove stale jaxflow-reserved worktrees.",
@@ -7320,6 +7309,8 @@ def parse_args(argv):
     )
     loop.add_argument("prefix", help="Normalized to at least 4 chars; e.g. moa-474.")
 
+
+def _add_mission_parser(sub):
     mission = sub.add_parser(
         "mission",
         help="Track Rafa's own multi-phase objective (opt-in, cross-project).",
@@ -7345,6 +7336,18 @@ def parse_args(argv):
     mission_sub.add_parser("cancel", help="Finish the active mission as cancelled.")
     mission_sub.add_parser("show", help="Print the active mission, or 'no active mission'.")
 
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="jaxflow",
+        description="Single dispatch path for jaxflow reviews, builds, and merges. Never "
+                     "call the reviewer/builder runtime (codex, claude, opencode) directly.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    for add in (_add_review_parser, _add_build_parser, _add_pr_parser, _add_release_parser,
+                _add_merge_parser, _add_run_query_parsers, _add_gc_loop_parsers,
+                _add_mission_parser):
+        add(sub)
     return parser.parse_args(argv)
 
 
