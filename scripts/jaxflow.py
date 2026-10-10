@@ -1154,6 +1154,19 @@ class HubRejected(RuntimeError):
         super().__init__(f"{status} {error}" if isinstance(error, str) else str(status))
 
 
+def _refuse(code, hint=None):
+    """Build the `Refusal` for `code` with its optional `.hint` (the second stderr line
+    `main` prints). Callers write `raise _refuse(...)`, so the exception type, `.code`,
+    `.hint` and the traceback frame stay what the inline `exc = Refusal(code);
+    exc.hint = ...; raise exc` form produced. `.hint` is set only when given (never None),
+    exactly like the inline form where a refusal without a hint has no attribute at all.
+    `Refusal` itself stays in `jax_init.py`."""
+    exc = Refusal(code)
+    if hint is not None:
+        exc.hint = hint
+    return exc
+
+
 def _hub_refusal(exc):
     if isinstance(exc, HubRejected):
         return Refusal(jr._bound(f"hub-rejected: {exc}", 200))
