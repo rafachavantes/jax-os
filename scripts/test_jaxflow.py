@@ -24,6 +24,7 @@ import pytest
 
 import general_settings
 import jaxflow
+import jaxflow_review
 import jaxflow_merge
 import jaxflow_workerkit
 import jaxflow_common
@@ -432,7 +433,7 @@ def test_dispatch_proceeds_when_caller_session_present(monkeypatch):
             events.append(event)
             return {"ok": True}
 
-        jaxflow.dispatch_review(
+        jaxflow_review.dispatch_review(
             _review_args(spec=str(target), from_caller="codex"),
             run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CODEX_THREAD_ID": "thread-1"}, now=_fixed_now, allowlist_root=allow_root,
@@ -507,7 +508,7 @@ def test_dispatch_derives_repo_from_toplevel_when_cwd_is_nested(monkeypatch):
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now, allowlist_root=allow_root,
         )
@@ -738,14 +739,14 @@ def test_dispatch_writes_doc_review_test_marker_before_dispatch(monkeypatch):
         monkeypatch.chdir(root)
         fake = FakeTmux()
 
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root,
         )
         tests_file = root / ".local" / "reports" / f"{run_id}.tests.txt"
-        assert tests_file.read_text(encoding="utf-8") == jaxflow.DOC_REVIEW_TEST_MARKER
-        assert jaxflow.DOC_REVIEW_TEST_MARKER == "No test/build command was required by this handoff.\n"
+        assert tests_file.read_text(encoding="utf-8") == jaxflow_review.DOC_REVIEW_TEST_MARKER
+        assert jaxflow_review.DOC_REVIEW_TEST_MARKER == "No test/build command was required by this handoff.\n"
 
 
 def test_dispatch_hub_unreachable_removes_manifest_and_skips_tmux(monkeypatch):
@@ -761,7 +762,7 @@ def test_dispatch_hub_unreachable_removes_manifest_and_skips_tmux(monkeypatch):
             raise RuntimeError("event post failed")
 
         try:
-            jaxflow.dispatch_review(
+            jaxflow_review.dispatch_review(
                 _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root), post=post,
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now, allowlist_root=allow_root,
             )
@@ -791,7 +792,7 @@ def test_dispatch_tmux_failed_posts_cancelled_row_first(monkeypatch):
             return {"ok": True}
 
         try:
-            jaxflow.dispatch_review(
+            jaxflow_review.dispatch_review(
                 _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root), post=post,
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now, allowlist_root=allow_root,
             )
@@ -824,7 +825,7 @@ def test_dispatch_caller_pane_present_reaches_manifest_and_payload(monkeypatch):
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(plan=str(target)), run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CODEX_THREAD_ID": "1", "TMUX_PANE": "%3"}, now=_fixed_now, allowlist_root=allow_root,
         )
@@ -853,7 +854,7 @@ def test_dispatch_phase_defaults_to_stem_and_overrides_win(monkeypatch):
             events.append(event)
             return {"ok": True}
 
-        jaxflow.dispatch_review(
+        jaxflow_review.dispatch_review(
             _review_args(spec=str(target), model="custom-model", effort="high"),
             run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now, allowlist_root=allow_root,
@@ -872,7 +873,7 @@ def test_dispatch_writes_pointer_for_claude_caller(monkeypatch):
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -955,7 +956,7 @@ def test_dispatch_writes_pointer_for_diff_review(monkeypatch):
         con.close()
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -974,7 +975,7 @@ def test_dispatch_no_pointer_on_no_callback(monkeypatch):
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        jaxflow.dispatch_review(
+        jaxflow_review.dispatch_review(
             _review_args(spec=str(target), no_callback=True),
             run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -991,7 +992,7 @@ def test_dispatch_no_pointer_for_codex_caller(monkeypatch):
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        jaxflow.dispatch_review(
+        jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CODEX_THREAD_ID": _CAPTURED_THREAD},
             now=_fixed_now, allowlist_root=allow_root,
@@ -1007,7 +1008,7 @@ def test_dispatch_no_pointer_for_noncanonical_session(monkeypatch, capsys):
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "not-a-uuid"},
@@ -1036,7 +1037,7 @@ def test_dispatch_review_writes_no_pointer_on_tmux_failure(monkeypatch):
         fake = FakeTmux()
         fake.new_session_fails = True
         with pytest.raises(ji.Refusal, match="tmux-failed"):
-            jaxflow.dispatch_review(
+            jaxflow_review.dispatch_review(
                 _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1135,7 +1136,7 @@ def test_dispatch_codex_manifest_has_no_pane_incarnation_fields(monkeypatch):
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CODEX_THREAD_ID": _CAPTURED_THREAD, "TMUX_PANE": "%3"},
@@ -1157,7 +1158,7 @@ def test_dispatch_warns_when_hook_missing(monkeypatch, tmp_path, capsys):
         missing = tmp_path / "settings.json"  # never written -- read raises OSError
         monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", missing)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1180,7 +1181,7 @@ def test_dispatch_silent_when_hook_present(monkeypatch, capsys):
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        jaxflow.dispatch_review(
+        jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1201,7 +1202,7 @@ def test_dispatch_warns_when_hook_settings_malformed_json(monkeypatch, tmp_path,
         bad_settings.write_text("{not json", encoding="utf-8")
         monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", bad_settings)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1231,7 +1232,7 @@ def test_dispatch_warns_when_hook_settings_have_a_malformed_shape(monkeypatch, t
         settings_path.write_text(json.dumps(settings), encoding="utf-8")
         monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", settings_path)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1254,7 +1255,7 @@ def test_dispatch_rejects_unsafe_run_id_for_pointer(monkeypatch, capsys, unsafe_
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1300,7 +1301,7 @@ def test_dispatch_warns_when_hook_present_but_not_structurally(monkeypatch, tmp_
         }), encoding="utf-8")
         monkeypatch.setattr(jaxflow_common, "CLAUDE_SETTINGS_PATH", settings_path)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": _TEST_CLAUDE_SESSION_ID},
@@ -1341,7 +1342,7 @@ def test_dispatch_quotes_tmux_command_for_space_and_semicolon_in_repo_path(monke
         monkeypatch.chdir(root)
         fake = FakeTmux()
 
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root,
@@ -3851,7 +3852,7 @@ def test_review_invalid_override_does_not_launch(monkeypatch):
             fake = FakeTmux()
             events = []
             try:
-                jaxflow.dispatch_review(
+                jaxflow_review.dispatch_review(
                     _review_args(spec=str(target), **kwargs),
                     run=_run_with_tmux(fake, real_cwd=root),
                     post=lambda e: events.append(e) or {"ok": True},
@@ -8769,7 +8770,7 @@ def test_external_plan_survives_dispatch_builder_and_diff_launch(monkeypatch):
         _seed_finished_build(con, run_id, root, worktree, verify="true", head_sha=head,
                              plan_path=plan_src)
         con.close()
-        diff_run_id = jaxflow.dispatch_diff_review(
+        diff_run_id = jaxflow_review.dispatch_diff_review(
             _diff_args(run_id), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9642,7 +9643,7 @@ def test_diff_dispatch_on_a_legacy_build_run_without_a_build_key(monkeypatch):
         con.close()
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        jaxflow.dispatch_diff_review(
+        jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9668,7 +9669,7 @@ def test_diff_dispatch_reviews_a_finished_build_whose_report_was_invalid(monkeyp
         con.close()
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        jaxflow.dispatch_diff_review(
+        jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9694,7 +9695,7 @@ def test_diff_review_eligible_on_an_interrupted_builder_row_with_a_real_head_sha
         # Must NOT raise -- no "unknown-run" Refusal with the "finished without a
         # head_sha" hint, since head_sha is real and non-empty regardless of
         # contract_status (dispatch_diff_review's own check only reads head_sha).
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -9720,7 +9721,7 @@ def test_diff_dispatch_reruns_both_commands_and_rewrites_the_evidence(monkeypatc
         stale.parent.mkdir(parents=True, exist_ok=True)
         stale.write_text("COMMAND: STALE\nold\nEXIT: 0\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        jaxflow.dispatch_diff_review(
+        jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9776,7 +9777,7 @@ def test_diff_dispatch_reuses_verify_when_all_conditions_hold(monkeypatch):
         before = tests_path.read_bytes()
         monkeypatch.chdir(root)
         seen = []
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             # F5 fix: the logging runner must be PASSED to dispatch (an unused
             # `logging_run` here previously left `seen` empty, vacuous assertion).
             _diff_args("b1"), run=_run_with_tmux_and_log(FakeTmux(), seen, real_cwd=root),
@@ -9805,7 +9806,7 @@ def test_diff_dispatch_reverify_forces_rerun_even_when_conditions_hold(monkeypat
         tests_path.parent.mkdir(parents=True, exist_ok=True)
         tests_path.write_text("COMMAND: true\n\nEXIT: 0\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", reverify=True), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9831,7 +9832,7 @@ def test_diff_dispatch_dirty_worktree_reruns_verify(monkeypatch):
         tests_path.write_text("COMMAND: true\n\nEXIT: 0\n", encoding="utf-8")
         (worktree / "dirty.txt").write_text("x\n", encoding="utf-8")  # untracked -> dirty
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9861,7 +9862,7 @@ def test_diff_dispatch_head_moved_past_builder_sha_reruns_verify(monkeypatch):
         tests_path.parent.mkdir(parents=True, exist_ok=True)
         tests_path.write_text("COMMAND: true\n\nEXIT: 0\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9884,7 +9885,7 @@ def test_diff_dispatch_missing_tests_file_reruns_verify(monkeypatch):
         con.close()  # no pre-existing .tests.txt at all
         monkeypatch.chdir(root)
         seen = []
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux_and_log(FakeTmux(), seen, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9916,7 +9917,7 @@ def test_diff_dispatch_command_mismatch_only_inside_redacted_token_still_reuses(
         tests_path.parent.mkdir(parents=True, exist_ok=True)
         tests_path.write_text(f"COMMAND: {jaxflow_hook.redact(verify_cmd)}\n\nEXIT: 0\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9944,7 +9945,7 @@ def test_diff_dispatch_empty_evidence_file_reruns_verify(monkeypatch):
         tests_path.write_text("", encoding="utf-8")
         monkeypatch.chdir(root)
         seen = []
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux_and_log(FakeTmux(), seen, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -9973,7 +9974,7 @@ def test_diff_dispatch_one_frame_present_but_two_commands_expected_reruns_verify
         tests_path.write_text("COMMAND: true\n\nEXIT: 0\n", encoding="utf-8")  # only frame 1
         monkeypatch.chdir(root)
         seen = []
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux_and_log(FakeTmux(), seen, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10002,7 +10003,7 @@ def test_diff_dispatch_malformed_frame_without_exit_reruns_verify(monkeypatch):
         tests_path.write_text("COMMAND: true\nno exit line here\n", encoding="utf-8")
         monkeypatch.chdir(root)
         seen = []
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux_and_log(FakeTmux(), seen, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10049,7 +10050,7 @@ def test_guard_no_prior_review_dispatches_unguarded(monkeypatch):
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=head)
         con.close()
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10078,7 +10079,7 @@ def test_guard_no_prior_review_with_full_flag_still_records_override_full(monkey
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=head)
         con.close()
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", full="first review ever, no prior verdict to bypass"),
             run=_run_with_tmux(FakeTmux(), real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -10103,7 +10104,7 @@ def test_guard_filters_by_project_same_branch_other_project_does_not_block(monke
         _seed_diff_review(con, "aaaaaaaaaaa1", root, worktree, verdict="approve", project="other")
         con.close()
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10129,7 +10130,7 @@ def test_guard_running_review_refuses_unconditionally(monkeypatch):
         monkeypatch.chdir(root)
         for extra in ({}, {"full": "an audited reason"}, {"since": "aaaaaaaaaaa0"}):
             try:
-                jaxflow.dispatch_diff_review(
+                jaxflow_review.dispatch_diff_review(
                     _diff_args("b1", **extra), run=_run_with_tmux(fake, real_cwd=root),
                     post=lambda e: {"ok": True},
                     env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -10168,7 +10169,7 @@ def test_guard_approve_blocks_and_full_or_since_bypasses(monkeypatch):
         )
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -10185,7 +10186,7 @@ def test_guard_approve_blocks_and_full_or_since_bypasses(monkeypatch):
             "target": "feat/x", "phase": "PHASE", "builder_run_id": "b1", "prior_review_run_id": "aaaaaaaaaaa1",
         }
 
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", full="planned re-review after an unrelated hotfix"),
             run=_run_with_tmux(FakeTmux(), real_cwd=root), post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -10210,7 +10211,7 @@ def test_guard_approve_with_changes_blocks_same_as_approve(monkeypatch):
         con.close()
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10236,7 +10237,7 @@ def test_guard_latest_invalid_but_earlier_approve_still_applies(monkeypatch):
         con.close()
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10266,7 +10267,7 @@ def test_guard_reject_proceeds_with_or_without_since(monkeypatch):
             encoding="utf-8",
         )
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10275,7 +10276,7 @@ def test_guard_reject_proceeds_with_or_without_since(monkeypatch):
         assert manifest["guard"]["override"] == "none"
         assert manifest["guard"]["prior_verdict"] == "reject"
 
-        run_id2 = jaxflow.dispatch_diff_review(
+        run_id2 = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10297,7 +10298,7 @@ def test_guard_since_and_full_together_is_usage_error(monkeypatch):
         con.close()
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1", full="x"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10313,7 +10314,7 @@ def test_guard_since_empty_string_and_full_together_is_still_usage_error():
     # compares to `None`, not truthiness, and fires before any repo/DB access at all,
     # so no fixture setup is needed here.
     try:
-        jaxflow.dispatch_diff_review(
+        jaxflow_review.dispatch_diff_review(
             _diff_args("b1", since="", full="reason"), run=None, post=None, env={}, now=_fixed_now,
         )
     except ji.Refusal as exc:
@@ -10335,7 +10336,7 @@ def test_guard_full_with_blank_reason_is_usage_error(monkeypatch):
         con.close()
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", full="   "), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10367,7 +10368,7 @@ def test_guard_refusal_log_write_failure_still_raises_the_refusal(monkeypatch):
         monkeypatch.chdir(root)
         try:
             try:
-                jaxflow.dispatch_diff_review(
+                jaxflow_review.dispatch_diff_review(
                     _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
                     post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                     now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10416,7 +10417,7 @@ def test_since_root_only_success_narrows_range_and_records_manifest(monkeypatch)
         con.close()
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=merge_base, head_sha=root_head)
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10447,7 +10448,7 @@ def test_since_delta_node_root_mismatch_but_continuity_holds_still_proceeds(monk
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=merge_base, head_sha=root_head)
         _write_diff_manifest(root, "aaaaaaaaaaa2", base_sha=root_head, head_sha=delta_head, since_review_run_id="aaaaaaaaaaa1")
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", since="aaaaaaaaaaa2"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10473,7 +10474,7 @@ def test_since_non_ancestor_head_refuses(monkeypatch):
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=merge_base, head_sha="f" * 40)
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10503,7 +10504,7 @@ def test_since_root_base_sha_drifted_from_current_merge_base_refuses(monkeypatch
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=stale_merge_base, head_sha=root_head)
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10534,7 +10535,7 @@ def test_since_non_root_continuity_broken_refuses(monkeypatch):
         _write_diff_manifest(root, "aaaaaaaaaaa2", base_sha=stray, head_sha=delta_head, since_review_run_id="aaaaaaaaaaa1")
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa2"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10560,7 +10561,7 @@ def test_since_node_ancestry_broken_refuses(monkeypatch):
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha="f" * 40, head_sha=root_head)
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10586,7 +10587,7 @@ def test_since_missing_intermediate_manifest_refuses(monkeypatch):
         _write_diff_manifest(root, "aaaaaaaaaaa2", base_sha=root_head, head_sha=root_head, since_review_run_id="aaaaaaaaaaa1")
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa2"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10614,7 +10615,7 @@ def test_since_cycle_in_chain_refuses(monkeypatch):
         _write_diff_manifest(root, "aaaaaaaaaaa2", base_sha=root_head, head_sha=root_head, since_review_run_id="aaaaaaaaaaa1")
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10647,7 +10648,7 @@ def test_since_reaches_root_within_bounded_depth(monkeypatch):
                 root, ids[i], base_sha=shas[i], head_sha=shas[i + 1], since_review_run_id=ids[i - 1],
             )
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", since=ids[-1]), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10669,7 +10670,7 @@ def test_since_naming_non_diff_run_refuses(monkeypatch):
         con.close()
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="bbbbbbbbbbbb"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10698,7 +10699,7 @@ def test_since_manifest_kind_mismatch_refuses_since_chain_missing(monkeypatch):
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=root_head, head_sha=root_head, kind="build")
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10724,7 +10725,7 @@ def test_since_naming_non_terminal_prior_refuses(monkeypatch):
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=root_head, head_sha=root_head)
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10750,7 +10751,7 @@ def test_since_naming_other_branch_target_and_lineage_mismatch_refuse(monkeypatc
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=root_head, head_sha=root_head)
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10771,7 +10772,7 @@ def test_since_naming_other_branch_target_and_lineage_mismatch_refuse(monkeypatc
         con2.close()
         _write_diff_manifest(root, "aaaaaaaaaaa2", base_sha=root_head, head_sha=root_head, builder_run_id="b2")
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa2"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10797,7 +10798,7 @@ def test_since_path_traversal_and_symlink_escape_refuse(monkeypatch):
         runs_dir_before = (root / ".local" / "runs")
         existed_before = set(runs_dir_before.iterdir()) if runs_dir_before.is_dir() else set()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="../x"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10823,7 +10824,7 @@ def test_since_path_traversal_and_symlink_escape_refuse(monkeypatch):
         _seed_diff_review(con, escape_id, root, worktree, verdict="approve")
         con.close()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since=escape_id), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10857,7 +10858,7 @@ def test_since_malformed_chain_data_refuses_since_chain_missing_never_crashes(mo
         _write_diff_manifest(root, "aaaaaaaaaaa1", **kwargs)
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10883,7 +10884,7 @@ def test_guard_bypasses_terminal_verdict_only_never_the_running_lock(monkeypatch
         con.close()
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=merge_base, head_sha=root_head)
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", full="approved bypass"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -10898,7 +10899,7 @@ def test_guard_bypasses_terminal_verdict_only_never_the_running_lock(monkeypatch
         con.close()
         for extra in ({"full": "x"}, {"since": "aaaaaaaaaaa1"}):
             try:
-                jaxflow.dispatch_diff_review(
+                jaxflow_review.dispatch_diff_review(
                     _diff_args("b1", **extra), run=_run_with_tmux(fake, real_cwd=root),
                     post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                     now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11089,7 +11090,7 @@ def test_diff_dispatch_refuses_verify_failed_when_only_the_build_command_fails(m
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11128,7 +11129,7 @@ def test_diff_dispatch_refuses_when_the_declared_spec_fragment_heading_is_missin
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11195,7 +11196,7 @@ def test_diff_dispatch_refuses_unknown_run(monkeypatch):
         db = Path(raw) / "jaxos.db"
         _fresh_db(db).close()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("nope"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11239,7 +11240,7 @@ def test_diff_dispatch_refuses_non_build_run_and_unfinished_build(monkeypatch):
             ("b1", "unknown-run", "not finished"),
         ):
             try:
-                jaxflow.dispatch_diff_review(
+                jaxflow_review.dispatch_diff_review(
                     _diff_args(run_id), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                     post=lambda e: {"ok": True},
                     env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -11278,7 +11279,7 @@ def test_diff_dispatch_refuses_mixed_role_run_id_as_unknown_run(monkeypatch):
         })
         con.close()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("mix1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11304,7 +11305,7 @@ def test_diff_dispatch_refuses_missing_worktree(monkeypatch):
         _seed_finished_build(con, "b1", root, allow_root / "demo-feat-x", verify="true")
         con.close()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11351,7 +11352,7 @@ def test_diff_dispatch_ignores_builder_report_path_and_derives_tests_path_from_b
         )
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11378,7 +11379,7 @@ def test_diff_dispatch_verify_failed_refuses_before_any_reviewer_dispatch(monkey
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11421,7 +11422,7 @@ def test_diff_dispatch_ancestor_head_gate_pass_and_reject(monkeypatch):
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
             allowlist_root=allow_root, db_path=db,
@@ -11447,7 +11448,7 @@ def test_diff_dispatch_ancestor_head_gate_pass_and_reject(monkeypatch):
         _seed_finished_build(con2, "b2", root, worktree, verify="true", head_sha="f" * 40)
         con2.close()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b2"), run=_run_with_tmux(fake, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db2,
@@ -11483,7 +11484,7 @@ def test_diff_dispatch_caller_session_missing_restores_preexisting_evidence(monk
         tests_file.write_text(old_evidence, encoding="utf-8")
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1"},  # no CLAUDE_CODE_SESSION_ID
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11525,7 +11526,7 @@ def test_diff_dispatch_refuses_symlinked_evidence_path_before_any_verify_or_read
 
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=run_and_forbid_verify,
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11572,7 +11573,7 @@ def test_diff_dispatch_refuses_when_evidence_write_races_a_symlink_after_verify(
 
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=racing_run,
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11615,7 +11616,7 @@ def test_diff_dispatch_missing_builder_manifest_refuses_before_verify(monkeypatc
         monkeypatch.chdir(root)
         log = []
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux_and_log(FakeTmux(), log, real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11648,7 +11649,7 @@ def test_diff_dispatch_missing_plan_path_in_builder_manifest_refuses_unknown_run
         manifest_path.write_text(json.dumps({"plan_path": None}), encoding="utf-8")
         monkeypatch.chdir(root)
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11683,7 +11684,7 @@ def test_diff_dispatch_handoff_stub_and_manifest_name_plan_before_test_output(mo
 
         monkeypatch.setattr(jr, "preflight", spy_preflight)
 
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11731,7 +11732,7 @@ def test_diff_dispatch_original_plan_flows_into_diff_manifest_without_copies(mon
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=head, plan_path=plan_src)
         con.close()
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11765,7 +11766,7 @@ def test_diff_dispatch_resolves_declared_spec_original_and_refuses_unresolvable_
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=head, plan_path=plan_path)
         con.close()
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -11787,7 +11788,7 @@ def test_diff_dispatch_resolves_declared_spec_original_and_refuses_unresolvable_
         _seed_finished_build(con2, "b2", root, worktree, verify="true", head_sha=head, plan_path=plan_path)
         con2.close()
         try:
-            jaxflow.dispatch_diff_review(
+            jaxflow_review.dispatch_diff_review(
                 _diff_args("b2"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root, db_path=db2,
@@ -12678,35 +12679,35 @@ _NO_THREAT_MODEL_NOTE = "jaxflow: no threat model in AGENTS.md — reviewer gets
 
 
 def test_parse_threat_model_reads_both_known_modes():
-    assert jaxflow.parse_threat_model(_THREAT_MODEL_BLOCK) == "internal-single-user"
+    assert jaxflow_review.parse_threat_model(_THREAT_MODEL_BLOCK) == "internal-single-user"
     public_text = _THREAT_MODEL_BLOCK.replace("internal-single-user", "public-app")
-    assert jaxflow.parse_threat_model(public_text) == "public-app"
+    assert jaxflow_review.parse_threat_model(public_text) == "public-app"
 
 
 def test_parse_threat_model_unknown_mode_is_none():
-    assert jaxflow.parse_threat_model("## Threat model\nmode: something-else\n") is None
+    assert jaxflow_review.parse_threat_model("## Threat model\nmode: something-else\n") is None
 
 
 def test_parse_threat_model_missing_section_is_none():
-    assert jaxflow.parse_threat_model("# AGENTS.md\n\nNo threat model here.\n") is None
-    assert jaxflow.parse_threat_model("") is None
+    assert jaxflow_review.parse_threat_model("# AGENTS.md\n\nNo threat model here.\n") is None
+    assert jaxflow_review.parse_threat_model("") is None
 
 
 def test_parse_threat_model_heading_with_trailing_comment_case_insensitive():
     text = "## THREAT MODEL  <!-- CHOOSE ONE MODE -->\nmode: public-app\n"
-    assert jaxflow.parse_threat_model(text) == "public-app"
+    assert jaxflow_review.parse_threat_model(text) == "public-app"
 
 
 def test_parse_threat_model_mode_line_surrounding_spaces():
     text = "## Threat model\n   mode:    internal-single-user   \n"
-    assert jaxflow.parse_threat_model(text) == "internal-single-user"
+    assert jaxflow_review.parse_threat_model(text) == "internal-single-user"
 
 
 def test_parse_threat_model_stops_at_the_next_heading():
     # A `mode:` line belonging to a LATER section must not be borrowed (same idea as
     # `_resolve_delivery_target`'s Deploy policy block boundary).
     text = "## Threat model\n\n## Another section\nmode: public-app\n"
-    assert jaxflow.parse_threat_model(text) is None
+    assert jaxflow_review.parse_threat_model(text) is None
 
 
 def test_threat_model_line_exact_text():
@@ -12721,17 +12722,17 @@ def test_threat_model_line_exact_text():
 
 def test_threat_model_for_reads_valid_mode_from_agents_md(tmp_path):
     repo = _agents(tmp_path, _THREAT_MODEL_BLOCK)
-    assert jaxflow._threat_model_for(repo) == "internal-single-user"
+    assert jaxflow_review._threat_model_for(repo) == "internal-single-user"
 
 
 def test_threat_model_for_missing_agents_md_prints_note_and_returns_none(tmp_path, capsys):
-    assert jaxflow._threat_model_for(tmp_path) is None
+    assert jaxflow_review._threat_model_for(tmp_path) is None
     assert capsys.readouterr().err.strip() == _NO_THREAT_MODEL_NOTE
 
 
 def test_threat_model_for_no_valid_mode_prints_note_and_returns_none(tmp_path, capsys):
     repo = _agents(tmp_path, "## Threat model\nmode: something-else\n")
-    assert jaxflow._threat_model_for(repo) is None
+    assert jaxflow_review._threat_model_for(repo) is None
     assert capsys.readouterr().err.strip() == _NO_THREAT_MODEL_NOTE
 
 
@@ -12744,7 +12745,7 @@ def test_dispatch_review_manifest_carries_threat_model_from_agents_md(monkeypatc
         (root / "AGENTS.md").write_text(_THREAT_MODEL_BLOCK, encoding="utf-8")
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CODEX_THREAD_ID": "1"},
             now=_fixed_now, allowlist_root=allow_root,
@@ -12761,7 +12762,7 @@ def test_dispatch_review_no_agents_md_manifest_threat_model_none_with_stderr_not
         target = _spec_file(root)
         monkeypatch.chdir(root)
         fake = FakeTmux()
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
             post=lambda e: {"ok": True}, env={"CODEX_THREAD_ID": "1"},
             now=_fixed_now, allowlist_root=allow_root,
@@ -12787,7 +12788,7 @@ def test_dispatch_diff_review_manifest_carries_threat_model_from_agents_md(monke
         tests_path.parent.mkdir(parents=True, exist_ok=True)
         tests_path.write_text("COMMAND: true\n\nEXIT: 0\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
@@ -17556,7 +17557,7 @@ def test_dispatch_diff_review_started_payload_carries_builder_run_id(tmp_path, m
                             from_caller="claude", no_callback=True, focus=None, reverify=False)
     monkeypatch.chdir(root)
     with contextlib.suppress(ji.Refusal):  # a subsequent tmux-launch failure is irrelevant -- post already fired
-        jaxflow.dispatch_diff_review(
+        jaxflow_review.dispatch_diff_review(
             args, run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: events.append(e) or {"ok": True},
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "sess"}, now=_fixed_now,
@@ -17736,7 +17737,7 @@ def test_resolve_caller_accepts_jaxos_from_flag_without_env_markers():
 
 def test_main_accepts_from_jaxos_on_review_build_and_merge(monkeypatch):
     seen = []
-    monkeypatch.setattr(jaxflow, "dispatch_review", lambda args, **kw: seen.append(("review", args.from_caller)) or "r1")
+    monkeypatch.setattr(jaxflow_review, "dispatch_review", lambda args, **kw: seen.append(("review", args.from_caller)) or "r1")
     monkeypatch.setattr(jaxflow, "dispatch_build", lambda args, **kw: seen.append(("build", args.from_caller)) or "b1")
     monkeypatch.setattr(jaxflow_merge, "cmd_merge", lambda args, **kw: seen.append(("merge", args.from_caller)) or jaxflow_common.OK)
     assert jaxflow.main(["review", "--spec", "x.md", "--from", "jaxos"]) == jaxflow_common.OK
@@ -17766,7 +17767,7 @@ def test_jaxos_review_dispatch_forces_no_callback_and_records_caller(monkeypatch
             return {"ok": True}
 
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.dispatch_review(
+            jaxflow_review.dispatch_review(
                 _review_args(spec=str(target), from_caller="jaxos"),
                 run=_run_with_tmux(fake, real_cwd=root), post=post,
                 env={}, now=_fixed_now, allowlist_root=allow_root,
@@ -17775,7 +17776,7 @@ def test_jaxos_review_dispatch_forces_no_callback_and_records_caller(monkeypatch
         assert exc.value.hint == "hint: set JAXOS_CALLER_SESSION"
         assert events == []
 
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target), from_caller="jaxos"),   # NO no_callback=True
             run=_run_with_tmux(fake, real_cwd=root), post=post,
             env={"JAXOS_CALLER_SESSION": "jaxos"}, now=_fixed_now, allowlist_root=allow_root,
@@ -18588,7 +18589,7 @@ def _review_hub(monkeypatch, post):
         monkeypatch.chdir(root)
         fake = FakeTmux()
         try:
-            jaxflow.dispatch_review(
+            jaxflow_review.dispatch_review(
                 _review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root), post=post,
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
                 now=_fixed_now, allowlist_root=allow_root,
@@ -18719,7 +18720,7 @@ def _no_runs_or_tests(root):
 def _probe_review(root, allow_root, target, env=None, **flags):
     events = []
     try:
-        jaxflow.dispatch_review(
+        jaxflow_review.dispatch_review(
             _review_args(spec=str(target), **flags),
             run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: events.append(e) or {"ok": True},
@@ -18983,7 +18984,7 @@ def _stacked_diff_dispatch(monkeypatch, capsys, recorded):
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=p2_head, base_sha=base)
         con.close()
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -19042,7 +19043,7 @@ def test_since_root_on_a_stacked_build_passes_the_lock(monkeypatch, capsys):
         con.close()
         _write_diff_manifest(root, "aaaaaaaaaaa1", base_sha=p1_tip, head_sha=root_head)
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1", since="aaaaaaaaaaa1"), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
@@ -19062,7 +19063,7 @@ def test_dispatch_review_runs_on_the_callers_own_runtime_when_the_opposite_agent
         _init_repo(root)
         target = _spec_file(root)
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target), no_callback=True), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root,
         )
@@ -19078,7 +19079,7 @@ def test_dispatch_review_without_fallback_prints_no_line_and_stores_no_fallback(
         _init_repo(root)
         target = _spec_file(root)
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_review(
+        run_id = jaxflow_review.dispatch_review(
             _review_args(spec=str(target), no_callback=True), run=_run_with_tmux(FakeTmux(), real_cwd=root),
             post=lambda e: {"ok": True}, env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root,
         )
@@ -19098,7 +19099,7 @@ def test_dispatch_review_refuses_without_a_reviewer_agent_and_reserves_nothing(m
         monkeypatch.chdir(root)
         posts = []
         with pytest.raises(ji.Refusal) as caught:
-            jaxflow.dispatch_review(
+            jaxflow_review.dispatch_review(
                 _review_args(spec=str(target)), run=_run_with_tmux(FakeTmux(), real_cwd=root),
                 post=lambda e: posts.append(e), env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root,
             )
@@ -19118,7 +19119,7 @@ def test_review_and_build_refuse_on_unreadable_settings_and_reserve_nothing(monk
         monkeypatch.chdir(root)
         fake = FakeTmux()
         for call in (
-            lambda: jaxflow.dispatch_review(_review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
+            lambda: jaxflow_review.dispatch_review(_review_args(spec=str(target)), run=_run_with_tmux(fake, real_cwd=root),
                                             post=lambda e: {"ok": True}, env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root),
             lambda: jaxflow.dispatch_build(_build_args(plan=str(plan)), run=_run_with_tmux(fake, real_cwd=root),
                                            post=lambda e: {"ok": True}, env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root),
@@ -19147,7 +19148,7 @@ def test_dispatch_diff_review_falls_back_and_prints_the_line(monkeypatch, capsys
         tests_path.parent.mkdir(parents=True, exist_ok=True)
         tests_path.write_text("COMMAND: true\n\nEXIT: 0\n", encoding="utf-8")
         monkeypatch.chdir(root)
-        run_id = jaxflow.dispatch_diff_review(
+        run_id = jaxflow_review.dispatch_diff_review(
             _diff_args("b1"), run=_run_with_tmux(FakeTmux(), real_cwd=root), post=lambda e: {"ok": True},
             env=_CLAUDE_ENV, now=_fixed_now, allowlist_root=allow_root, db_path=db,
         )
