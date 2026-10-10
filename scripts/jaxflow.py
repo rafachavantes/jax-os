@@ -2592,6 +2592,43 @@ def _preflight_diff(*, run, db_path, worktree, builder_run_id, project, phase, r
         stub_path.unlink(missing_ok=True)
 
 
+def _diff_manifests(args, *, repo, worktree, project, phase, branch, builder_run_id, base_sha,
+                    head_sha, tests_path, caller, caller_session, caller_pane, model, effort,
+                    runtime, fallback, run_id, session, now, plan_path, spec_dest, verify_field,
+                    guard_info, since_review_run_id, since_verdict):
+    """`(manifest, started_event_payload)` of a diff-review run. Key order is part of the
+    contract (manifest.json is written in insertion order). `caller_session` is passed in:
+    `_require_caller_session` must keep running in the dispatcher, right after `_alloc_run`."""
+    manifest = {
+        "kind": "diff", "role": "reviewer", "project": project, "phase": phase,
+        "repo": str(repo), "worktree": str(worktree), "target": branch,
+        "builder_run_id": builder_run_id, "base_sha": base_sha, "head_sha": head_sha,
+        "tests_path": str(tests_path), "caller": caller, "caller_session": caller_session,
+        "model": model, "effort": effort, "runtime": runtime, "run_id": run_id,
+        "session": session, "no_callback": _no_callback(args, caller), "focus": args.focus,
+        "threat_model": _threat_model_for(repo),
+        "plan_path": str(plan_path), "spec_path": str(spec_dest),
+        "dispatch_start": _iso8601(now()),
+        "verify": verify_field,
+        "guard": guard_info,
+        "full_reason": args.full,
+    }
+    if since_review_run_id:
+        manifest["since_review_run_id"] = since_review_run_id
+        manifest["since_verdict"] = since_verdict
+    if fallback:
+        manifest["fallback"] = fallback
+
+    started_event_payload = {
+        "phase": phase, "runtime": runtime, "kind": "diff", "target": branch,
+        "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
+        "session": session, "repo": str(repo), "builder_run_id": builder_run_id,
+    }
+    if caller_pane:
+        started_event_payload["caller_pane"] = caller_pane
+    return manifest, started_event_payload
+
+
 def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if args.since is not None and args.full is not None:
         raise Refusal("since-full-conflict")
@@ -2630,7 +2667,6 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
 
     builder_manifest, plan_path, spec_dest = _load_build_inputs(repo, builder_run_id, worktree, allowlist_root)
     tests_path = _evidence_path(worktree, builder_run_id)
-    full_reason = args.full
     guard_info = _review_guards(
         args, run=run, repo=repo, db_path=db_path, project=project, branch=branch,
         phase=phase, builder_run_id=builder_run_id, now=now,
@@ -2660,34 +2696,15 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         caller_session = _require_caller_session(env, caller)
         caller_pane = env.get("TMUX_PANE")
 
-        manifest = {
-            "kind": "diff", "role": "reviewer", "project": project, "phase": phase,
-            "repo": str(repo), "worktree": str(worktree), "target": branch,
-            "builder_run_id": builder_run_id, "base_sha": base_sha, "head_sha": head_sha,
-            "tests_path": str(tests_path), "caller": caller, "caller_session": caller_session,
-            "model": model, "effort": effort, "runtime": runtime, "run_id": run_id,
-            "session": session, "no_callback": _no_callback(args, caller), "focus": args.focus,
-            "threat_model": _threat_model_for(repo),
-            "plan_path": str(plan_path), "spec_path": str(spec_dest),
-            "dispatch_start": _iso8601(now()),
-            "verify": verify_field,
-            "guard": guard_info,
-            "full_reason": full_reason,
-        }
-        if since_review_run_id:
-            manifest["since_review_run_id"] = since_review_run_id
-            manifest["since_verdict"] = since_verdict
-        if fallback:
-            manifest["fallback"] = fallback
-
-        started_event_payload = {
-            "phase": phase, "runtime": runtime, "kind": "diff", "target": branch,
-            "caller": caller, "caller_session": caller_session, "model": model, "effort": effort,
-            "session": session, "repo": str(repo), "builder_run_id": builder_run_id,
-        }
-        if caller_pane:
-            started_event_payload["caller_pane"] = caller_pane
-
+        manifest, started_event_payload = _diff_manifests(
+            args, repo=repo, worktree=worktree, project=project, phase=phase, branch=branch,
+            builder_run_id=builder_run_id, base_sha=base_sha, head_sha=head_sha,
+            tests_path=tests_path, caller=caller, caller_session=caller_session,
+            caller_pane=caller_pane, model=model, effort=effort, runtime=runtime,
+            fallback=fallback, run_id=run_id, session=session, now=now, plan_path=plan_path,
+            spec_dest=spec_dest, verify_field=verify_field, guard_info=guard_info,
+            since_review_run_id=since_review_run_id, since_verdict=since_verdict,
+        )
         run_id = _dispatch_run(
             run=run, post=post, repo=repo, project=project, phase=phase, kind="diff",
             role="reviewer", run_id=run_id, session=session, manifest=manifest,
