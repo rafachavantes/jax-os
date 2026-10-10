@@ -1149,16 +1149,33 @@ describe("selectPendingAction — deterministic single-event policy (round-3 F4)
   });
 });
 
-describe("isMergeAskEligible (spec §4)", () => {
-  it("mergeAsk at/above the threshold is eligible regardless of question text", () => {
-    expect(isMergeAskEligible(0.5)).toBe(true);
-    expect(isMergeAskEligible(0.82)).toBe(true);
-    expect(isMergeAskEligible(0.49)).toBe(false);
-    expect(isMergeAskEligible(null)).toBe(false);
+describe("isMergeAskEligible (merge question contract)", () => {
+  it("is eligible only for mergeAsk exactly 1 WITH a branch", () => {
+    expect(isMergeAskEligible(1, "feat/x")).toBe(true);
+    expect(isMergeAskEligible(1)).toBe(false);
+    expect(isMergeAskEligible(1, null)).toBe(false);
+    expect(isMergeAskEligible(1, undefined)).toBe(false);
   });
-  it("boundary values 0 and 1 (cold review round 1 F3)", () => {
-    expect(isMergeAskEligible(0)).toBe(false);
-    expect(isMergeAskEligible(1)).toBe(true);
+  it("old Jev fractions, 0 and null are never eligible, branch or not", () => {
+    for (const v of [0.5, 0.82, 0.99, 0, null]) expect(isMergeAskEligible(v, "feat/x")).toBe(false);
+  });
+});
+
+describe("selectPendingAction carries mergeBranch/mergeTarget (merge question contract)", () => {
+  it("a tmux pane's freeform action carries branch and target; a pane without them leaves them undefined", () => {
+    const withMq: MissionCard = { ...BASE, sessions: [{ transport: "tmux", session: "s", panes: [
+      pane("%1", { capsuleEventId: 9, capsuleStatus: "needs_input", capsuleMergeAsk: 1, capsuleMergeBranch: "feat/x", capsuleMergeTarget: "main" }),
+    ] }] };
+    expect(selectPendingAction(withMq)).toMatchObject({ kind: "freeform", mergeAsk: 1, mergeBranch: "feat/x", mergeTarget: "main" });
+    const plain: MissionCard = { ...BASE, sessions: [{ transport: "tmux", session: "s", panes: [pane("%1", { capsuleEventId: 9, capsuleStatus: "needs_input" })] }] };
+    const action = selectPendingAction(plain);
+    expect(action?.kind).toBe("freeform");
+    expect(action && action.kind === "freeform" ? [action.mergeBranch, action.mergeTarget] : null).toEqual([undefined, undefined]);
+  });
+  it("a codex session carries them too", () => {
+    const card: MissionCard = { ...BASE, sessions: [codexSession("thread-1", {
+      capsuleEventId: 42, capsuleStatus: "needs_input", capsuleMergeAsk: 1, capsuleMergeBranch: "feat/x", capsuleMergeTarget: "main" })] };
+    expect(selectPendingAction(card)).toMatchObject({ kind: "freeform", transport: "codex", mergeBranch: "feat/x", mergeTarget: "main" });
   });
 });
 

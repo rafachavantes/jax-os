@@ -97,6 +97,9 @@ const tmuxApprovePane = (over: Partial<MissionPane> = {}): MissionPane => ({
   capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0, ...over,
 });
 
+// A pane whose turn carried the canonical merge question (what the hook ships): eligible for "Approve merge".
+const MQ_FIELDS = { capsuleMergeAsk: 1, capsuleMergeBranch: "feat/x", capsuleMergeTarget: "main" } as const;
+
 const PANE_ROW: MissionCard = {
   ...base,
   sessions: [{ transport: "tmux", session: "jax-p1-lead", panes: [{ pane: "%1", tmuxIncarnation: "1:1", session: "jax-p1-lead", role: "lead", state: "working", lastEventTs: null, pendingQuestion: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0 }] }],
@@ -339,15 +342,15 @@ describe("action row (Task 9, spec §9)", () => {
     expect(html).not.toContain("actions.approveMerge");
   });
 
-  it("a native Codex session with mergeAsk above threshold now reaches approve too — D2 drops the old transport==='tmux' guard", () => {
+  it("a native Codex session with a merge-question reaches approve too", () => {
     const card = { ...base, headline: "needs-you" as const, pendingQuestions: [],
-      sessions: [{ transport: "codex" as const, threadId: "t1", state: "needs-you" as const, lastEventTs: null, subagentCount: 0, capsuleEventId: 42, capsuleStatus: "needs_input" as const, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: 0.9, capsuleQuestion: "posso mergear feat/x em main?" }] };
-    expect(pendingUiAction(card, undefined, T_PT)).toEqual({ kind: "approve", eventId: 42, question: "posso mergear feat/x em main?", replyYes: "pode", replyNo: "não", answerable: true });
+      sessions: [{ transport: "codex" as const, threadId: "t1", state: "needs-you" as const, lastEventTs: null, subagentCount: 0, capsuleEventId: 42, capsuleStatus: "needs_input" as const, capsuleMinutes: null, capsuleDeclaredAt: null, ...MQ_FIELDS, capsuleQuestion: "posso mergear feat/x em main?" }] };
+    expect(pendingUiAction(card, undefined, T_PT)).toEqual({ kind: "approve", eventId: 42, question: "posso mergear feat/x em main?", replyYes: "pode", replyNo: "não", answerable: true, branch: "feat/x", target: "main" });
   });
 
   it("a native Codex session with answerable: false renders the approve pair disabled plus the unreachable line (D4)", () => {
     const card = { ...base, headline: "needs-you" as const, pendingQuestions: [],
-      sessions: [{ transport: "codex" as const, threadId: "t1", state: "needs-you" as const, lastEventTs: null, subagentCount: 0, capsuleEventId: 42, capsuleStatus: "needs_input" as const, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: 0.9, capsuleQuestion: "posso mergear?", capsuleAnswerable: false }] };
+      sessions: [{ transport: "codex" as const, threadId: "t1", state: "needs-you" as const, lastEventTs: null, subagentCount: 0, capsuleEventId: 42, capsuleStatus: "needs_input" as const, capsuleMinutes: null, capsuleDeclaredAt: null, ...MQ_FIELDS, capsuleQuestion: "posso mergear?", capsuleAnswerable: false }] };
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));
     expect(html).toContain("actions.answerUnreachable");
     expect(html).toMatch(/<button[^>]*\bdisabled\b[^>]*>actions\.approveMerge<\/button>/);
@@ -377,16 +380,14 @@ describe("action row (Task 9, spec §9)", () => {
     expect(pendingUiAction(card, undefined, T_PT)?.kind).toBe("generic");
   });
 
-  it("a message-detected merge ask is Jev's mergeAsk alone now: above threshold is 'approve', a literal-regex-looking question with no mergeAsk falls through to freeform (D1)", () => {
-    const byMergeAsk = { ...base, headline: "needs-you" as const, pendingQuestions: [],
-      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", capsuleMergeAsk: 0.82, capsuleQuestion: "posso mergear feat/x em main?" })] }] };
-    expect(pendingUiAction(byMergeAsk, undefined, T_PT)).toEqual({ kind: "approve", eventId: 9, question: "posso mergear feat/x em main?", replyYes: "pode", replyNo: "não", answerable: true });
-    const byLiteralRegex = { ...base, headline: "needs-you" as const, pendingQuestions: [],
-      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", capsuleMergeAsk: null, capsuleQuestion: "May I merge `feat/x` into `main`?" })] }] };
-    expect(pendingUiAction(byLiteralRegex, undefined, T_PT)?.kind).toBe("freeform");
-    const nonMatchingQuestion = { ...base, headline: "needs-you" as const, pendingQuestions: [],
-      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", capsuleMergeAsk: null, capsuleQuestion: "should I retry the build?" })] }] };
-    expect(pendingUiAction(nonMatchingQuestion, undefined, T_PT)?.kind).toBe("freeform");
+  it("approve comes from the hook's merge-question alone: mergeAsk 1 + branch; Jev-era fractions, a missing branch and null all fall through to freeform (A10)", () => {
+    const mk = (over: Partial<MissionPane>) => ({ ...base, headline: "needs-you" as const, pendingQuestions: [],
+      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", capsuleQuestion: "posso mergear feat/x em main?", ...over })] }] });
+    expect(pendingUiAction(mk(MQ_FIELDS), undefined, T_PT)).toEqual({
+      kind: "approve", eventId: 9, question: "posso mergear feat/x em main?", replyYes: "pode", replyNo: "não", answerable: true, branch: "feat/x", target: "main" });
+    expect(pendingUiAction(mk({ capsuleMergeAsk: 0.82 }), undefined, T_PT)?.kind).toBe("freeform");
+    expect(pendingUiAction(mk({ capsuleMergeAsk: 1 }), undefined, T_PT)?.kind).toBe("freeform");
+    expect(pendingUiAction(mk({ capsuleMergeAsk: null }), undefined, T_PT)?.kind).toBe("freeform");
   });
 
   it("gate set, a live lead-role tmux capsule exists, not merge-ask-eligible → approve with the branded gate reply, falling back to the bare phrase when card.branch is empty", () => {
@@ -399,19 +400,19 @@ describe("action row (Task 9, spec §9)", () => {
     expect(noBranchAction.replyYes).toBe("pode fazer o merge");
   });
 
-  it("gate fallback only covers an unclassified ask: a gated lead capsule Jev scored as not-a-merge-ask gets no approve", () => {
+  it("gate fallback only covers an unclassified ask: a gated lead capsule scored non-1 gets freeform, not the gate fallback", () => {
     const gated = (capsuleMergeAsk: number | null) => ({ ...base, headline: "needs-you" as const, gate: "awaiting-approval" as const, branch: "feat/x", pendingQuestions: [],
       sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ capsuleMergeAsk, capsuleQuestion: "should I retry the build?" })] }] });
     expect(pendingUiAction(gated(0.1), undefined, T_PT)?.kind).toBe("freeform");
     expect(pendingUiAction(gated(null), undefined, T_PT)?.kind).toBe("approve");
-    expect(pendingUiAction(gated(0.9), undefined, T_PT)?.kind).toBe("approve");
+    expect(pendingUiAction(gated(0.9), undefined, T_PT)?.kind).toBe("freeform"); // a scored non-1 ask never gets the gate fallback and is not eligible either
   });
 
   it("merge-eligible branch: localizes the bare reply through T (F1 — the literal decision 13 missed)", () => {
     const byMergeAsk = { ...base, headline: "needs-you" as const, pendingQuestions: [],
-      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", capsuleMergeAsk: 0.82, capsuleQuestion: "posso mergear feat/x em main?" })] }] };
-    expect(pendingUiAction(byMergeAsk, undefined, T_PT)).toEqual({ kind: "approve", eventId: 9, question: "posso mergear feat/x em main?", replyYes: "pode", replyNo: "não", answerable: true });
-    expect(pendingUiAction(byMergeAsk, undefined, T_EN)).toEqual({ kind: "approve", eventId: 9, question: "posso mergear feat/x em main?", replyYes: "yes", replyNo: "no", answerable: true });
+      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", ...MQ_FIELDS, capsuleQuestion: "posso mergear feat/x em main?" })] }] };
+    expect(pendingUiAction(byMergeAsk, undefined, T_PT)).toEqual({ kind: "approve", eventId: 9, question: "posso mergear feat/x em main?", replyYes: "pode", replyNo: "não", answerable: true, branch: "feat/x", target: "main" });
+    expect(pendingUiAction(byMergeAsk, undefined, T_EN)).toEqual({ kind: "approve", eventId: 9, question: "posso mergear feat/x em main?", replyYes: "yes", replyNo: "no", answerable: true, branch: "feat/x", target: "main" });
   });
 
   it("branch-merge fallback: localizes the interpolated reply through T", () => {
@@ -429,8 +430,8 @@ describe("action row (Task 9, spec §9)", () => {
     const noAsk = { ...base, headline: "needs-you" as const, gate: "awaiting-approval" as const, branch: "feat/x", pendingQuestions: [],
       sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc" })] }] };
     expect(pendingUiAction(noAsk, undefined, T_PT)?.kind).toBe("freeform");
-    const withAsk = { ...noAsk, sessions: [{ ...noAsk.sessions[0], panes: [tmuxApprovePane({ role: "adhoc", capsuleMergeAsk: 0.9, capsuleQuestion: "posso mergear?" })] }] };
-    expect(pendingUiAction(withAsk, undefined, T_PT)).toEqual({ kind: "approve", eventId: 9, question: "posso mergear?", replyYes: "pode", replyNo: "não", answerable: true });
+    const withAsk = { ...noAsk, sessions: [{ ...noAsk.sessions[0], panes: [tmuxApprovePane({ role: "adhoc", ...MQ_FIELDS, capsuleQuestion: "posso mergear?" })] }] };
+    expect(pendingUiAction(withAsk, undefined, T_PT)).toEqual({ kind: "approve", eventId: 9, question: "posso mergear?", replyYes: "pode", replyNo: "não", answerable: true, branch: "feat/x", target: "main" });
   });
 
   it("a blocked-status capsule never becomes approve, mergeAsk-eligible or not (spec §7)", () => {
@@ -441,7 +442,7 @@ describe("action row (Task 9, spec §9)", () => {
 
   it("QuestionLine renders the derived question for the approve kind, nothing when question is null", () => {
     const withQ = { ...base, headline: "needs-you" as const, pendingQuestions: [],
-      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", capsuleMergeAsk: 0.9, capsuleQuestion: "posso mergear?" })] }] };
+      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", ...MQ_FIELDS, capsuleQuestion: "posso mergear?" })] }] };
     expect(renderToStaticMarkup(createElement(ProjectCard, { expanded: false, onToggle: () => {}, card: withQ }))).toContain("posso mergear?");
     const noQ = { ...base, headline: "needs-you" as const, gate: "awaiting-approval" as const, branch: "feat/x", pendingQuestions: [],
       sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane()] }] };
@@ -561,6 +562,36 @@ describe("action row (Task 9, spec §9)", () => {
     expect(html).not.toContain("actions.respond");
     expect(html).toContain("actions.freeformPlaceholder");
     expect(html).not.toContain("actions.answerUnreachable");
+  });
+
+  it("A10/A15: the new path renders the actions.mergeTarget line; no sha anywhere", () => {
+    const card = { ...base, headline: "needs-you" as const, pendingQuestions: [],
+      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ role: "adhoc", ...MQ_FIELDS, capsuleQuestion: null })] }] };
+    const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: false, onToggle: () => {}, card }));
+    expect(html).toContain("actions.approveMerge");
+    expect(html).toContain("actions.mergeTarget");
+    expect(html).not.toMatch(/\b[0-9a-f]{7,40}\b/);
+  });
+
+  it("A15b: a NEW gated stop without the canonical question (hook payload merge_ask 0) is free-form, not approve", () => {
+    // Actual nonmatching hook payload shape: {capsule_status:"needs_input", capsule_rule:"tag", excerpt, merge_ask:0}
+    // under an awaiting-approval gate -> mergeAsk is 0 (not null), so the legacy fallback must NOT fire.
+    // Same session literal as the "above threshold" codex test (:342-345), but capsuleMergeAsk 0 and a gate.
+    const card = { ...base, headline: "needs-you" as const, gate: "awaiting-approval" as const, pendingQuestions: [],
+      sessions: [{ transport: "codex" as const, threadId: "t1", state: "needs-you" as const, lastEventTs: null, subagentCount: 0, capsuleEventId: 43, capsuleStatus: "needs_input" as const, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: 0, capsuleQuestion: "[JAXFLOW: needs_input] Ready for merge" }] };
+    expect(pendingUiAction(card, undefined, T_PT)?.kind).toBe("freeform");
+  });
+
+  it("A15: the legacy gate fallback renders Approve merge with NO actions.mergeTarget line", () => {
+    const card = { ...base, headline: "needs-you" as const, gate: "awaiting-approval" as const, branch: "feat/x", pendingQuestions: [],
+      sessions: [{ transport: "tmux" as const, session: "s", panes: [tmuxApprovePane({ capsuleQuestion: "done, next step tomorrow" })] }] };
+    const action = pendingUiAction(card, undefined, T_PT);
+    if (action?.kind !== "approve") throw new Error("expected approve");
+    expect(action.branch).toBeUndefined();
+    expect(action.target).toBeUndefined();
+    const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: false, onToggle: () => {}, card }));
+    expect(html).toContain("actions.approveMerge");
+    expect(html).not.toContain("actions.mergeTarget");
   });
 });
 

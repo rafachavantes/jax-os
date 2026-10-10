@@ -374,20 +374,17 @@ export function markDelivered(db: Database.Database, ids: number[], now = new Da
  * reaches the same `unknown`/`abandoned` state the `failed` branch reaches after five
  * retries, in one call — an honest "the model couldn't decide" answer is not a transport
  * failure and must not spend the retry budget (rung-7 indeterminate, 2026-09-22).
+ * A merge-question row is never `deferred`, so this never touches it (the hook's `merge_ask` survives).
  */
 export function classifyDeferred(
   db: Database.Database,
   id: number,
-  outcome: { status: CapsuleStatus; mergeAsk?: number } | { failed: true } | { indeterminate: true },
+  outcome: { status: CapsuleStatus } | { failed: true } | { indeterminate: true },
 ): boolean {
   const sql = "status" in outcome
-    ? outcome.mergeAsk !== undefined
-      ? `UPDATE workflow_events
-         SET payload = json_set(payload, '$.capsule_status', ?, '$.merge_ask', ?, '$.capsule_rule', 'classified')
-         WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`
-      : `UPDATE workflow_events
-         SET payload = json_set(payload, '$.capsule_status', ?, '$.capsule_rule', 'classified')
-         WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`
+    ? `UPDATE workflow_events
+       SET payload = json_set(payload, '$.capsule_status', ?, '$.capsule_rule', 'classified')
+       WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`
     : "indeterminate" in outcome
     ? `UPDATE workflow_events
        SET payload = json_set(payload, '$.capsule_status', 'unknown', '$.capsule_rule', 'abandoned')
@@ -399,9 +396,7 @@ export function classifyDeferred(
              CASE WHEN COALESCE(json_extract(payload, '$.capsule_attempts'), 0) + 1 >= 5
                   THEN 'abandoned' ELSE 'deferred' END)
        WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`;
-  const params = "status" in outcome
-    ? outcome.mergeAsk !== undefined ? [outcome.status, outcome.mergeAsk, id] : [outcome.status, id]
-    : [id];
+  const params = "status" in outcome ? [outcome.status, id] : [id];
   return db.prepare(sql).run(...params).changes === 1;
 }
 
@@ -885,7 +880,7 @@ export function abandonInjectingAnswers(db: Database.Database): number {
 
 export type LiveSnapshot = { paneIds: Set<string>; incarnation: string | null; paneCommands: Map<string, string> };
 
-export type Capsule = { status: string; minutes: number | null; declaredAt: string; eventId: number; mergeAsk: number | null; question: string | null; answerable?: boolean };
+export type Capsule = { status: string; minutes: number | null; declaredAt: string; eventId: number; mergeAsk: number | null; question: string | null; answerable?: boolean; mergeBranch?: string; mergeTarget?: string };
 
 export type PendingQuestion = {
   eventId: number;
@@ -1122,6 +1117,14 @@ function isAnswered(db: Database.Database, eventId: number): boolean {
   ).get(eventId) !== undefined;
 }
 
+// Merge question contract: branch/target ride the capsule only for the hook's own merge_ask 1.
+// merge_head_sha is audit evidence and is deliberately NOT exposed here.
+function mergeFields(p: { merge_ask?: number; merge_branch?: string; merge_target?: string }): { mergeBranch?: string; mergeTarget?: string } {
+  return p.merge_ask === 1 && typeof p.merge_branch === "string" && typeof p.merge_target === "string"
+    ? { mergeBranch: p.merge_branch, mergeTarget: p.merge_target }
+    : {};
+}
+
 // project-scoped (Finding 1): a pane_key persists across a project switch, so a pane_key-only
 // query here would surface the OTHER project's latest turn-stopped capsule on this project's row
 // once the pane moves on. `project` is always the project currently being enumerated by
@@ -1143,11 +1146,11 @@ function lastCapsule(
   try {
     const p = JSON.parse(row.payload) as {
       capsule_status?: string; capsule_minutes?: number; capsule_rule?: string;
-      merge_ask?: number; message_tail?: string;
+      merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string;
     };
     if (!p.capsule_status) return null;
     if ((p.capsule_status === "needs_input" || p.capsule_status === "blocked") &&
-        (p.capsule_rule === "classified" || p.capsule_rule === "trailing_question")) {
+        (p.capsule_rule === "classified" || p.capsule_rule === "trailing_question" || p.capsule_rule === "merge-question")) {
       const progressedTurn = db.prepare(`
         SELECT 1 FROM workflow_events
         WHERE project = ? AND pane_key = ? AND type = 'turn-started'
@@ -1189,6 +1192,7 @@ function lastCapsule(
       mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
       question: deriveQuestion(p.message_tail),
       answerable,
+      ...mergeFields(p),
     };
   } catch {
     return null;
@@ -1854,7 +1858,7 @@ function lastCodexCapsule(db: Database.Database, project: string, threadId: stri
     .get(project, threadId) as { id: number; ts: string; payload: string | null } | undefined;
   if (!row || !row.payload || isAnswered(db, row.id)) return null;
   try {
-    const p = JSON.parse(row.payload) as { capsule_status?: string; capsule_minutes?: number; merge_ask?: number; message_tail?: string };
+    const p = JSON.parse(row.payload) as { capsule_status?: string; capsule_minutes?: number; merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string };
     if (typeof p.capsule_status !== "string" || !p.capsule_status) return null;
     return {
       status: p.capsule_status,
@@ -1868,6 +1872,7 @@ function lastCodexCapsule(db: Database.Database, project: string, threadId: stri
       question: deriveQuestion(p.message_tail),
       answerable: true, // D4: no proactive Codex liveness check — a dead session just drops out
       // of card.sessions entirely (collectCodexSnapshot); nothing left here to disable.
+      ...mergeFields(p),
     };
   } catch {
     return null;

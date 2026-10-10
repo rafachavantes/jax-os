@@ -27,6 +27,15 @@ it("rung 1 does not fire on a tag with an unusable status — it falls through",
   db.close();
 });
 
+it("rung 1 also believes the hook's merge-question shape: needs_input, rule merge-question, deterministic", () => {
+  const db = openDb(":memory:");
+  const d = deriveCapsule(db, { ...STOP, source: "deterministic", payload: {
+    capsule_status: "needs_input", capsule_rule: "merge-question", capsule_attempts: 0,
+    merge_ask: 1, merge_branch: "feat/x", merge_target: "main", merge_head_sha: null } });
+  expect(d).toEqual({ capsule_status: "needs_input", capsule_rule: "merge-question", source: "deterministic" });
+  db.close();
+});
+
 it("rung 2: an unresolved question on the same pane yields needs_input", () => {
   const db = openDb(":memory:");
   setAfk(db, true);

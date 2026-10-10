@@ -196,6 +196,13 @@ def test_merge_contract_fast_forward_exception():
     assert "EQUAL tip is never treated as a fast-forward" in merge
 
 
+def test_merge_contract_pins_the_canonical_merge_question():
+    merge = _read("merge-contract.md")
+    assert "Posso mergear `<branch>` em `<destination>`?" in merge
+    assert "May I merge `<branch>` into `<destination>`?" in merge
+    assert "Approve merge" in merge
+
+
 TEMPLATE = CONTRACTS.parent / "templates" / "AGENTS-template.md"
 _PRESET_HEADING = re.compile(r"^\*\*Preset: `([a-z-]+)`\*\* — (.+)$", re.M)
 

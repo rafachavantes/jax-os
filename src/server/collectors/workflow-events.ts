@@ -312,7 +312,30 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       // the ladder. `capsule_status` is optional at ingress for the first time — B6 closed
       // that window against the v0 hook, and this reopens it deliberately, because the route
       // now FILLS the field rather than trusting a producer to have done so.
-      onlyKeys(p, ["capsule_status", "capsule_minutes", "excerpt", "message_tail", "capsule_rule"], "payload");
+      onlyKeys(p, ["capsule_status", "capsule_minutes", "excerpt", "message_tail", "capsule_rule",
+        "capsule_attempts", "merge_ask", "merge_branch", "merge_target", "merge_head_sha"], "payload");
+      const MERGE_REF = /^[A-Za-z0-9._/-]+$/;
+      if (p.capsule_rule === "merge-question") {
+        // The hook's merge-question shape (merge question contract section 3.8) and NOTHING else:
+        // the question wins over any tag, Jev is never consulted, so no tail/minutes/excerpt ride along.
+        if (source !== "deterministic") fail("capsule_rule merge-question requires source deterministic");
+        if (p.capsule_status !== "needs_input") fail("capsule_rule merge-question requires capsule_status needs_input");
+        if (p.capsule_attempts !== 0) fail("capsule_rule merge-question requires capsule_attempts 0");
+        if (p.merge_ask !== 1) fail("capsule_rule merge-question requires merge_ask 1");
+        for (const k of ["message_tail", "capsule_minutes", "excerpt"]) {
+          if (k in p) fail(`${k} cannot accompany a merge-question payload`);
+        }
+        reqStr(p, "merge_branch", 200, MERGE_REF);
+        reqStr(p, "merge_target", 200, MERGE_REF);
+        if (!("merge_head_sha" in p) || p.merge_head_sha === undefined) fail("merge_head_sha required");
+        if (p.merge_head_sha !== null) reqStr(p, "merge_head_sha", 40, /^[0-9a-f]{7,40}$/);
+        return;
+      }
+      if ("capsule_attempts" in p) fail("payload: unknown key capsule_attempts");
+      for (const k of ["merge_branch", "merge_target", "merge_head_sha"]) {
+        if (k in p) fail(`${k} requires merge_ask 1 on a merge-question payload`);
+      }
+      if ("merge_ask" in p && p.merge_ask !== 0) fail("merge_ask must be 0 outside a merge-question payload");
       // ONE discriminator, not a pile of partial checks. The payload is either the tagged
       // shape or the untagged one; anything that mixes them is a producer bug, and a
       // half-checked mix is how a hook's verdict gets silently discarded by the ladder.
@@ -685,9 +708,10 @@ export function renderMessage(
 const LOCAL_ONLY: Partial<Record<EventType, readonly string[]>> = {
   // Stored, never forwarded, never returned through a projection. (`message_tail` IS read by
   // the deferred-queue route, which is the single sanctioned reader — see projectPayload.)
+  // `merge_head_sha` is audit evidence, never rendered or forwarded.
   "attention-needed": ["excerpt"],
   question: ["tool_use_id", "tmux_target"],
-  "turn-stopped": ["message_tail"],
+  "turn-stopped": ["message_tail", "merge_head_sha"],
 };
 
 /**

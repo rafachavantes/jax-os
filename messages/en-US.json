@@ -242,6 +242,7 @@
       "replyMergeBranch": "yes, merge {branch}",
       "replyMerge": "yes, go ahead and merge",
       "replyDeny": "no",
+      "mergeTarget": "{branch} into {target}",
       "answerSent": "Answer sent",
       "cancel": "Cancel",
       "dispatch": "Dispatch",

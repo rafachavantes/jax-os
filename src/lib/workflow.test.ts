@@ -9,6 +9,10 @@ describe("Phase 2 shared vocabulary", () => {
     expect(CAPSULE_RULES).toContain("classifier-off");
   });
 
+  it("CAPSULE_RULES includes merge-question (merge question contract)", () => {
+    expect(CAPSULE_RULES).toContain("merge-question");
+  });
+
   it("CALLERS gains jaxos; RUN_ID_RE is a 12-hex jaxflow run id", () => {
     expect(CALLERS).toEqual(["claude", "codex", "jaxos"]);
     expect(RUN_ID_RE.test("a1b2c3d4e5f6")).toBe(true);

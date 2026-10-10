@@ -286,7 +286,7 @@ def test_forward_pending_accepts_every_2xx_as_delivered(monkeypatch):
 
 def _jev_ok(choice):
     return {"choice": choice, "confidence": 0.9, "probabilities": {}, "ms": 5,
-            "merge_ask": None, "criteria": 3, "model": "jev-1", "input_tokens": 1}
+            "criteria": 3, "model": "jev-1", "input_tokens": 1}
 
 
 def test_drain_uses_jev_as_the_primary_classifier():
@@ -305,47 +305,31 @@ def test_drain_uses_jev_as_the_primary_classifier():
     assert jev_result["choice"] == "waiting" and jev_error is None
 
 
-def test_drain_forwards_a_valid_merge_ask_in_the_post_body():
+@pytest.mark.parametrize("jev_merge_ask", [None, 0.0, 0.82, 1.0])
+def test_drain_never_sends_merge_ask_whatever_the_jev_result_carries(jev_merge_ask):  # A12
     posts = []
-    jev_result = {**_jev_ok("needs_input"), "merge_ask": 0.82}
+    jev_result = {**_jev_ok("needs_input"), "merge_ask": jev_merge_ask}
     wp._drain_deferred(get=lambda url: [{"id": 1, "message_tail": "posso mergear?"}],
                        jev=lambda t: jev_result,
                        classify=lambda t: (_ for _ in ()).throw(AssertionError("deepseek must not run")),
                        post=lambda url, body: posts.append(body), shadow=lambda *a: None)
-    assert posts == [{"id": 1, "capsule_status": "needs_input", "merge_ask": 0.82}]
+    assert posts == [{"id": 1, "capsule_status": "needs_input"}]
 
 
-def test_drain_forwards_boundary_merge_ask_values_zero_and_one():
-    posts = []
-    wp._drain_deferred(get=lambda url: [{"id": 1, "message_tail": "a"}, {"id": 2, "message_tail": "b"}],
-                       jev=lambda t: {**_jev_ok("done"), "merge_ask": 0.0 if t == "a" else 1.0},
-                       post=lambda url, body: posts.append(body), shadow=lambda *a: None)
-    assert posts == [
-        {"id": 1, "capsule_status": "done", "merge_ask": 0.0},
-        {"id": 2, "capsule_status": "done", "merge_ask": 1.0},
-    ]
-
-
-@pytest.mark.parametrize("bad_merge_ask", [None, True, False, float("nan"), 1.5, -0.1, "0.5"])
-def test_drain_omits_merge_ask_for_any_invalid_value(bad_merge_ask):
-    # bool is deliberately in this list: isinstance(True, (int, float)) is True in Python, so a
-    # type(x) in (int, float) check (not isinstance) is required to exclude it.
-    posts = []
-    jev_result = {**_jev_ok("done"), "merge_ask": bad_merge_ask}
-    wp._drain_deferred(get=lambda url: [{"id": 1, "message_tail": "x"}],
-                       jev=lambda t: jev_result,
-                       post=lambda url, body: posts.append(body), shadow=lambda *a: None)
-    assert posts == [{"id": 1, "capsule_status": "done"}]
-
-
-def test_drain_deepseek_fallback_never_sends_merge_ask():
-    posts = []
-    wp._drain_deferred(get=lambda url: [{"id": 1, "message_tail": "x"}],
-                       jev=lambda t: (_ for _ in ()).throw(RuntimeError("jev down")),
-                       classify=lambda t: "done",
-                       post=lambda url, body: posts.append(body), shadow=lambda *a: None)
-    assert posts == [{"id": 1, "capsule_status": "done"}]
-    assert "merge_ask" not in posts[0]
+def test_jev_call_no_longer_asks_the_merge_ask_question():
+    sent = {}
+    class _Resp:
+        def read(self):
+            return json.dumps({"answers": {"status": {"choice": "done", "confidence": 0.9, "probabilities": {}}}}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+    def fake_urlopen(request, timeout=10):
+        sent["body"] = json.loads(request.data.decode("utf-8"))
+        return _Resp()
+    with patch("urllib.request.urlopen", fake_urlopen):
+        result = wp._call_jev("ok", "key")
+    assert set(sent["body"]["questions"]) == {"status"}
+    assert "merge_ask" not in result
 
 
 def test_drain_falls_back_to_deepseek_exactly_as_before_when_jev_raises():
@@ -508,7 +492,7 @@ def test_default_shadow_appends_one_json_line_and_never_raises(tmp_path):
     # call and hands the result (or its error) straight through, so this writes only.
     path = tmp_path / "shadow.jsonl"
     jev_result = {"choice": "waiting", "confidence": 0.9, "probabilities": {"waiting": 0.9},
-                  "ms": 12, "merge_ask": None, "criteria": 3, "model": "jev-1", "input_tokens": 40}
+                  "ms": 12, "criteria": 3, "model": "jev-1", "input_tokens": 40}
     with patch.object(wp, "JEV_SHADOW_PATH", path):
         wp._default_shadow(7, "jev", "needs_input", jev_result, None)
         wp._default_shadow(8, "deepseek", "failed", None, "RuntimeError: 429")
@@ -520,14 +504,11 @@ def test_default_shadow_appends_one_json_line_and_never_raises(tmp_path):
 
 
 def test_parse_jev_rejects_a_choice_outside_the_criteria():
-    ok = wp._parse_jev({"answers": {"status": {"choice": "waiting", "confidence": 1.0, "probabilities": {"waiting": 1.0}},
-                                    "merge_ask": {"noul": 0.03}},
+    ok = wp._parse_jev({"answers": {"status": {"choice": "waiting", "confidence": 1.0, "probabilities": {"waiting": 1.0}}},
                         "usage": {"input_tokens": 460}}, 431)
     assert ok == {"choice": "waiting", "confidence": 1.0, "probabilities": {"waiting": 1.0}, "ms": 431,
-                  "merge_ask": 0.03, "criteria": 3, "model": None, "input_tokens": 460}
+                  "criteria": 3, "model": None, "input_tokens": 460}
     assert wp._parse_jev({"model": "jev-1.13.0", "answers": {"status": {"choice": "done", "confidence": 0.9, "probabilities": {}}}}, 5)["model"] == "jev-1.13.0"
-    # An answer set without merge_ask (older call shape) still parses; the field is simply absent.
-    assert wp._parse_jev({"answers": {"status": {"choice": "done", "confidence": 0.9, "probabilities": {}}}}, 5)["merge_ask"] is None
     with pytest.raises(ValueError):
         wp._parse_jev({"answers": {"status": {"choice": "maybe", "confidence": 1.0, "probabilities": {}}}}, 1)
 
