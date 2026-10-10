@@ -138,6 +138,8 @@ def test_adhoc_role_for_a_non_lead_session_name(is_adhoc_event=True):
         hook.main(["claude-notification"], stdin=io.StringIO(payload), run=_run_identity(session="probe-scratch"), post=post)
     assert [url for url, _ in posts] == [hook.EVENTS_URL]  # notification no longer registers a session
     assert posts[0][1]["role"] == "adhoc"
+    assert posts[0][1]["type"] == "attention-needed"
+    assert posts[0][1]["payload"] == {"reason": "agent_needs_input"}
 
 
 def test_failed_identity_lookup_falls_back_to_adhoc_and_skips_session_post_finding_37():
