@@ -4046,6 +4046,64 @@ def _validate_diff_worker_inputs(manifest, *, run, allowlist_root, worktree, bui
     return None, tests_path, plan_path, spec_path
 
 
+def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, tests_path,
+                        base_sha, head_sha):
+    """The reviewer handoff text of a `--diff` review (grammar `parse_reviewer_handoff`
+    parses: one `diff:` line, one `paths:` line, one indented `  test-output:` line).
+    Runs `git diff base..head`; a failure RAISES RuntimeError (never a placeholder
+    review). Returns the handoff string."""
+    diff_result = run(["git", "diff", f"{base_sha}..{head_sha}"], cwd=worktree)
+    if diff_result.returncode != 0:
+        # fixes cold review F6: a diff-generation failure must not silently substitute
+        # placeholder text and dispatch a review anyway -- the reviewer would be judging
+        # a diff that never actually happened. An uncaught crash here ends the tmux
+        # session with no run-finished event, surfacing as `dead` via `jaxflow status
+        # <run_id>` (spec §2.5's existing status vocabulary) -- an honest signal over a
+        # corrupted review.
+        raise RuntimeError(f"git diff {base_sha}..{head_sha} failed: {diff_result.stderr}")
+    diff_text = diff_result.stdout
+
+    # Grammar `parse_reviewer_handoff` parses: exactly one `diff:` line, exactly one
+    # `paths:` line, and exactly one indented `  test-output:` line in the block right
+    # after it -- everything else in this text (the framing, the `spec:`/`plan:` lines
+    # below, the actual diff, --focus) is free-form and never scanned by that parser
+    # (spec §4.3 step 3). fixes S2: `spec:`/`plan:` name the SAME evidence-of-should the
+    # builder's own handoff named -- the reviewer contract's required spec/plan inputs.
+    since_run_id = manifest.get("since_review_run_id")
+    correction_header = ""
+    prior_review_line = ""
+    if since_run_id:
+        # `_safe_run_subpath` (not jr.safe_run_paths, which raises on an existing
+        # report) validates since_run_id; a forged/escaping value renders NEITHER
+        # line, same as no since_run_id (F2/F6).
+        prior_report = _safe_run_subpath(repo, "reports", since_run_id, suffix=".md")
+        if prior_report is not None:
+            since_verdict = manifest.get("since_verdict", "unknown")
+            correction_header = f"Correction review of {since_run_id} (verdict {since_verdict})\n"
+            prior_review_line = f"  prior-review: {prior_report}\n"
+    handoff = (
+        f"{correction_header}"
+        f"diff: {base_sha}..{head_sha}\n"
+        "paths:\n"
+        f"  spec: {spec_path}\n"
+        f"  plan: {plan_path}\n"
+        f"  test-output: {tests_path}\n"
+        f"{prior_review_line}"
+        "\n"
+        # ponytail: whole diff embedded inline, no size cap -- revisit if a --diff review
+        # ever times out on a huge diff. This is also the resolution to the Claude
+        # --tools Read,Glob,Grep containment (spec §6 I2): neither reviewer runtime needs
+        # to run `git diff` itself for a --diff review. Doc reviews name the file and
+        # read it from disk instead of embedding its contents.
+        f"{diff_text}\n"
+    )
+    if manifest.get("threat_model"):
+        handoff = f"{handoff}\n{threat_model_line(manifest['threat_model'])}\n"
+    if manifest.get("focus"):
+        handoff = f"{handoff}\n--focus: {manifest['focus']}\n"
+    return handoff
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -4262,56 +4320,10 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     paths = jr.safe_run_paths(repo, run_id)
     paths["scratch"].mkdir(parents=True, exist_ok=True)
 
-    diff_result = run(["git", "diff", f"{base_sha}..{head_sha}"], cwd=worktree)
-    if diff_result.returncode != 0:
-        # fixes cold review F6: a diff-generation failure must not silently substitute
-        # placeholder text and dispatch a review anyway -- the reviewer would be judging
-        # a diff that never actually happened. An uncaught crash here ends the tmux
-        # session with no run-finished event, surfacing as `dead` via `jaxflow status
-        # <run_id>` (spec §2.5's existing status vocabulary) -- an honest signal over a
-        # corrupted review.
-        raise RuntimeError(f"git diff {base_sha}..{head_sha} failed: {diff_result.stderr}")
-    diff_text = diff_result.stdout
-
-    # Grammar `parse_reviewer_handoff` parses: exactly one `diff:` line, exactly one
-    # `paths:` line, and exactly one indented `  test-output:` line in the block right
-    # after it -- everything else in this text (the framing, the `spec:`/`plan:` lines
-    # below, the actual diff, --focus) is free-form and never scanned by that parser
-    # (spec §4.3 step 3). fixes S2: `spec:`/`plan:` name the SAME evidence-of-should the
-    # builder's own handoff named -- the reviewer contract's required spec/plan inputs.
-    since_run_id = manifest.get("since_review_run_id")
-    correction_header = ""
-    prior_review_line = ""
-    if since_run_id:
-        # `_safe_run_subpath` (not jr.safe_run_paths, which raises on an existing
-        # report) validates since_run_id; a forged/escaping value renders NEITHER
-        # line, same as no since_run_id (F2/F6).
-        prior_report = _safe_run_subpath(repo, "reports", since_run_id, suffix=".md")
-        if prior_report is not None:
-            since_verdict = manifest.get("since_verdict", "unknown")
-            correction_header = f"Correction review of {since_run_id} (verdict {since_verdict})\n"
-            prior_review_line = f"  prior-review: {prior_report}\n"
-    handoff = (
-        f"{correction_header}"
-        f"diff: {base_sha}..{head_sha}\n"
-        "paths:\n"
-        f"  spec: {spec_path}\n"
-        f"  plan: {plan_path}\n"
-        f"  test-output: {tests_path}\n"
-        f"{prior_review_line}"
-        "\n"
-        # ponytail: whole diff embedded inline, no size cap -- revisit if a --diff review
-        # ever times out on a huge diff. This is also the resolution to the Claude
-        # --tools Read,Glob,Grep containment (spec §6 I2): neither reviewer runtime needs
-        # to run `git diff` itself for a --diff review. Doc reviews name the file and
-        # read it from disk instead of embedding its contents.
-        f"{diff_text}\n"
+    handoff = _build_diff_handoff(
+        manifest, run=run, repo=repo, worktree=worktree, spec_path=spec_path,
+        plan_path=plan_path, tests_path=tests_path, base_sha=base_sha, head_sha=head_sha,
     )
-    if manifest.get("threat_model"):
-        handoff = f"{handoff}\n{threat_model_line(manifest['threat_model'])}\n"
-    if manifest.get("focus"):
-        handoff = f"{handoff}\n--focus: {manifest['focus']}\n"
-
     prompt_text = REVIEWER_PROMPT_PREAMBLE + jr.assemble_prompt("reviewer", {
         "run_id": run_id, "project": project, "role": "reviewer", "phase": phase,
         "report": str(paths["report"]), "tests": str(paths["tests"]),
