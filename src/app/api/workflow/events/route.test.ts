@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 
@@ -195,47 +196,22 @@ describe("POST /api/workflow/events/classify", () => {
     expect(await second.json()).toMatchObject({ ok: true, data: { settled: false } }); // replay is a no-op
   });
 
-  it("accepts {id, capsule_status, merge_ask}, stores merge_ask, and still accepts the plain shape unchanged", async () => {
-    const withMergeAsk = insertEvent(testDb, {
-      run_id: null, project: "p1", role: "lead", type: "turn-stopped",
-      source: "behavioral", emitter: "claude-stop", pane: "%1", tmux_incarnation: "234790:1787586213",
-      payload: { message_tail: "posso mergear feat/x em main?\nAguardo seu retorno." },
-    });
-    const res = await classifyPost(new Request("http://127.0.0.1:3100/api/workflow/events/classify", {
-      method: "POST", headers: { "Content-Type": "application/json", origin: "http://127.0.0.1:3100" },
-      body: JSON.stringify({ id: withMergeAsk.id, capsule_status: "needs_input", merge_ask: 0.82 }),
-    }));
-    expect(await res.json()).toMatchObject({ ok: true, data: { settled: true } });
-    const storedA = testDb.prepare("SELECT payload FROM workflow_events WHERE id = ?").get(withMergeAsk.id) as { payload: string };
-    expect(JSON.parse(storedA.payload)).toMatchObject({ capsule_status: "needs_input", capsule_rule: "classified", merge_ask: 0.82 });
-
-    const plain = insertEvent(testDb, {
-      run_id: null, project: "p1", role: "lead", type: "turn-stopped",
-      source: "behavioral", emitter: "claude-stop", pane: "%2", tmux_incarnation: "234790:1787586213",
-      payload: { message_tail: "ambiguous prose" },
-    });
-    const res2 = await classifyPost(new Request("http://127.0.0.1:3100/api/workflow/events/classify", {
-      method: "POST", headers: { "Content-Type": "application/json", origin: "http://127.0.0.1:3100" },
-      body: JSON.stringify({ id: plain.id, capsule_status: "done" }),
-    }));
-    expect(await res2.json()).toMatchObject({ ok: true, data: { settled: true } });
-    const storedB = testDb.prepare("SELECT payload FROM workflow_events WHERE id = ?").get(plain.id) as { payload: string };
-    expect(JSON.parse(storedB.payload)).not.toHaveProperty("merge_ask");
-  });
-
-  it.each([0, 1])("accepts and stores the exact boundary merge_ask value %s (cold review round 1 F3)", async (boundary) => {
+  it("the classify route no longer accepts merge_ask: the extra key is refused and nothing is written", async () => {
     const row = insertEvent(testDb, {
       run_id: null, project: "p1", role: "lead", type: "turn-stopped",
       source: "behavioral", emitter: "claude-stop", pane: "%1", tmux_incarnation: "234790:1787586213",
       payload: { message_tail: "posso mergear feat/x em main?\nAguardo seu retorno." },
     });
-    const res = await classifyPost(new Request("http://127.0.0.1:3100/api/workflow/events/classify", {
+    const post = (body: unknown) => classifyPost(new Request("http://127.0.0.1:3100/api/workflow/events/classify", {
       method: "POST", headers: { "Content-Type": "application/json", origin: "http://127.0.0.1:3100" },
-      body: JSON.stringify({ id: row.id, capsule_status: "needs_input", merge_ask: boundary }),
+      body: JSON.stringify(body),
     }));
-    expect(await res.json()).toMatchObject({ ok: true, data: { settled: true } });
+    expect(await (await post({ id: row.id, capsule_status: "needs_input", merge_ask: 0.82 })).json()).toMatchObject({ ok: false });
+    const untouched = testDb.prepare("SELECT payload FROM workflow_events WHERE id = ?").get(row.id) as { payload: string };
+    expect(JSON.parse(untouched.payload)).toMatchObject({ capsule_rule: "deferred" });
+    expect(await (await post({ id: row.id, capsule_status: "done" })).json()).toMatchObject({ ok: true, data: { settled: true } });
     const stored = testDb.prepare("SELECT payload FROM workflow_events WHERE id = ?").get(row.id) as { payload: string };
-    expect(JSON.parse(stored.payload)).toMatchObject({ merge_ask: boundary });
+    expect(JSON.parse(stored.payload)).not.toHaveProperty("merge_ask");
   });
 });
 
@@ -359,5 +335,62 @@ describe("POST /api/workflow/events — turn-stopped is local telemetry (MOA-469
     const finished = await POST(postRequest(RUN_FINISHED_BODY));
     expect((await finished.json()).forwarded).toBe(true);
     expect(forwardCalls).toBe(1);
+  });
+});
+
+describe("POST /api/workflow/events - merge question contract (A6, A7, A14)", () => {
+  // The fixture is REAL hook output: scripts/test_jaxflow_hook.py asserts the Python hook produces
+  // exactly this file. main() additionally stamps tmux_incarnation, which the route test adds below.
+  const fixture = JSON.parse(readFileSync(new URL("./merge-question-hook-output.fixture.json", import.meta.url), "utf8")) as
+    Record<"plain" | "withDoneTag" | "withWaitingTag", Record<string, unknown> & { payload: Record<string, unknown> }>;
+  const withInc = (e: Record<string, unknown>) => ({ ...e, tmux_incarnation: "100:1000" });
+  const storedPayload = () => {
+    const row = testDb.prepare("SELECT payload, source FROM workflow_events WHERE type = 'turn-stopped' ORDER BY id DESC LIMIT 1").get() as { payload: string; source: string };
+    return { payload: JSON.parse(row.payload), source: row.source };
+  };
+
+  beforeEach(() => { testDb = openDb(":memory:"); hermesTarget = null; forwardOk = true; forwardCalls = 0; });
+
+  it.each(["plain", "withDoneTag", "withWaitingTag"] as const)("accepts and stores the hook's %s output as the merge-question shape (the question wins)", async (name) => {
+    const res = await POST(postRequest(withInc(fixture[name])));
+    expect(await res.json()).toMatchObject({ ok: true });
+    const { payload, source } = storedPayload();
+    expect(source).toBe("deterministic");
+    expect(payload).toEqual(fixture.plain.payload);
+    expect(payload).not.toHaveProperty("message_tail");
+    expect(payload).not.toHaveProperty("capsule_minutes");
+  });
+
+  it.each([
+    ["message_tail", { message_tail: "x" }],
+    ["capsule_minutes", { capsule_minutes: 5 }],
+  ])("rejects merge-question with %s", async (_n, extra) => {
+    const body = withInc({ ...fixture.plain, payload: { ...fixture.plain.payload, ...extra } });
+    expect(await (await POST(postRequest(body))).json()).toMatchObject({ ok: false });
+  });
+
+  it("rejects merge-question from a non-deterministic source", async () => {
+    expect(await (await POST(postRequest(withInc({ ...fixture.plain, source: "behavioral" })))).json()).toMatchObject({ ok: false });
+  });
+
+  it("A6: merge_ask 0 is accepted on untagged and tagged payloads; merge_* without merge_ask 1, a bad sha and a bad branch are refused", async () => {
+    const stop = (source: string, payload: Record<string, unknown>) => withInc({
+      project: "p1", role: "lead", pane: "%1", type: "turn-stopped", source, emitter: "claude-stop", payload });
+    expect(await (await POST(postRequest(stop("behavioral", { message_tail: "prose", merge_ask: 0 })))).json()).toMatchObject({ ok: true });
+    expect(await (await POST(postRequest(stop("deterministic", { capsule_status: "done", capsule_rule: "tag", merge_ask: 0 })))).json()).toMatchObject({ ok: true });
+    expect(await (await POST(postRequest(stop("behavioral", { message_tail: "p", merge_ask: 0, merge_branch: "feat/x" })))).json()).toMatchObject({ ok: false });
+    expect(await (await POST(postRequest(withInc({ ...fixture.plain, payload: { ...fixture.plain.payload, merge_head_sha: "nope" } })))).json()).toMatchObject({ ok: false });
+    expect(await (await POST(postRequest(withInc({ ...fixture.plain, payload: { ...fixture.plain.payload, merge_branch: "a b" } })))).json()).toMatchObject({ ok: false });
+  });
+
+  it("A7: a stored hook merge_ask 1 survives a late classify attempt (the row is not deferred, nothing is rewritten)", async () => {
+    await POST(postRequest(withInc(fixture.plain)));
+    const id = (testDb.prepare("SELECT id FROM workflow_events WHERE type = 'turn-stopped'").get() as { id: number }).id;
+    const res = await classifyPost(new Request("http://127.0.0.1:3100/api/workflow/events/classify", {
+      method: "POST", headers: { "Content-Type": "application/json", origin: "http://127.0.0.1:3100" },
+      body: JSON.stringify({ id, capsule_status: "done" }),
+    }));
+    expect(await res.json()).toMatchObject({ ok: true, data: { settled: false } });
+    expect(storedPayload().payload).toMatchObject({ capsule_status: "needs_input", capsule_rule: "merge-question", merge_ask: 1 });
   });
 });

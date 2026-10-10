@@ -374,20 +374,17 @@ export function markDelivered(db: Database.Database, ids: number[], now = new Da
  * reaches the same `unknown`/`abandoned` state the `failed` branch reaches after five
  * retries, in one call — an honest "the model couldn't decide" answer is not a transport
  * failure and must not spend the retry budget (rung-7 indeterminate, 2026-09-22).
+ * A merge-question row is never `deferred`, so this never touches it (the hook's `merge_ask` survives).
  */
 export function classifyDeferred(
   db: Database.Database,
   id: number,
-  outcome: { status: CapsuleStatus; mergeAsk?: number } | { failed: true } | { indeterminate: true },
+  outcome: { status: CapsuleStatus } | { failed: true } | { indeterminate: true },
 ): boolean {
   const sql = "status" in outcome
-    ? outcome.mergeAsk !== undefined
-      ? `UPDATE workflow_events
-         SET payload = json_set(payload, '$.capsule_status', ?, '$.merge_ask', ?, '$.capsule_rule', 'classified')
-         WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`
-      : `UPDATE workflow_events
-         SET payload = json_set(payload, '$.capsule_status', ?, '$.capsule_rule', 'classified')
-         WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`
+    ? `UPDATE workflow_events
+       SET payload = json_set(payload, '$.capsule_status', ?, '$.capsule_rule', 'classified')
+       WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`
     : "indeterminate" in outcome
     ? `UPDATE workflow_events
        SET payload = json_set(payload, '$.capsule_status', 'unknown', '$.capsule_rule', 'abandoned')
@@ -399,9 +396,7 @@ export function classifyDeferred(
              CASE WHEN COALESCE(json_extract(payload, '$.capsule_attempts'), 0) + 1 >= 5
                   THEN 'abandoned' ELSE 'deferred' END)
        WHERE id = ? AND type = 'turn-stopped' AND json_extract(payload, '$.capsule_rule') = 'deferred'`;
-  const params = "status" in outcome
-    ? outcome.mergeAsk !== undefined ? [outcome.status, outcome.mergeAsk, id] : [outcome.status, id]
-    : [id];
+  const params = "status" in outcome ? [outcome.status, id] : [id];
   return db.prepare(sql).run(...params).changes === 1;
 }
 
