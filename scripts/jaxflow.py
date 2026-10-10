@@ -3535,6 +3535,26 @@ def _review_read_roots(review_repo, control_base, *, run, allowlist_root, docume
     return tuple(roots)
 
 
+def _deliver_terminal_event(post, repo, run_id, event):
+    """Spool-then-post-then-unspool of a worker's terminal event; returns `delivered`.
+    The spool is written BEFORE the POST so a failed delivery can be re-posted by the
+    reaper / `jaxflow cancel`; it is deleted only after the POST succeeded. A failure never
+    raises: it prints `event delivery FAILED: ...` and the caller records
+    `ledger_pending=not delivered` on the callback line. `_write_spool`/`_delete_spool` are
+    module globals looked up at call time. The refusal paths that use `_write_spool_at`
+    directly (:3267, :3331, :3535) are NOT delivery sites and stay as they are."""
+    delivered = True
+    try:
+        _write_spool(repo, run_id, event)
+        post(event)
+    except Exception as exc:
+        delivered = False
+        print(f"event delivery FAILED: {exc}")
+    if delivered:
+        _delete_spool(repo, run_id)
+    return delivered
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -3816,15 +3836,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
                     "payload": payload,
                 }
                 _persist_resume_checkpoint(manifest, control_repo, worktree, payload, run=run)
-                delivered = True
-                try:
-                    _write_spool(control_repo, run_id, finished_event)
-                    post(finished_event)
-                except Exception as exc:
-                    delivered = False
-                    print(f"event delivery FAILED: {exc}")
-                if delivered:
-                    _delete_spool(control_repo, run_id)
+                delivered = _deliver_terminal_event(post, control_repo, run_id, finished_event)
                 _send_callback(
                     manifest, run=run, kind="build", outcome="failure",
                     summary=payload["summary"], report_path=None, stage=payload["stage"],
@@ -3951,15 +3963,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
             "source": "deterministic", "emitter": "wrapper", "payload": payload,
         }
         _persist_resume_checkpoint(manifest, control_repo, worktree, payload, run=run)
-        delivered = True
-        try:
-            _write_spool(control_repo, run_id, finished_event)
-            post(finished_event)
-        except Exception as exc:
-            delivered = False
-            print(f"event delivery FAILED: {exc}")
-        if delivered:
-            _delete_spool(control_repo, run_id)
+        delivered = _deliver_terminal_event(post, control_repo, run_id, finished_event)
 
         manifest["worker_summary"] = summary
         manifest["worker_contract_status"] = contract_status
@@ -4195,15 +4199,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
                 "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
                 "payload": payload,
             }
-            delivered = True
-            try:
-                _write_spool(repo, run_id, finished_event)
-                post(finished_event)
-            except Exception as exc:
-                delivered = False
-                print(f"event delivery FAILED: {exc}")
-            if delivered:
-                _delete_spool(repo, run_id)
+            delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
             _send_callback(
                 manifest, run=run, kind="diff", outcome="no verdict",
                 summary=payload["summary"], report_path=None, stage=payload["stage"],
@@ -4302,15 +4298,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
         "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
         "source": "deterministic", "emitter": "wrapper", "payload": payload,
     }
-    delivered = True
-    try:
-        _write_spool(repo, run_id, finished_event)
-        post(finished_event)
-    except Exception as exc:
-        delivered = False
-        print(f"event delivery FAILED: {exc}")
-    if delivered:
-        _delete_spool(repo, run_id)
+    delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
 
     manifest["worker_summary"] = summary
     manifest["worker_contract_status"] = contract_status
@@ -4481,15 +4469,7 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
                 "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
                 "payload": payload,
             }
-            delivered = True
-            try:
-                _write_spool(repo, run_id, finished_event)
-                post(finished_event)
-            except Exception as exc:
-                delivered = False
-                print(f"event delivery FAILED: {exc}")
-            if delivered:
-                _delete_spool(repo, run_id)
+            delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
             _send_callback(
                 manifest, run=run, kind=kind, outcome="no verdict",
                 summary=payload["summary"], report_path=None, stage=payload["stage"],
@@ -4585,15 +4565,7 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
         "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
         "source": "deterministic", "emitter": "wrapper", "payload": payload,
     }
-    delivered = True
-    try:
-        _write_spool(repo, run_id, finished_event)
-        post(finished_event)
-    except Exception as exc:
-        delivered = False
-        print(f"event delivery FAILED: {exc}")
-    if delivered:
-        _delete_spool(repo, run_id)
+    delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
 
     manifest["worker_summary"] = summary
     manifest["worker_contract_status"] = contract_status
