@@ -20,6 +20,13 @@ describe("handleMissionCurrent", () => {
     expect(await (await handleMissionCurrent(undefined, deps)).json()).toEqual({ ok: true, data: created });
   });
 
+  it("returns autonomous for an active autonomous mission", async () => {
+    const deps = depsWithDb();
+    insertMission(deps.getDb(), { name: "Ship it", goal: "g", milestones: ["m1"], autonomous: true });
+    const body = await (await handleMissionCurrent(undefined, deps)).json();
+    expect(body.data.autonomous).toBe(true);
+  });
+
   it("a DB failure returns {ok:false,error}, never a crash", async () => {
     const deps: MissionCurrentRouteDeps = { getDb: depsWithDb().getDb, getActiveMission: () => { throw new Error("db unavailable"); } };
     expect(await (await handleMissionCurrent(undefined, deps)).json()).toEqual({ ok: false, error: "db unavailable" });
