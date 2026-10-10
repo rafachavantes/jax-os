@@ -1933,6 +1933,33 @@ def _select_build_profile(args):
     return runtime, model, effort, requested_profile
 
 
+def _resolve_explicit_base(args, run, repo):
+    """`--base` resolved to a 40-hex commit SHA BEFORE the reservation, or None when the flag
+    is absent. It is the SHA, never the caller's string, that reaches `git worktree add`."""
+    # `--base` is resolved to a SHA here, BEFORE the reservation, and it is the SHA -- never
+    # the caller's string -- that reaches `git worktree add` further down. Two reasons, both
+    # load-bearing:
+    #   * `git worktree add -b <branch> <path> <base>` takes the base POSITIONALLY with no
+    #     `--` guard, so a value like `--foo` would be read by git as an option. A resolved
+    #     40-hex SHA cannot start with `-`, which closes that off structurally rather than by
+    #     blacklisting shapes.
+    #   * `rev-parse --verify <base>^{commit}` proves the ref exists and names a commit, so a
+    #     typo refuses here instead of half-creating a worktree and unwinding it.
+    # The explicit shape gate still runs first: `rev-parse` itself would read a leading `--`
+    # as its own option, so the value has to be proven flag-shaped-safe before it is handed
+    # to git at all.
+    if args.base is None:
+        return None
+    if (args.base.startswith("-") or any(c.isspace() for c in args.base)
+            or not 1 <= _utf16_len(args.base) <= 512):
+        raise Refusal("base-invalid")
+    probe = run(["git", "rev-parse", "--verify", f"{args.base}^{{commit}}"], cwd=repo)
+    resolved = probe.stdout.strip()
+    if probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved):
+        raise Refusal("base-invalid")
+    return resolved
+
+
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     cwd = Path.cwd().resolve()
     repo = _require_toplevel(run, cwd)
@@ -1971,28 +1998,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         "callerSession": caller_session, "callerPane": env.get("TMUX_PANE"),
         "model": model, "effort": effort, "repo": str(repo),
     })
-    # `--base` is resolved to a SHA here, BEFORE the reservation, and it is the SHA -- never
-    # the caller's string -- that reaches `git worktree add` further down. Two reasons, both
-    # load-bearing:
-    #   * `git worktree add -b <branch> <path> <base>` takes the base POSITIONALLY with no
-    #     `--` guard, so a value like `--foo` would be read by git as an option. A resolved
-    #     40-hex SHA cannot start with `-`, which closes that off structurally rather than by
-    #     blacklisting shapes.
-    #   * `rev-parse --verify <base>^{commit}` proves the ref exists and names a commit, so a
-    #     typo refuses here instead of half-creating a worktree and unwinding it.
-    # The explicit shape gate still runs first: `rev-parse` itself would read a leading `--`
-    # as its own option, so the value has to be proven flag-shaped-safe before it is handed
-    # to git at all.
-    base_sha = None
-    if args.base is not None:
-        if (args.base.startswith("-") or any(c.isspace() for c in args.base)
-                or not 1 <= _utf16_len(args.base) <= 512):
-            raise Refusal("base-invalid")
-        probe = run(["git", "rev-parse", "--verify", f"{args.base}^{{commit}}"], cwd=repo)
-        resolved = probe.stdout.strip()
-        if probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved):
-            raise Refusal("base-invalid")
-        base_sha = resolved
+    base_sha = _resolve_explicit_base(args, run, repo)
     whitelist = [p.strip() for p in args.whitelist.split(",") if p.strip()]
     worktree = _branch_worktree_path(allowlist_root, project, args.branch, resolve=False)
 
