@@ -24,6 +24,7 @@ import pytest
 
 import general_settings
 import jaxflow
+import jaxflow_merge
 import jaxflow_workerkit
 import jaxflow_common
 import uuid
@@ -5431,7 +5432,7 @@ def _tl2_merge_child(cfg, start, published, proceed):
                     proceed.wait(30)
             return fake_run(argv, cwd)
 
-        rc = jaxflow.cmd_merge(
+        rc = jaxflow_merge.cmd_merge(
             _MergeArgs(sha=cfg["sha"], checks="true"),
             run=run, post=_tl2_ledger_post(cfg["db"]), env=_merge_env(),
             now=_fixed_now, allowlist_root=Path(cfg["allow_root"]),
@@ -12502,13 +12503,13 @@ def test_delivery_target_falls_back_to_default_branch_with_no_preset_block(tmp_p
             return _completed(0, "refs/remotes/origin/trunk\n")
         return _completed(1, "")
 
-    target, no_preset, preset = jaxflow._resolve_delivery_target(repo, run=fake_run)
+    target, no_preset, preset = jaxflow_merge._resolve_delivery_target(repo, run=fake_run)
     assert (target, no_preset, preset) == ("trunk", True, None)
     assert calls, "the fallback must actually consult _default_branch"
 
 
 def test_delivery_target_absent_agents_file_is_the_same_fallback(tmp_path):
-    target, no_preset, preset = jaxflow._resolve_delivery_target(
+    target, no_preset, preset = jaxflow_merge._resolve_delivery_target(
         tmp_path, run=lambda argv, cwd=None: _completed(0, "refs/remotes/origin/main\n")
     )
     assert (target, no_preset, preset) == ("main", True, None)
@@ -12520,7 +12521,7 @@ def test_delivery_target_reads_the_dual_branch_preset_block(tmp_path):
     def fake_run(argv, cwd=None):
         raise AssertionError("a resolved preset must never call _default_branch")
 
-    assert jaxflow._resolve_delivery_target(repo, run=fake_run) == ("staging", False, "dual-branch")
+    assert jaxflow_merge._resolve_delivery_target(repo, run=fake_run) == ("staging", False, "dual-branch")
 
 
 @pytest.mark.parametrize("preset", ["single-branch", "single-branch-pr", "bubble-buildprint"])
@@ -12530,7 +12531,7 @@ def test_delivery_target_reads_the_other_presets(tmp_path, preset):
         f"## Deploy policy\n\n**Preset: `{preset}`** — notes.\n\n"
         "- Base branch: `main`. Delivery target: `main`.\n",
     )
-    target, no_preset, resolved = jaxflow._resolve_delivery_target(
+    target, no_preset, resolved = jaxflow_merge._resolve_delivery_target(
         repo, run=lambda argv, cwd=None: _completed(1, "")
     )
     assert (target, no_preset, resolved) == ("main", False, preset)
@@ -12544,7 +12545,7 @@ def test_delivery_target_reads_the_dual_branch_pr_preset_block(tmp_path):
         "`staging`; executor and gate per `merge-contract.md`.\n"
         "- Production target: `main`.\n",
     )
-    assert jaxflow._resolve_delivery_target(
+    assert jaxflow_merge._resolve_delivery_target(
         repo, run=lambda argv, cwd=None: _completed(1, ""),
     ) == ("staging", False, "dual-branch-pr")
 
@@ -12569,7 +12570,7 @@ def test_delivery_target_reads_the_dual_branch_pr_preset_block(tmp_path):
 def test_delivery_target_refuses_with_preset_unknown(tmp_path, agents_text):
     repo = _agents(tmp_path, agents_text)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
+        jaxflow_merge._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
     assert exc.value.code == "preset-unknown"
 
 
@@ -12582,7 +12583,7 @@ _FIVE_PRESETS = ["single-branch", "single-branch-pr", "dual-branch", "dual-branc
 ])
 def test_delivery_target_resolves_each_of_the_five_presets(tmp_path, preset, target):
     repo = _agents(tmp_path, f"**Preset: `{preset}`** — a.\n\n- Delivery target: `{target}`.\n")
-    assert jaxflow._resolve_delivery_target(
+    assert jaxflow_merge._resolve_delivery_target(
         repo, run=lambda argv, cwd=None: _completed(1, ""),
     ) == (target, False, preset)
 
@@ -12591,15 +12592,15 @@ def test_delivery_target_resolves_each_of_the_five_presets(tmp_path, preset, tar
 def test_delivery_target_refuses_an_old_preset_name_and_lists_the_five(tmp_path, old):
     repo = _agents(tmp_path, f"**Preset: `{old}`** — a.\n\nDelivery target: `main`.\n")
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
+        jaxflow_merge._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
     assert exc.value.code == "preset-unknown"
     assert all(name in exc.value.hint for name in _FIVE_PRESETS)
 
 
 def test_preset_sets_partition_the_five_names():
-    local, pr = set(jaxflow._LOCAL_PRESETS), set(jaxflow._PR_PRESETS)
+    local, pr = set(jaxflow_merge._LOCAL_PRESETS), set(jaxflow_merge._PR_PRESETS)
     assert local | pr == set(_FIVE_PRESETS) and not local & pr
-    assert set(jaxflow._RELEASE_PRESETS) == {"dual-branch-pr"}
+    assert set(jaxflow_merge._RELEASE_PRESETS) == {"dual-branch-pr"}
 
 
 # cold review e24e7fb33bc8 F1: the production target resolves for RELEASE presets only, so a stray
@@ -12624,25 +12625,25 @@ _PRODUCTION_REFUSALS = [
 def test_production_target_refuses(tmp_path, agents_text):
     repo = _agents(tmp_path, agents_text)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._resolve_production_target(repo)
+        jaxflow_merge._resolve_production_target(repo)
     assert exc.value.code == "production-target-unconfigured"
 
 
 def test_production_target_reads_the_dual_branch_pr_block(tmp_path):
     repo = _agents(tmp_path, "**Preset: `dual-branch-pr`** — a.\n\nDelivery target: `staging`.\nProduction target: `main`.\n")
-    assert jaxflow._resolve_production_target(repo) == "main"
+    assert jaxflow_merge._resolve_production_target(repo) == "main"
 
 
 def test_required_target_for_branch_is_delivery_for_a_feature_head(tmp_path):
     repo = _agents(tmp_path, "**Preset: `dual-branch-pr`** — a.\n\nDelivery target: `staging`.\nProduction target: `main`.\n")
-    assert jaxflow._required_target_for_branch(
+    assert jaxflow_merge._required_target_for_branch(
         repo, "feat/x", run=lambda argv, cwd=None: _completed(1, ""),
     ) == ("staging", "dual-branch-pr")
 
 
 def test_required_target_for_branch_is_production_for_a_release_head(tmp_path):
     repo = _agents(tmp_path, "**Preset: `dual-branch-pr`** — a.\n\nDelivery target: `staging`.\nProduction target: `main`.\n")
-    assert jaxflow._required_target_for_branch(
+    assert jaxflow_merge._required_target_for_branch(
         repo, "release/2026-09-27-staging-promotion", run=lambda argv, cwd=None: _completed(1, ""),
     ) == ("main", "dual-branch-pr")
 
@@ -12653,7 +12654,7 @@ def test_required_target_for_branch_on_a_local_preset_refuses_a_release_head(tmp
     # this only matters once `merge`/`pr open` actually route a release/* head through here
     # (Task 6/7); this test pins the helper's own behavior in isolation.
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._required_target_for_branch(
+        jaxflow_merge._required_target_for_branch(
             repo, "release/x", run=lambda argv, cwd=None: _completed(1, ""),
         )
     assert exc.value.code == "production-target-unconfigured"
@@ -12898,7 +12899,7 @@ def test_pr_open_refuses_github_integration_disabled_before_any_gh_call(tmp_path
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_pr_open(_pr_open_args(), run=fake_run, env=_merge_env())
+        jaxflow_merge.cmd_pr_open(_pr_open_args(), run=fake_run, env=_merge_env())
     assert exc.value.code == "github-integration-disabled"
     assert not any(c[:2] == ["gh", "pr"] or c[:2] == ["git", "push"] for c in calls), calls
 
@@ -12912,7 +12913,7 @@ def test_merge_pr_refuses_github_integration_disabled_before_any_gh_call(tmp_pat
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(target="staging"), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(target="staging"), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "github-integration-disabled"
     assert not any(c[:2] == ["gh", "pr"] or c[:2] == ["git", "push"] for c in calls), calls
@@ -12927,7 +12928,7 @@ def test_release_refuses_github_integration_disabled_before_any_gh_call(tmp_path
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_release(SimpleNamespace(from_caller="claude"), run=fake_run, env=_merge_env())
+        jaxflow_merge.cmd_release(SimpleNamespace(from_caller="claude"), run=fake_run, env=_merge_env())
     assert exc.value.code == "github-integration-disabled"
     assert not any(c[:2] == ["gh", "pr"] or c[:2] == ["git", "push"] for c in calls), calls
 
@@ -12953,14 +12954,14 @@ def test_preset_matrix_pr_open_and_release_refusals(
         ("git", "check-ref-format",): _completed(0, ""),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_pr_open(
+        jaxflow_merge.cmd_pr_open(
             _pr_open_args(target="not-the-target"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
     assert exc.value.code == ("preset-not-pr" if pr_refused else "target-mismatch")
     if release_refused:
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_release(
+            jaxflow_merge.cmd_release(
                 SimpleNamespace(from_caller="claude"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -12979,7 +12980,7 @@ def test_github_repo_slug_parses_ssh_and_https_remotes(tmp_path):
             if argv[:3] == ["git", "remote", "get-url"]:
                 return _completed(0, f"{url}\n")
             return _completed(1, "")
-        assert jaxflow._github_repo_slug(run, tmp_path) == expected
+        assert jaxflow_merge._github_repo_slug(run, tmp_path) == expected
 
 
 def test_github_repo_slug_refuses_when_origin_is_unreadable_or_not_github(tmp_path):
@@ -12989,7 +12990,7 @@ def test_github_repo_slug_refuses_when_origin_is_unreadable_or_not_github(tmp_pa
                    _completed(0, "https://evilgithub.com/acme/x.git\n")):
         run = lambda argv, cwd=None, result=result: result
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow._github_repo_slug(run, tmp_path)
+            jaxflow_merge._github_repo_slug(run, tmp_path)
         assert exc.value.code == "github-unreachable"
 
 
@@ -13005,7 +13006,7 @@ def test_gh_pr_view_parses_json_and_passes_the_exact_argv():
     def run(argv, cwd=None):
         calls.append(argv)
         return _completed(0, json.dumps(_GH_PR_VIEW_BODY))
-    view = jaxflow._gh_pr_view(run, Path("/repo"), "acme/x", 7)
+    view = jaxflow_merge._gh_pr_view(run, Path("/repo"), "acme/x", 7)
     assert view["state"] == "OPEN"
     assert calls == [["gh", "pr", "view", "7", "--repo", "acme/x", "--json",
                        "number,url,state,headRefOid,headRefName,baseRefName,mergeable,mergeCommit"]]
@@ -13015,17 +13016,17 @@ def test_gh_pr_view_refuses_github_unreachable_on_failure_or_bad_json(tmp_path):
     for result in (_completed(1, ""), _completed(0, "not json")):
         run = lambda argv, cwd=None, result=result: result
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow._gh_pr_view(run, tmp_path, "acme/x", 7)
+            jaxflow_merge._gh_pr_view(run, tmp_path, "acme/x", 7)
         assert exc.value.code == "github-unreachable"
 
 
 def test_resolve_pr_number_zero_one_and_ambiguous_matches(tmp_path):
     def run_for(matches):
         return lambda argv, cwd=None: _completed(0, json.dumps(matches))
-    assert jaxflow._resolve_pr_number(run_for([]), tmp_path, "acme/x", "feat/x", "staging") is None
-    assert jaxflow._resolve_pr_number(run_for([{"number": 9}]), tmp_path, "acme/x", "feat/x", "staging") == 9
+    assert jaxflow_merge._resolve_pr_number(run_for([]), tmp_path, "acme/x", "feat/x", "staging") is None
+    assert jaxflow_merge._resolve_pr_number(run_for([{"number": 9}]), tmp_path, "acme/x", "feat/x", "staging") == 9
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow._resolve_pr_number(run_for([{"number": 9}, {"number": 10}]), tmp_path, "acme/x", "feat/x", "staging")
+        jaxflow_merge._resolve_pr_number(run_for([{"number": 9}, {"number": 10}]), tmp_path, "acme/x", "feat/x", "staging")
     assert exc.value.code == "pr-ambiguous"
 
 
@@ -13033,7 +13034,7 @@ def test_resolve_pr_number_refuses_github_unreachable_on_failure_or_bad_json(tmp
     for result in (_completed(1, ""), _completed(0, "not json")):
         run = lambda argv, cwd=None, result=result: result
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow._resolve_pr_number(run, tmp_path, "acme/x", "feat/x", "staging")
+            jaxflow_merge._resolve_pr_number(run, tmp_path, "acme/x", "feat/x", "staging")
         assert exc.value.code == "github-unreachable"
 
 
@@ -13047,18 +13048,18 @@ def test_find_recorded_pr_returns_the_latest_matching_branch_row(tmp_path):
     _insert(con, None, "demo", "lead", "pr-opened",
             {"branch": "feat/y", "sha": "c" * 40, "pr_number": 9}, ts="2026-09-27T12:00:00")
     con.close()
-    found = jaxflow._find_recorded_pr("demo", "feat/x", db_path=db)
+    found = jaxflow_merge._find_recorded_pr("demo", "feat/x", db_path=db)
     assert found == {"branch": "feat/x", "sha": "b" * 40, "pr_number": 7}
 
 
 def test_find_recorded_pr_returns_none_with_no_matching_row(tmp_path):
     db = tmp_path / "jaxos.db"
     _fresh_db(db).close()
-    assert jaxflow._find_recorded_pr("demo", "feat/x", db_path=db) is None
+    assert jaxflow_merge._find_recorded_pr("demo", "feat/x", db_path=db) is None
 
 
 def test_find_recorded_pr_returns_none_with_no_db_at_all(tmp_path):
-    assert jaxflow._find_recorded_pr("demo", "feat/x", db_path=tmp_path / "nope.db") is None
+    assert jaxflow_merge._find_recorded_pr("demo", "feat/x", db_path=tmp_path / "nope.db") is None
 
 
 def _pr_open_args(branch="feat/x", sha="a" * 40, target="staging", title="Ship it",
@@ -13100,7 +13101,7 @@ def test_pr_open_happy_path_pushes_creates_and_records(tmp_path, monkeypatch):
         # jaxflow._open_ro(db)` was self-referential and would recurse forever the moment it
         # actually ran).
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_pr_open(
+        result = jaxflow_merge.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13138,7 +13139,7 @@ def test_pr_open_resumes_at_the_same_sha_with_no_mutation(tmp_path, monkeypatch)
     })
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_pr_open(
+        result = jaxflow_merge.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13170,7 +13171,7 @@ def test_pr_open_fast_forward_fix_pushes_and_refreshes_the_record(tmp_path, monk
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        jaxflow.cmd_pr_open(
+        jaxflow_merge.cmd_pr_open(
             _pr_open_args(sha=new_sha), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13199,7 +13200,7 @@ def test_pr_open_refuses_a_diverged_remote_head(tmp_path, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_pr_open(
+            jaxflow_merge.cmd_pr_open(
                 _pr_open_args(sha=other_sha), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13224,7 +13225,7 @@ def test_pr_open_reports_a_closed_unmerged_pr_never_reopening_it(tmp_path, monke
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_pr_open(
+            jaxflow_merge.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13252,7 +13253,7 @@ def test_pr_open_refuses_a_base_mismatch_on_a_recorded_pr_before_any_push_or_eve
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_pr_open(
+            jaxflow_merge.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13280,7 +13281,7 @@ def test_pr_open_refuses_a_head_branch_mismatch_on_a_recorded_pr_before_any_push
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_pr_open(
+            jaxflow_merge.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13306,7 +13307,7 @@ def test_pr_open_refuses_target_mismatch(tmp_path, monkeypatch, agents, target, 
         ("git", "check-ref-format",): _completed(0, ""),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_pr_open(
+        jaxflow_merge.cmd_pr_open(
             _pr_open_args(target=target), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13320,7 +13321,7 @@ def test_pr_open_argparse_wiring_end_to_end(monkeypatch, tmp_path):
         seen["branch"] = args.branch
         seen["title"] = args.title
         return {"number": 1, "url": "https://github.com/acme/x/pull/1", "repo_slug": "acme/x"}
-    monkeypatch.setattr(jaxflow, "cmd_pr_open", fake_cmd_pr_open)
+    monkeypatch.setattr(jaxflow_merge, "cmd_pr_open", fake_cmd_pr_open)
     argv = ["pr", "open", "feat/x", "--sha", "a" * 40, "--target", "staging", "--title", "Ship it"]
     assert jaxflow.main(argv) == jaxflow_common.OK
     assert seen == {"branch": "feat/x", "title": "Ship it"}
@@ -13341,7 +13342,7 @@ def test_pr_open_refuses_a_local_preset_before_any_push_or_gh_call(tmp_path, mon
             ("git", "check-ref-format",): _completed(0, ""),
         })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_pr_open(
+        jaxflow_merge.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13361,7 +13362,7 @@ def test_pr_open_refuses_a_no_preset_repo_before_any_push_or_gh_call(tmp_path, m
             ("git", "check-ref-format",): _completed(0, ""),
         })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_pr_open(
+        jaxflow_merge.cmd_pr_open(
             _pr_open_args(), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13388,7 +13389,7 @@ def test_pr_open_refuses_preset_not_pr_for_a_release_head_before_target_resoluti
         ("git", "check-ref-format",): _completed(0, ""),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_pr_open(
+        jaxflow_merge.cmd_pr_open(
             _pr_open_args(branch=head, target="main"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13411,7 +13412,7 @@ def test_pr_open_single_branch_pr_targets_main_and_records_the_pr(tmp_path, monk
     })
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_pr_open(
+        result = jaxflow_merge.cmd_pr_open(
             _pr_open_args(target="main"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13435,7 +13436,7 @@ def test_pr_open_single_branch_pr_refuses_a_release_head_even_with_a_production_
             ("git", "check-ref-format",): _completed(0, ""),
         })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_pr_open(
+        jaxflow_merge.cmd_pr_open(
             _pr_open_args(branch=head, target="main"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13519,7 +13520,7 @@ def test_merge_pr_happy_path_verifies_checks_merges_and_syncs(tmp_path, monkeypa
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_merge(
+        result = jaxflow_merge.cmd_merge(
             _MergeArgs(target="staging"), run=run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13543,7 +13544,7 @@ def test_merge_pr_github_merge_refused_leaves_nothing_recorded(tmp_path, monkeyp
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_ledger_post(db, events),
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13562,7 +13563,7 @@ def test_merge_pr_merge_queue_required(tmp_path, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13595,7 +13596,7 @@ def test_merge_pr_reports_a_success_that_did_not_actually_merge(tmp_path, monkey
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=run, post=_ledger_post(db, events),
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13615,7 +13616,7 @@ def test_merge_pr_identity_mismatch_on_base(tmp_path, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13638,7 +13639,7 @@ def test_merge_pr_refuses_a_head_branch_mismatch(tmp_path, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13659,7 +13660,7 @@ def test_merge_pr_head_moved_since_approval(tmp_path, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13675,7 +13676,7 @@ def test_merge_pr_mergeability_unknown_after_bounded_retries_mutates_nothing(tmp
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13692,7 +13693,7 @@ def test_merge_pr_rerun_after_a_real_github_merge_is_recording_only(tmp_path, mo
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_merge(
+        result = jaxflow_merge.cmd_merge(
             _MergeArgs(target="staging"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13717,7 +13718,7 @@ def test_merge_pr_already_merged_head_mismatch_refuses_pr_head_moved(tmp_path, m
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13770,7 +13771,7 @@ def test_merge_pr_target_mutual_exclusion_by_head_shape(tmp_path, monkeypatch, b
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         if expected:
-            result = jaxflow.cmd_merge(
+            result = jaxflow_merge.cmd_merge(
                 _MergeArgs(branch=branch, sha=sha, target=target), run=run,
                 post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
                 allowlist_root=tmp_path.parent,
@@ -13778,7 +13779,7 @@ def test_merge_pr_target_mutual_exclusion_by_head_shape(tmp_path, monkeypatch, b
             assert result == jaxflow_common.OK
         else:
             with pytest.raises(ji.Refusal) as exc:
-                jaxflow.cmd_merge(
+                jaxflow_merge.cmd_merge(
                     _MergeArgs(branch=branch, sha=sha, target=target), run=run,
                     post=_never_post, env=_merge_env(), now=_fixed_now,
                     allowlist_root=tmp_path.parent,
@@ -13811,7 +13812,7 @@ def test_merge_single_branch_pr_feature_head_takes_the_pr_path(tmp_path, monkeyp
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_merge(
+        result = jaxflow_merge.cmd_merge(
             _MergeArgs(branch="feat/x", sha=sha, target="main"), run=run,
             post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent,
@@ -13831,7 +13832,7 @@ def test_merge_single_branch_pr_refuses_a_release_head(tmp_path, monkeypatch):
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(
+        jaxflow_merge.cmd_merge(
             _MergeArgs(branch="release/2026-10-07", sha="a" * 40, target="main"),
             run=fake_run, post=_never_post, env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent,
@@ -13859,7 +13860,7 @@ def test_merge_pr_no_recorded_pr_and_zero_gh_list_matches_refuses_pr_not_found(t
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13882,7 +13883,7 @@ def test_merge_pr_no_recorded_pr_and_ambiguous_gh_list_refuses(tmp_path, monkeyp
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=fake_run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13904,7 +13905,7 @@ def test_merge_pr_checks_dirtied_tree_refuses(tmp_path, monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging"), run=run, post=_never_post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -13943,7 +13944,7 @@ def test_release_happy_path_fetches_snapshots_and_opens_the_pr(tmp_path, monkeyp
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_release(
+        result = jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -13976,7 +13977,7 @@ def test_release_name_collision_same_day_gets_a_numeric_suffix(tmp_path, monkeyp
     })
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_release(
+        result = jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -14003,7 +14004,7 @@ def test_release_name_collision_local_ref_gets_a_numeric_suffix(tmp_path, monkey
     })
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_release(
+        result = jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -14032,7 +14033,7 @@ def test_release_reuses_an_open_release_pr_without_advancing_the_snapshot(tmp_pa
     })
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_release(
+        result = jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -14066,7 +14067,7 @@ def test_release_reconciles_an_interrupted_attempt_instead_of_duplicating(tmp_pa
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_release(
+        result = jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, events),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -14083,7 +14084,7 @@ def test_release_refuses_a_repo_outside_the_allowlist_before_any_mutation(tmp_pa
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_release(
+        jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_never_post,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path / "elsewhere",
         )
@@ -14116,7 +14117,7 @@ def test_release_does_not_reuse_a_same_numbered_pr_recorded_for_another_repo(tmp
     })
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_release(
+        result = jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -14158,7 +14159,7 @@ def test_release_does_not_reuse_when_the_live_pr_head_no_longer_matches_the_reco
     })
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        result = jaxflow.cmd_release(
+        result = jaxflow_merge.cmd_release(
             SimpleNamespace(from_caller="claude"), run=fake_run, post=_ledger_post(db, []),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -14172,7 +14173,7 @@ def test_release_argparse_wiring_end_to_end(monkeypatch):
         seen["from_caller"] = args.from_caller
         return {"number": 1, "url": "https://github.com/acme/x/pull/1",
                 "snapshot_sha": "a" * 40, "branch": "release/x"}
-    monkeypatch.setattr(jaxflow, "cmd_release", fake_cmd_release)
+    monkeypatch.setattr(jaxflow_merge, "cmd_release", fake_cmd_release)
     assert jaxflow.main(["release", "--from", "claude"]) == jaxflow_common.OK
     assert seen == {"from_caller": "claude"}
 
@@ -14258,7 +14259,7 @@ def test_merge_refuses_a_sha_that_is_not_full_40_hex(tmp_path, monkeypatch):
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")}
     )
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha="abc1234"), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha="abc1234"), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
     _assert_no_mutation(calls)
@@ -14278,7 +14279,7 @@ def test_merge_refuses_when_head_is_not_the_approved_sha(tmp_path, monkeypatch):
         ("git", "branch", "--show-current"): _completed(0, "feat/x\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
     _assert_no_mutation(calls)  # §7.1 #19: zero mutating calls past the detecting reads
@@ -14296,7 +14297,7 @@ def test_merge_refuses_a_dirty_tracked_tree_untracked_files_pass(tmp_path, monke
     dirty = {**base, ("git", "status", "--porcelain"): _completed(0, " M src/app.py\n")}
     fake_run, calls = _merge_runner(tmp_path, script=dirty)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "dirty-tracked-tree"
     _assert_no_mutation(calls)
@@ -14308,7 +14309,7 @@ def test_merge_refuses_a_dirty_tracked_tree_untracked_files_pass(tmp_path, monke
               _completed(128, "", "fatal: not a git repository\n")}
     fake_run3, calls3 = _merge_runner(tmp_path, script=broken)
     with pytest.raises(ji.Refusal) as exc3:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run3, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run3, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc3.value.code == "dirty-tracked-tree"
     assert "git status failed" in exc3.value.hint
@@ -14320,7 +14321,7 @@ def test_merge_refuses_a_dirty_tracked_tree_untracked_files_pass(tmp_path, monke
     clean = {**base, ("git", "status", "--porcelain"): _completed(0, "")}
     fake_run2, calls2 = _merge_runner(tmp_path, script=clean)
     with contextlib.suppress(Exception):
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run2, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run2, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     # The whole argv, not a 3-element prefix (diff review 2026-09-07): what actually
     # makes an untracked artifact pass this gate is `--untracked-files=no` on the probe,
@@ -14345,7 +14346,7 @@ def test_merge_refuses_when_the_target_switch_lands_elsewhere(tmp_path, monkeypa
         ("git", "branch", "--show-current"): _completed(0, "feat/x\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-mismatch"
     _assert_no_mutation(calls)
@@ -14455,7 +14456,7 @@ def test_merge_happy_path_call_order_and_printed_outcome_with_remote(tmp_path, m
         calls.append(["POST", event["type"]])
         posted.append(event)
 
-    rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=fake_run,
+    rc = jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=fake_run,
                            post=record_post, env=_merge_env(), now=_fixed_now,
                            allowlist_root=tmp_path.parent)
     assert rc == jaxflow_common.OK
@@ -14523,7 +14524,7 @@ def test_merge_refuses_when_worktree_claim_held(tmp_path, monkeypatch):
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     with jresume.worktree_claim(tmp_path, worktree):
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(
+            jaxflow_merge.cmd_merge(
                 _MergeArgs(sha=sha, checks="true"), run=fake_run,
                 post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
                 allowlist_root=tmp_path.parent,
@@ -14547,7 +14548,7 @@ def test_merge_refuses_nonterminal_newer_build(tmp_path, monkeypatch):
     con.close()
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(
+        jaxflow_merge.cmd_merge(
             _MergeArgs(sha=sha, checks="true"), run=fake_run,
             post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent,
@@ -14561,7 +14562,7 @@ def test_merge_runs_checks_on_a_non_fast_forward_merge(tmp_path, monkeypatch, ca
     sha = "a" * 40
     _worktree_path(tmp_path).mkdir(parents=True)
     fake_run, calls = _switch_aware_runner(tmp_path, sha)  # default: not an ancestor
-    rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=fake_run,
+    rc = jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=fake_run,
                            post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
                            allowlist_root=tmp_path.parent)
     assert rc == jaxflow_common.OK
@@ -14578,7 +14579,7 @@ def test_merge_still_refuses_checks_failed_on_a_non_fast_forward(tmp_path, monke
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("/bin/bash", "-lc"): _completed(1, "boom")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
     flat = [" ".join(c) for c in calls]
@@ -14602,7 +14603,7 @@ def test_merge_refuses_an_equal_tip_merge_as_merge_failed(tmp_path, monkeypatch)
         },
     )
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="true"), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, checks="true"), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
     flat = [" ".join(c) for c in calls]
@@ -14620,7 +14621,7 @@ def test_merge_fast_forward_uses_the_captured_pre_merge_tip_not_a_later_head_rea
     _worktree_path(tmp_path).mkdir(parents=True)
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("git", "merge-base", "--is-ancestor"): _completed(0, "")})
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: {"ok": True},
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: {"ok": True},
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     flat = [" ".join(c) for c in calls]
     i_tip = flat.index("git rev-parse HEAD")
@@ -14656,7 +14657,7 @@ def test_merge_a_non_fast_forward_target_does_not_skip_checks(tmp_path, monkeypa
             return is_ancestor(argv)
         return base_fake(argv, cwd=cwd)
 
-    rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=wrapped,
+    rc = jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, checks="pytest -q"), run=wrapped,
                            post=lambda e: {"ok": True}, env=_merge_env(), now=_fixed_now,
                            allowlist_root=tmp_path.parent)
     assert rc == jaxflow_common.OK
@@ -14669,7 +14670,7 @@ def test_merge_without_a_remote_skips_push_and_says_so(tmp_path, monkeypatch, ca
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha, remote=False)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert not any(c[:2] == ["git", "push"] for c in calls)
     out = capsys.readouterr().out.strip().splitlines()
@@ -14681,7 +14682,7 @@ def test_merge_prints_the_no_preset_block_line(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert "target: main (no preset block)" in capsys.readouterr().out
 
@@ -14692,7 +14693,7 @@ def test_merge_omits_pane_when_tmux_pane_is_unset(tmp_path, monkeypatch):
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
     env = _merge_env()
     del env["TMUX_PANE"]
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                       env=env, now=_fixed_now, allowlist_root=tmp_path.parent)
     assert "pane" not in posted[0], "absent pane is omitted, never sent as null"
 
@@ -14708,7 +14709,7 @@ def test_merge_aborts_cleanly_with_zero_further_calls(tmp_path, monkeypatch, fai
     fake_run, calls = _switch_aware_runner(tmp_path, sha,
                                            overrides={failing: _completed(1, "boom")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
     flat = [" ".join(c) for c in calls]
@@ -14732,7 +14733,7 @@ def test_merge_post_failure_keeps_the_commit_and_prints_the_resume_line(tmp_path
         raise RuntimeError("hub down")
 
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=failing_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=failing_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "hub-unreachable"
     flat = [" ".join(c) for c in calls]
@@ -14748,7 +14749,7 @@ def test_merge_push_failure_keeps_everything_and_cleans_nothing(tmp_path, monkey
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("git", "push"): _completed(1, "rejected")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "push-failed"
     assert len(posted) == 1, "the audit row was already posted and is not retried"
@@ -14768,7 +14769,7 @@ def test_merge_copies_worktree_reports_before_removing_it(tmp_path, monkeypatch)
     (worktree / ".local" / "reports" / "abc123abc123.tests.txt").write_text(
         "42 passed", encoding="utf-8")
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     dest = tmp_path / ".local" / "reports"
     assert dest.joinpath("abc123abc123.md").read_text(encoding="utf-8") == "report"
@@ -14795,7 +14796,7 @@ def test_merge_writes_status_md_stage_ship_and_drops_the_gate(tmp_path, monkeypa
         encoding="utf-8",
     )
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     text = (tmp_path / ".jax-os" / "status.md").read_text(encoding="utf-8")
     assert "stage: ship" in text
@@ -14822,7 +14823,7 @@ def test_merge_detects_a_resume_and_skips_merge_checks_and_commit(tmp_path, monk
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{sha}\n"),
         ("git", "remote", "get-url"): _completed(2, ""),   # 2 == no origin
     })
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     flat = [" ".join(c) for c in calls]
     for banned in ("git merge --no-ff", "git commit", "git diff --quiet", "/bin/bash -lc",
@@ -14845,7 +14846,7 @@ def test_merge_does_not_mistake_an_unrelated_merge_commit_for_a_resume(tmp_path,
         tmp_path, sha,
         overrides={("git", "rev-parse", "--verify", "main^2"): _completed(0, "d" * 40 + "\n")})
     _worktree_path(tmp_path).mkdir(parents=True)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run,
                       post=lambda e: calls.append(["POST", e["type"]]),
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     flat = [" ".join(c) for c in calls]
@@ -14873,7 +14874,7 @@ def test_merge_reports_when_the_abort_could_not_clean_the_checkout(tmp_path, mon
             ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(0, "e" * 40 + "\n"),
         })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
     assert "exited 128" in exc.value.hint, "the abort's own exit code is reported (F11)"
@@ -14892,7 +14893,7 @@ def test_merge_abort_that_succeeds_cleanly_adds_no_state_note(tmp_path, monkeypa
             ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(1, ""),
         })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
     assert "MERGE_HEAD" not in exc.value.hint
@@ -14913,7 +14914,7 @@ def test_merge_abort_that_exits_zero_still_reports_a_modified_tracked_file(tmp_p
             ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(1, ""),
         })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
     assert "MERGE_HEAD" not in exc.value.hint, "there is no merge state left"
@@ -14935,7 +14936,7 @@ def test_merge_refuses_when_the_checks_stage_a_tracked_change(tmp_path, monkeypa
         tmp_path, sha, trees=["3" * 40, "4" * 40],
         overrides={("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): _completed(1, "")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-dirtied-tree"
     assert "(staged)" in exc.value.hint
@@ -14961,7 +14962,7 @@ def test_merge_refuses_a_branch_the_audit_event_cannot_carry(tmp_path, monkeypat
     fake_run, calls = _merge_runner(tmp_path, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(branch=branch), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(branch=branch), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
     _assert_no_mutation(calls)
@@ -14978,7 +14979,7 @@ def test_merge_refuses_a_delivery_target_the_audit_event_cannot_carry(tmp_path, 
     fake_run, calls = _merge_runner(tmp_path, script={
         ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "preset-unknown"
     _assert_no_mutation(calls)
@@ -14999,7 +15000,7 @@ def test_merge_resume_refuses_when_the_subject_read_fails_but_prints_the_right_t
         ("git", "log", "-1", "--format=%s"): _completed(128, "feat: Phase X (merge feat/x)\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
     _assert_no_mutation(calls)
@@ -15015,7 +15016,7 @@ def test_merge_refuses_when_the_post_switch_branch_read_fails_but_prints_the_tar
         tmp_path, sha,
         overrides={("git", "branch", "--show-current"): _completed(128, "main\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-mismatch"
     assert not any(" ".join(c).startswith("git merge --no-ff") for c in calls), \
@@ -15033,7 +15034,7 @@ def test_merge_refuses_when_a_git_read_fails_but_prints_a_plausible_value(tmp_pa
         tmp_path, sha,
         overrides={("git", "rev-parse", "HEAD"): _completed(128, "c" * 40 + "\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
     assert not any(" ".join(c).startswith("git push") for c in calls)
@@ -15052,7 +15053,7 @@ def test_merge_refuses_a_write_tree_value_that_is_not_a_tree_object(tmp_path, mo
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha, trees=trees)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
     assert not any(" ".join(c).startswith("git commit") for c in calls)
@@ -15070,7 +15071,7 @@ def test_merge_refuses_when_the_remote_probe_itself_fails(tmp_path, monkeypatch)
         tmp_path, sha,
         overrides={("git", "remote", "get-url"): _completed(128, "", "fatal: not a git repo")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "push-failed"
     assert "could not probe origin" in exc.value.hint
@@ -15094,7 +15095,7 @@ def test_merge_resume_refuses_when_the_branch_read_fails_rather_than_being_gone(
         ("git", "show-ref", "--verify"): _completed(128, "", "fatal: not a git repository"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
     assert "could not read feat/x" in exc.value.hint
@@ -15111,7 +15112,7 @@ def test_merge_reports_a_branch_that_could_not_be_deleted(tmp_path, monkeypatch,
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha,
         overrides={("git", "branch", "-d"): _completed(1, "", "error: not fully merged")})
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     out = capsys.readouterr().out
     assert "branch feat/x kept" in out and "not fully merged" in out
@@ -15141,7 +15142,7 @@ def test_merge_refuses_an_unusable_phase_title(tmp_path, monkeypatch, phase):
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(phase=phase), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(phase=phase), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "phase-invalid"
     _assert_no_mutation(calls)
@@ -15154,7 +15155,7 @@ def test_merge_phase_title_is_identical_in_the_commit_and_the_audit_event(tmp_pa
     sha, posted = "a" * 40, []
     title = "Phase C.2 — Jax Rules (canonical rule-file management)"
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha, phase=title), run=fake_run, post=posted.append,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, phase=title), run=fake_run, post=posted.append,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     commit = next(c for c in calls if c[:2] == ["git", "commit"])
     assert commit[-1] == f"feat: {title} (merge feat/x)"
@@ -15169,7 +15170,7 @@ def test_merge_refuses_when_the_merged_index_cannot_be_fingerprinted(tmp_path, m
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, trees=[_completed(128, "", "fatal: unable to write new index file")])
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
     assert "unable to write new index file" in exc.value.hint
@@ -15194,7 +15195,7 @@ def test_merge_report_copy_skips_a_symlinked_entry(tmp_path, monkeypatch, capsys
     # would have stayed green if symlinked entries were followed.
     (reports / "def456def456.md").symlink_to(secret)
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     copied = tmp_path / ".local" / "reports"
     assert (copied / "abc123abc123.md").read_text(encoding="utf-8") == "real report"
@@ -15210,7 +15211,7 @@ def test_merge_accepts_a_phase_at_exactly_the_utf16_bound(tmp_path, monkeypatch)
     sha, posted = "a" * 40, []
     title = "\U0001f680" * 100
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha, phase=title), run=fake_run, post=posted.append,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, phase=title), run=fake_run, post=posted.append,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert posted[0]["payload"]["phase"] == title
 
@@ -15280,7 +15281,7 @@ def test_merge_report_copy_refuses_every_escape(tmp_path, monkeypatch, capsys, p
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
     if plant == "dest-symlinked-ancestor":
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+            jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                               env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
         assert exc.value.code == "agent-settings-symlink"
         assert secret.read_text(encoding="utf-8") == "SECRET"
@@ -15297,7 +15298,7 @@ def test_merge_report_copy_refuses_every_escape(tmp_path, monkeypatch, capsys, p
         previous = (signal.signal(signal.SIGALRM, _blocked),
                     signal.setitimer(signal.ITIMER_REAL, 5))
     try:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     finally:
         if previous is not None:
@@ -15331,7 +15332,7 @@ def test_merge_report_copy_continues_past_one_unreadable_entry(tmp_path, monkeyp
     (reports / "ccc333ccc333.md").write_text("third", encoding="utf-8")
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
     try:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
         dest = tmp_path / ".local" / "reports"
         assert (dest / "aaa111aaa111.md").read_text(encoding="utf-8") == "first"
@@ -15351,7 +15352,7 @@ def test_merge_refuses_when_the_commit_sha_cannot_be_read(tmp_path, monkeypatch)
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("git", "rev-parse", "HEAD"): _completed(128, "")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
     assert "re-run the same jaxflow merge to resume" in exc.value.hint
@@ -15388,7 +15389,7 @@ def test_merge_report_copy_skips_a_report_that_changed_under_the_read(
 
     monkeypatch.setattr(os, "read", racing_read)
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert fired, "the race never fired -- the copy loop no longer calls os.read"
     assert len(victim.read_bytes()) == expected_len
@@ -15407,7 +15408,7 @@ def test_merge_keeps_the_worktree_when_a_report_copy_fails(tmp_path, monkeypatch
     reports.mkdir(parents=True)
     (reports / "abc123abc123.md").write_bytes(b"x" * (jaxflow_common.REPORT_COPY_MAX + 1))
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert "kept (report copy failed)" in capsys.readouterr().out
     flat = [" ".join(c) for c in calls]
@@ -15425,7 +15426,7 @@ def test_merge_refuses_an_agents_md_that_exists_but_cannot_be_read(tmp_path, mon
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "preset-unknown"
     assert "could not be read" in exc.value.hint
@@ -15463,7 +15464,7 @@ def test_merge_resume_writes_the_target_as_the_status_branch(tmp_path, monkeypat
         # a detached HEAD: `git branch --show-current` prints nothing
         ("git", "branch", "--show-current"): _completed(0, "\n"),
     })
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     text = (tmp_path / ".jax-os" / "status.md").read_text(encoding="utf-8")
     assert "branch: main" in text, "the delivery target, not the caller's checkout"
@@ -15478,7 +15479,7 @@ def test_merge_refuses_when_the_switch_to_the_target_fails(tmp_path, monkeypatch
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha, switch_fails="main")
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-mismatch"
     assert "git switch main failed" in exc.value.hint
@@ -15501,7 +15502,7 @@ def test_merge_resume_refuses_a_subject_that_merely_contains_the_branch(tmp_path
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{sha}\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha, phase="Release (merge feat/x)"), run=fake_run,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, phase="Release (merge feat/x)"), run=fake_run,
                           post=_never_post, env=_merge_env(), now=_fixed_now,
                           allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
@@ -15525,7 +15526,7 @@ def test_merge_resume_refuses_a_branch_the_merge_commit_does_not_name(tmp_path, 
         ("git", "rev-parse", "--verify", "alias^{commit}"): _completed(0, f"{sha}\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(branch="alias", sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(branch="alias", sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
     assert "does not record alias" in exc.value.hint
@@ -15546,7 +15547,7 @@ def test_merge_resume_refuses_when_the_branch_no_longer_names_the_approved_sha(t
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, "9" * 40 + "\n"),
     })
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
     _assert_no_mutation(calls)
@@ -15568,7 +15569,7 @@ def test_merge_resume_skips_cleanup_when_the_branch_is_already_gone(tmp_path, mo
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(128, ""),
         ("git", "remote", "get-url"): _completed(2, ""),   # 2 == no origin
     })
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     flat = [" ".join(c) for c in calls]
     assert not any(f.startswith("git worktree remove") or f.startswith("git branch -d") for f in flat)
@@ -15585,7 +15586,7 @@ def test_merge_never_removes_a_worktree_git_does_not_register_for_that_branch(tm
     fake_run, calls = _switch_aware_runner(tmp_path, sha, overrides={
         ("git", "worktree", "list"): _completed(
             0, f"worktree {worktree}\nHEAD {'f' * 40}\nbranch refs/heads/other\n\n")})
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     flat = [" ".join(c) for c in calls]
     assert not any(f.startswith("git worktree remove") for f in flat)
@@ -15600,7 +15601,7 @@ def test_merge_commit_failure_aborts_and_never_audits_or_pushes(tmp_path, monkey
     fake_run, calls = _switch_aware_runner(tmp_path, sha, overrides={
         ("git", "commit",): _completed(1, "hook refused: Co-Authored-By is banned")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "merge-failed"
     assert "hook refused" in exc.value.hint
@@ -15639,7 +15640,7 @@ def test_merge_refuses_when_approved_target_differs_from_policy(
     }
     fake_run, calls = _merge_runner(tmp_path, script=script, agents=_RELEASE_POLICY)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha, target="main"), run=fake_run,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, target="main"), run=fake_run,
                           post=_never_post, env=_merge_env(), now=_fixed_now,
                           allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-mismatch"
@@ -15653,7 +15654,7 @@ def test_merge_happy_path_with_matching_non_main_policy_target(tmp_path, monkeyp
     sha, posted = "a" * 40, []
     _agents(tmp_path, _TEMPLATE_DUAL_BRANCH_BLOCK)
     fake_run, calls = _switch_aware_runner(tmp_path, sha, target="staging")
-    jaxflow.cmd_merge(_MergeArgs(sha=sha, target="staging"), run=fake_run,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, target="staging"), run=fake_run,
                       post=posted.append, env=_merge_env(), now=_fixed_now,
                       allowlist_root=tmp_path.parent)
     assert ["git", "switch", "staging"] in calls
@@ -15668,7 +15669,7 @@ def test_merge_refuses_an_unusable_approved_target(tmp_path, monkeypatch, target
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(target=target), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(target=target), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-invalid"
     _assert_no_delivery(calls, policy_target="main")
@@ -15680,7 +15681,7 @@ def test_merge_direct_call_missing_target_is_target_invalid(tmp_path, monkeypatc
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_merge_args_without_target(), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_merge_args_without_target(), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "target-invalid"
     _assert_no_delivery(calls, policy_target="main")
@@ -15699,7 +15700,7 @@ def test_merge_approved_target_uses_real_check_ref_format(tmp_path, monkeypatch,
     fake_run, calls = _merge_run_real_ref_format(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(target=target), run=fake_run, post=_never_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(target=target), run=fake_run, post=_never_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == code
     assert ["git", "check-ref-format", f"refs/heads/{target}"] in calls
@@ -15716,7 +15717,7 @@ def test_merge_gates_win_over_an_invalid_target(tmp_path, monkeypatch, override,
     fake_run, calls = _merge_runner(
         tmp_path, script={("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(target="-nope", **override), run=fake_run,
+        jaxflow_merge.cmd_merge(_MergeArgs(target="-nope", **override), run=fake_run,
                           post=_never_post, env=_merge_env(), now=_fixed_now,
                           allowlist_root=tmp_path.parent)
     assert exc.value.code == code
@@ -15731,7 +15732,7 @@ def test_merge_identical_retry_resumes_after_push_failure(tmp_path, monkeypatch)
     fake_run, calls = _switch_aware_runner(
         tmp_path, sha, overrides={("git", "push"): _completed(1, "rejected")})
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=posted.append,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "push-failed"
     assert any(" ".join(c).startswith("git commit") for c in calls)
@@ -15746,7 +15747,7 @@ def test_merge_identical_retry_resumes_after_push_failure(tmp_path, monkeypatch)
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{sha}\n"),
         ("git", "remote", "get-url"): _completed(0, "git@github:x/y.git\n"),
     })
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run2, post=posted2.append,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run2, post=posted2.append,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     flat2 = [" ".join(c) for c in calls2]
     for banned in ("git merge --no-ff", "git commit", "/bin/bash -lc", "git write-tree",
@@ -15765,7 +15766,7 @@ def test_merge_identical_retry_resumes_after_audit_failure(tmp_path, monkeypatch
 
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=failing_post,
+        jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=failing_post,
                           env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert exc.value.code == "hub-unreachable"
     assert any(" ".join(c).startswith("git commit") for c in calls)
@@ -15780,7 +15781,7 @@ def test_merge_identical_retry_resumes_after_audit_failure(tmp_path, monkeypatch
         ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{sha}\n"),
         ("git", "remote", "get-url"): _completed(2, ""),
     })
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run2, post=posted2.append,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run2, post=posted2.append,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     flat2 = [" ".join(c) for c in calls2]
     for banned in ("git merge --no-ff", "git commit", "/bin/bash -lc", "git write-tree"):
@@ -15896,7 +15897,7 @@ def _reuse_run(worktree, *, porcelain="", registered=True):
 
 def _call_reuse(tmp_path, db, *, checks="pnpm test", sha=_REUSE_SHA, recheck=False, **run_kw):
     worktree = _worktree_path(tmp_path)
-    return jaxflow._merge_checks_reuse(
+    return jaxflow_merge._merge_checks_reuse(
         _reuse_run(worktree, **run_kw), tmp_path, jaxflow_common.slugify_project(tmp_path.name),
         worktree, "feat/x", sha, checks, allowlist_root=tmp_path.parent, recheck=recheck,
         db_path=db)
@@ -15982,7 +15983,7 @@ def test_merge_checks_reuse_asks_git_for_untracked_files_explicitly(tmp_path):
         seen.append(list(argv))
         return inner(argv, cwd)
 
-    jaxflow._merge_checks_reuse(
+    jaxflow_merge._merge_checks_reuse(
         run, tmp_path, jaxflow_common.slugify_project(tmp_path.name), worktree, "feat/x", _REUSE_SHA,
         "pnpm test", allowlist_root=tmp_path.parent, db_path=db)
     assert ["git", "status", "--porcelain", "--untracked-files=all"] in seen
@@ -16037,7 +16038,7 @@ def _run_pr_merge(tmp_path, monkeypatch, *, seed=None, setup_kw=None, dirty_untr
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         try:
-            rc = jaxflow.cmd_merge(
+            rc = jaxflow_merge.cmd_merge(
                 _MergeArgs(target="staging", checks="pnpm test", **args_kw), run=run,
                 post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
                 allowlist_root=tmp_path.parent)
@@ -16107,7 +16108,7 @@ def test_merge_pr_failing_checks_still_refuse_when_reuse_does_not_hold(tmp_path,
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         with pytest.raises(ji.Refusal) as exc:
-            jaxflow.cmd_merge(_MergeArgs(target="staging", checks="pnpm test"), run=fake_run,
+            jaxflow_merge.cmd_merge(_MergeArgs(target="staging", checks="pnpm test"), run=fake_run,
                               post=_never_post, env=_merge_env(), now=_fixed_now,
                               allowlist_root=tmp_path.parent)
     assert exc.value.code == "checks-failed"
@@ -16126,7 +16127,7 @@ def test_merge_pr_already_merged_recovery_audits_checks_resumed(tmp_path, monkey
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        rc = jaxflow.cmd_merge(
+        rc = jaxflow_merge.cmd_merge(
             _MergeArgs(target="staging", checks="pnpm test", recheck=recheck), run=fake_run,
             post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent)
@@ -16139,7 +16140,7 @@ def test_merge_pr_already_merged_recovery_audits_checks_resumed(tmp_path, monkey
 def test_merge_pr_release_head_never_consults_the_reuse_lookup(tmp_path, monkeypatch):
     # D3: a release/* head has no build worktree and no diff review; it always runs.
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(jaxflow, "_merge_checks_reuse",
+    monkeypatch.setattr(jaxflow_merge, "_merge_checks_reuse",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("reuse consulted")))
     db = tmp_path / "jaxos.db"
     script, _ = _pr_merge_setup(tmp_path, db, branch="release/x", target="main",
@@ -16149,7 +16150,7 @@ def test_merge_pr_release_head_never_consults_the_reuse_lookup(tmp_path, monkeyp
     events = []
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
-        rc = jaxflow.cmd_merge(
+        rc = jaxflow_merge.cmd_merge(
             _MergeArgs(branch="release/x", target="main", checks="pnpm test"), run=inner,
             post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
             allowlist_root=tmp_path.parent)
@@ -16202,7 +16203,7 @@ def _run_local_ff(tmp_path, monkeypatch, *, seed=None, make_worktree=True, dirty
     with monkeypatch.context() as m:
         m.setattr(jr, "DB_PATH", db)
         try:
-            rc = jaxflow.cmd_merge(
+            rc = jaxflow_merge.cmd_merge(
                 _MergeArgs(sha=sha, checks="pnpm test", **args_kw), run=run,
                 post=lambda e: events.append(e) or {"ok": True}, env=_merge_env(),
                 now=_fixed_now, allowlist_root=tmp_path.parent)
@@ -16273,7 +16274,7 @@ def test_main_routes_merge_and_maps_a_refusal_to_exit_2(monkeypatch, capsys):
         seen["branch"] = args.branch
         return jaxflow_common.OK
 
-    monkeypatch.setattr(jaxflow, "cmd_merge", fake_cmd_merge)
+    monkeypatch.setattr(jaxflow_merge, "cmd_merge", fake_cmd_merge)
     argv = ["merge", "feat/x", "--sha", "a" * 40, "--phase", "P", "--checks", "true",
             "--target", "main"]
     assert jaxflow.main(argv) == jaxflow_common.OK
@@ -16284,7 +16285,7 @@ def test_main_routes_merge_and_maps_a_refusal_to_exit_2(monkeypatch, capsys):
         exc.hint = "hint: PR preset"
         raise exc
 
-    monkeypatch.setattr(jaxflow, "cmd_merge", refusing)
+    monkeypatch.setattr(jaxflow_merge, "cmd_merge", refusing)
     assert jaxflow.main(argv) == jaxflow_common.REFUSED
     err = capsys.readouterr().err
     assert "preset-unsupported" in err and "hint: PR preset" in err
@@ -17019,7 +17020,7 @@ def test_merge_leaves_child_log_in_control_repo_and_excludes_it_from_report_copy
     child_log.parent.mkdir(parents=True, exist_ok=True)
     child_log.write_text("child output\n", encoding="utf-8")
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     assert child_log.read_text(encoding="utf-8") == "child output\n"
     assert not any(p.name == "child.log" for p in (tmp_path / ".local" / "reports").iterdir())
@@ -17737,7 +17738,7 @@ def test_main_accepts_from_jaxos_on_review_build_and_merge(monkeypatch):
     seen = []
     monkeypatch.setattr(jaxflow, "dispatch_review", lambda args, **kw: seen.append(("review", args.from_caller)) or "r1")
     monkeypatch.setattr(jaxflow, "dispatch_build", lambda args, **kw: seen.append(("build", args.from_caller)) or "b1")
-    monkeypatch.setattr(jaxflow, "cmd_merge", lambda args, **kw: seen.append(("merge", args.from_caller)) or jaxflow_common.OK)
+    monkeypatch.setattr(jaxflow_merge, "cmd_merge", lambda args, **kw: seen.append(("merge", args.from_caller)) or jaxflow_common.OK)
     assert jaxflow.main(["review", "--spec", "x.md", "--from", "jaxos"]) == jaxflow_common.OK
     assert jaxflow.main([
         "build", "--plan", "p.md", "--phase", "P", "--branch", "feat/x", "--whitelist", "a",
@@ -17828,7 +17829,7 @@ def test_merge_from_jaxos_keeps_the_existing_builder_field(tmp_path, monkeypatch
     sha = "a" * 40
     status = _status_md_fixture(tmp_path)
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
-    rc = jaxflow.cmd_merge(_MergeArgs(sha=sha, from_caller="jaxos"), run=fake_run, post=lambda e: None,
+    rc = jaxflow_merge.cmd_merge(_MergeArgs(sha=sha, from_caller="jaxos"), run=fake_run, post=lambda e: None,
                            env={}, now=_fixed_now, allowlist_root=tmp_path.parent)
     assert rc == jaxflow_common.OK
     text = status.read_text(encoding="utf-8")
@@ -17842,7 +17843,7 @@ def test_merge_from_claude_still_writes_the_caller_as_builder(tmp_path, monkeypa
     sha = "a" * 40
     status = _status_md_fixture(tmp_path)
     fake_run, _ = _switch_aware_runner(tmp_path, sha)
-    jaxflow.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
+    jaxflow_merge.cmd_merge(_MergeArgs(sha=sha), run=fake_run, post=lambda e: None,
                       env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
     text = status.read_text(encoding="utf-8")
     assert "stage: ship" in text and "builder: claude" in text
@@ -18647,7 +18648,7 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
         fake_run, _calls = _merge_runner(tmp_path, agents=_DUAL_PR_AGENTS, script=script)
         with monkeypatch.context() as m:
             m.setattr(jr, "DB_PATH", db)
-            jaxflow.cmd_pr_open(
+            jaxflow_merge.cmd_pr_open(
                 _pr_open_args(), run=fake_run, post=post,
                 env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
             )
@@ -18669,7 +18670,7 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
     sha = "a" * 40
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(
+        jaxflow_merge.cmd_merge(
             _MergeArgs(sha=sha), run=fake_run, post=_event_post_rejected,
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -18680,7 +18681,7 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
 
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(
+        jaxflow_merge.cmd_merge(
             _MergeArgs(sha=sha), run=fake_run, post=lambda event: (_ for _ in ()).throw(OSError("down")),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
         )
@@ -18692,7 +18693,7 @@ def test_pr_open_and_merge_audit_hub_rejected_has_no_resume_advice_unreachable_k
     # A 5xx is a hub-side fault that may clear: keep the status, but still advise a retry.
     fake_run, calls = _switch_aware_runner(tmp_path, sha)
     with pytest.raises(ji.Refusal) as exc:
-        jaxflow.cmd_merge(
+        jaxflow_merge.cmd_merge(
             _MergeArgs(sha=sha), run=fake_run,
             post=lambda event: (_ for _ in ()).throw(jaxflow_common.HubRejected(500, "boom")),
             env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent,
