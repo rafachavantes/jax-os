@@ -2223,26 +2223,11 @@ def dispatch_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_
     return run_id
 
 
-def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
-    if args.since is not None and args.full is not None:
-        raise Refusal("since-full-conflict")
-    if args.full is not None and not args.full.strip():
-        raise Refusal("full-reason-blank")
-    if args.since is not None and not _RUN_ID_RE.match(args.since):
-        raise Refusal("since-invalid")
-    cwd = Path.cwd().resolve()
-    repo = _require_toplevel(run, cwd)
-    caller = resolve_caller(env, args.from_caller)
-    selected = jset.select_reviewer(
-        jset.read_settings(), caller, model=args.model, effort=args.effort, agents=_enabled_agents(),
-    )
-    runtime = selected["runtime"]
-    model = selected["model"]
-    effort = selected["effort"]
-    fallback = selected["fallback"]
-    builder_run_id = args.diff
-
-    db_path = db_path or jr.DB_PATH
+def _load_finished_build(db_path, builder_run_id):
+    """The finished build a `review --diff` targets, as `(project, started_payload,
+    finished_payload)`. Every refusal is `unknown-run` with its own hint (spec 2.9). The
+    unfiltered `run-started` lookup only words the hint for a missing builder row; it never
+    decides whether the run is usable."""
     con = _open_ro(db_path)
     con.row_factory = sqlite3.Row
     try:
@@ -2290,8 +2275,30 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # Refusing it threw away whole builds over a report-format slip (MOA-471, b756335468ba).
     if not finished_payload.get("head_sha"):
         raise _refuse("unknown-run", f"hint: build {builder_run_id} finished without a head_sha")
+    return started["project"], started_payload, finished_payload
 
-    project = started["project"]
+
+def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
+    if args.since is not None and args.full is not None:
+        raise Refusal("since-full-conflict")
+    if args.full is not None and not args.full.strip():
+        raise Refusal("full-reason-blank")
+    if args.since is not None and not _RUN_ID_RE.match(args.since):
+        raise Refusal("since-invalid")
+    cwd = Path.cwd().resolve()
+    repo = _require_toplevel(run, cwd)
+    caller = resolve_caller(env, args.from_caller)
+    selected = jset.select_reviewer(
+        jset.read_settings(), caller, model=args.model, effort=args.effort, agents=_enabled_agents(),
+    )
+    runtime = selected["runtime"]
+    model = selected["model"]
+    effort = selected["effort"]
+    fallback = selected["fallback"]
+    builder_run_id = args.diff
+
+    db_path = db_path or jr.DB_PATH
+    project, started_payload, finished_payload = _load_finished_build(db_path, builder_run_id)
     branch = started_payload["target"]
     verify_cmd = started_payload["verify"]
     # `.get`, never a subscript: every build recorded before MOA-454 has no `build` key
