@@ -120,10 +120,8 @@ def _check_hub_caps(fields):
             continue
         n = _utf16_len(value)
         if n > cap:
-            exc = Refusal(f"{_CAP_LABELS.get(name, name)}-too-long ({n} > {cap})")
-            if name in ("verify", "build"):
-                exc.hint = _LONG_CMD_HINT
-            raise exc
+            raise _refuse(f"{_CAP_LABELS.get(name, name)}-too-long ({n} > {cap})",
+                          _LONG_CMD_HINT if name in ("verify", "build") else None)
 
 
 def _dispatch_run(*, run, post, repo, project, phase, kind, role, run_id, session, manifest,
@@ -233,9 +231,7 @@ def _require_caller_session(env, caller):
     var = _CALLER_SESSION_VAR[caller]
     session = env.get(var)
     if not session:
-        exc = Refusal("caller-session-missing")
-        exc.hint = f"hint: set {var}"
-        raise exc
+        raise _refuse("caller-session-missing", f"hint: set {var}")
     return session
 
 
@@ -251,18 +247,14 @@ def _enabled_agents():
     unreadable settings.json refuses review and build, never falls back to defaults."""
     settings = general_settings.read_settings()
     if not settings.get("ok"):
-        exc = Refusal(settings.get("error") or "settings-unreadable")
-        exc.hint = "hint: fix settings.json or save /settings"
-        raise exc
+        raise _refuse(settings.get("error") or "settings-unreadable", "hint: fix settings.json or save /settings")
     return settings["data"]["integrations"]["agents"]
 
 
 def _require_opencode_on():
     """MOA-504 D9: every builder profile is OpenCode, so one switch gates build and --resume."""
     if not _enabled_agents()["opencode"]:
-        exc = Refusal("agent-disabled: opencode")
-        exc.hint = "hint: turn OpenCode on in /settings -> General"
-        raise exc
+        raise _refuse("agent-disabled: opencode", "hint: turn OpenCode on in /settings -> General")
 
 
 def _reviewer_runtime_line(runtime, fallback):
@@ -271,6 +263,15 @@ def _reviewer_runtime_line(runtime, fallback):
 
 def _iso8601(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
+
+
+def _branch_worktree_path(allowlist_root, project, branch, *, resolve=True):
+    """`<allowlist_root>/<project>-<branch with '/' as '-'>` -- the build worktree `build`
+    reserves for a branch. `resolve=False` for the two callers that must NOT canonicalize
+    (`dispatch_build` reserves a path that does not exist yet; `cmd_result` compares the
+    string form before it resolves anything)."""
+    path = allowlist_root / f"{project}-{branch.replace('/', '-')}"
+    return path.resolve() if resolve else path
 
 
 def _manifest_dir(repo: Path, run_id: str) -> Path:
@@ -530,6 +531,15 @@ def _review_round_tally(repo, project, kind, target, run_id, new_report_text, *,
     return build_review_tally(new_report_text, prev_text)
 
 
+def _load_manifest(run_dir):
+    """The decoded `manifest.json` of a run directory, whatever JSON value it holds.
+    Raises exactly what the inline reads raised (`OSError`, `ValueError`/`JSONDecodeError`,
+    `RecursionError`): each caller keeps its own `try/except`, its non-dict handling and
+    its own refusal code. `run_worker`'s direct parse (it must PROPAGATE read errors) and
+    `_read_prior_manifest` (no-follow open) deliberately do not use it."""
+    return json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+
 def _load_diff_review_node(con, repo, run_id):
     """Everything the item 9 chain walk needs for one diff-review run: its own manifest
     (base_sha/head_sha/since_review_run_id), its ledger target/verdict, and its linked
@@ -540,7 +550,7 @@ def _load_diff_review_node(con, repo, run_id):
     if manifest_dir is None:
         return None
     try:
-        manifest = json.loads((manifest_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest = _load_manifest(manifest_dir)
     except (OSError, ValueError):
         return None
     if manifest.get("kind") != "diff":
@@ -678,7 +688,7 @@ def _chain_block(run_id, *, db_path):
 
 def _read_manifest_field(repo, run_id, field):
     try:
-        data = json.loads((_manifest_dir(repo, run_id) / "manifest.json").read_text(encoding="utf-8"))
+        data = _load_manifest(_manifest_dir(repo, run_id))
     except (OSError, ValueError, RecursionError):
         return None
     if type(data) is not dict:
@@ -1154,6 +1164,19 @@ class HubRejected(RuntimeError):
         super().__init__(f"{status} {error}" if isinstance(error, str) else str(status))
 
 
+def _refuse(code, hint=None):
+    """Build the `Refusal` for `code` with its optional `.hint` (the second stderr line
+    `main` prints). Callers write `raise _refuse(...)`, so the exception type, `.code`,
+    `.hint` and the traceback frame stay what the inline `exc = Refusal(code);
+    exc.hint = ...; raise exc` form produced. `.hint` is set only when given (never None),
+    exactly like the inline form where a refusal without a hint has no attribute at all.
+    `Refusal` itself stays in `jax_init.py`."""
+    exc = Refusal(code)
+    if hint is not None:
+        exc.hint = hint
+    return exc
+
+
 def _hub_refusal(exc):
     if isinstance(exc, HubRejected):
         return Refusal(jr._bound(f"hub-rejected: {exc}", 200))
@@ -1550,6 +1573,42 @@ def _refuse_nonterminal_builder(project, repo, branch, db_path=None):
         raise Refusal("resume-ineligible")
 
 
+def _plan_path_defect(plan_path, allowlist_root):
+    """Why a (resolved) plan path is unusable, or None. The check order is load-bearing and
+    shared by every caller: missing -> secret FIRST (a symlink planted inside the worktree
+    that resolves to a control-repo `.env` must say `secret-detected` even though it is
+    "contained") -> outside the allowlist / not a file / unreadable. Callers map the result
+    to their own refusal: `resume-ineligible`, `secret-detected: <path>`,
+    `plan is not a readable file`, `unknown-run` or `path-outside-allowlist`."""
+    if plan_path is None:
+        return "path-outside-allowlist"
+    if _is_secret_path(plan_path):
+        return "secret-detected"
+    if (not _contained(plan_path, allowlist_root) or not plan_path.is_file()
+            or not os.access(plan_path, os.R_OK)):
+        return "path-outside-allowlist"
+    return None
+
+
+def _builder_run_rows(con, run_id):
+    """The builder `run-started` row (`project`, `payload`) and `run-finished` row
+    (`payload`) of a run, as `(started, finished)`; either may be None. `role = 'builder'`
+    stays in BOTH queries (diff-review F3: a reviewer's own `run-started` must never pair
+    with an unrelated builder `run-finished` of the same id). `con.row_factory` must be
+    `sqlite3.Row`; the caller owns the connection."""
+    started = con.execute(
+        "SELECT project, payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
+        "AND type = 'run-started' LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    finished = con.execute(
+        "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
+        "AND type = 'run-finished' LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    return started, finished
+
+
 def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_session,
                            run, post, env, now, allowlist_root, db_path):
     db_path = db_path or jr.DB_PATH
@@ -1559,16 +1618,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise Refusal("resume-ineligible") from exc
     con.row_factory = sqlite3.Row
     try:
-        started = con.execute(
-            "SELECT project, payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-started' LIMIT 1",
-            (resume_id,),
-        ).fetchone()
-        finished = con.execute(
-            "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-finished' LIMIT 1",
-            (resume_id,),
-        ).fetchone()
+        started, finished = _builder_run_rows(con, resume_id)
     finally:
         con.close()
     if not started or not finished:
@@ -1621,7 +1671,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise
     except Exception as exc:
         raise Refusal("resume-ineligible") from exc
-    expected = (allowlist_root / f"{project}-{branch.replace('/', '-')}").resolve()
+    expected = _branch_worktree_path(allowlist_root, project, branch)
     if worktree != expected or not _contained(worktree, allowlist_root) or not worktree.is_dir():
         raise Refusal("resume-ineligible")
     whitelist = prior.get("whitelist")
@@ -1635,7 +1685,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         raise
     except Exception as exc:
         raise Refusal("resume-ineligible") from exc
-    if _is_secret_path(plan_path) or not plan_path.is_file() or not os.access(plan_path, os.R_OK):
+    if _plan_path_defect(plan_path, allowlist_root):
         raise Refusal("resume-ineligible")
     plan_defects = _validate_plan_structure(plan_path.read_text(encoding="utf-8"), plan_path, allowlist_root)
     if plan_defects:
@@ -1662,16 +1712,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             raise Refusal("resume-ineligible") from exc
         con.row_factory = sqlite3.Row
         try:
-            started_now = con.execute(
-                "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-                "AND type = 'run-started' LIMIT 1",
-                (resume_id,),
-            ).fetchone()
-            finished_now = con.execute(
-                "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-                "AND type = 'run-finished' LIMIT 1",
-                (resume_id,),
-            ).fetchone()
+            started_now, finished_now = _builder_run_rows(con, resume_id)
             latest = _latest_builder_attempt(con, project, repo, branch)
         finally:
             con.close()
@@ -1725,15 +1766,13 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
             raise
         except Exception as exc:
             raise Refusal("resume-ineligible") from exc
-        if _is_secret_path(plan_path) or not plan_path.is_file() or not os.access(plan_path, os.R_OK):
+        if _plan_path_defect(plan_path, allowlist_root):
             raise Refusal("resume-ineligible")
         profile_name = "fallback" if getattr(args, "fallback", False) else prior["requested_profile"]
         if profile_name not in ("default", "fallback"):
             raise Refusal("resume-ineligible")
         if latest != resume_id:
-            exc = Refusal("resume-ineligible")
-            exc.hint = f"hint: latest attempt is {latest}"
-            raise exc
+            raise _refuse("resume-ineligible", f"hint: latest attempt is {latest}")
         prior_session = started_payload.get("session")
         if prior_session:
             live = run(["tmux", "has-session", "-t", prior_session])
@@ -1805,10 +1844,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
 
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     caller = resolve_caller(env, args.from_caller)
     # Fires as early as possible -- BEFORE any worktree reservation -- so a missing
     # session variable never leaves a worktree/branch to clean up (a natural extension of
@@ -1839,13 +1875,14 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
     # Canonicalize + secret-check the plan path BEFORE any reservation (fixes cold review
     # F3 -- the first draft never called _is_secret_path at all for `build`).
     plan_path = canonicalize_target(Path(args.plan), allowlist_root)
-    if _is_secret_path(plan_path):
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
         raise Refusal(f"secret-detected: {plan_path}")
     # fixes Part 1 diff-review F1: a directory or unreadable plan path must refuse here,
     # before any reservation -- not after a worktree/branch already exist (MOA-467: the
     # original document is read in place later, so there is no copy step to fail in).
     # No git call needed for this check.
-    if not plan_path.is_file() or not os.access(plan_path, os.R_OK):
+    if defect:
         raise Refusal("plan is not a readable file")
 
     # MOA-471 item 10: plan-structure validation runs BEFORE any reservation below --
@@ -1854,9 +1891,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
     plan_text = plan_path.read_text(encoding="utf-8")
     plan_defects = _validate_plan_structure(plan_text, plan_path, allowlist_root)
     if plan_defects:
-        exc = Refusal("plan-invalid")
-        exc.hint = "hint: " + "; ".join(plan_defects)
-        raise exc
+        raise _refuse("plan-invalid", "hint: " + "; ".join(plan_defects))
 
     _require_opencode_on()
     settings = jset.read_settings()
@@ -1912,8 +1947,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
             raise Refusal("base-invalid")
         base_sha = resolved
     whitelist = [p.strip() for p in args.whitelist.split(",") if p.strip()]
-    branch_slug = args.branch.replace("/", "-")
-    worktree = allowlist_root / f"{project}-{branch_slug}"
+    worktree = _branch_worktree_path(allowlist_root, project, args.branch, resolve=False)
 
     # Exclusive reservation FIRST (fixes cold review G8/RECURRENCE(F19), spec §4.2 step 1;
     # reordered ahead of `_default_branch()` per Part 1 diff-review F2): `git worktree add
@@ -1961,10 +1995,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         # by something unrelated -- must never be deleted; the rare git-half-created case is
         # accepted as a leftover orphan ref instead.
         shutil.rmtree(worktree, ignore_errors=True)
-        exc = Refusal("branch-exists")
-        if added.stderr:
-            exc.hint = f"hint: {added.stderr.strip()}"
-        raise exc
+        raise _refuse("branch-exists", f"hint: {added.stderr.strip()}" if added.stderr else None)
     # Past this point, `git worktree add` succeeded, so `worktree` is a registered Git
     # worktree admin entry and `args.branch` is a branch this dispatch itself just created --
     # every cleanup path below undoes both via `_cleanup_worktree` (fixes cold review round
@@ -2072,10 +2103,7 @@ def dispatch_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_
     # `repo` is the resolved git toplevel of the cwd, not the cwd itself (fixes
     # branch review F1) -- only a failed rev-parse (cwd outside any git repo) refuses.
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     caller = resolve_caller(env, args.from_caller)
     kind = "spec" if args.spec else "plan"
     raw_target = args.spec if args.spec else args.plan
@@ -2203,10 +2231,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     if args.since is not None and not _RUN_ID_RE.match(args.since):
         raise Refusal("since-invalid")
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     caller = resolve_caller(env, args.from_caller)
     selected = jset.select_reviewer(
         jset.read_settings(), caller, model=args.model, effort=args.effort, agents=_enabled_agents(),
@@ -2228,31 +2253,21 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         # build. When this filtered query misses, a SEPARATE unfiltered lookup below is
         # used ONLY to word the `unknown-run` hint -- never to decide whether the run is
         # usable.
-        started = con.execute(
-            "SELECT project, payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-started' LIMIT 1",
-            (builder_run_id,),
-        ).fetchone()
-        finished = con.execute(
-            "SELECT payload FROM workflow_events WHERE run_id = ? AND role = 'builder' "
-            "AND type = 'run-finished' LIMIT 1",
-            (builder_run_id,),
-        ).fetchone()
+        started, finished = _builder_run_rows(con, builder_run_id)
         if not started:
             any_started = con.execute(
                 "SELECT role, payload FROM workflow_events WHERE run_id = ? "
                 "AND type = 'run-started' LIMIT 1",
                 (builder_run_id,),
             ).fetchone()
-            exc = Refusal("unknown-run")
             if not any_started:
-                exc.hint = f"hint: no run-started row for {builder_run_id}"
+                hint = f"hint: no run-started row for {builder_run_id}"
             elif any_started["role"] == "reviewer":
-                exc.hint = f"hint: run {builder_run_id} is a reviewer run, not a build"
+                hint = f"hint: run {builder_run_id} is a reviewer run, not a build"
             else:
                 any_kind = json.loads(any_started["payload"]).get("kind", "unknown")
-                exc.hint = f"hint: run {builder_run_id} is a {any_kind} run, not a build"
-            raise exc
+                hint = f"hint: run {builder_run_id} is a {any_kind} run, not a build"
+            raise _refuse("unknown-run", hint)
     finally:
         con.close()
     # fixes cold review F1: a build that has not finished yet is treated exactly like an
@@ -2266,21 +2281,15 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         # should never fire for a legitimate row (only `build` dispatches ever write
         # `role: builder`) -- kept in case a malformed/hand-crafted row slips past the
         # role filter with the wrong `kind`.
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: run {builder_run_id} is a {started_payload.get('kind', 'unknown')} run, not a build"
-        raise exc
+        raise _refuse("unknown-run", f"hint: run {builder_run_id} is a {started_payload.get('kind', 'unknown')} run, not a build")
     if not finished:
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: build {builder_run_id} has not finished yet"
-        raise exc
+        raise _refuse("unknown-run", f"hint: build {builder_run_id} has not finished yet")
     finished_payload = json.loads(finished["payload"])
     # A build whose REPORT is missing/invalid still has a real diff: the wrapper records
     # `head_sha` regardless of `contract_status`, and verify is re-run below anyway.
     # Refusing it threw away whole builds over a report-format slip (MOA-471, b756335468ba).
     if not finished_payload.get("head_sha"):
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: build {builder_run_id} finished without a head_sha"
-        raise exc
+        raise _refuse("unknown-run", f"hint: build {builder_run_id} finished without a head_sha")
 
     project = started["project"]
     branch = started_payload["target"]
@@ -2288,14 +2297,13 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # `.get`, never a subscript: every build recorded before MOA-454 has no `build` key
     # (spec §2.6), and `review --diff` must keep working on those.
     build_cmd = started_payload.get("build")
-    branch_slug = branch.replace("/", "-")
     phase = args.phase or started_payload["phase"]
 
     # fixes cold review F2: resolve and confine the derived worktree path (§6 I10) and
     # require it to still exist -- a removed/never-created worktree must refuse cleanly
     # (a NEW code, distinct from `unknown-run`: the RUN is known and finished, only its
     # worktree is gone) instead of an uncaught FileNotFoundError from the verify call below.
-    worktree = (allowlist_root / f"{project}-{branch_slug}").resolve()
+    worktree = _branch_worktree_path(allowlist_root, project, branch)
     if not _contained(worktree, allowlist_root) or not worktree.is_dir():
         raise Refusal("worktree-missing")
 
@@ -2307,12 +2315,10 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     builder_manifest_path = _manifest_dir(repo, builder_run_id) / "manifest.json"
 
     def _unusable_builder_manifest():
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: build manifest for {builder_run_id} missing or invalid: {builder_manifest_path}"
-        return exc
+        return _refuse("unknown-run", f"hint: build manifest for {builder_run_id} missing or invalid: {builder_manifest_path}")
 
     try:
-        builder_manifest = json.loads(builder_manifest_path.read_text(encoding="utf-8"))
+        builder_manifest = _load_manifest(_manifest_dir(repo, builder_run_id))
     except (OSError, ValueError):
         raise _unusable_builder_manifest()
     raw_plan_path = builder_manifest.get("plan_path")
@@ -2326,11 +2332,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # validated at dispatch). The check below mirrors `dispatch_build`'s own: canonical,
     # non-secret, readable, inside the allowlist. Secret-shaped paths, missing files and
     # outside-allowlist paths all refuse here, before any verify run is ever spent.
-    if (
-        plan_path is None or _is_secret_path(plan_path)
-        or not _contained(plan_path, allowlist_root)
-        or not plan_path.is_file() or not os.access(plan_path, os.R_OK)
-    ):
+    if _plan_path_defect(plan_path, allowlist_root):
         raise _unusable_builder_manifest()
     plan_text = plan_path.read_text(encoding="utf-8")
     spec_dest, spec_refusal_code = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
@@ -2347,9 +2349,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # ponytail: parent dirs are the operator's own worktree, trusted; only the evidence
     # file itself is checked (diff review 4884f63bdd16 F2 rejected).
     if tests_path.is_symlink() or (tests_path.exists() and not tests_path.is_file()):
-        exc = Refusal("path-outside-allowlist")
-        exc.hint = f"hint: evidence path is a symlink or not a regular file: {tests_path}"
-        raise exc
+        raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
 
     # MOA-471 item 7: the CONCURRENCY lock always runs first and is never bypassed.
     guard_con = _open_ro(db_path)
@@ -2370,9 +2370,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
             repo, reason="review-running", target=branch, phase=phase,
             builder_run_id=builder_run_id, prior_review_run_id=running["run_id"], now=now,
         )
-        exc = Refusal("review-running")
-        exc.hint = f"hint: run {running['run_id']} is still reviewing this branch"
-        raise exc
+        raise _refuse("review-running", f"hint: run {running['run_id']} is still reviewing this branch")
 
     # The terminal-verdict lock: only among prior reviews with a real terminal verdict.
     terminal = [
@@ -2401,12 +2399,8 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
                 repo, reason="prior-review-accepted", target=branch, phase=phase,
                 builder_run_id=builder_run_id, prior_review_run_id=prior_run_id, now=now,
             )
-            exc = Refusal("prior-review-accepted")
-            exc.hint = (
-                f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
-                f"pass --full \"<reason>\" or --since {prior_run_id}"
-            )
-            raise exc
+            raise _refuse("prior-review-accepted", f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
+                f"pass --full \"<reason>\" or --since {prior_run_id}")
         else:  # reject, no flags: proceeds, advisory only
             override = "none"
             print(f"hint: prior review {prior_run_id} rejected this branch; consider --since {prior_run_id}")
@@ -2471,9 +2465,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         if not _write_verify_tests_file(tests_path, verify_frames, worktree=worktree):
             # fixes F3 (TOCTOU symlink race): refuse, restoring the snapshotted evidence.
             _restore_evidence()
-            exc = Refusal("path-outside-allowlist")
-            exc.hint = f"hint: evidence path is a symlink or not a regular file: {tests_path}"
-            raise exc
+            raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
         if any(r.returncode != 0 for _, r in verify_frames):
             raise Refusal("verify-failed")
         verify_field = {
@@ -2523,37 +2515,28 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
                     since_con.close()
                 if walk_error is not None:
                     kind, bad_run_id = walk_error
-                    exc = Refusal(f"since-chain-{kind}")
-                    exc.hint = f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead"
-                    raise exc
+                    raise _refuse(f"since-chain-{kind}", f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead")
                 target_node = chain[-1]
                 if not target_node["head_sha"]:
-                    exc = Refusal("since-chain-broken")
-                    exc.hint = f"hint: {target_node['run_id']} has no head_sha; run a full review instead"
-                    raise exc
+                    raise _refuse("since-chain-broken", f"hint: {target_node['run_id']} has no head_sha; run a full review instead")
                 ancestor = run(
                     ["git", "merge-base", "--is-ancestor", target_node["head_sha"], head_sha], cwd=worktree,
                 )
                 if ancestor.returncode != 0:
-                    exc = Refusal("since-not-ancestor")
-                    exc.hint = "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead"
-                    raise exc
+                    raise _refuse("since-not-ancestor", "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead")
                 lock_error = _validate_since_chain(
                     chain, branch=branch, current_merge_base=base_sha, run=run, worktree=worktree,
                 )
                 if lock_error:
-                    exc = Refusal(lock_error)
-                    exc.hint = "hint: run a full review instead"
-                    raise exc
+                    raise _refuse(lock_error, "hint: run a full review instead")
                 since_review_run_id = args.since
                 since_verdict = target_node["verdict"]
                 base_sha = target_node["head_sha"]
             except Refusal:
                 raise
             except (TypeError, AttributeError, ValueError, KeyError, json.JSONDecodeError) as exc:
-                bad_exc = Refusal("since-chain-missing")
-                bad_exc.hint = f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead"
-                raise bad_exc from exc
+                raise _refuse("since-chain-missing",
+                              f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead") from exc
 
         # fixes cold review round 2 F3(a): route --diff through the SAME handoff-grammar/
         # evidence validation every other reviewer dispatch gets (spec §4.3 step 3), instead of
@@ -2810,7 +2793,7 @@ def _merge_checks_reuse(run, repo, project, worktree, branch, sha, checks_cmd, *
                 if not _contained(mpath, mdir):  # review F1: a symlinked manifest.json escapes
                     return False, "lookup-failed", None
                 try:
-                    manifest = json.loads(mpath.read_text(encoding="utf-8"))
+                    manifest = _load_manifest(mdir)
                 except (OSError, ValueError):
                     manifest = None
             if not isinstance(manifest, dict) or manifest.get("kind") != "diff" \
@@ -2851,6 +2834,15 @@ def _merge_checks_reuse(run, repo, project, worktree, branch, sha, checks_cmd, *
         return reuse, reason, review_id if reuse else None
     except Exception:  # ponytail: advisory lookup -- any failure means "run the checks"
         return False, "lookup-failed", None
+
+
+def _checks_audit(reused, review_id, sha):
+    """The `checks` field of the `merge-approved` audit: `reused` records which diff review
+    already tested this exact head; otherwise the checks ran. (A resume records
+    `{"mode": "resumed"}` itself: it neither runs nor reuses checks.)"""
+    if reused:
+        return {"mode": "reused", "source_review_run_id": review_id, "head_sha": sha}
+    return {"mode": "run"}
 
 
 def _merge_checks_line(audit, checks_cmd):
@@ -3364,7 +3356,7 @@ def _validate_run_paths(manifest, *, allowlist_root):
         return None
     control_repo = Path(manifest["repo"]).resolve()
     worktree = Path(manifest["worktree"]).resolve()
-    expected_worktree = (allowlist_root / f"{manifest['project']}-{manifest['target'].replace('/', '-')}").resolve()
+    expected_worktree = _branch_worktree_path(allowlist_root, manifest["project"], manifest["target"])
     branch = manifest.get("branch")
     if (
         not _contained(control_repo, allowlist_root)
@@ -3509,6 +3501,575 @@ def _review_read_roots(review_repo, control_base, *, run, allowlist_root, docume
     return tuple(roots)
 
 
+def _deliver_terminal_event(post, repo, run_id, event):
+    """Spool-then-post-then-unspool of a worker's terminal event; returns `delivered`.
+    The spool is written BEFORE the POST so a failed delivery can be re-posted by the
+    reaper / `jaxflow cancel`; it is deleted only after the POST succeeded. A failure never
+    raises: it prints `event delivery FAILED: ...` and the caller records
+    `ledger_pending=not delivered` on the callback line. `_write_spool`/`_delete_spool` are
+    module globals looked up at call time. The refusal paths that use `_write_spool_at`
+    directly (:3267, :3331, :3535) are NOT delivery sites and stay as they are."""
+    delivered = True
+    try:
+        _write_spool(repo, run_id, event)
+        post(event)
+    except Exception as exc:
+        delivered = False
+        print(f"event delivery FAILED: {exc}")
+    if delivered:
+        _delete_spool(repo, run_id)
+    return delivered
+
+
+def _log_diagnosis(payload, child_log_text, *, exit_code, contract_status):
+    """MOA-470 §4.3 / MOA-495 2.1: `reason`, `tail` (and `log_context` when Jev found
+    relevant slices) travel together and are added iff `contract_status` needed a diagnosis
+    -- never for "ok". `refine_reason` keeps `classify_reason`'s regex/exit precedence and
+    only asks Jev to pick among the wider reason set when the regex did not already decide
+    provider-limit. (The fourth `contract_status in ("missing", "invalid")` hit, in
+    `_send_callback`'s own line text at :3196, is not a payload block and stays.)"""
+    if contract_status not in ("missing", "invalid"):
+        return
+    window = jr.child_log_classify_window(child_log_text)
+    payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
+    payload["tail"] = jr.child_log_tail(child_log_text)
+    context = jr.log_context(window)
+    if context:
+        payload["log_context"] = context
+
+
+def _reviewer_stdio(runtime, output_path):
+    """`(stdout_file, stdout_target, stderr_target)` for a reviewer child. Claude's stdout
+    stays the opened report file (spec §5: out of scope) and only its stderr is piped for
+    child.log; Codex's final report always goes through `--output-last-message`, so its
+    stdout is free for the merged pipe, same as the builder."""
+    if runtime == "claude":
+        stdout_file = open(output_path, "wb")
+        return stdout_file, stdout_file, subprocess.PIPE
+    return None, subprocess.PIPE, subprocess.STDOUT
+
+
+def _install_worker_signal_handler(manifest, *, role, kind, outcome, run, post, killpg,
+                                   run_id, project, phase, spool_repo, log_path, child_box,
+                                   terminated, worktree=None, base_sha=None, persist=False):
+    """Registers the SIGTERM/SIGHUP handler of a worker and returns it. `log_path` MUST
+    already be bound by the caller (MOA-474 cold review 887b1d3994d4 F1: a signal landing
+    between registration and a late assignment raised NameError inside the handler and
+    left no terminal row). `child_box`/`terminated` are the caller's shared dicts, so a
+    signal that lands before the child exists is a plain no-op. Exact order inside the
+    handler, which tests pin: terminate child -> best-effort PLAIN read of child.log (never
+    through the log fd `_capture_child_output` may still be writing) -> `_interrupted_payload`
+    -> [builder only: `_persist_resume_checkpoint`] -> spool / post / unspool ->
+    `_send_callback` -> `os._exit(0)` in `finally`. `persist=True` is the builder: it also
+    passes `worktree`/`base_sha`/`run` to `_interrupted_payload` (ignored for reviewers).
+    Every collaborator is a module global resolved at call time."""
+    def _on_signal(signum, frame):
+        terminated["flag"] = True
+        child = child_box["child"]
+        try:
+            if child is not None:
+                pgid = os.getpgid(child.pid)
+                _terminate_child(child, pgid, killpg=killpg)
+            signal_name = signal.Signals(signum).name
+            try:
+                raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
+            except OSError:
+                raw_log = ""
+            last_line = next(
+                (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
+            )
+            payload = _interrupted_payload(
+                role=role, phase=phase, signal_name=signal_name,
+                worktree=worktree, base_sha=base_sha, run=run, last_line=last_line,
+            )
+            finished_event = {
+                "run_id": run_id, "project": project, "role": role,
+                "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
+                "payload": payload,
+            }
+            if persist:
+                _persist_resume_checkpoint(manifest, spool_repo, worktree, payload, run=run)
+            delivered = _deliver_terminal_event(post, spool_repo, run_id, finished_event)
+            _send_callback(
+                manifest, run=run, kind=kind, outcome=outcome,
+                summary=payload["summary"], report_path=None, stage=payload["stage"],
+                diagnostic=payload["diagnostic"], contract_status="interrupted",
+                ledger_pending=not delivered,
+            )
+        finally:
+            os._exit(0)
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGHUP, _on_signal)
+    return _on_signal
+
+
+def _spawn_and_drain(popen, argv, *, cwd, prompt_path, env, log_path, child_box, terminated,
+                     stdout_target, stderr_target, stdout_file=None, drain_stderr=False):
+    """Open child.log, spawn the child with the prompt on stdin, drain its output into the
+    log, wait. Returns `(status, child, child_log_text)`: status `"missing-cli"` (child
+    None: the caller refuses with `missing-cli: <argv[0]>`), `"terminated"` (a signal tore
+    the run down; the handler owns the terminal row and `child.log` stays partial and NOT
+    redacted since `_finalize_child_log` never runs -- spec §4.2 known limit) or `"ok"`
+    (text = the redacted, finalized log). Drain BEFORE wait (spec §4.2): the OS pipe buffer
+    is 64 KiB, so a child writing more with nobody reading deadlocks against `wait()`.
+    `drain_stderr` is the Claude reviewer (stdout is the report file, stderr the stream).
+    `_open_child_log`, `_capture_child_output`, `_finalize_child_log` are module globals."""
+    log_fd = _open_child_log(log_path)
+    try:
+        with prompt_path.open("rb") as stdin_source:
+            child = popen(
+                argv, cwd=cwd, stdin=stdin_source,
+                stdout=stdout_target, stderr=stderr_target,
+                start_new_session=True, env=env,
+            )
+    except FileNotFoundError:
+        os.close(log_fd)
+        if stdout_file is not None:
+            stdout_file.close()
+        return "missing-cli", None, None
+    child_box["child"] = child
+    if stdout_file is not None:
+        stdout_file.close()
+    _capture_child_output(child.stderr if drain_stderr else child.stdout, log_fd)
+    child.wait()
+    if terminated["flag"]:
+        os.close(log_fd)
+        return "terminated", child, None
+    return "ok", child, _finalize_child_log(log_fd, log_path)
+
+
+def _reviewer_finish_payload(manifest, *, post, repo, paths, run_id, project, phase,
+                             child, child_log_text):
+    """Reviewer contract finalize through terminal-event delivery. Returns
+    `(payload, summary, contract_status, delivered)`."""
+    contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
+    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
+    stream_last_line = next(
+        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    )
+    payload = {
+        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
+        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
+    }
+    if contract_status == "ok":
+        # Row 3 (spec §8): the report's own verdict, unchanged -- derive_outcome is
+        # never called on this branch, it has nothing to decide (never synthesized).
+        payload["verdict"] = report_verdict
+        if findings is not None:
+            payload["findings"] = findings
+        # MOA-495 2.2: one-line tally against the immediately previous round of the
+        # same document/branch -- absent when there is none, or Jev fails/errs.
+        try:
+            new_report_text = paths["report"].read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            new_report_text = None
+        if new_report_text is not None:
+            tally = _review_round_tally(repo, project, manifest["kind"], manifest["target"], run_id, new_report_text)
+            if tally is not None:
+                payload["tally"] = tally
+    else:
+        outcome = jr.derive_outcome({
+            "role": "reviewer", "report_result": None, "contract_status": contract_status,
+            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
+            "verify_frames": [], "tests_written": True,
+            "head_sha": None, "base_sha": None, "is_descendant": False,
+            "last_stream_text": jr._last_stream_text_line(child_log_text),
+        })
+        if outcome["stage"] is not None:
+            payload["stage"] = outcome["stage"]
+            payload["diagnostic"] = outcome["diagnostic"]
+    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
+    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
+    # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
+    # but the guard covers both), if the payload still overflows it.
+    jr.cap_payload_bytes(payload)
+    finished_event = {
+        "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
+        "source": "deterministic", "emitter": "wrapper", "payload": payload,
+    }
+    delivered = _deliver_terminal_event(post, repo, run_id, finished_event)
+    return payload, summary, contract_status, delivered
+
+
+def _finish_reviewer_worker(manifest, *, run, post, repo, paths, run_id, project, phase,
+                            kind, child, child_log_text, status_first, allowlist_root):
+    """Terminal half of a reviewer worker. `status_first=True` (the DOC path) runs
+    `_update_status_md` BETWEEN the manifest `worker_*` fields and the callback;
+    `status_first=False` (the DIFF path) does not run it here -- `run_worker` runs it after
+    this returns. The ORDER is the contract: unifying the two would be a behaviour change
+    (Decision 7)."""
+    payload, summary, contract_status, delivered = _reviewer_finish_payload(
+        manifest, post=post, repo=repo, paths=paths, run_id=run_id, project=project,
+        phase=phase, child=child, child_log_text=child_log_text,
+    )
+    manifest["worker_summary"] = summary
+    manifest["worker_contract_status"] = contract_status
+    manifest["worker_outcome"] = payload.get("verdict")
+    if status_first:
+        # Fixes branch review F6: the callback line stays fixed regardless of whether this
+        # POST succeeds -- a delivery failure is reported separately, to the worker's own
+        # stdout (the pane), never by mutating the callback line; `ledger_pending` below is
+        # the one sanctioned addition (MOA-474 §12.1).
+        _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
+    _send_callback(
+        manifest, run=run, kind=kind, outcome=payload.get("verdict", "no verdict"), summary=summary,
+        report_path=paths["report"], stage=payload.get("stage"), diagnostic=payload.get("diagnostic"),
+        contract_status=contract_status, ledger_pending=not delivered,
+    )
+    return 0
+
+
+def _manifest_identity_error(manifest_path, control_repo, run_id):
+    """Why `manifest_path` is not the genuine manifest of this run, as a refusal code, or
+    None. It must be the path `build` wrote for `run_id` in the control repo, a regular file
+    (never a symlink, never behind a symlinked parent) owned by this user."""
+    expected_manifest = _manifest_dir(control_repo, run_id) / "manifest.json"
+    if os.path.abspath(str(manifest_path)) != os.path.abspath(str(expected_manifest)):
+        return "path-outside-allowlist"
+    try:
+        jset._reject_symlink_parents(Path(manifest_path))
+        info = Path(manifest_path).lstat()
+        if stat.S_ISLNK(info.st_mode):
+            return "agent-settings-symlink"
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            return "agent-settings-permissions"
+    except Refusal as exc:
+        return exc.code
+    except OSError:
+        return "agent-settings-permissions"
+    return None
+
+
+def _prepare_builder_launch(manifest, *, run, env, allowlist_root, manifest_path, control_repo,
+                            worktree, branch, whitelist, verify_cmd, build_cmd):
+    """Everything a builder launch needs BEFORE `popen`: worker-side preflight, plan-path
+    re-validation, resume-lineage checks, managed launch selection, the handoff and the
+    prompt file. Returns `(argv, prompt_path, paths, child_env)`. Any pre-launch failure
+    RAISES (`Refusal(code)`, `KeyError`, ...): the caller's single `except Exception` turns
+    it into one `_refuse_builder_run` (Refusal -> its code, KeyError -> `manifest missing
+    <key>`, anything else -> `str(exc)`)."""
+    run_id = manifest["run_id"]
+    project = manifest["project"]
+    phase = manifest["phase"]
+    runtime = manifest["runtime"]
+    handoff_branch = manifest.get("branch", branch)
+    child_env = env
+    launch_selection = None
+
+    # Worker-side preflight (fixes cold review round 2 F2, spec §2.4 worker step 2):
+    # the dispatcher already preflighted the worktree once, moments earlier, but the
+    # worker re-validates its own manifest independently -- the only guard against a
+    # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
+    # path.
+    args_ns = SimpleNamespace(
+        role="builder", project=project, phase=phase, repo=str(worktree),
+        prompt_file=None, runtime=runtime, callback=None,
+    )
+    try:
+        jr.preflight(args_ns, run=run, allow_untracked=True, require_feat_branch=False, skip_handoff=True)
+    except ValueError as exc:
+        raise Refusal(_map_refusal(str(exc))) from exc
+
+    # Defense-in-depth (fixes cold review round 2 F1; amended by the MOA-467
+    # acceptance fixes): the worker re-validates its own manifest's plan_path with
+    # the SAME policy `dispatch_build` applied -- canonicalized, non-secret,
+    # readable, inside the allowlist. A directly named plan path IS a read input,
+    # so an explicitly named external document (another allowlist repo, a related
+    # worktree) is legitimate: refusing it here while `build` accepted it was the
+    # regression. Forged paths outside the allowlist, secrets, missing files and
+    # symlink escapes all still refuse. Secret-shaped paths refuse FIRST -- a
+    # symlink planted inside the worktree that resolves to a control-repo `.env`
+    # must refuse even though it is "contained".
+    plan_path = Path(manifest["plan_path"]).resolve()
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
+        raise Refusal(f"secret-detected: {plan_path}")
+    if defect:
+        raise Refusal(defect)
+    resume_start = manifest.get("resume_start")
+    if resume_start is not None:
+        jresume.require_same_work_state(
+            resume_start, jresume.capture_work_state(worktree, plan_path, run=run),
+        )
+    if _treats_as_managed(manifest):
+        try:
+            con = _open_ro(jr.DB_PATH)
+        except sqlite3.Error as exc:
+            raise Refusal("resume-ineligible") from exc
+        con.row_factory = sqlite3.Row
+        try:
+            latest = _latest_builder_attempt(con, manifest["project"], control_repo, branch)
+        finally:
+            con.close()
+        if latest != run_id:
+            raise Refusal("resume-ineligible")
+
+    paths = jr.safe_run_paths(worktree, run_id)
+    paths["scratch"].mkdir(parents=True, exist_ok=True)
+
+    if runtime == "opencode-builder":
+        child_env, launch_selection = _resolve_managed_launch(
+            manifest, worktree, manifest_path, env, control_repo,
+        )
+
+    # Contract-valid builder handoff, derived from the plan's own text (round-1 cold
+    # review F2 -- MOA-467: the plan is the ORIGINAL document in the validated read
+    # scope, neither copied into the worktree nor re-copied here).
+    plan_text = plan_path.read_text(encoding="utf-8")
+    spec_dest, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
+    if spec_refusal:
+        # fixes cold review round 2 F5: a DECLARED but bad **Spec:** reference
+        # refuses loudly instead of silently handing the builder the plan itself as
+        # its own spec -- only the absence of a **Spec:** line at all falls back
+        # that way.
+        raise Refusal(spec_refusal)
+    head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
+    head_for_handoff = head_probe.stdout.strip() if head_probe.returncode == 0 else "unknown"
+    handoff = _build_builder_handoff(
+        plan_dest=plan_path, spec_dest=spec_dest,
+        agents_path=worktree / "AGENTS.md", branch=handoff_branch, head_sha=head_for_handoff,
+        whitelist=whitelist, verify_cmd=verify_cmd, build_cmd=build_cmd,
+        read_roots=_builder_read_roots(
+            control_repo, worktree, run=run, allowlist_root=allowlist_root,
+            documents=(plan_path, spec_dest),
+        ),
+    )
+    prompt_text = jr.assemble_prompt("builder", {
+        "run_id": run_id, "project": project, "role": "builder", "phase": phase,
+        "report": str(paths["report"]), "tests": str(paths["tests"]),
+        "scratch": str(paths["scratch"]), "repo": str(worktree),
+    }, handoff)
+    prompt_path = paths["scratch"] / "prompt.txt"
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+
+    # `model`/`effort` are converted back from their ledger sentinels to a real
+    # override-or-None here (fixes cold review F4) -- "default"/"n/a" mean "no
+    # override was given", never a literal value to pass to the runtime.
+    if launch_selection is not None:
+        model_override = launch_selection["runtime_model"]
+        effort_override = launch_selection["effort"]
+    else:
+        model = manifest["model"]
+        effort = manifest["effort"]
+        model_override = None if model == "default" else model
+        effort_override = None if effort == "n/a" else effort
+    argv = jr.runtime_argv(
+        runtime, "builder", worktree, prompt_path, paths["reviewer_output"],
+        model=model_override, effort=effort_override,
+    )
+    return argv, prompt_path, paths, child_env
+
+
+def _builder_finish_payload(manifest, *, run, paths, run_id, project, phase, worktree,
+                            verify_cmd, build_cmd, child, child_log_text):
+    """Builder contract finalize, jaxflow's OWN post-build verification (both commands run;
+    the build is never skipped because the test failed), outcome derivation and the
+    run-finished payload. Returns `(payload, summary, contract_status, outcome,
+    verify_contradicts)`. The resume checkpoint, delivery, manifest `worker_*` fields and
+    the callback stay with the caller, in that order."""
+    contract_status, summary, report_result = finalize_builder_report(
+        paths, run_id, project, phase, worktree=worktree)
+
+    head_sha = None
+    head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=worktree)
+    if head.returncode == 0 and jr.SHA_RE.match(head.stdout.strip()):
+        head_sha = head.stdout.strip()
+
+    # jaxflow's OWN post-build verification (spec §4.2 step 4) -- distinct from and in
+    # addition to whatever the builder ran per its own handoff's commands. BOTH commands
+    # run; the build is never skipped because the test failed.
+    verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
+    tests_written = _write_verify_tests_file(paths["tests"], verify_frames, worktree=worktree)
+
+    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
+    base_sha = manifest.get("base_sha")
+    is_descendant = (
+        head_sha is not None and isinstance(base_sha, str)
+        and _is_strict_descendant(run, worktree, base_sha, head_sha)
+    )
+    # MOA-474 D5/§7: the last non-empty PHYSICAL line of the redacted child.log --
+    # never the whole stream (criterion 2: a recovered mid-stream error is not
+    # terminal evidence, only the LAST line can ever be).
+    stream_last_line = next(
+        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    )
+    outcome = jr.derive_outcome({
+        "role": "builder", "report_result": report_result,
+        "report_summary": summary, "contract_status": contract_status,
+        "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
+        "verify_frames": verify_frames, "tests_written": tests_written,
+        "head_sha": head_sha, "base_sha": base_sha, "is_descendant": is_descendant,
+        # MOA-474 cold review F4: wires _last_stream_text_line into rows 5/10's
+        # diagnostic (§13) -- without this, evidence.get("last_stream_text") always
+        # defaults to None and the exit/signal diagnostic never has a real cause.
+        "last_stream_text": jr._last_stream_text_line(child_log_text),
+    })
+    payload = {
+        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
+        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
+        "head_sha": head_sha, "result": outcome["result"],
+    }
+    if outcome["stage"] is not None:
+        payload["stage"] = outcome["stage"]
+        payload["diagnostic"] = outcome["diagnostic"]
+    # MOA-470 §4.3: both keys travel together, emitted iff contract_status needed a
+    # diagnosis -- never for "ok" (verify's own result covers that).
+    _log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
+    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
+    # payload byte ceiling -- drops log_context (then tally, N/A on this branch)
+    # if the combination still overflows it despite the byte-bounded chunks above.
+    jr.cap_payload_bytes(payload)
+    # MOA-455, unaffected by this change: a claimed failure the verify chain did
+    # NOT confirm is flagged on the callback line ONLY, never touching the ledger
+    # `result`. Unlike the pre-MOA-474 code, this note is orthogonal to
+    # derive_outcome's own veto: it only ever fires when the report claimed
+    # failure and jaxflow's own checks disagree (the opposite direction from the
+    # veto, which overrides a claimed SUCCESS).
+    verify_failed_now = any(r.returncode != 0 for _, r in verify_frames)
+    verify_contradicts = (
+        report_result == "failure" and not verify_failed_now and tests_written
+    )
+    return payload, summary, contract_status, outcome, verify_contradicts
+
+
+def _validate_diff_worker_inputs(manifest, *, run, allowlist_root, worktree, builder_run_id,
+                                 base_sha, head_sha):
+    """Every pre-launch check of the diff worker. Returns `(message, tests_path, plan_path,
+    spec_path)`: `message` is the refusal text for `_refuse_diff_run` (None when all checks
+    passed -- then the other three are the validated values). A failing `git diff
+    --name-only` still RAISES RuntimeError (not a refusal), exactly as before."""
+    # fixes F6 (HIGH, NEW): the evidence path is DERIVED from the validated worktree plus
+    # `builder_run_id` -- exactly as `dispatch_diff_review` itself derives it (spec §4.3
+    # step 1) -- never trusted verbatim from the manifest body. `builder_run_id` itself is
+    # shape-checked first (it is embedded into a filesystem path below); a manifest
+    # `tests_path` that disagrees with the derived path is a forged or stale value and
+    # refuses rather than being echoed into the reviewer prompt.
+    if not _RUN_ID_RE.match(builder_run_id):
+        return "path-outside-allowlist", None, None, None
+    tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
+    manifest_tests_path = manifest.get("tests_path")
+    if manifest_tests_path is not None and Path(manifest_tests_path).resolve() != tests_path.resolve():
+        return "path-outside-allowlist", None, None, None
+
+    # fixes S2, amended MOA-467 (acceptance fixes): re-validates plan_path/spec_path --
+    # the build's own handoff inputs -- before any read (defense-in-depth against a
+    # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
+    # path). The plan must be a real readable non-secret file inside the allowlist --
+    # the same policy `dispatch_build` applied, so an explicitly named external plan
+    # (another allowlist repo, a related worktree) survives the build AND the later
+    # diff review. The spec is NOT trusted verbatim from the manifest: it must equal the
+    # one the plan itself declares (re-derived here from the validated plan text, so a
+    # forged manifest can never inject an arbitrary spec path) -- except for the legacy
+    # worktree-copy shape, which stays accepted exactly as it always was.
+    raw_plan = manifest.get("plan_path")
+    try:
+        plan_path = Path(raw_plan).resolve() if raw_plan else None
+    except OSError:
+        plan_path = None
+    defect = _plan_path_defect(plan_path, allowlist_root)
+    if defect == "secret-detected":
+        return f"secret-detected: {plan_path}", None, None, None
+    if defect:
+        return defect, None, None, None
+    raw_spec = manifest.get("spec_path")
+    try:
+        spec_path = Path(raw_spec).resolve() if raw_spec else None
+    except OSError:
+        spec_path = None
+    legacy_copy_ok = (
+        spec_path is not None and not _is_secret_path(spec_path)
+        and spec_path.is_file() and os.access(spec_path, os.R_OK)
+        and _contained(spec_path, worktree)
+    )
+    if not legacy_copy_ok:
+        # New-style manifests: re-derive the spec from the validated plan text and
+        # require the manifest to agree -- a forged spec path can never be injected.
+        plan_text = plan_path.read_text(encoding="utf-8")
+        derived_spec, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
+        if spec_refusal:
+            return spec_refusal, None, None, None
+        # str()-compared, not Path-compared (MOA-471 item 2): `derived_spec` is a plain
+        # str, not a Path, whenever the plan's **Spec:** line carries a resolved
+        # `#<heading>` fragment -- comparing Path != str would always be unequal and
+        # falsely refuse every fragmented spec even when both sides name the same value.
+        if str(spec_path) != str(derived_spec):
+            return "path-outside-allowlist", None, None, None
+        spec_path = derived_spec
+
+    # fixes Part 2 diff-review F2: the changed-path LIST is checked against the same
+    # secret-path guard I4/jax_init uses BEFORE the full diff (which can carry secret file
+    # CONTENTS, not just names) is ever read -- refusing loudly instead of embedding a
+    # secret's value in the reviewer prompt.
+    names_result = run(["git", "diff", "--name-only", f"{base_sha}..{head_sha}"], cwd=worktree)
+    if names_result.returncode != 0:
+        raise RuntimeError(f"git diff --name-only {base_sha}..{head_sha} failed: {names_result.stderr}")
+    secret_hit = next(
+        (p for p in names_result.stdout.splitlines() if p and _is_secret_path(p)), None,
+    )
+    if secret_hit:
+        return f"secret-detected: {secret_hit}", None, None, None
+    return None, tests_path, plan_path, spec_path
+
+
+def _build_diff_handoff(manifest, *, run, repo, worktree, spec_path, plan_path, tests_path,
+                        base_sha, head_sha):
+    """The reviewer handoff text of a `--diff` review (grammar `parse_reviewer_handoff`
+    parses: one `diff:` line, one `paths:` line, one indented `  test-output:` line).
+    Runs `git diff base..head`; a failure RAISES RuntimeError (never a placeholder
+    review). Returns the handoff string."""
+    diff_result = run(["git", "diff", f"{base_sha}..{head_sha}"], cwd=worktree)
+    if diff_result.returncode != 0:
+        # fixes cold review F6: a diff-generation failure must not silently substitute
+        # placeholder text and dispatch a review anyway -- the reviewer would be judging
+        # a diff that never actually happened. An uncaught crash here ends the tmux
+        # session with no run-finished event, surfacing as `dead` via `jaxflow status
+        # <run_id>` (spec §2.5's existing status vocabulary) -- an honest signal over a
+        # corrupted review.
+        raise RuntimeError(f"git diff {base_sha}..{head_sha} failed: {diff_result.stderr}")
+    diff_text = diff_result.stdout
+
+    # Grammar `parse_reviewer_handoff` parses: exactly one `diff:` line, exactly one
+    # `paths:` line, and exactly one indented `  test-output:` line in the block right
+    # after it -- everything else in this text (the framing, the `spec:`/`plan:` lines
+    # below, the actual diff, --focus) is free-form and never scanned by that parser
+    # (spec §4.3 step 3). fixes S2: `spec:`/`plan:` name the SAME evidence-of-should the
+    # builder's own handoff named -- the reviewer contract's required spec/plan inputs.
+    since_run_id = manifest.get("since_review_run_id")
+    correction_header = ""
+    prior_review_line = ""
+    if since_run_id:
+        # `_safe_run_subpath` (not jr.safe_run_paths, which raises on an existing
+        # report) validates since_run_id; a forged/escaping value renders NEITHER
+        # line, same as no since_run_id (F2/F6).
+        prior_report = _safe_run_subpath(repo, "reports", since_run_id, suffix=".md")
+        if prior_report is not None:
+            since_verdict = manifest.get("since_verdict", "unknown")
+            correction_header = f"Correction review of {since_run_id} (verdict {since_verdict})\n"
+            prior_review_line = f"  prior-review: {prior_report}\n"
+    handoff = (
+        f"{correction_header}"
+        f"diff: {base_sha}..{head_sha}\n"
+        "paths:\n"
+        f"  spec: {spec_path}\n"
+        f"  plan: {plan_path}\n"
+        f"  test-output: {tests_path}\n"
+        f"{prior_review_line}"
+        "\n"
+        # ponytail: whole diff embedded inline, no size cap -- revisit if a --diff review
+        # ever times out on a huge diff. This is also the resolution to the Claude
+        # --tools Read,Glob,Grep containment (spec §6 I2): neither reviewer runtime needs
+        # to run `git diff` itself for a --diff review. Doc reviews name the file and
+        # read it from disk instead of embedding its contents.
+        f"{diff_text}\n"
+    )
+    if manifest.get("threat_model"):
+        handoff = f"{handoff}\n{threat_model_line(manifest['threat_model'])}\n"
+    if manifest.get("focus"):
+        handoff = f"{handoff}\n--focus: {manifest['focus']}\n"
+    return handoff
+
+
 def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
@@ -3573,22 +4134,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
             run=run, post=post,
         )
     control_repo, worktree = validated
-    expected_manifest = _manifest_dir(control_repo, run_id) / "manifest.json"
-    identity_error = None
-    if os.path.abspath(str(manifest_path)) != os.path.abspath(str(expected_manifest)):
-        identity_error = "path-outside-allowlist"
-    else:
-        try:
-            jset._reject_symlink_parents(Path(manifest_path))
-            info = Path(manifest_path).lstat()
-            if stat.S_ISLNK(info.st_mode):
-                identity_error = "agent-settings-symlink"
-            elif not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                identity_error = "agent-settings-permissions"
-        except Refusal as exc:
-            identity_error = exc.code
-        except OSError:
-            identity_error = "agent-settings-permissions"
+    identity_error = _manifest_identity_error(manifest_path, control_repo, run_id)
     if identity_error:
         return _refuse_unvalidated_builder_run(
             identity_error, manifest=manifest, manifest_path=manifest_path,
@@ -3617,127 +4163,15 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
                 run=run, post=post,
             )
     try:
-        handoff_branch = manifest.get("branch", branch)
-        child_env = env
-        launch_selection = None
-
         # fixes F1, second half: every pre-launch failure from here through argv assembly
         # (a `safe_run_paths` collision, an unreadable `plan_path`, any other exception)
         # routes through `_refuse_builder_run` with the exception's own text as the message,
         # instead of an uncaught crash leaving the reservation behind.
         try:
-            # Worker-side preflight (fixes cold review round 2 F2, spec §2.4 worker step 2):
-            # the dispatcher already preflighted the worktree once, moments earlier, but the
-            # worker re-validates its own manifest independently -- the only guard against a
-            # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
-            # path.
-            args_ns = SimpleNamespace(
-                role="builder", project=project, phase=phase, repo=str(worktree),
-                prompt_file=None, runtime=runtime, callback=None,
-            )
-            try:
-                jr.preflight(args_ns, run=run, allow_untracked=True, require_feat_branch=False, skip_handoff=True)
-            except ValueError as exc:
-                return _refuse_builder_run(
-                    _map_refusal(str(exc)), manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-
-            # Defense-in-depth (fixes cold review round 2 F1; amended by the MOA-467
-            # acceptance fixes): the worker re-validates its own manifest's plan_path with
-            # the SAME policy `dispatch_build` applied -- canonicalized, non-secret,
-            # readable, inside the allowlist. A directly named plan path IS a read input,
-            # so an explicitly named external document (another allowlist repo, a related
-            # worktree) is legitimate: refusing it here while `build` accepted it was the
-            # regression. Forged paths outside the allowlist, secrets, missing files and
-            # symlink escapes all still refuse. Secret-shaped paths refuse FIRST -- a
-            # symlink planted inside the worktree that resolves to a control-repo `.env`
-            # must refuse even though it is "contained".
-            plan_path = Path(manifest["plan_path"]).resolve()
-            if _is_secret_path(plan_path):
-                return _refuse_builder_run(
-                    f"secret-detected: {plan_path}", manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-            if not _contained(plan_path, allowlist_root) or not plan_path.is_file() \
-                    or not os.access(plan_path, os.R_OK):
-                return _refuse_builder_run(
-                    "path-outside-allowlist", manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-            resume_start = manifest.get("resume_start")
-            if resume_start is not None:
-                jresume.require_same_work_state(
-                    resume_start, jresume.capture_work_state(worktree, plan_path, run=run),
-                )
-            if _treats_as_managed(manifest):
-                try:
-                    con = _open_ro(jr.DB_PATH)
-                except sqlite3.Error as exc:
-                    raise Refusal("resume-ineligible") from exc
-                con.row_factory = sqlite3.Row
-                try:
-                    latest = _latest_builder_attempt(con, manifest["project"], control_repo, branch)
-                finally:
-                    con.close()
-                if latest != run_id:
-                    raise Refusal("resume-ineligible")
-
-            paths = jr.safe_run_paths(worktree, run_id)
-            paths["scratch"].mkdir(parents=True, exist_ok=True)
-
-            if runtime == "opencode-builder":
-                child_env, launch_selection = _resolve_managed_launch(
-                    manifest, worktree, manifest_path, env, control_repo,
-                )
-
-            # Contract-valid builder handoff, derived from the plan's own text (round-1 cold
-            # review F2 -- MOA-467: the plan is the ORIGINAL document in the validated read
-            # scope, neither copied into the worktree nor re-copied here).
-            plan_text = plan_path.read_text(encoding="utf-8")
-            spec_dest, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
-            if spec_refusal:
-                # fixes cold review round 2 F5: a DECLARED but bad **Spec:** reference
-                # refuses loudly instead of silently handing the builder the plan itself as
-                # its own spec -- only the absence of a **Spec:** line at all falls back
-                # that way.
-                return _refuse_builder_run(
-                    spec_refusal, manifest=manifest, run=run, post=post,
-                    control_repo=control_repo, worktree=worktree, branch=branch,
-                )
-            head_probe = run(["git", "rev-parse", "HEAD"], cwd=worktree)
-            head_for_handoff = head_probe.stdout.strip() if head_probe.returncode == 0 else "unknown"
-            handoff = _build_builder_handoff(
-                plan_dest=plan_path, spec_dest=spec_dest,
-                agents_path=worktree / "AGENTS.md", branch=handoff_branch, head_sha=head_for_handoff,
-                whitelist=whitelist, verify_cmd=verify_cmd, build_cmd=build_cmd,
-                read_roots=_builder_read_roots(
-                    control_repo, worktree, run=run, allowlist_root=allowlist_root,
-                    documents=(plan_path, spec_dest),
-                ),
-            )
-            prompt_text = jr.assemble_prompt("builder", {
-                "run_id": run_id, "project": project, "role": "builder", "phase": phase,
-                "report": str(paths["report"]), "tests": str(paths["tests"]),
-                "scratch": str(paths["scratch"]), "repo": str(worktree),
-            }, handoff)
-            prompt_path = paths["scratch"] / "prompt.txt"
-            prompt_path.write_text(prompt_text, encoding="utf-8")
-
-            # `model`/`effort` are converted back from their ledger sentinels to a real
-            # override-or-None here (fixes cold review F4) -- "default"/"n/a" mean "no
-            # override was given", never a literal value to pass to the runtime.
-            if launch_selection is not None:
-                model_override = launch_selection["runtime_model"]
-                effort_override = launch_selection["effort"]
-            else:
-                model = manifest["model"]
-                effort = manifest["effort"]
-                model_override = None if model == "default" else model
-                effort_override = None if effort == "n/a" else effort
-            argv = jr.runtime_argv(
-                runtime, "builder", worktree, prompt_path, paths["reviewer_output"],
-                model=model_override, effort=effort_override,
+            argv, prompt_path, paths, child_env = _prepare_builder_launch(
+                manifest, run=run, env=env, allowlist_root=allowlist_root,
+                manifest_path=manifest_path, control_repo=control_repo, worktree=worktree,
+                branch=branch, whitelist=whitelist, verify_cmd=verify_cmd, build_cmd=build_cmd,
             )
         except Exception as exc:
             # fixes F1 (RECURRENCE, tech-lead triage): anything that fails before the child
@@ -3758,182 +4192,46 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
         child_box = {"child": None}
         terminated = {"flag": False}
 
-        def _on_signal(signum, frame):
-            terminated["flag"] = True
-            child = child_box["child"]
-            try:
-                if child is not None:
-                    pgid = os.getpgid(child.pid)
-                    _terminate_child(child, pgid, killpg=killpg)
-                signal_name = signal.Signals(signum).name
-                # MOA-474 cold review F3: a best-effort read of whatever child.log has
-                # on disk so far, redacted the same way `_finalize_child_log` redacts
-                # the completed file -- a PLAIN read (never through log_fd, which
-                # `_capture_child_output` may still be mid-write to at signal time; no
-                # fd contention this way). Any read failure just yields no evidence,
-                # same as the original plain-text default.
-                try:
-                    raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
-                except OSError:
-                    raw_log = ""
-                last_line = next(
-                    (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
-                )
-                payload = _interrupted_payload(
-                    role="builder", phase=phase, signal_name=signal_name,
-                    worktree=worktree, base_sha=manifest.get("base_sha"), run=run,
-                    last_line=last_line,
-                )
-                finished_event = {
-                    "run_id": run_id, "project": project, "role": "builder",
-                    "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
-                    "payload": payload,
-                }
-                _persist_resume_checkpoint(manifest, control_repo, worktree, payload, run=run)
-                delivered = True
-                try:
-                    _write_spool(control_repo, run_id, finished_event)
-                    post(finished_event)
-                except Exception as exc:
-                    delivered = False
-                    print(f"event delivery FAILED: {exc}")
-                if delivered:
-                    _delete_spool(control_repo, run_id)
-                _send_callback(
-                    manifest, run=run, kind="build", outcome="failure",
-                    summary=payload["summary"], report_path=None, stage=payload["stage"],
-                    diagnostic=payload["diagnostic"], contract_status="interrupted",
-                    ledger_pending=not delivered,
-                )
-            finally:
-                os._exit(0)
-
         # MOA-474 cold review 887b1d3994d4 F1: `_on_signal` above reads `log_path`, so
         # it must be bound BEFORE the handlers are registered -- a signal landing in the
         # window between registration and the old assignment raised NameError inside the
         # handler and exited with no terminal row.
         log_path = jr.child_log_path(control_repo, run_id)
-        signal.signal(signal.SIGTERM, _on_signal)
-        signal.signal(signal.SIGHUP, _on_signal)
+        _install_worker_signal_handler(
+            manifest, role="builder", kind="build", outcome="failure", run=run, post=post,
+            killpg=killpg, run_id=run_id, project=project, phase=phase,
+            spool_repo=control_repo, log_path=log_path, child_box=child_box,
+            terminated=terminated, worktree=worktree, base_sha=manifest.get("base_sha"),
+            persist=True,
+        )
 
         # MOA-470 §4.2: OpenCode has no --output-* flag, so its stdout was never the
         # report channel -- free to redirect to a pipe. stderr merges into the same pipe
         # (matches how both already appear interleaved in a tmux pane today).
-        log_fd = _open_child_log(log_path)
-        try:
-            with prompt_path.open("rb") as stdin_source:
-                child = popen(
-                    argv, cwd=str(worktree), stdin=stdin_source,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    start_new_session=True, env=child_env,
-                )
-        except FileNotFoundError:
-            os.close(log_fd)
+        status, child, child_log_text = _spawn_and_drain(
+            popen, argv, cwd=str(worktree), prompt_path=prompt_path, env=child_env,
+            log_path=log_path, child_box=child_box, terminated=terminated,
+            stdout_target=subprocess.PIPE, stderr_target=subprocess.STDOUT,
+        )
+        if status == "missing-cli":
             return _refuse_builder_run(
                 f"missing-cli: {argv[0]}", manifest=manifest, run=run, post=post,
                 control_repo=control_repo, worktree=worktree, branch=branch,
             )
-        child_box["child"] = child
-
-        # Drain BEFORE wait (spec §4.2): the OS pipe buffer is 64 KiB on Linux: a child
-        # writing more than that with nobody reading deadlocks against `wait()` below.
-        _capture_child_output(child.stdout, log_fd)
-        child.wait()
-        if terminated["flag"]:
-            # Known limit, not a bug (spec §4.2): a signal-torn-down run's child.log is
-            # left exactly as far as the drain got -- partial and NOT redacted, since
-            # `_finalize_child_log` (which redacts) never runs on this path.
-            os.close(log_fd)
+        if status == "terminated":
             return 0
-        child_log_text = _finalize_child_log(log_fd, log_path)
 
-        contract_status, summary, report_result = finalize_builder_report(
-            paths, run_id, project, phase, worktree=worktree)
-
-        head_sha = None
-        head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=worktree)
-        if head.returncode == 0 and jr.SHA_RE.match(head.stdout.strip()):
-            head_sha = head.stdout.strip()
-
-        # jaxflow's OWN post-build verification (spec §4.2 step 4) -- distinct from and in
-        # addition to whatever the builder ran per its own handoff's commands. BOTH commands
-        # run; the build is never skipped because the test failed.
-        verify_frames = _run_verify_commands(run, worktree, verify_cmd, build_cmd)
-        tests_written = _write_verify_tests_file(paths["tests"], verify_frames, worktree=worktree)
-
-        exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
-        base_sha = manifest.get("base_sha")
-        is_descendant = (
-            head_sha is not None and isinstance(base_sha, str)
-            and _is_strict_descendant(run, worktree, base_sha, head_sha)
+        payload, summary, contract_status, outcome, verify_contradicts = _builder_finish_payload(
+            manifest, run=run, paths=paths, run_id=run_id, project=project, phase=phase,
+            worktree=worktree, verify_cmd=verify_cmd, build_cmd=build_cmd,
+            child=child, child_log_text=child_log_text,
         )
-        # MOA-474 D5/§7: the last non-empty PHYSICAL line of the redacted child.log --
-        # never the whole stream (criterion 2: a recovered mid-stream error is not
-        # terminal evidence, only the LAST line can ever be).
-        stream_last_line = next(
-            (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
-        )
-        outcome = jr.derive_outcome({
-            "role": "builder", "report_result": report_result,
-            "report_summary": summary, "contract_status": contract_status,
-            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
-            "verify_frames": verify_frames, "tests_written": tests_written,
-            "head_sha": head_sha, "base_sha": base_sha, "is_descendant": is_descendant,
-            # MOA-474 cold review F4: wires _last_stream_text_line into rows 5/10's
-            # diagnostic (§13) -- without this, evidence.get("last_stream_text") always
-            # defaults to None and the exit/signal diagnostic never has a real cause.
-            "last_stream_text": jr._last_stream_text_line(child_log_text),
-        })
-        payload = {
-            "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
-            "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
-            "head_sha": head_sha, "result": outcome["result"],
-        }
-        if outcome["stage"] is not None:
-            payload["stage"] = outcome["stage"]
-            payload["diagnostic"] = outcome["diagnostic"]
-        # MOA-470 §4.3: both keys travel together, emitted iff contract_status needed a
-        # diagnosis -- never for "ok" (verify's own result covers that).
-        if contract_status in ("missing", "invalid"):
-            window = jr.child_log_classify_window(child_log_text)
-            # MOA-495 2.1: refine_reason keeps classify_reason's regex/exit precedence
-            # and only asks Jev to pick among the wider reason set when the regex did
-            # not already decide provider-limit; log_context surfaces the log slices
-            # Jev found most relevant, for `jaxflow result` to show instead of raw tail.
-            payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
-            payload["tail"] = jr.child_log_tail(child_log_text)
-            context = jr.log_context(window)
-            if context:
-                payload["log_context"] = context
-        # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
-        # payload byte ceiling -- drops log_context (then tally, N/A on this branch)
-        # if the combination still overflows it despite the byte-bounded chunks above.
-        jr.cap_payload_bytes(payload)
-        # MOA-455, unaffected by this change: a claimed failure the verify chain did
-        # NOT confirm is flagged on the callback line ONLY, never touching the ledger
-        # `result`. Unlike the pre-MOA-474 code, this note is orthogonal to
-        # derive_outcome's own veto: it only ever fires when the report claimed
-        # failure and jaxflow's own checks disagree (the opposite direction from the
-        # veto, which overrides a claimed SUCCESS).
-        verify_failed_now = any(r.returncode != 0 for _, r in verify_frames)
-        verify_contradicts = (
-            report_result == "failure" and not verify_failed_now and tests_written
-        )
-
         finished_event = {
             "run_id": run_id, "project": project, "role": "builder", "type": "run-finished",
             "source": "deterministic", "emitter": "wrapper", "payload": payload,
         }
         _persist_resume_checkpoint(manifest, control_repo, worktree, payload, run=run)
-        delivered = True
-        try:
-            _write_spool(control_repo, run_id, finished_event)
-            post(finished_event)
-        except Exception as exc:
-            delivered = False
-            print(f"event delivery FAILED: {exc}")
-        if delivered:
-            _delete_spool(control_repo, run_id)
+        delivered = _deliver_terminal_event(post, control_repo, run_id, finished_event)
 
         manifest["worker_summary"] = summary
         manifest["worker_contract_status"] = contract_status
@@ -3976,135 +4274,22 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
         return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
     repo, worktree = validated
 
-    # fixes F6 (HIGH, NEW): the evidence path is DERIVED from the validated worktree plus
-    # `builder_run_id` -- exactly as `dispatch_diff_review` itself derives it (spec §4.3
-    # step 1) -- never trusted verbatim from the manifest body. `builder_run_id` itself is
-    # shape-checked first (it is embedded into a filesystem path below); a manifest
-    # `tests_path` that disagrees with the derived path is a forged or stale value and
-    # refuses rather than being echoed into the reviewer prompt.
-    if not _RUN_ID_RE.match(builder_run_id):
-        return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-    tests_path = worktree / ".local" / "reports" / f"{builder_run_id}.tests.txt"
-    manifest_tests_path = manifest.get("tests_path")
-    if manifest_tests_path is not None and Path(manifest_tests_path).resolve() != tests_path.resolve():
-        return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-
-    # fixes S2, amended MOA-467 (acceptance fixes): re-validates plan_path/spec_path --
-    # the build's own handoff inputs -- before any read (defense-in-depth against a
-    # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
-    # path). The plan must be a real readable non-secret file inside the allowlist --
-    # the same policy `dispatch_build` applied, so an explicitly named external plan
-    # (another allowlist repo, a related worktree) survives the build AND the later
-    # diff review. The spec is NOT trusted verbatim from the manifest: it must equal the
-    # one the plan itself declares (re-derived here from the validated plan text, so a
-    # forged manifest can never inject an arbitrary spec path) -- except for the legacy
-    # worktree-copy shape, which stays accepted exactly as it always was.
-    raw_plan = manifest.get("plan_path")
-    try:
-        plan_path = Path(raw_plan).resolve() if raw_plan else None
-    except OSError:
-        plan_path = None
-    if plan_path is not None and _is_secret_path(plan_path):
-        return _refuse_diff_run(f"secret-detected: {plan_path}", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-    if (
-        plan_path is None
-        or not _contained(plan_path, allowlist_root)
-        or not plan_path.is_file() or not os.access(plan_path, os.R_OK)
-    ):
-        return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-    raw_spec = manifest.get("spec_path")
-    try:
-        spec_path = Path(raw_spec).resolve() if raw_spec else None
-    except OSError:
-        spec_path = None
-    legacy_copy_ok = (
-        spec_path is not None and not _is_secret_path(spec_path)
-        and spec_path.is_file() and os.access(spec_path, os.R_OK)
-        and _contained(spec_path, worktree)
+    message, tests_path, plan_path, spec_path = _validate_diff_worker_inputs(
+        manifest, run=run, allowlist_root=allowlist_root, worktree=worktree,
+        builder_run_id=builder_run_id, base_sha=base_sha, head_sha=head_sha,
     )
-    if not legacy_copy_ok:
-        # New-style manifests: re-derive the spec from the validated plan text and
-        # require the manifest to agree -- a forged spec path can never be injected.
-        plan_text = plan_path.read_text(encoding="utf-8")
-        derived_spec, spec_refusal = _resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
-        if spec_refusal:
-            return _refuse_diff_run(spec_refusal, manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-        # str()-compared, not Path-compared (MOA-471 item 2): `derived_spec` is a plain
-        # str, not a Path, whenever the plan's **Spec:** line carries a resolved
-        # `#<heading>` fragment -- comparing Path != str would always be unequal and
-        # falsely refuse every fragmented spec even when both sides name the same value.
-        if str(spec_path) != str(derived_spec):
-            return _refuse_diff_run("path-outside-allowlist", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
-        spec_path = derived_spec
-
-    # fixes Part 2 diff-review F2: the changed-path LIST is checked against the same
-    # secret-path guard I4/jax_init uses BEFORE the full diff (which can carry secret file
-    # CONTENTS, not just names) is ever read -- refusing loudly instead of embedding a
-    # secret's value in the reviewer prompt.
-    names_result = run(["git", "diff", "--name-only", f"{base_sha}..{head_sha}"], cwd=worktree)
-    if names_result.returncode != 0:
-        raise RuntimeError(f"git diff --name-only {base_sha}..{head_sha} failed: {names_result.stderr}")
-    secret_hit = next(
-        (p for p in names_result.stdout.splitlines() if p and _is_secret_path(p)), None,
-    )
-    if secret_hit:
-        return _refuse_diff_run(f"secret-detected: {secret_hit}", manifest=manifest, run=run, post=post, manifest_path=manifest_path)
+    if message:
+        return _refuse_diff_run(message, manifest=manifest, run=run, post=post, manifest_path=manifest_path)
 
     # Reviewer runs always use the CONTROL repo for report/scratch paths (spec §2.4 step
     # 2), even though the reviewer's own cwd (below) is the worktree.
     paths = jr.safe_run_paths(repo, run_id)
     paths["scratch"].mkdir(parents=True, exist_ok=True)
 
-    diff_result = run(["git", "diff", f"{base_sha}..{head_sha}"], cwd=worktree)
-    if diff_result.returncode != 0:
-        # fixes cold review F6: a diff-generation failure must not silently substitute
-        # placeholder text and dispatch a review anyway -- the reviewer would be judging
-        # a diff that never actually happened. An uncaught crash here ends the tmux
-        # session with no run-finished event, surfacing as `dead` via `jaxflow status
-        # <run_id>` (spec §2.5's existing status vocabulary) -- an honest signal over a
-        # corrupted review.
-        raise RuntimeError(f"git diff {base_sha}..{head_sha} failed: {diff_result.stderr}")
-    diff_text = diff_result.stdout
-
-    # Grammar `parse_reviewer_handoff` parses: exactly one `diff:` line, exactly one
-    # `paths:` line, and exactly one indented `  test-output:` line in the block right
-    # after it -- everything else in this text (the framing, the `spec:`/`plan:` lines
-    # below, the actual diff, --focus) is free-form and never scanned by that parser
-    # (spec §4.3 step 3). fixes S2: `spec:`/`plan:` name the SAME evidence-of-should the
-    # builder's own handoff named -- the reviewer contract's required spec/plan inputs.
-    since_run_id = manifest.get("since_review_run_id")
-    correction_header = ""
-    prior_review_line = ""
-    if since_run_id:
-        # `_safe_run_subpath` (not jr.safe_run_paths, which raises on an existing
-        # report) validates since_run_id; a forged/escaping value renders NEITHER
-        # line, same as no since_run_id (F2/F6).
-        prior_report = _safe_run_subpath(repo, "reports", since_run_id, suffix=".md")
-        if prior_report is not None:
-            since_verdict = manifest.get("since_verdict", "unknown")
-            correction_header = f"Correction review of {since_run_id} (verdict {since_verdict})\n"
-            prior_review_line = f"  prior-review: {prior_report}\n"
-    handoff = (
-        f"{correction_header}"
-        f"diff: {base_sha}..{head_sha}\n"
-        "paths:\n"
-        f"  spec: {spec_path}\n"
-        f"  plan: {plan_path}\n"
-        f"  test-output: {tests_path}\n"
-        f"{prior_review_line}"
-        "\n"
-        # ponytail: whole diff embedded inline, no size cap -- revisit if a --diff review
-        # ever times out on a huge diff. This is also the resolution to the Claude
-        # --tools Read,Glob,Grep containment (spec §6 I2): neither reviewer runtime needs
-        # to run `git diff` itself for a --diff review. Doc reviews name the file and
-        # read it from disk instead of embedding its contents.
-        f"{diff_text}\n"
+    handoff = _build_diff_handoff(
+        manifest, run=run, repo=repo, worktree=worktree, spec_path=spec_path,
+        plan_path=plan_path, tests_path=tests_path, base_sha=base_sha, head_sha=head_sha,
     )
-    if manifest.get("threat_model"):
-        handoff = f"{handoff}\n{threat_model_line(manifest['threat_model'])}\n"
-    if manifest.get("focus"):
-        handoff = f"{handoff}\n--focus: {manifest['focus']}\n"
-
     prompt_text = REVIEWER_PROMPT_PREAMBLE + jr.assemble_prompt("reviewer", {
         "run_id": run_id, "project": project, "role": "reviewer", "phase": phase,
         "report": str(paths["report"]), "tests": str(paths["tests"]),
@@ -4128,207 +4313,47 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
             documents=(plan_path, spec_path),
         ),
     )
-    stdout_file = None
-    stdout_target = None
-    stderr_target = None
-    # MOA-470 §4.2: Codex has no separate stdout consumer to protect -- its final
-    # report always goes through --output-last-message regardless of stdout -- so its
-    # stdout is free for the merged pipe, same as the builder. Claude's stdout stays
-    # the opened report file (spec §5: out of scope); only its stderr is newly piped.
-    if runtime == "claude":
-        stdout_file = open(paths["reviewer_output"], "wb")
-        stdout_target = stdout_file
-        stderr_target = subprocess.PIPE
-    else:
-        stdout_target = subprocess.PIPE
-        stderr_target = subprocess.STDOUT
+    stdout_file, stdout_target, stderr_target = _reviewer_stdio(runtime, paths["reviewer_output"])
 
     child_box = {"child": None}
     terminated = {"flag": False}
-
-    def _on_signal(signum, frame):
-        terminated["flag"] = True
-        child = child_box["child"]
-        try:
-            if child is not None:
-                pgid = os.getpgid(child.pid)
-                _terminate_child(child, pgid, killpg=killpg)
-            signal_name = signal.Signals(signum).name
-            # MOA-474 cold review F3: same best-effort plain read + redact as the
-            # builder worker's own signal handler -- never through log_fd, which
-            # `_capture_child_output` may still be mid-write to.
-            try:
-                raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
-            except OSError:
-                raw_log = ""
-            last_line = next(
-                (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
-            )
-            payload = _interrupted_payload(
-                role="reviewer", phase=phase, signal_name=signal_name, last_line=last_line,
-            )
-            finished_event = {
-                "run_id": run_id, "project": project, "role": "reviewer",
-                "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
-                "payload": payload,
-            }
-            delivered = True
-            try:
-                _write_spool(repo, run_id, finished_event)
-                post(finished_event)
-            except Exception as exc:
-                delivered = False
-                print(f"event delivery FAILED: {exc}")
-            if delivered:
-                _delete_spool(repo, run_id)
-            _send_callback(
-                manifest, run=run, kind="diff", outcome="no verdict",
-                summary=payload["summary"], report_path=None, stage=payload["stage"],
-                diagnostic=payload["diagnostic"], contract_status="interrupted",
-                ledger_pending=not delivered,
-            )
-        finally:
-            os._exit(0)
 
     # MOA-474 cold review 887b1d3994d4 F1: bind `log_path` BEFORE registering the
     # handlers -- a signal in the old window raised NameError inside the handler and
     # exited with no terminal row.
     log_path = jr.child_log_path(repo, run_id)
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGHUP, _on_signal)
+    _install_worker_signal_handler(
+        manifest, role="reviewer", kind="diff", outcome="no verdict", run=run, post=post,
+        killpg=killpg, run_id=run_id, project=project, phase=phase, spool_repo=repo,
+        log_path=log_path, child_box=child_box, terminated=terminated,
+    )
 
-    log_fd = _open_child_log(log_path)
-    try:
-        with prompt_path.open("rb") as stdin_source:
-            # cwd = the worktree (spec §4.3 step 4), not /tmp -- unlike a doc review, this
-            # reviewer's cwd is the real repo whose commits it is reviewing.
-            child = popen(
-                argv, cwd=str(worktree), stdin=stdin_source,
-                stdout=stdout_target, stderr=stderr_target,
-                start_new_session=True, env=env,
-            )
-    except FileNotFoundError:
-        os.close(log_fd)
-        if stdout_file is not None:
-            stdout_file.close()
+    # cwd = the worktree (spec §4.3 step 4), not /tmp -- unlike a doc review, this
+    # reviewer's cwd is the real repo whose commits it is reviewing.
+    status, child, child_log_text = _spawn_and_drain(
+        popen, argv, cwd=str(worktree), prompt_path=prompt_path, env=env, log_path=log_path,
+        child_box=child_box, terminated=terminated, stdout_target=stdout_target,
+        stderr_target=stderr_target, stdout_file=stdout_file, drain_stderr=runtime == "claude",
+    )
+    if status == "missing-cli":
         return _refuse_diff_run(
             f"missing-cli: {argv[0]}", manifest=manifest, run=run, post=post, manifest_path=manifest_path,
         )
-    child_box["child"] = child
-    if stdout_file is not None:
-        stdout_file.close()
-
-    _capture_child_output(child.stderr if runtime == "claude" else child.stdout, log_fd)
-    child.wait()
-    if terminated["flag"]:
-        os.close(log_fd)
+    if status == "terminated":
         return 0
-    child_log_text = _finalize_child_log(log_fd, log_path)
 
-    contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
-    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
-    stream_last_line = next(
-        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    return _finish_reviewer_worker(
+        manifest, run=run, post=post, repo=repo, paths=paths, run_id=run_id, project=project,
+        phase=phase, kind="diff", child=child, child_log_text=child_log_text,
+        status_first=False, allowlist_root=allowlist_root,
     )
-    payload = {
-        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
-        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
-    }
-    if contract_status == "ok":
-        # Row 3 (spec §8): the report's own verdict, unchanged -- derive_outcome is
-        # never called on this branch, it has nothing to decide (never synthesized).
-        payload["verdict"] = report_verdict
-        if findings is not None:
-            payload["findings"] = findings
-        # MOA-495 2.2: one-line tally against the immediately previous round of the
-        # same document/branch -- absent when there is none, or Jev fails/errs.
-        try:
-            new_report_text = paths["report"].read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            new_report_text = None
-        if new_report_text is not None:
-            tally = _review_round_tally(repo, project, manifest["kind"], manifest["target"], run_id, new_report_text)
-            if tally is not None:
-                payload["tally"] = tally
-    else:
-        outcome = jr.derive_outcome({
-            "role": "reviewer", "report_result": None, "contract_status": contract_status,
-            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
-            "verify_frames": [], "tests_written": True,
-            "head_sha": None, "base_sha": None, "is_descendant": False,
-            "last_stream_text": jr._last_stream_text_line(child_log_text),
-        })
-        if outcome["stage"] is not None:
-            payload["stage"] = outcome["stage"]
-            payload["diagnostic"] = outcome["diagnostic"]
-    if contract_status in ("missing", "invalid"):
-        window = jr.child_log_classify_window(child_log_text)
-        # MOA-495 2.1: see the builder worker's own comment above -- same refine_reason/
-        # log_context wiring, reused here for a reviewer's missing/invalid row.
-        payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
-        payload["tail"] = jr.child_log_tail(child_log_text)
-        context = jr.log_context(window)
-        if context:
-            payload["log_context"] = context
-
-    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
-    # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
-    # but the guard covers both), if the payload still overflows it.
-    jr.cap_payload_bytes(payload)
-    finished_event = {
-        "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
-        "source": "deterministic", "emitter": "wrapper", "payload": payload,
-    }
-    delivered = True
-    try:
-        _write_spool(repo, run_id, finished_event)
-        post(finished_event)
-    except Exception as exc:
-        delivered = False
-        print(f"event delivery FAILED: {exc}")
-    if delivered:
-        _delete_spool(repo, run_id)
-
-    manifest["worker_summary"] = summary
-    manifest["worker_contract_status"] = contract_status
-    manifest["worker_outcome"] = payload.get("verdict")
-
-    verdict_text = payload.get("verdict", "no verdict")
-    _send_callback(
-        manifest, run=run, kind="diff", outcome=verdict_text, summary=summary,
-        report_path=paths["report"], stage=payload.get("stage"), diagnostic=payload.get("diagnostic"),
-        contract_status=contract_status, ledger_pending=not delivered,
-    )
-    return 0
 
 
-def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=subprocess.Popen,
-                killpg=os.killpg, env=None, allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    # Sealed env (§2.3) is set on a COPY, never on the real os.environ (fixes cold review
-    # F4 — the old in-place os.environ mutation was untestable and left every later test
-    # in the same process permanently sealed too). The copy is what actually reaches the
-    # child via Popen(env=...) below.
-    env = dict(os.environ if env is None else env)
-    env["HONCHO_ENABLED"] = "false"
-    env["JAXFLOW_ONESHOT"] = "1"
-    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-
-    if manifest["role"] == "builder":
-        code = _run_builder_worker(
-            manifest, run=run, post=post, popen=popen, killpg=killpg, env=env,
-            allowlist_root=allowlist_root, manifest_path=manifest_path,
-        )
-        _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
-        return code
-
-    if manifest["kind"] == "diff":
-        code = _run_diff_reviewer_worker(
-            manifest, run=run, post=post, popen=popen, killpg=killpg, env=env,
-            allowlist_root=allowlist_root, manifest_path=manifest_path,
-        )
-        _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
-        return code
-
+def _run_doc_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowlist_root,
+                             manifest_path):
+    """The `--spec` / `--plan` document-review worker: validates its own manifest target
+    (defense-in-depth), builds the doc-review handoff, runs the reviewer in `/tmp` and
+    finishes through `_finish_reviewer_worker(status_first=True)`. Returns the exit code."""
     repo = Path(manifest["repo"]).resolve()
     if not _contained(repo, allowlist_root):
         print("path-outside-allowlist", file=sys.stderr)
@@ -4413,16 +4438,7 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
             repo, repo, run=run, allowlist_root=allowlist_root, documents=(target_path,),
         ),
     )
-    stdout_file = None
-    stdout_target = None
-    stderr_target = None
-    if runtime == "claude":
-        stdout_file = open(paths["reviewer_output"], "wb")
-        stdout_target = stdout_file
-        stderr_target = subprocess.PIPE
-    else:
-        stdout_target = subprocess.PIPE
-        stderr_target = subprocess.STDOUT
+    stdout_file, stdout_target, stderr_target = _reviewer_stdio(runtime, paths["reviewer_output"])
 
     # Handlers are installed BEFORE Popen (fixes cold review F6): `tmux kill-session`
     # delivers the signal to this pane's process, and a fast kill could otherwise land
@@ -4432,162 +4448,57 @@ def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=sub
     child_box = {"child": None}
     terminated = {"flag": False}
 
-    def _on_signal(signum, frame):
-        terminated["flag"] = True
-        child = child_box["child"]
-        try:
-            if child is not None:
-                pgid = os.getpgid(child.pid)
-                _terminate_child(child, pgid, killpg=killpg)
-            signal_name = signal.Signals(signum).name
-            # MOA-474 cold review F3: same best-effort plain read + redact as the
-            # builder worker's own signal handler -- never through log_fd, which
-            # `_capture_child_output` may still be mid-write to.
-            try:
-                raw_log = log_path.read_bytes().decode("utf-8", errors="surrogateescape")
-            except OSError:
-                raw_log = ""
-            last_line = next(
-                (ln for ln in reversed(redact(raw_log).splitlines()) if ln.strip()), None,
-            )
-            payload = _interrupted_payload(
-                role="reviewer", phase=phase, signal_name=signal_name, last_line=last_line,
-            )
-            finished_event = {
-                "run_id": run_id, "project": project, "role": "reviewer",
-                "type": "run-finished", "source": "deterministic", "emitter": "wrapper",
-                "payload": payload,
-            }
-            delivered = True
-            try:
-                _write_spool(repo, run_id, finished_event)
-                post(finished_event)
-            except Exception as exc:
-                delivered = False
-                print(f"event delivery FAILED: {exc}")
-            if delivered:
-                _delete_spool(repo, run_id)
-            _send_callback(
-                manifest, run=run, kind=kind, outcome="no verdict",
-                summary=payload["summary"], report_path=None, stage=payload["stage"],
-                diagnostic=payload["diagnostic"], contract_status="interrupted",
-                ledger_pending=not delivered,
-            )
-        finally:
-            os._exit(0)
-
     # MOA-474 cold review 887b1d3994d4 F1: bind `log_path` BEFORE registering the
     # handlers -- a signal in the old window raised NameError inside the handler and
     # exited with no terminal row.
     log_path = jr.child_log_path(repo, run_id)
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGHUP, _on_signal)
+    _install_worker_signal_handler(
+        manifest, role="reviewer", kind=kind, outcome="no verdict", run=run, post=post,
+        killpg=killpg, run_id=run_id, project=project, phase=phase, spool_repo=repo,
+        log_path=log_path, child_box=child_box, terminated=terminated,
+    )
 
-    log_fd = _open_child_log(log_path)
-    try:
-        with prompt_path.open("rb") as stdin_source:
-            child = popen(
-                argv, cwd="/tmp", stdin=stdin_source,
-                stdout=stdout_target, stderr=stderr_target,
-                start_new_session=True, env=env,
-            )
-    except FileNotFoundError:
-        os.close(log_fd)
-        if stdout_file is not None:
-            stdout_file.close()
+    status, child, child_log_text = _spawn_and_drain(
+        popen, argv, cwd="/tmp", prompt_path=prompt_path, env=env, log_path=log_path,
+        child_box=child_box, terminated=terminated, stdout_target=stdout_target,
+        stderr_target=stderr_target, stdout_file=stdout_file, drain_stderr=runtime == "claude",
+    )
+    if status == "missing-cli":
         return _refuse_diff_run(
             f"missing-cli: {argv[0]}", manifest=manifest, run=run, post=post, manifest_path=manifest_path,
         )
-    child_box["child"] = child
-    if stdout_file is not None:
-        stdout_file.close()
-
-    _capture_child_output(child.stderr if runtime == "claude" else child.stdout, log_fd)
-    child.wait()
-    if terminated["flag"]:
-        os.close(log_fd)
+    if status == "terminated":
         return 0
-    child_log_text = _finalize_child_log(log_fd, log_path)
 
-    contract_status, summary, report_verdict, findings = finalize_reviewer_report(paths, run_id, project, phase)
-    exit_code = child.returncode if 0 <= child.returncode <= 255 else 1
-    stream_last_line = next(
-        (ln for ln in reversed(child_log_text.splitlines()) if ln.strip()), "",
+    return _finish_reviewer_worker(
+        manifest, run=run, post=post, repo=repo, paths=paths, run_id=run_id, project=project,
+        phase=phase, kind=kind, child=child, child_log_text=child_log_text,
+        status_first=True, allowlist_root=allowlist_root,
     )
-    payload = {
-        "phase": phase, "exit_code": exit_code, "contract_status": contract_status,
-        "report_path": str(paths["report"]), "summary": jr._bound(summary, 200),
-    }
-    if contract_status == "ok":
-        # Row 3 (spec §8): the report's own verdict, unchanged -- derive_outcome is
-        # never called on this branch, it has nothing to decide (never synthesized).
-        payload["verdict"] = report_verdict
-        if findings is not None:
-            payload["findings"] = findings
-        # MOA-495 2.2: one-line tally against the immediately previous round of the
-        # same document/branch -- absent when there is none, or Jev fails/errs.
-        try:
-            new_report_text = paths["report"].read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            new_report_text = None
-        if new_report_text is not None:
-            tally = _review_round_tally(repo, project, manifest["kind"], manifest["target"], run_id, new_report_text)
-            if tally is not None:
-                payload["tally"] = tally
+
+
+def run_worker(manifest_path, *, run=jr.run_command, post=_post_event, popen=subprocess.Popen,
+                killpg=os.killpg, env=None, allowlist_root=ALLOWLIST_ROOT_DEFAULT):
+    # Sealed env (§2.3) is set on a COPY, never on the real os.environ (fixes cold review
+    # F4 — the old in-place os.environ mutation was untestable and left every later test
+    # in the same process permanently sealed too). The copy is what actually reaches the
+    # child via Popen(env=...) below.
+    env = dict(os.environ if env is None else env)
+    env["HONCHO_ENABLED"] = "false"
+    env["JAXFLOW_ONESHOT"] = "1"
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    worker_kwargs = dict(run=run, post=post, popen=popen, killpg=killpg, env=env,
+                         allowlist_root=allowlist_root, manifest_path=manifest_path)
+
+    if manifest["role"] == "builder":
+        code = _run_builder_worker(manifest, **worker_kwargs)
+    elif manifest["kind"] == "diff":
+        code = _run_diff_reviewer_worker(manifest, **worker_kwargs)
     else:
-        outcome = jr.derive_outcome({
-            "role": "reviewer", "report_result": None, "contract_status": contract_status,
-            "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
-            "verify_frames": [], "tests_written": True,
-            "head_sha": None, "base_sha": None, "is_descendant": False,
-            "last_stream_text": jr._last_stream_text_line(child_log_text),
-        })
-        if outcome["stage"] is not None:
-            payload["stage"] = outcome["stage"]
-            payload["diagnostic"] = outcome["diagnostic"]
-    if contract_status in ("missing", "invalid"):
-        window = jr.child_log_classify_window(child_log_text)
-        # MOA-495 2.1: see the builder worker's own comment above -- same refine_reason/
-        # log_context wiring, reused here for a reviewer's missing/invalid row.
-        payload["reason"] = jr.refine_reason(window, exit_code=exit_code, contract_status=contract_status)
-        payload["tail"] = jr.child_log_tail(child_log_text)
-        context = jr.log_context(window)
-        if context:
-            payload["log_context"] = context
-    # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
-    # payload byte ceiling -- drops log_context, then tally (mutually exclusive here,
-    # but the guard covers both), if the payload still overflows it.
-    jr.cap_payload_bytes(payload)
-    finished_event = {
-        "run_id": run_id, "project": project, "role": "reviewer", "type": "run-finished",
-        "source": "deterministic", "emitter": "wrapper", "payload": payload,
-    }
-    delivered = True
-    try:
-        _write_spool(repo, run_id, finished_event)
-        post(finished_event)
-    except Exception as exc:
-        delivered = False
-        print(f"event delivery FAILED: {exc}")
-    if delivered:
-        _delete_spool(repo, run_id)
-
-    manifest["worker_summary"] = summary
-    manifest["worker_contract_status"] = contract_status
-    manifest["worker_outcome"] = payload.get("verdict")
-    # Fixes branch review F6: the callback line stays fixed regardless of whether this
-    # POST succeeds -- a delivery failure is reported separately, to the worker's own
-    # stdout (the pane), never by mutating the callback line; `ledger_pending` below is
-    # the one sanctioned addition (MOA-474 §12.1).
+        # The doc path updates status.md itself, BEFORE its callback (Decision 7).
+        return _run_doc_reviewer_worker(manifest, **worker_kwargs)
     _update_status_md(manifest, run=run, allowlist_root=allowlist_root)
-
-    verdict_text = payload.get("verdict", "no verdict")
-    _send_callback(
-        manifest, run=run, kind=kind, outcome=verdict_text, summary=summary,
-        report_path=paths["report"], stage=payload.get("stage"), diagnostic=payload.get("diagnostic"),
-        contract_status=contract_status, ledger_pending=not delivered,
-    )
-    return 0
+    return code
 
 
 def _open_ro(db_path):
@@ -4712,10 +4623,8 @@ def _resolve_delivery_target(repo, *, run):
     if name is None:
         return jr._default_branch(repo, run), True, None
     if name not in _LOCAL_PRESETS + _PR_PRESETS:
-        exc = Refusal("preset-unknown")
-        exc.hint = (f"hint: unknown preset `{jr._bound(name, 40)}`; valid presets: "
+        raise _refuse("preset-unknown", f"hint: unknown preset `{jr._bound(name, 40)}`; valid presets: "
                     + ", ".join(_LOCAL_PRESETS + _PR_PRESETS))
-        raise exc
     hit = _DELIVERY_TARGET_RE.search(block)
     if not hit:
         raise Refusal("preset-unknown")
@@ -4992,7 +4901,7 @@ def cmd_result(run_id, *, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     if tally is not None:
         print(f"{tally}\n", flush=True)
     if started["role"] == "builder":
-        root = allowlist_root / f"{started['project']}-{started_payload['target'].replace('/', '-')}"
+        root = _branch_worktree_path(allowlist_root, started["project"], started_payload["target"], resolve=False)
     else:
         root = Path(started_payload["repo"])
     expected = root / ".local" / "reports" / f"{run_id}.md"
@@ -5168,6 +5077,26 @@ def _git_read(run, repo, argv, *, shape=None):
     return out
 
 
+def _require_toplevel(run, cwd, *, strict=False):
+    """The resolved git toplevel of `cwd`, or the toplevel refusal. Two forms,
+    both preserved from the inline copies. `strict=False` (dispatchers, gc): only a failed
+    `rev-parse` refuses and the stdout is taken as-is. `strict=True` (pr/merge verbs, round-5
+    F8): the value becomes the repo root every later call is scoped to, so it must be a
+    non-empty absolute path to a directory -- an empty or relative one would silently
+    resolve against the process cwd. `_git_read` is looked up at call time."""
+    argv = ["git", "rev-parse", "--show-toplevel"]
+    if strict:
+        top = _git_read(run, cwd, argv)
+        valid = top is not None and top.startswith("/") and Path(top).is_dir()
+    else:
+        result = run(argv, cwd=cwd)
+        top = result.stdout.strip()
+        valid = result.returncode == 0
+    if not valid:
+        raise Refusal("not-a-git-toplevel")
+    return Path(top).resolve()
+
+
 def _is_strict_descendant(run, repo, base, head):
     """True iff `head` descends from `base` AND `head != base` (spec §4.2, pinned once:
     both call sites -- this fallback's commit-beyond-base check, and `cmd_merge`'s
@@ -5296,6 +5225,13 @@ def _find_latest_release_pr(project, repo_slug, *, db_path=None):
     return None
 
 
+def _status_tracked(run, cwd):
+    """The tracked-only status probe (porcelain, untracked files excluded: an untracked
+    artifact never blocks anything). Returns the raw `run(...)` result; every caller keeps
+    its own `returncode`/`stdout` reading (a failed probe is NOT a clean tree)."""
+    return run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd)
+
+
 def _abort_merge(run, repo):
     """Aborts an in-progress merge and reports what actually survived. `git merge --abort`
     is NOT a guaranteed restore (verified 2026-09-07): when the checks modified a tracked
@@ -5319,7 +5255,7 @@ def _abort_merge(run, repo):
         notes.append("MERGE_HEAD still present (the checkout is mid-merge)")
     elif merge_head.returncode != 1:
         notes.append("MERGE_HEAD could not be checked")
-    dirty = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo)
+    dirty = _status_tracked(run, repo)
     if dirty.returncode != 0:
         notes.append("tracked changes could not be checked")
     elif dirty.stdout.strip():
@@ -5622,10 +5558,7 @@ def cmd_gc(args, *, run=jr.run_command, post=_post_event, now=None, db_path=None
     now_val = now() if now is not None else datetime.now().astimezone()
     db_path = db_path or jr.DB_PATH
     cwd = Path.cwd().resolve()
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
-    if top.returncode != 0:
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top.stdout.strip()).resolve()
+    repo = _require_toplevel(run, cwd)
     project = slugify_project(repo.name)
 
     if args.yes:
@@ -5747,9 +5680,7 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
     if number is None:
         pushed = run(["git", "push", "origin", f"{sha}:refs/heads/{branch}"], cwd=repo)
         if pushed.returncode != 0:
-            exc = Refusal("push-failed")
-            exc.hint = f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}"
-            raise exc
+            raise _refuse("push-failed", f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}")
         create_argv = ["gh", "pr", "create", "--repo", repo_slug, "--head", branch,
                         "--base", target, "--title", title]
         if body_file:
@@ -5758,14 +5689,10 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
         if created.returncode != 0:
             # Spec names no dedicated code for a failed `gh pr create` -- github-unreachable
             # is the closest existing "a GitHub operation failed" bucket (Global Constraints).
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: gh pr create failed: {jr._bound((created.stderr or created.stdout).strip(), 200)}"
-            raise exc
+            raise _refuse("github-unreachable", f"hint: gh pr create failed: {jr._bound((created.stderr or created.stdout).strip(), 200)}")
         m = _GH_PR_URL_RE.match((created.stdout or "").strip())
         if not m:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: gh pr create printed no PR URL: {jr._bound(created.stdout.strip(), 200)}"
-            raise exc
+            raise _refuse("github-unreachable", f"hint: gh pr create printed no PR URL: {jr._bound(created.stdout.strip(), 200)}")
         number, pr_url = int(m.group(1)), created.stdout.strip()
     else:
         view = _gh_pr_view(run, repo, repo_slug, number)
@@ -5774,31 +5701,21 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
         # the approved target must refuse before any push or ledger event -- same
         # pr-identity-mismatch code _cmd_merge_pr uses for this exact shape of mismatch.
         if view["baseRefName"] != target:
-            exc = Refusal("pr-identity-mismatch")
-            exc.hint = f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}"
-            raise exc
+            raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}")
         # cold review 24597072c8ac F2: same identity guard as the base check above, for the
         # head branch -- a recorded/resolved PR number whose actual head branch isn't `branch`
         # must refuse before any push or ledger event too.
         if view["headRefName"] != branch:
-            exc = Refusal("pr-identity-mismatch")
-            exc.hint = f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {branch!r}"
-            raise exc
+            raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {branch!r}")
         if view["state"] in ("CLOSED", "MERGED"):
-            exc = Refusal("pr-closed")
-            exc.hint = f"hint: PR #{number} is {view['state'].lower()}; jaxflow never reopens one"
-            raise exc
+            raise _refuse("pr-closed", f"hint: PR #{number} is {view['state'].lower()}; jaxflow never reopens one")
         if view["headRefOid"] != sha:
             if not _is_strict_descendant(run, repo, base=view["headRefOid"], head=sha):
-                exc = Refusal("pr-remote-diverged")
-                exc.hint = (f"hint: PR #{number}'s remote head {view['headRefOid'][:12]} is not "
+                raise _refuse("pr-remote-diverged", f"hint: PR #{number}'s remote head {view['headRefOid'][:12]} is not "
                             f"an ancestor of the approved {sha[:12]}; force-push is never used")
-                raise exc
             pushed = run(["git", "push", "origin", f"{sha}:refs/heads/{branch}"], cwd=repo)
             if pushed.returncode != 0:
-                exc = Refusal("push-failed")
-                exc.hint = f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}"
-                raise exc
+                raise _refuse("push-failed", f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}")
             print(f"fast-forwarded PR #{number} to {sha}; a NEW approval is required for this sha")
         else:
             # Spec recovery table: "PR already open" is a true no-op -- no push, no gh
@@ -5846,10 +5763,7 @@ def cmd_release(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     env = os.environ if env is None else env
     now = now or (lambda: datetime.now().astimezone())
     cwd = Path.cwd().resolve()
-    top = _git_read(run, cwd, ["git", "rev-parse", "--show-toplevel"])
-    if top is None or not top.startswith("/") or not Path(top).is_dir():
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top).resolve()
+    repo = _require_toplevel(run, cwd, strict=True)
     settings = general_settings.read_settings()
     if not (settings.get("ok") and settings["data"]["integrations"]["github"]):
         raise Refusal("github-integration-disabled")
@@ -5886,15 +5800,11 @@ def cmd_release(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     delivery_target, _no_preset_block, _preset = _resolve_delivery_target(repo, run=run)
     fetched = run(["git", "fetch", "origin", delivery_target], cwd=repo)
     if fetched.returncode != 0:
-        exc = Refusal("github-unreachable")
-        exc.hint = f"hint: git fetch origin {delivery_target} failed: {jr._bound((fetched.stderr or fetched.stdout).strip(), 200)}"
-        raise exc
+        raise _refuse("github-unreachable", f"hint: git fetch origin {delivery_target} failed: {jr._bound((fetched.stderr or fetched.stdout).strip(), 200)}")
     snapshot_sha = _git_read(run, repo, ["git", "rev-parse", "--verify", f"origin/{delivery_target}^{{commit}}"],
                               shape=r"[0-9a-f]{40}")
     if snapshot_sha is None:
-        exc = Refusal("github-unreachable")
-        exc.hint = f"hint: origin/{delivery_target} does not resolve to a commit after fetch"
-        raise exc
+        raise _refuse("github-unreachable", f"hint: origin/{delivery_target} does not resolve to a commit after fetch")
 
     date = now().strftime("%Y-%m-%d")
     branch = f"release/{date}-staging-promotion"
@@ -5916,9 +5826,7 @@ def cmd_release(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
 
     updated = run(["git", "update-ref", f"refs/heads/{branch}", snapshot_sha], cwd=repo)
     if updated.returncode != 0:
-        exc = Refusal("merge-failed")
-        exc.hint = f"hint: could not create local ref {branch}: {jr._bound((updated.stderr or updated.stdout).strip(), 200)}"
-        raise exc
+        raise _refuse("merge-failed", f"hint: could not create local ref {branch}: {jr._bound((updated.stderr or updated.stdout).strip(), 200)}")
 
     result = _open_pr(repo, project, caller, branch, snapshot_sha, production_target,
                        f"Release: {delivery_target} promotion {date}", body_file=None, run=run,
@@ -5937,10 +5845,7 @@ def cmd_pr_open(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     env = os.environ if env is None else env
     now = now or (lambda: datetime.now().astimezone())
     cwd = Path.cwd().resolve()
-    top = _git_read(run, cwd, ["git", "rev-parse", "--show-toplevel"])
-    if top is None or not top.startswith("/") or not Path(top).is_dir():
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top).resolve()
+    repo = _require_toplevel(run, cwd, strict=True)
     caller = resolve_caller(env, args.from_caller)
     project = slugify_project(repo.name)
     settings = general_settings.read_settings()
@@ -5948,34 +5853,24 @@ def cmd_pr_open(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
         raise Refusal("github-integration-disabled")
 
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha or ""):
-        exc = Refusal("sha-mismatch")
-        exc.hint = "hint: --sha must be the full 40-character commit sha from the approval"
-        raise exc
+        raise _refuse("sha-mismatch", "hint: --sha must be the full 40-character commit sha from the approval")
     if not (args.branch and not any(c.isspace() for c in args.branch)
             and 1 <= _utf16_len(args.branch) <= 512):
-        exc = Refusal("branch-invalid")
-        exc.hint = ("hint: --branch must be a non-empty ref of at most 512 UTF-16 code units "
+        raise _refuse("branch-invalid", "hint: --branch must be a non-empty ref of at most 512 UTF-16 code units "
                     "with no whitespace")
-        raise exc
     approved_target = args.target
     if not (isinstance(approved_target, str) and not approved_target.startswith("-")
             and not any(c.isspace() for c in approved_target)
             and 1 <= _utf16_len(approved_target) <= 512):
-        exc = Refusal("target-invalid")
-        exc.hint = ("hint: --target must be a literal branch name of 1-512 UTF-16 code units "
+        raise _refuse("target-invalid", "hint: --target must be a literal branch name of 1-512 UTF-16 code units "
                     "with no whitespace or leading dash")
-        raise exc
     fmt = run(["git", "check-ref-format", f"refs/heads/{approved_target}"], cwd=repo)
     if fmt.returncode != 0:
-        exc = Refusal("target-invalid")
-        exc.hint = f"hint: --target is not a valid branch name: {jr._bound(approved_target, 120)}"
-        raise exc
+        raise _refuse("target-invalid", f"hint: --target is not a valid branch name: {jr._bound(approved_target, 120)}")
 
     head = run(["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"], cwd=repo)
     if head.returncode != 0 or head.stdout.strip() != args.sha:
-        exc = Refusal("sha-mismatch")
-        exc.hint = f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved {args.sha}"
-        raise exc
+        raise _refuse("sha-mismatch", f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved {args.sha}")
 
     # cold review 9f7f7290c510 F2: the preset-set check comes FIRST. `_required_target_for_branch`
     # resolves the Production target for a release/* head and would raise
@@ -5983,313 +5878,97 @@ def cmd_pr_open(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     # no-preset repo must refuse before any push or gh call, never silently deliver.
     preset = _resolve_delivery_target(repo, run=run)[2]
     if preset not in _PR_PRESETS:
-        exc = Refusal("preset-not-pr")
-        exc.hint = ("hint: jaxflow pr open only works on a repo whose AGENTS.md Preset is a PR "
+        raise _refuse("preset-not-pr", "hint: jaxflow pr open only works on a repo whose AGENTS.md Preset is a PR "
                     "preset (`single-branch-pr` or `dual-branch-pr`)")
-        raise exc
     required_target, _preset = _required_target_for_branch(repo, args.branch, run=run)
     if approved_target != required_target:
-        exc = Refusal("target-mismatch")
-        exc.hint = (f"hint: approved target {jr._bound(approved_target, 120)} differs from the "
+        raise _refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} differs from the "
                     f"configured {jr._bound(required_target, 120)}")
-        raise exc
 
     return _open_pr(repo, project, caller, args.branch, args.sha, approved_target, args.title,
                      body_file=args.body_file, run=run, post=post, env=env, now=now,
                      allowlist_root=allowlist_root)
 
 
-def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
-                   allowlist_root):
-    """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
-    No local git merge at all -- delivery happens on GitHub via `gh pr merge`. Feature heads
-    run --checks in their registered build worktree (decision 7); a release/* head has no
-    such worktree, so this creates a detached temporary checkout of the approved sha and
-    tears it down after, success or failure."""
-    repo_slug = _github_repo_slug(run, repo)
-    # Ledger & card reconciliation: the recorded PR number if the hub has one for this branch,
-    # otherwise a `gh pr list` fallback -- zero matches means no PR exists at all (pr-not-found,
-    # unlike `pr open` which would proceed to create one); more than one refuses pr-ambiguous
-    # (already handled inside _resolve_pr_number, Task 5).
-    recorded = _find_recorded_pr(project, args.branch)
-    number = recorded["pr_number"] if recorded is not None else _resolve_pr_number(
-        run, repo, repo_slug, args.branch, target)
-    if number is None:
-        exc = Refusal("pr-not-found")
-        exc.hint = f"hint: no recorded PR for {args.branch} -- run jaxflow pr open first"
-        raise exc
-
-    view = _gh_pr_view(run, repo, repo_slug, number)
-    if view["baseRefName"] != target:
-        exc = Refusal("pr-identity-mismatch")
-        exc.hint = f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}"
-        raise exc
-    # cold review 24597072c8ac F2: base was already checked; the head BRANCH must be verified
-    # too, not just its sha (below) -- a recorded/resolved PR number pointing at the wrong
-    # branch is a distinct identity mismatch, unconditionally, before MERGED vs. not is decided.
-    if view["headRefName"] != args.branch:
-        exc = Refusal("pr-identity-mismatch")
-        exc.hint = f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {args.branch!r}"
-        raise exc
-
-    merge_sha = None
-    if view["state"] == "MERGED":
-        # cold review e441aa1770e3 F2: a PR merged with extra commits pushed and merged outside
-        # the approval flow (e.g. by hand) must never be recorded as an approval of a DIFFERENT
-        # sha -- same pr-head-moved code the non-merged branch below already uses for this exact
-        # mismatch shape. Base is already covered: the baseRefName check a few lines above this
-        # state split runs unconditionally, before MERGED vs. not is even decided.
-        if view["headRefOid"] != args.sha:
-            exc = Refusal("pr-head-moved")
-            exc.hint = (f"hint: PR #{number} merged at head {view['headRefOid'][:12]}, not the "
-                        f"approved {args.sha[:12]}")
-            raise exc
-        # Recovery table: already merged, local recording failed -- skip checks/merge, just
-        # record + sync + cleanup below, using GitHub's own merge commit sha.
-        merge_sha = (view.get("mergeCommit") or {}).get("oid")
-        if not merge_sha:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: PR #{number} is merged but its merge commit sha could not be read"
-            raise exc
-        checks_audit = {"mode": "resumed"}
+def _cleanup_merged_worktree(run, repo, worktree, branch, allowlist_root):
+    """Best-effort cleanup after a delivered merge: copy the run reports out of the build
+    worktree, then remove it and delete the branch. Fails closed on a failed report copy
+    (the worktree is kept, spec §4 guard 7) and never turns a completed merge into a
+    refusal: every failure is a printed note."""
+    if not (_contained(worktree, allowlist_root) and worktree.is_dir()
+            and _is_registered_worktree(run, repo, worktree, branch)):
+        return
+    copy_result = _copy_run_reports(worktree, repo)
+    if copy_result["failed"]:
+        print(f"worktree {worktree} kept (report copy failed)")
+        return
+    removed = run(["git", "worktree", "remove", str(worktree)], cwd=repo)
+    if removed.returncode == 0:
+        deleted = run(["git", "branch", "-d", branch], cwd=repo)
+        if deleted.returncode != 0:
+            print(f"branch {branch} kept ({jr._bound((deleted.stderr or deleted.stdout).strip(), 200)})")
     else:
-        if view["state"] == "CLOSED":
-            exc = Refusal("pr-closed")
-            exc.hint = f"hint: PR #{number} is closed and unmerged; jaxflow never reopens one"
-            raise exc
-        if view["headRefOid"] != args.sha:
-            exc = Refusal("pr-head-moved")
-            exc.hint = f"hint: PR #{number}'s head is {view['headRefOid'][:12]}, not the approved {args.sha[:12]}"
-            raise exc
+        print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
 
-        is_release = args.branch.startswith("release/")
-        if not is_release:
-            checks_dir = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
-            if not (_contained(checks_dir, allowlist_root) and checks_dir.is_dir()
-                    and _is_registered_worktree(run, repo, checks_dir, args.branch)):
-                exc = Refusal("checks-failed")
-                exc.hint = f"hint: no registered build worktree for {args.branch} at {checks_dir}"
-                raise exc
-        else:
-            checks_dir = (allowlist_root / f"{project}-release-checks-{args.sha[:12]}").resolve()
-            added = run(["git", "worktree", "add", "--detach", str(checks_dir), args.sha], cwd=repo)
-            if added.returncode != 0:
-                exc = Refusal("merge-failed")
-                exc.hint = f"hint: could not create the release checks checkout: {jr._bound((added.stderr or added.stdout).strip(), 200)}"
-                raise exc
 
-        try:
-            head = run(["git", "rev-parse", "HEAD"], cwd=checks_dir)
-            if head.returncode != 0 or head.stdout.strip() != args.sha:
-                exc = Refusal("sha-mismatch")
-                exc.hint = f"hint: {checks_dir} is not at the approved {args.sha}"
-                raise exc
-            status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=checks_dir)
-            if status.returncode != 0 or status.stdout.strip():
-                exc = Refusal("dirty-tracked-tree")
-                if status.returncode != 0:
-                    exc.hint = f"hint: git status failed: {jr._bound((status.stderr or status.stdout).strip(), 200)}"
-                raise exc
-            # MOA-510 D7: AFTER the HEAD and clean-tracked-tree guards above; reuse only adds
-            # the review/evidence/command conditions and full-porcelain cleanliness.
-            if is_release:
-                reused, review_id = False, None
-            else:
-                reused, _reason, review_id = _merge_checks_reuse(
-                    run, repo, project, checks_dir, args.branch, args.sha, args.checks,
-                    allowlist_root=allowlist_root, recheck=args.recheck)
-            if reused:
-                checks_audit = {"mode": "reused", "source_review_run_id": review_id,
-                                "head_sha": args.sha}
-            else:
-                checks_audit = {"mode": "run"}
-                checked = run(["/bin/bash", "-lc", args.checks], cwd=checks_dir)
-                if checked.returncode != 0:
-                    exc = Refusal("checks-failed")
-                    exc.hint = f"hint: {args.checks} exit {checked.returncode}"
-                    raise exc
-                status_after = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=checks_dir)
-                if status_after.returncode != 0 or status_after.stdout.strip():
-                    exc = Refusal("checks-dirtied-tree")
-                    exc.hint = "hint: the checks command modified a tracked file"
-                    raise exc
-        finally:
-            if is_release:
-                # cold review 75e934eacdca F2: no --force (Global Constraints: jaxflow never
-                # forces a git/gh mutation). A normal removal can fail (e.g. the checks command
-                # left an untracked file); that is non-fatal to the delivery result -- the
-                # worktree is kept and its path reported, never force-discarded.
-                removed = run(["git", "worktree", "remove", str(checks_dir)], cwd=repo)
-                if removed.returncode != 0:
-                    print(f"release checks worktree {checks_dir} kept "
-                          f"({jr._bound((removed.stderr or removed.stdout).strip(), 200)})")
-
-        def _revalidate_pr_identity(v):
-            # cold review 75e934eacdca F3 (partial accept): --match-head-commit below pins
-            # the head at merge time, but nothing pins the base or the open state -- a PR
-            # retargeted or closed during the mergeability wait must still be caught. Reuses
-            # the SAME refusal codes the initial read above already uses for this exact shape
-            # of mismatch (rejected: a server-side anti-retarget policy -- single-user VPS,
-            # GitHub has no such lock, and this last-moment re-check is enough; see Review
-            # triage).
-            if v["state"] != "OPEN":
-                exc = Refusal("pr-closed")
-                exc.hint = f"hint: PR #{number} is no longer open ({v['state'].lower()}); jaxflow never reopens or re-merges one"
-                raise exc
-            if v["headRefOid"] != args.sha:
-                exc = Refusal("pr-head-moved")
-                exc.hint = f"hint: PR #{number}'s head is {v['headRefOid'][:12]}, not the approved {args.sha[:12]}"
-                raise exc
-            if v["baseRefName"] != target:
-                exc = Refusal("pr-identity-mismatch")
-                exc.hint = f"hint: PR #{number}'s base is {v['baseRefName']!r}, not the approved {target!r}"
-                raise exc
-            # cold review 24597072c8ac F2: every re-read must re-verify the head branch too,
-            # same as the initial read above.
-            if v["headRefName"] != args.branch:
-                exc = Refusal("pr-identity-mismatch")
-                exc.hint = f"hint: PR #{number}'s head branch is {v['headRefName']!r}, not the approved {args.branch!r}"
-                raise exc
-
-        mergeable = view.get("mergeable")
-        attempts = 0
-        while mergeable == "UNKNOWN" and attempts < 3:
-            time.sleep(2)
-            view = _gh_pr_view(run, repo, repo_slug, number)
-            _revalidate_pr_identity(view)
-            mergeable = view.get("mergeable")
-            attempts += 1
-        if mergeable == "UNKNOWN":
-            raise Refusal("mergeability-unknown")
-
-        # Immediately before the merge call too, even when the loop above never ran (mergeable
-        # was never UNKNOWN) -- same reasoning as inside the loop.
-        _revalidate_pr_identity(view)
-
-        merged = run(["gh", "pr", "merge", str(number), "--repo", repo_slug, "--merge",
-                      "--match-head-commit", args.sha, "--subject",
-                      f"feat: {phase} (merge {args.branch})"], cwd=repo)
-        if merged.returncode != 0:
-            stderr_text = merged.stderr or merged.stdout or ""
-            code = "merge-queue-required" if "merge queue" in stderr_text.lower() else "github-merge-refused"
-            exc = Refusal(code)
-            checks_out = run(["gh", "pr", "checks", str(number), "--repo", repo_slug], cwd=repo)
-            exc.hint = (f"hint: {jr._bound(stderr_text.strip(), 300)}\nchecks: "
-                        f"{jr._bound((checks_out.stdout or checks_out.stderr or '').strip(), 300)}")
-            raise exc
-
-        view = _gh_pr_view(run, repo, repo_slug, number)
-        # cold review 24597072c8ac F1 (downgraded to LOW -- no project here uses a merge queue
-        # -- relabelled): `gh pr merge` exiting 0 does not guarantee GitHub actually merged the
-        # PR (a merge queue or auto-merge can accept the request asynchronously). That specific
-        # shape -- success exit, still not MERGED -- gets its own refusal so the lead knows
-        # GitHub accepted the request without merging and to check the PR directly; nothing is
-        # recorded as merged either way.
-        if view["state"] != "MERGED":
-            exc = Refusal("merge-not-completed")
-            exc.hint = (f"hint: gh pr merge exited 0 but PR #{number} is still "
-                        f"{view['state'].lower()}, not merged -- GitHub may have accepted the "
-                        f"request without merging it yet (e.g. a merge queue or auto-merge); "
-                        f"check the PR directly. Nothing was recorded as merged.")
-            raise exc
-        if view["headRefOid"] != args.sha or view["baseRefName"] != target:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: gh pr merge reported success but PR #{number} does not read back as merged"
-            raise exc
-        merge_sha = (view.get("mergeCommit") or {}).get("oid")
-        if not merge_sha:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: PR #{number} merged but no merge commit sha was reported"
-            raise exc
-
-    event = {"project": project, "role": "lead", "type": "merge-approved", "source": "deterministic",
-             "emitter": "wrapper",
-             "payload": {"phase": phase, "branch": args.branch, "sha": args.sha, "target": target,
-                         "approved_by": "rafa", "merge_sha": merge_sha,
-                         "pr_number": number, "pr_url": view["url"], "checks": checks_audit}}
+def _post_merge_audit(post, env, project, payload, *, retry_msg, warn_bad_pane):
+    """Post the `merge-approved` audit event. The delivery is already durable, so a failed
+    POST becomes the hub refusal; when the failure is retryable `retry_msg` is printed and
+    the refusal carries the hint (resume advice). `pane` is present-or-absent, never null
+    (the `caller_pane` discipline): a merge run outside tmux has no pane, which the
+    validator's `wrapper` carve-out allows. `warn_bad_pane` (the local merge path) also
+    says so when TMUX_PANE is set but unusable -- the validator checks `%<1-10 digits>`,
+    and a junk value must not strand a merge that is already committed (round-6 F14); the
+    PR path omits the pane silently, as before."""
+    event = {"project": project, "role": "lead", "type": "merge-approved",
+             "source": "deterministic", "emitter": "wrapper", "payload": payload}
     pane = env.get("TMUX_PANE")
     if pane and re.fullmatch(r"%[0-9]{1,10}", pane):
         event["pane"] = pane
+    elif pane and warn_bad_pane:
+        print(f"TMUX_PANE={jr._bound(pane, 60)} is not a pane target; reporting without it")
     try:
         post(event)
     except Exception as exc:
         refusal = _hub_refusal(exc)
         if _hub_retryable(exc):
-            print(f"PR #{number} merged as {merge_sha}; re-run the same jaxflow merge to resume")
+            print(retry_msg)
             refusal.hint = f"hint: {jr._bound(str(exc), 200)}"
         raise refusal from exc
 
-    # Best-effort local sync (decision 10): fetch + fast-forward the local target only when
-    # clean and direct; a divergence or a dirty tree is reported, never reset or force.
-    run(["git", "fetch", "origin", target], cwd=repo)
-    switched = run(["git", "switch", target], cwd=repo)
-    if switched.returncode == 0:
-        status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo)
-        if status.returncode == 0 and not status.stdout.strip():
-            ff = run(["git", "merge", "--ff-only", f"origin/{target}"], cwd=repo)
-            if ff.returncode != 0:
-                print(f"local {target} not fast-forwarded (diverged from origin/{target}); left as-is")
-        else:
-            print(f"local {target} not synced (tracked tree not clean)")
 
-    if not args.branch.startswith("release/"):
-        worktree = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
-        if (_contained(worktree, allowlist_root) and worktree.is_dir()
-                and _is_registered_worktree(run, repo, worktree, args.branch)):
-            copy_result = _copy_run_reports(worktree, repo)
-            if copy_result["failed"]:
-                print(f"worktree {worktree} kept (report copy failed)")
-            else:
-                removed = run(["git", "worktree", "remove", str(worktree)], cwd=repo)
-                if removed.returncode == 0:
-                    deleted = run(["git", "branch", "-d", args.branch], cwd=repo)
-                    if deleted.returncode != 0:
-                        print(f"branch {args.branch} kept ({jr._bound((deleted.stderr or deleted.stdout).strip(), 200)})")
-                else:
-                    print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
-
-    outcome = f"merged {merge_sha} via PR #{number} ({view['url']})"
+def _record_merge_status(run, allowlist_root, *, repo, caller, target, dispatch_start,
+                         outcome, checks_audit, checks_cmd, target_note=None):
+    """status.md + the closing stdout lines of a delivered merge; returns `OK`. `branch` is
+    passed to `_update_status_md` explicitly rather than left to `_current_branch()`
+    (part-1 cold review): a RESUME never switches to the target, so the current checkout is
+    whatever the tech lead was standing on -- or nothing, from a detached HEAD.
+    `target_note` is the local path's `target: ... (no preset block)` line. Order: status
+    update -> note -> outcome -> checks line."""
     _update_status_md(
         {"repo": str(repo), "kind": "merge", "runtime": None if caller == "jaxos" else caller,
-         "branch": target, "dispatch_start": _iso8601(now()), "worker_summary": outcome,
+         "branch": target, "dispatch_start": dispatch_start, "worker_summary": outcome,
          "worker_outcome": None},
         run=run, allowlist_root=allowlist_root,
     )
+    if target_note:
+        print(target_note)
     print(outcome)
-    line = _merge_checks_line(checks_audit, args.checks)
+    line = _merge_checks_line(checks_audit, checks_cmd)
     if line:
         print(line)
     return OK
 
 
-def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
-              allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    """Delivers an approved branch (spec §5). Synchronous and foreground by design: Rafa's
-    approval already named this phase/branch/sha, and the tech lead is waiting right here
-    for a pass/fail — there is nothing to poll later, so `merge` allocates no run id, posts
-    no `run-started`/`run-finished`, and owns no tmux session. Its only ledger row is the
-    `merge-approved` audit event in §5.3."""
-    env = os.environ if env is None else env
-    now = now or (lambda: datetime.now().astimezone())
-    started_at = _iso8601(now())
-
-    cwd = Path.cwd().resolve()
-    top = _git_read(run, cwd, ["git", "rev-parse", "--show-toplevel"])
-    if top is None or not top.startswith("/") or not Path(top).is_dir():
-        # Shape, not just exit status (round-5 F8): the value becomes the repo root every
-        # later call is scoped to, and an empty or relative one would silently resolve
-        # against the process cwd.
-        raise Refusal("not-a-git-toplevel")
-    repo = Path(top).resolve()
-    caller = resolve_caller(env, args.from_caller)
-    project = slugify_project(repo.name)
-
+def _validate_merge_inputs(args, *, run, repo):
+    """Shape-validates every merge input BEFORE any git state is touched: full 40-hex sha,
+    `--branch`, ONE canonical `--phase` (UTF-16 bounded, no newline, no U+FEFF), `--target`
+    (literal branch name + a read-only `git check-ref-format`). Precedence between several
+    invalid inputs is the order below. Returns `(phase, approved_target)`."""
     # An abbreviated sha is an INCOMPLETE approval per merge-contract.md, not a lookup to
     # widen -- refused before any git state is touched.
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha or ""):
-        exc = Refusal("sha-mismatch")
-        exc.hint = "hint: --sha must be the full 40-character commit sha from the approval"
-        raise exc
+        raise _refuse("sha-mismatch", "hint: --sha must be the full 40-character commit sha from the approval")
 
     # `--branch` reaches the commit subject AND the audit payload, where the validator
     # bounds it at `LIMITS.target` (512). `git check-ref-format` happily accepts a
@@ -6302,10 +5981,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
     # `String.length` counts two.
     if not (args.branch and not any(c.isspace() for c in args.branch)
             and 1 <= _utf16_len(args.branch) <= 512):   # -1 means unencodable, not short
-        exc = Refusal("branch-invalid")
-        exc.hint = ("hint: --branch must be a non-empty ref of at most 512 UTF-16 code "
+        raise _refuse("branch-invalid", "hint: --branch must be a non-empty ref of at most 512 UTF-16 code "
                     "units (emoji count as two) with no whitespace")
-        raise exc
 
     # ONE canonical phase title, used byte-for-byte by the commit subject, the audit
     # payload and the resume comparison (round-4 F15/F16). Two shapes had to be refused
@@ -6336,10 +6013,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
     # commits and then fails audit.
     if (not phase or utf16_len > 200 or phase != args.phase
             or any(c in phase for c in "\r\n\t\ufeff")):
-        exc = Refusal("phase-invalid")
-        exc.hint = ("hint: --phase must be a single line of at most 200 UTF-16 code units "
+        raise _refuse("phase-invalid", "hint: --phase must be a single line of at most 200 UTF-16 code units "
                     "(emoji count as two) with no leading or trailing whitespace")
-        raise exc
 
     # `--target` is the approved destination, asserted against policy — never an override
     # and never defaulted from current policy (MOA-458). Shape first, then a read-only
@@ -6349,16 +6024,503 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
     if not (isinstance(approved_target, str) and not approved_target.startswith("-")
             and not any(c.isspace() for c in approved_target)
             and 1 <= _utf16_len(approved_target) <= 512):
-        exc = Refusal("target-invalid")
-        exc.hint = ("hint: --target must be a literal branch name of 1–512 UTF-16 code "
+        raise _refuse("target-invalid", "hint: --target must be a literal branch name of 1–512 UTF-16 code "
                     "units with no whitespace or leading dash")
-        raise exc
     fmt = run(["git", "check-ref-format", f"refs/heads/{approved_target}"], cwd=repo)
     if fmt.returncode != 0:
-        exc = Refusal("target-invalid")
-        exc.hint = (f"hint: --target is not a valid branch name: "
+        raise _refuse("target-invalid", f"hint: --target is not a valid branch name: "
                     f"{jr._bound(approved_target, 120)}")
-        raise exc
+    return phase, approved_target
+
+
+def _merge_resume_verify(args, *, run, repo, target, phase):
+    """Proves a RESUME is really the approved delivery: the target's merge commit carries
+    exactly the subject jaxflow itself writes for this branch/phase (the WHOLE subject, not
+    a substring: `--phase` is free text), and the source branch is either gone (exit 1 of
+    `show-ref`) or still the approved sha. Returns `(merge_sha, branch_present)`."""
+    branch_present = True
+    # A resume skips the whole switch/merge/checks/commit sequence, so it never gets
+    # the source-branch identity for free -- and it later DELETES that branch. Earn it
+    # here (cold review F2): the caller-named branch must still resolve to the approved
+    # sha, or resolve to nothing at all (a previous resume already cleaned it up).
+    # The merge commit lives on TARGET, and a resume never switches to it -- reading
+    # HEAD here would report whatever branch the caller happens to be standing on
+    # (found while fixing round-2 F4).
+    merge_sha = _git_read(run, repo, ["git", "rev-parse", f"{target}^{{commit}}"],
+                          shape=r"[0-9a-f]{40}")
+    if merge_sha is None:
+        raise _refuse("sha-mismatch", f"hint: resume refused -- {target} does not resolve to a commit")
+
+    # Resolving to the approved sha does NOT prove this is the branch the approval
+    # named: any alias pointing at the same commit resolves identically, and the
+    # cleanup below would then delete the alias and its worktree while the delivered
+    # branch survived (round-2 F4, reproduced on real git). The merge commit jaxflow
+    # itself wrote carries the branch name in its subject; that is the binding. A
+    # merge jaxflow did not write is refused rather than resumed.
+    # The WHOLE subject, not a substring of it (round-3 F7): `--phase` is free text,
+    # so a real merge of `other` titled `Release (merge feat/x)` writes
+    # `feat: Release (merge feat/x) (merge other)` -- a substring test would accept a
+    # resume for feat/x and delete it. Equality against the subject jaxflow itself
+    # writes cannot be forged from the phase title alone.
+    subject = _git_read(run, repo, ["git", "log", "-1", "--format=%s", merge_sha])
+    expected_subject = f"feat: {phase} (merge {args.branch})"
+    if subject != expected_subject:
+        raise _refuse("sha-mismatch", f"hint: resume refused -- {target}'s merge commit {merge_sha} does "
+                    f"not record {args.branch} "
+                    f"(subject: {jr._bound(subject or '<unreadable>', 120)}; "
+                    f"expected: {jr._bound(expected_subject, 120)})")
+
+    # "The branch is gone" and "the ref read failed" are different facts, and
+    # `rev-parse --verify` returns 128 for both (round-5 F6). `show-ref --verify`
+    # separates them on real git: exit 1 is "no such ref", exit 128 is a repository
+    # error. Only exit 1 may skip cleanup; anything else refuses rather than posting
+    # an audit for a delivery whose source branch it could not read.
+    present = run(["git", "show-ref", "--verify", "--quiet",
+                   f"refs/heads/{args.branch}"], cwd=repo)
+    if present.returncode == 1:
+        branch_present = False
+    elif present.returncode != 0:
+        raise _refuse("sha-mismatch", f"hint: resume refused -- could not read {args.branch}: "
+                    f"{jr._bound((present.stderr or present.stdout).strip(), 200)}")
+    if branch_present:
+        src = _git_read(run, repo,
+                        ["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"],
+                        shape=r"[0-9a-f]{40}")
+        if src != args.sha:
+            raise _refuse("sha-mismatch", f"hint: resume refused -- {args.branch} now points at "
+                        f"{src or '<unreadable>'}, not the approved {args.sha}")
+    print(f"resuming: {target} already carries the merge of {args.sha}")
+    return merge_sha, branch_present
+
+
+def _merge_prepare_target(args, *, run, repo, target):
+    """Fresh (non-resume) delivery preflight: the approved branch still points at the approved
+    sha, the CONTROL repo's tracked tree is clean, and the target is checked out. Returns
+    `target_tip` (the target HEAD captured BEFORE `git merge` runs -- never a later HEAD
+    re-read, AC 8)."""
+    # NO `git switch <branch>` here (round-4 F12, reproduced on real git). `build`
+    # leaves the approved branch checked out in its own linked worktree, and git
+    # refuses to check the same branch out twice:
+    #     fatal: 'feat/x' is already used by worktree at '<builder worktree>'
+    # Every real delivery would refuse. Nothing in this verb needs that checkout
+    # anyway: `git merge` takes a COMMIT, and the tree that has to be clean is the
+    # CONTROL repo's, wherever its HEAD happens to be. A ref read answers the only
+    # question the switch was ever asked -- does <branch> point at the approved sha?
+    head = run(["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"], cwd=repo)
+    if head.returncode != 0 or head.stdout.strip() != args.sha:
+        raise _refuse("sha-mismatch", f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved "
+                    f"{args.sha}")
+
+    # Tracked-only: an untracked build artifact never blocks a delivery (§2.10 #1's
+    # allow_untracked rule, implemented here because `merge` does not call preflight()).
+    status = _status_tracked(run, repo)
+    if status.returncode != 0 or status.stdout.strip():
+        # A failed probe is NOT a clean tree (round-4 F4): empty stdout from a git
+        # that errored would otherwise read as "nothing dirty" and let the merge
+        # proceed on a tree whose state was never established.
+        raise _refuse(
+            "dirty-tracked-tree",
+            "hint: git status failed, so the tree could not be checked: "
+            f"{jr._bound((status.stderr or status.stdout).strip(), 200)}"
+            if status.returncode != 0 else None)
+
+    switched = run(["git", "switch", target], cwd=repo)
+    if switched.returncode != 0:
+        raise _refuse("target-mismatch", f"hint: git switch {target} failed: "
+                    f"{jr._bound((switched.stderr or switched.stdout).strip(), 200)}")
+    on_target = _git_read(run, repo, ["git", "branch", "--show-current"])
+    if on_target != target:
+        raise _refuse("target-mismatch", f"hint: expected to be on {target}, got {on_target or '?'}")
+    # New (spec §4.5, 77f30f829248 F4): captured HERE, before `git merge` runs --
+    # never a later HEAD re-read (AC 8). `None` on a resume path is never read,
+    # since `fast_forward` below is only computed inside `if not resuming:`.
+    target_tip = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
+                           shape=r"[0-9a-f]{40}")
+    return target_tip
+
+
+def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, phase,
+                              allowlist_root, target_tip):
+    """Stage the merge (`--no-ff --no-commit`), fingerprint the index, reuse or run the
+    checks, prove the checks did not change WHAT GETS DELIVERED, commit. Returns
+    `(merge_sha, checks_audit)`. The two `git write-tree` calls stay DIRECT `run` calls
+    (Decision 8): `_git_read` discards the underlying git failure text, and the F9 test
+    expects it in the refusal hint."""
+    checks_cmd = args.checks
+    merged = run(["git", "merge", "--no-ff", "--no-commit", args.sha], cwd=repo)
+    if merged.returncode != 0:
+        raise _refuse("merge-failed", f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo)}")
+
+    # The exact merge result, as an object id, BEFORE the checks touch anything.
+    # `git write-tree` is what `git commit` itself runs; it succeeds here because a
+    # merge that left conflicts already refused above.
+    # A tree object id, not just an exit code (round-5 F3): these two values are
+    # compared to each other, so two malformed-but-equal outputs would report "the
+    # checks staged nothing" -- the one thing `git diff --quiet` cannot see.
+    # Read directly rather than through `_git_read` (deviation from the plan's literal
+    # text, see report): the plan's own F9 test expects the underlying git failure
+    # text (e.g. "unable to write new index file") IN the refusal hint, which
+    # `_git_read` -- by design -- discards on any failure. The shape check itself is
+    # unchanged (round-5 F3: a tree object id, not just an exit code).
+    tree_before_probe = run(["git", "write-tree"], cwd=repo)
+    tree_before = tree_before_probe.stdout.strip()
+    if tree_before_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_before):
+        # An index that cannot be fingerprinted is a broken merge, not a dirty check
+        # (round-3 F9). Refuse BEFORE spending a checks run on it.
+        detail = jr._bound((tree_before_probe.stderr or tree_before_probe.stdout).strip(), 200)
+        raise _refuse("merge-failed", f"hint: could not fingerprint the merged index: {detail}"
+                      + _abort_merge(run, repo))
+
+    # MOA-510 D4: `fast_forward` keeps its meaning ("the target has no commits the
+    # branch lacks": the merged tree is byte-identical to the branch head) but is no
+    # longer a skip by itself -- the head must also be the one the latest diff review
+    # already tested. A moved target never reaches the lookup; an EQUAL tip stays
+    # outside `fast_forward` (`_is_strict_descendant` needs `base != head`).
+    fast_forward = target_tip is not None and _is_strict_descendant(
+        run, repo, base=target_tip, head=args.sha)
+    if fast_forward:
+        reused, _reason, review_id = _merge_checks_reuse(
+            run, repo, project, worktree, args.branch, args.sha, checks_cmd,
+            allowlist_root=allowlist_root, recheck=args.recheck)
+    else:
+        reused, review_id = False, None
+    checks_audit = _checks_audit(reused, review_id, args.sha)
+    if not reused:
+        checked = run(["/bin/bash", "-lc", checks_cmd], cwd=repo)
+        if checked.returncode != 0:
+            raise _refuse("checks-failed",
+                          f"hint: {checks_cmd} exit {checked.returncode}{_abort_merge(run, repo)}")
+
+        # The checks must not have changed WHAT GETS DELIVERED: a checks command that
+        # rewrites a lockfile or a snapshot would otherwise ride along inside the merge.
+        # Two comparisons are needed (cold review round 2, F5, reproduced on real git):
+        # `git diff --quiet` sees only worktree-vs-index, so a check that edits a tracked
+        # file and then runs `git add` passes it while the index -- and therefore the
+        # commit -- has already changed. Untracked artifacts the checks created are their
+        # own output and are left alone.
+        # Same deviation as tree_before, same reason: keep the underlying git failure
+        # text available for the hint instead of losing it inside `_git_read`.
+        tree_after_probe = run(["git", "write-tree"], cwd=repo)
+        tree_after = tree_after_probe.stdout.strip()
+        if tree_after_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_after):
+            detail = jr._bound((tree_after_probe.stderr or tree_after_probe.stdout).strip(), 200)
+            raise _refuse("checks-dirtied-tree",
+                          f"hint: the index could not be fingerprinted after the checks: {detail}"
+                          + _abort_merge(run, repo))
+        staged_changed = tree_after != tree_before
+        if staged_changed or run(["git", "diff", "--quiet"], cwd=repo).returncode != 0:
+            raise _refuse("checks-dirtied-tree",
+                          "hint: the checks command modified a tracked file "
+                          + ("(staged)" if staged_changed else "(unstaged)")
+                          + _abort_merge(run, repo))
+
+    # A commit hook can refuse -- this very repository has one (`.githooks/commit-msg`).
+    # An unchecked failure here would audit and push a merge that was never committed
+    # (cold review F3).
+    committed = run(["git", "commit", "-m", f"feat: {phase} (merge {args.branch})"],
+                    cwd=repo)
+    if committed.returncode != 0:
+        raise _refuse("merge-failed", f"hint: commit refused: "
+                    f"{jr._bound((committed.stderr or committed.stdout).strip(), 200)}"
+                    + _abort_merge(run, repo))
+    merge_sha = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
+                          shape=r"[0-9a-f]{40}")
+    return merge_sha, checks_audit
+
+
+def _merge_push(run, repo, target):
+    """Push the delivered target to `origin` when there is one. Exit 2 of `git remote
+    get-url` is "No such remote" and NOTHING else is (verified on real git, round-5 F4):
+    any other non-zero result refuses `push-failed` -- the commit is already durable and the
+    documented resume finishes the job. Returns whether a push happened."""
+    pushed = False
+    # Exit 2 is "No such remote" and NOTHING else is (verified on real git, round-5 F4).
+    # Treating every non-zero result as "no remote" would let a broken repository, a
+    # permission error or a git that failed to start report a complete local delivery and
+    # skip the push entirely. The commit is already durable here, so the refusal is
+    # `push-failed` and the documented resume finishes the job.
+    remote = run(["git", "remote", "get-url", "origin"], cwd=repo)
+    if remote.returncode not in (0, 2):
+        raise _refuse("push-failed", f"hint: could not probe origin: "
+                    f"{jr._bound((remote.stderr or remote.stdout).strip(), 200)}")
+    if remote.returncode == 0:
+        push = run(["git", "push", "origin", target], cwd=repo)
+        if push.returncode != 0:
+            raise _refuse("push-failed", f"hint: {jr._bound(push.stderr.strip(), 200)}")
+        pushed = True
+    return pushed
+
+
+def _pr_already_merged(view, number, sha):
+    """Recovery path: the PR is already MERGED (a previous run merged it but recording
+    failed). cold review e441aa1770e3 F2: a PR merged with extra commits pushed outside the
+    approval flow must never be recorded as an approval of a DIFFERENT sha -- same
+    `pr-head-moved` code the open-PR branch uses. Returns GitHub's own merge commit sha."""
+    if view["headRefOid"] != sha:
+        raise _refuse(
+            "pr-head-moved",
+            f"hint: PR #{number} merged at head {view['headRefOid'][:12]}, not the approved {sha[:12]}")
+    merge_sha = (view.get("mergeCommit") or {}).get("oid")
+    if not merge_sha:
+        raise _refuse(
+            "github-unreachable",
+            f"hint: PR #{number} is merged but its merge commit sha could not be read")
+    return merge_sha
+
+
+def _pr_run_checks(args, *, run, repo, project, allowlist_root):
+    """Run (or reuse) `--checks` for an open PR head. Feature heads run in their registered
+    build worktree (decision 7); a `release/*` head has no such worktree, so a detached
+    temporary checkout of the approved sha is created and torn down in `finally`, success
+    or failure. Returns the `checks` audit dict."""
+    is_release = args.branch.startswith("release/")
+    if not is_release:
+        checks_dir = _branch_worktree_path(allowlist_root, project, args.branch)
+        if not (_contained(checks_dir, allowlist_root) and checks_dir.is_dir()
+                and _is_registered_worktree(run, repo, checks_dir, args.branch)):
+            raise _refuse("checks-failed",
+                          f"hint: no registered build worktree for {args.branch} at {checks_dir}")
+    else:
+        checks_dir = (allowlist_root / f"{project}-release-checks-{args.sha[:12]}").resolve()
+        added = run(["git", "worktree", "add", "--detach", str(checks_dir), args.sha], cwd=repo)
+        if added.returncode != 0:
+            raise _refuse(
+                "merge-failed",
+                f"hint: could not create the release checks checkout: {jr._bound((added.stderr or added.stdout).strip(), 200)}")
+
+    try:
+        head = run(["git", "rev-parse", "HEAD"], cwd=checks_dir)
+        if head.returncode != 0 or head.stdout.strip() != args.sha:
+            raise _refuse("sha-mismatch", f"hint: {checks_dir} is not at the approved {args.sha}")
+        status = _status_tracked(run, checks_dir)
+        if status.returncode != 0 or status.stdout.strip():
+            raise _refuse(
+                "dirty-tracked-tree",
+                f"hint: git status failed: {jr._bound((status.stderr or status.stdout).strip(), 200)}"
+                if status.returncode != 0 else None)
+        # MOA-510 D7: AFTER the HEAD and clean-tracked-tree guards above; reuse only adds
+        # the review/evidence/command conditions and full-porcelain cleanliness.
+        if is_release:
+            reused, review_id = False, None
+        else:
+            reused, _reason, review_id = _merge_checks_reuse(
+                run, repo, project, checks_dir, args.branch, args.sha, args.checks,
+                allowlist_root=allowlist_root, recheck=args.recheck)
+        checks_audit = _checks_audit(reused, review_id, args.sha)
+        if not reused:
+            checked = run(["/bin/bash", "-lc", args.checks], cwd=checks_dir)
+            if checked.returncode != 0:
+                raise _refuse("checks-failed", f"hint: {args.checks} exit {checked.returncode}")
+            status_after = _status_tracked(run, checks_dir)
+            if status_after.returncode != 0 or status_after.stdout.strip():
+                raise _refuse("checks-dirtied-tree", "hint: the checks command modified a tracked file")
+        return checks_audit
+    finally:
+        if is_release:
+            # cold review 75e934eacdca F2: no --force (Global Constraints: jaxflow never
+            # forces a git/gh mutation). A normal removal can fail (e.g. the checks command
+            # left an untracked file); that is non-fatal to the delivery result -- the
+            # worktree is kept and its path reported, never force-discarded.
+            removed = run(["git", "worktree", "remove", str(checks_dir)], cwd=repo)
+            if removed.returncode != 0:
+                print(f"release checks worktree {checks_dir} kept "
+                      f"({jr._bound((removed.stderr or removed.stdout).strip(), 200)})")
+
+
+def _revalidate_pr_identity(v, number, sha, target, branch):
+    """cold review 75e934eacdca F3 (partial accept): `--match-head-commit` pins the head at
+    merge time, but nothing pins the base or the open state -- a PR retargeted or closed
+    during the mergeability wait must still be caught. Same refusal codes as the initial
+    read, but the check ORDER here is its own (open state, head oid, base, head branch)
+    and must NOT be unified with the initial sequence (Decision 9)."""
+    if v["state"] != "OPEN":
+        raise _refuse(
+            "pr-closed",
+            f"hint: PR #{number} is no longer open ({v['state'].lower()}); jaxflow never reopens or re-merges one")
+    if v["headRefOid"] != sha:
+        raise _refuse(
+            "pr-head-moved",
+            f"hint: PR #{number}'s head is {v['headRefOid'][:12]}, not the approved {sha[:12]}")
+    if v["baseRefName"] != target:
+        raise _refuse(
+            "pr-identity-mismatch",
+            f"hint: PR #{number}'s base is {v['baseRefName']!r}, not the approved {target!r}")
+    # cold review 24597072c8ac F2: every re-read must re-verify the head branch too,
+    # same as the initial read.
+    if v["headRefName"] != branch:
+        raise _refuse(
+            "pr-identity-mismatch",
+            f"hint: PR #{number}'s head branch is {v['headRefName']!r}, not the approved {branch!r}")
+
+
+def _pr_await_mergeable(view, *, run, repo, repo_slug, number, sha, target, branch):
+    """Wait (up to 3 x 2 s) for GitHub to compute `mergeable`, re-reading and
+    re-validating the PR identity after EVERY wait; refuse `mergeability-unknown` if it
+    never settles; then re-validate once more immediately before the merge call, even when
+    the loop never ran. Returns the latest view. `time.sleep` is looked up on the `time`
+    module at call time (23 tests patch `jaxflow.time.sleep`); `_gh_pr_view` likewise."""
+    mergeable = view.get("mergeable")
+    attempts = 0
+    while mergeable == "UNKNOWN" and attempts < 3:
+        time.sleep(2)
+        view = _gh_pr_view(run, repo, repo_slug, number)
+        _revalidate_pr_identity(view, number, sha, target, branch)
+        mergeable = view.get("mergeable")
+        attempts += 1
+    if mergeable == "UNKNOWN":
+        raise Refusal("mergeability-unknown")
+    # Immediately before the merge call too, even when the loop above never ran (mergeable
+    # was never UNKNOWN) -- same reasoning as inside the loop.
+    _revalidate_pr_identity(view, number, sha, target, branch)
+    return view
+
+
+def _pr_merge_and_readback(args, *, run, repo, repo_slug, number, phase, target):
+    """`gh pr merge` pinned with `--match-head-commit`, then a FRESH `gh pr view` that must
+    read back as MERGED at the approved head/base (cold review 24597072c8ac F1: exit 0 does
+    not guarantee GitHub merged -- a merge queue or auto-merge can accept asynchronously;
+    that shape gets its own `merge-not-completed` and nothing is recorded as merged).
+    Returns `(view, merge_sha)`. Do not skip the post-merge read: it is what makes
+    `merge-not-completed` possible."""
+    merged = run(["gh", "pr", "merge", str(number), "--repo", repo_slug, "--merge",
+                  "--match-head-commit", args.sha, "--subject",
+                  f"feat: {phase} (merge {args.branch})"], cwd=repo)
+    if merged.returncode != 0:
+        stderr_text = merged.stderr or merged.stdout or ""
+        code = "merge-queue-required" if "merge queue" in stderr_text.lower() else "github-merge-refused"
+        checks_out = run(["gh", "pr", "checks", str(number), "--repo", repo_slug], cwd=repo)
+        raise _refuse(code, f"hint: {jr._bound(stderr_text.strip(), 300)}\nchecks: "
+                      f"{jr._bound((checks_out.stdout or checks_out.stderr or '').strip(), 300)}")
+    view = _gh_pr_view(run, repo, repo_slug, number)
+    # cold review 24597072c8ac F1 (downgraded to LOW -- no project here uses a merge queue
+    # -- relabelled): `gh pr merge` exiting 0 does not guarantee GitHub actually merged the
+    # PR (a merge queue or auto-merge can accept the request asynchronously). That specific
+    # shape -- success exit, still not MERGED -- gets its own refusal so the lead knows
+    # GitHub accepted the request without merging and to check the PR directly; nothing is
+    # recorded as merged either way.
+    if view["state"] != "MERGED":
+        raise _refuse(
+            "merge-not-completed",
+            f"hint: gh pr merge exited 0 but PR #{number} is still "
+            f"{view['state'].lower()}, not merged -- GitHub may have accepted the "
+            f"request without merging it yet (e.g. a merge queue or auto-merge); "
+            f"check the PR directly. Nothing was recorded as merged.")
+    if view["headRefOid"] != args.sha or view["baseRefName"] != target:
+        raise _refuse(
+            "github-unreachable",
+            f"hint: gh pr merge reported success but PR #{number} does not read back as merged")
+    merge_sha = (view.get("mergeCommit") or {}).get("oid")
+    if not merge_sha:
+        raise _refuse(
+            "github-unreachable",
+            f"hint: PR #{number} merged but no merge commit sha was reported")
+    return view, merge_sha
+
+
+def _sync_local_target(run, repo, target):
+    """Best-effort local sync (decision 10): fetch + fast-forward the local target only when
+    clean and direct; a divergence or a dirty tree is reported, never reset or force."""
+    run(["git", "fetch", "origin", target], cwd=repo)
+    switched = run(["git", "switch", target], cwd=repo)
+    if switched.returncode == 0:
+        status = _status_tracked(run, repo)
+        if status.returncode == 0 and not status.stdout.strip():
+            ff = run(["git", "merge", "--ff-only", f"origin/{target}"], cwd=repo)
+            if ff.returncode != 0:
+                print(f"local {target} not fast-forwarded (diverged from origin/{target}); left as-is")
+        else:
+            print(f"local {target} not synced (tracked tree not clean)")
+
+
+def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
+                   allowlist_root):
+    """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
+    No local git merge at all -- delivery happens on GitHub via `gh pr merge`. Feature heads
+    run --checks in their registered build worktree (decision 7); a release/* head has no
+    such worktree, so this creates a detached temporary checkout of the approved sha and
+    tears it down after, success or failure."""
+    repo_slug = _github_repo_slug(run, repo)
+    # Ledger & card reconciliation: the recorded PR number if the hub has one for this branch,
+    # otherwise a `gh pr list` fallback -- zero matches means no PR exists at all (pr-not-found,
+    # unlike `pr open` which would proceed to create one); more than one refuses pr-ambiguous
+    # (already handled inside _resolve_pr_number, Task 5).
+    recorded = _find_recorded_pr(project, args.branch)
+    number = recorded["pr_number"] if recorded is not None else _resolve_pr_number(
+        run, repo, repo_slug, args.branch, target)
+    if number is None:
+        raise _refuse("pr-not-found", f"hint: no recorded PR for {args.branch} -- run jaxflow pr open first")
+
+    view = _gh_pr_view(run, repo, repo_slug, number)
+    if view["baseRefName"] != target:
+        raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}")
+    # cold review 24597072c8ac F2: base was already checked; the head BRANCH must be verified
+    # too, not just its sha (below) -- a recorded/resolved PR number pointing at the wrong
+    # branch is a distinct identity mismatch, unconditionally, before MERGED vs. not is decided.
+    if view["headRefName"] != args.branch:
+        raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {args.branch!r}")
+
+    merge_sha = None
+    if view["state"] == "MERGED":
+        # Recovery table: already merged, local recording failed -- skip checks/merge, just
+        # record + sync + cleanup below, using GitHub's own merge commit sha.
+        merge_sha = _pr_already_merged(view, number, args.sha)
+        checks_audit = {"mode": "resumed"}
+    else:
+        if view["state"] == "CLOSED":
+            raise _refuse("pr-closed", f"hint: PR #{number} is closed and unmerged; jaxflow never reopens one")
+        if view["headRefOid"] != args.sha:
+            raise _refuse("pr-head-moved", f"hint: PR #{number}'s head is {view['headRefOid'][:12]}, not the approved {args.sha[:12]}")
+
+        checks_audit = _pr_run_checks(
+            args, run=run, repo=repo, project=project, allowlist_root=allowlist_root)
+
+        view = _pr_await_mergeable(
+            view, run=run, repo=repo, repo_slug=repo_slug, number=number,
+            sha=args.sha, target=target, branch=args.branch)
+
+        view, merge_sha = _pr_merge_and_readback(
+            args, run=run, repo=repo, repo_slug=repo_slug, number=number, phase=phase,
+            target=target)
+
+    _post_merge_audit(
+        post, env, project,
+        {"phase": phase, "branch": args.branch, "sha": args.sha, "target": target,
+         "approved_by": "rafa", "merge_sha": merge_sha, "pr_number": number,
+         "pr_url": view["url"], "checks": checks_audit},
+        retry_msg=f"PR #{number} merged as {merge_sha}; re-run the same jaxflow merge to resume",
+        warn_bad_pane=False)
+
+    _sync_local_target(run, repo, target)
+
+    if not args.branch.startswith("release/"):
+        _cleanup_merged_worktree(
+            run, repo, _branch_worktree_path(allowlist_root, project, args.branch),
+            args.branch, allowlist_root)
+
+    return _record_merge_status(
+        run, allowlist_root, repo=repo, caller=caller, target=target,
+        dispatch_start=_iso8601(now()),
+        outcome=f"merged {merge_sha} via PR #{number} ({view['url']})",
+        checks_audit=checks_audit, checks_cmd=args.checks)
+
+
+def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
+              allowlist_root=ALLOWLIST_ROOT_DEFAULT):
+    """Delivers an approved branch (spec §5). Synchronous and foreground by design: Rafa's
+    approval already named this phase/branch/sha, and the tech lead is waiting right here
+    for a pass/fail — there is nothing to poll later, so `merge` allocates no run id, posts
+    no `run-started`/`run-finished`, and owns no tmux session. Its only ledger row is the
+    `merge-approved` audit event in §5.3."""
+    env = os.environ if env is None else env
+    now = now or (lambda: datetime.now().astimezone())
+    started_at = _iso8601(now())
+
+    cwd = Path.cwd().resolve()
+    repo = _require_toplevel(run, cwd, strict=True)
+    caller = resolve_caller(env, args.from_caller)
+    project = slugify_project(repo.name)
+
+    phase, approved_target = _validate_merge_inputs(args, run=run, repo=repo)
 
     target, no_preset_block, preset = _resolve_delivery_target(repo, run=run)
     # Same bound as `--branch`, and for the same reason: the target is audit payload too,
@@ -6367,10 +6529,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
     # that does not name a usable target is exactly what `preset-unknown` already means.
     if not (target and not any(c.isspace() for c in target)
             and 1 <= _utf16_len(target) <= 512):
-        exc = Refusal("preset-unknown")
-        exc.hint = (f"hint: the delivery target is not a usable ref: "
+        raise _refuse("preset-unknown", f"hint: the delivery target is not a usable ref: "
                     f"{jr._bound(target or '<empty>', 120)}")
-        raise exc
 
     if preset in _PR_PRESETS:
         settings = general_settings.read_settings()
@@ -6378,27 +6538,23 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
             raise Refusal("github-integration-disabled")
         required_target, _preset = _required_target_for_branch(repo, args.branch, run=run)
         if approved_target != required_target:
-            exc = Refusal("target-mismatch")
-            exc.hint = (f"hint: approved target {jr._bound(approved_target, 120)} differs from "
+            raise _refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} differs from "
                         f"the configured {jr._bound(required_target, 120)}")
-            raise exc
         if args.branch.startswith("release/"):
             return _cmd_merge_pr(args, repo=repo, project=project, caller=caller,
                                   target=required_target, phase=phase, run=run, post=post,
                                   env=env, now=now, allowlist_root=allowlist_root)
-        worktree = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
+        worktree = _branch_worktree_path(allowlist_root, project, args.branch)
         with jresume.worktree_claim(repo, worktree):
             return _cmd_merge_pr(args, repo=repo, project=project, caller=caller,
                                        target=required_target, phase=phase, run=run, post=post,
                                        env=env, now=now, allowlist_root=allowlist_root)
 
     if approved_target != target:
-        exc = Refusal("target-mismatch")
-        exc.hint = (f"hint: approved target {jr._bound(approved_target, 120)} "
+        raise _refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} "
                     f"differs from policy target {jr._bound(target, 120)}")
-        raise exc
 
-    worktree = (allowlist_root / f"{project}-{args.branch.replace('/', '-')}").resolve()
+    worktree = _branch_worktree_path(allowlist_root, project, args.branch)
     with jresume.worktree_claim(repo, worktree):
         _refuse_nonterminal_builder(project, repo, args.branch)
         # Resume check (§5.2). `--verify` rather than a bare rev-parse: the bare form exits
@@ -6412,304 +6568,48 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
         merge_sha = None
         branch_present = True
         if resuming:
-            # A resume skips the whole switch/merge/checks/commit sequence, so it never gets
-            # the source-branch identity for free -- and it later DELETES that branch. Earn it
-            # here (cold review F2): the caller-named branch must still resolve to the approved
-            # sha, or resolve to nothing at all (a previous resume already cleaned it up).
-            # The merge commit lives on TARGET, and a resume never switches to it -- reading
-            # HEAD here would report whatever branch the caller happens to be standing on
-            # (found while fixing round-2 F4).
-            merge_sha = _git_read(run, repo, ["git", "rev-parse", f"{target}^{{commit}}"],
-                                  shape=r"[0-9a-f]{40}")
-            if merge_sha is None:
-                exc = Refusal("sha-mismatch")
-                exc.hint = f"hint: resume refused -- {target} does not resolve to a commit"
-                raise exc
-
-            # Resolving to the approved sha does NOT prove this is the branch the approval
-            # named: any alias pointing at the same commit resolves identically, and the
-            # cleanup below would then delete the alias and its worktree while the delivered
-            # branch survived (round-2 F4, reproduced on real git). The merge commit jaxflow
-            # itself wrote carries the branch name in its subject; that is the binding. A
-            # merge jaxflow did not write is refused rather than resumed.
-            # The WHOLE subject, not a substring of it (round-3 F7): `--phase` is free text,
-            # so a real merge of `other` titled `Release (merge feat/x)` writes
-            # `feat: Release (merge feat/x) (merge other)` -- a substring test would accept a
-            # resume for feat/x and delete it. Equality against the subject jaxflow itself
-            # writes cannot be forged from the phase title alone.
-            subject = _git_read(run, repo, ["git", "log", "-1", "--format=%s", merge_sha])
-            expected_subject = f"feat: {phase} (merge {args.branch})"
-            if subject != expected_subject:
-                exc = Refusal("sha-mismatch")
-                exc.hint = (f"hint: resume refused -- {target}'s merge commit {merge_sha} does "
-                            f"not record {args.branch} "
-                            f"(subject: {jr._bound(subject or '<unreadable>', 120)}; "
-                            f"expected: {jr._bound(expected_subject, 120)})")
-                raise exc
-
-            # "The branch is gone" and "the ref read failed" are different facts, and
-            # `rev-parse --verify` returns 128 for both (round-5 F6). `show-ref --verify`
-            # separates them on real git: exit 1 is "no such ref", exit 128 is a repository
-            # error. Only exit 1 may skip cleanup; anything else refuses rather than posting
-            # an audit for a delivery whose source branch it could not read.
-            present = run(["git", "show-ref", "--verify", "--quiet",
-                           f"refs/heads/{args.branch}"], cwd=repo)
-            if present.returncode == 1:
-                branch_present = False
-            elif present.returncode != 0:
-                exc = Refusal("sha-mismatch")
-                exc.hint = (f"hint: resume refused -- could not read {args.branch}: "
-                            f"{jr._bound((present.stderr or present.stdout).strip(), 200)}")
-                raise exc
-            if branch_present:
-                src = _git_read(run, repo,
-                                ["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"],
-                                shape=r"[0-9a-f]{40}")
-                if src != args.sha:
-                    exc = Refusal("sha-mismatch")
-                    exc.hint = (f"hint: resume refused -- {args.branch} now points at "
-                                f"{src or '<unreadable>'}, not the approved {args.sha}")
-                    raise exc
-            print(f"resuming: {target} already carries the merge of {args.sha}")
+            merge_sha, branch_present = _merge_resume_verify(
+                args, run=run, repo=repo, target=target, phase=phase)
         else:
-            # NO `git switch <branch>` here (round-4 F12, reproduced on real git). `build`
-            # leaves the approved branch checked out in its own linked worktree, and git
-            # refuses to check the same branch out twice:
-            #     fatal: 'feat/x' is already used by worktree at '<builder worktree>'
-            # Every real delivery would refuse. Nothing in this verb needs that checkout
-            # anyway: `git merge` takes a COMMIT, and the tree that has to be clean is the
-            # CONTROL repo's, wherever its HEAD happens to be. A ref read answers the only
-            # question the switch was ever asked -- does <branch> point at the approved sha?
-            head = run(["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"], cwd=repo)
-            if head.returncode != 0 or head.stdout.strip() != args.sha:
-                exc = Refusal("sha-mismatch")
-                exc.hint = (f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved "
-                            f"{args.sha}")
-                raise exc
-
-            # Tracked-only: an untracked build artifact never blocks a delivery (§2.10 #1's
-            # allow_untracked rule, implemented here because `merge` does not call preflight()).
-            status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo)
-            if status.returncode != 0 or status.stdout.strip():
-                # A failed probe is NOT a clean tree (round-4 F4): empty stdout from a git
-                # that errored would otherwise read as "nothing dirty" and let the merge
-                # proceed on a tree whose state was never established.
-                exc = Refusal("dirty-tracked-tree")
-                if status.returncode != 0:
-                    exc.hint = ("hint: git status failed, so the tree could not be checked: "
-                                f"{jr._bound((status.stderr or status.stdout).strip(), 200)}")
-                raise exc
-
-            switched = run(["git", "switch", target], cwd=repo)
-            if switched.returncode != 0:
-                exc = Refusal("target-mismatch")
-                exc.hint = (f"hint: git switch {target} failed: "
-                            f"{jr._bound((switched.stderr or switched.stdout).strip(), 200)}")
-                raise exc
-            on_target = _git_read(run, repo, ["git", "branch", "--show-current"])
-            if on_target != target:
-                exc = Refusal("target-mismatch")
-                exc.hint = f"hint: expected to be on {target}, got {on_target or '?'}"
-                raise exc
-            # New (spec §4.5, 77f30f829248 F4): captured HERE, before `git merge` runs --
-            # never a later HEAD re-read (AC 8). `None` on a resume path is never read,
-            # since `fast_forward` below is only computed inside `if not resuming:`.
-            target_tip = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
-                                   shape=r"[0-9a-f]{40}")
+            target_tip = _merge_prepare_target(args, run=run, repo=repo, target=target)
 
         checks_cmd = args.checks
         checks_audit = {"mode": "resumed"}   # D5: a resume neither runs nor reuses the checks
         if not resuming:
-            merged = run(["git", "merge", "--no-ff", "--no-commit", args.sha], cwd=repo)
-            if merged.returncode != 0:
-                exc = Refusal("merge-failed")
-                exc.hint = f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo)}"
-                raise exc
-
-            # The exact merge result, as an object id, BEFORE the checks touch anything.
-            # `git write-tree` is what `git commit` itself runs; it succeeds here because a
-            # merge that left conflicts already refused above.
-            # A tree object id, not just an exit code (round-5 F3): these two values are
-            # compared to each other, so two malformed-but-equal outputs would report "the
-            # checks staged nothing" -- the one thing `git diff --quiet` cannot see.
-            # Read directly rather than through `_git_read` (deviation from the plan's literal
-            # text, see report): the plan's own F9 test expects the underlying git failure
-            # text (e.g. "unable to write new index file") IN the refusal hint, which
-            # `_git_read` -- by design -- discards on any failure. The shape check itself is
-            # unchanged (round-5 F3: a tree object id, not just an exit code).
-            tree_before_probe = run(["git", "write-tree"], cwd=repo)
-            tree_before = tree_before_probe.stdout.strip()
-            if tree_before_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_before):
-                # An index that cannot be fingerprinted is a broken merge, not a dirty check
-                # (round-3 F9). Refuse BEFORE spending a checks run on it.
-                exc = Refusal("merge-failed")
-                detail = jr._bound((tree_before_probe.stderr or tree_before_probe.stdout).strip(), 200)
-                exc.hint = (f"hint: could not fingerprint the merged index: {detail}"
-                            + _abort_merge(run, repo))
-                raise exc
-
-            # MOA-510 D4: `fast_forward` keeps its meaning ("the target has no commits the
-            # branch lacks": the merged tree is byte-identical to the branch head) but is no
-            # longer a skip by itself -- the head must also be the one the latest diff review
-            # already tested. A moved target never reaches the lookup; an EQUAL tip stays
-            # outside `fast_forward` (`_is_strict_descendant` needs `base != head`).
-            fast_forward = target_tip is not None and _is_strict_descendant(
-                run, repo, base=target_tip, head=args.sha)
-            if fast_forward:
-                reused, _reason, review_id = _merge_checks_reuse(
-                    run, repo, project, worktree, args.branch, args.sha, checks_cmd,
-                    allowlist_root=allowlist_root, recheck=args.recheck)
-            else:
-                reused, review_id = False, None
-            if reused:
-                checks_audit = {"mode": "reused", "source_review_run_id": review_id,
-                                "head_sha": args.sha}
-            else:
-                checks_audit = {"mode": "run"}
-                checked = run(["/bin/bash", "-lc", checks_cmd], cwd=repo)
-                if checked.returncode != 0:
-                    exc = Refusal("checks-failed")
-                    exc.hint = f"hint: {checks_cmd} exit {checked.returncode}{_abort_merge(run, repo)}"
-                    raise exc
-
-                # The checks must not have changed WHAT GETS DELIVERED: a checks command that
-                # rewrites a lockfile or a snapshot would otherwise ride along inside the merge.
-                # Two comparisons are needed (cold review round 2, F5, reproduced on real git):
-                # `git diff --quiet` sees only worktree-vs-index, so a check that edits a tracked
-                # file and then runs `git add` passes it while the index -- and therefore the
-                # commit -- has already changed. Untracked artifacts the checks created are their
-                # own output and are left alone.
-                # Same deviation as tree_before, same reason: keep the underlying git failure
-                # text available for the hint instead of losing it inside `_git_read`.
-                tree_after_probe = run(["git", "write-tree"], cwd=repo)
-                tree_after = tree_after_probe.stdout.strip()
-                if tree_after_probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree_after):
-                    exc = Refusal("checks-dirtied-tree")
-                    detail = jr._bound((tree_after_probe.stderr or tree_after_probe.stdout).strip(), 200)
-                    exc.hint = (f"hint: the index could not be fingerprinted after the checks: {detail}"
-                                + _abort_merge(run, repo))
-                    raise exc
-                staged_changed = tree_after != tree_before
-                if staged_changed or run(["git", "diff", "--quiet"], cwd=repo).returncode != 0:
-                    exc = Refusal("checks-dirtied-tree")
-                    exc.hint = ("hint: the checks command modified a tracked file "
-                                + ("(staged)" if staged_changed else "(unstaged)")
-                                + _abort_merge(run, repo))
-                    raise exc
-
-            # A commit hook can refuse -- this very repository has one (`.githooks/commit-msg`).
-            # An unchecked failure here would audit and push a merge that was never committed
-            # (cold review F3).
-            committed = run(["git", "commit", "-m", f"feat: {phase} (merge {args.branch})"],
-                            cwd=repo)
-            if committed.returncode != 0:
-                exc = Refusal("merge-failed")
-                exc.hint = (f"hint: commit refused: "
-                            f"{jr._bound((committed.stderr or committed.stdout).strip(), 200)}"
-                            + _abort_merge(run, repo))
-                raise exc
-            merge_sha = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
-                                  shape=r"[0-9a-f]{40}")
+            merge_sha, checks_audit = _merge_stage_check_commit(
+                args, run=run, repo=repo, project=project, worktree=worktree, target=target,
+                phase=phase, allowlist_root=allowlist_root, target_tip=target_tip)
 
         # One guard for BOTH paths (round-4 F5). `merge-approved` requires a full 40-hex sha
         # and the validator rejects anything else, so an unchecked probe would turn a durable
         # commit into an un-auditable one. Nothing is aborted here: on the normal path the
         # commit already landed, and re-running the same `jaxflow merge` resumes from it.
         if merge_sha is None:
-            exc = Refusal("merge-failed")
-            exc.hint = ("hint: the merge commit exists but its sha could not be read; "
+            raise _refuse("merge-failed", "hint: the merge commit exists but its sha could not be read; "
                         "re-run the same jaxflow merge to resume")
-            raise exc
 
-        event = {
-            "project": project, "role": "lead", "type": "merge-approved",
-            "source": "deterministic", "emitter": "wrapper",
-            "payload": {
-                "phase": phase, "branch": args.branch, "sha": args.sha,   # already <= 200
-                "target": target, "approved_by": "rafa", "merge_sha": merge_sha,
-                "checks": checks_audit,
-            },
-        }
-        # Present-or-absent, never null (the `caller_pane` discipline). A merge run outside
-        # tmux has no pane at all, and the validator's `wrapper` carve-out (spec §2.6, amended
-        # 2026-09-07) is what lets that event through.
-        pane = env.get("TMUX_PANE")
-        if pane and re.fullmatch(r"%[0-9]{1,10}", pane):
-            event["pane"] = pane
-        elif pane:
-            # The validator checks `pane` against `%<1-10 digits>`, so a junk or oversized
-            # TMUX_PANE would fail the POST *after* the commit and strand the delivery
-            # (round-6 F14). The field is optional, and an unusable pane target is worth
-            # nothing to whoever reads the ledger -- omit it and say so, rather than let an
-            # environment variable decide whether a merge can be audited.
-            print(f"TMUX_PANE={jr._bound(pane, 60)} is not a pane target; reporting without it")
-        try:
-            post(event)
-        except Exception as exc:
-            refusal = _hub_refusal(exc)
-            if _hub_retryable(exc):
-                print(f"merge commit {merge_sha} kept; re-run the same jaxflow merge to resume")
-                refusal.hint = f"hint: {jr._bound(str(exc), 200)}"
-            raise refusal from exc
+        _post_merge_audit(
+            post, env, project,
+            {"phase": phase, "branch": args.branch, "sha": args.sha,   # already <= 200
+             "target": target, "approved_by": "rafa", "merge_sha": merge_sha,
+             "checks": checks_audit},
+            retry_msg=f"merge commit {merge_sha} kept; re-run the same jaxflow merge to resume",
+            warn_bad_pane=True)
 
-        pushed = False
-        # Exit 2 is "No such remote" and NOTHING else is (verified on real git, round-5 F4).
-        # Treating every non-zero result as "no remote" would let a broken repository, a
-        # permission error or a git that failed to start report a complete local delivery and
-        # skip the push entirely. The commit is already durable here, so the refusal is
-        # `push-failed` and the documented resume finishes the job.
-        remote = run(["git", "remote", "get-url", "origin"], cwd=repo)
-        if remote.returncode not in (0, 2):
-            exc = Refusal("push-failed")
-            exc.hint = (f"hint: could not probe origin: "
-                        f"{jr._bound((remote.stderr or remote.stdout).strip(), 200)}")
-            raise exc
-        if remote.returncode == 0:
-            push = run(["git", "push", "origin", target], cwd=repo)
-            if push.returncode != 0:
-                exc = Refusal("push-failed")
-                exc.hint = f"hint: {jr._bound(push.stderr.strip(), 200)}"
-                raise exc
-            pushed = True
+        pushed = _merge_push(run, repo, target)
 
         # Everything below is best-effort: the delivery is durable and pushed, and a failure
         # here must never turn a completed merge into a refusal.
-        if (branch_present and _contained(worktree, allowlist_root) and worktree.is_dir()
-                and _is_registered_worktree(run, repo, worktree, args.branch)):
-            copy_result = _copy_run_reports(worktree, repo)
-            # F3 (spec §4 guard 7): fails closed now, replacing catch-and-continue.
-            if copy_result["failed"]:
-                print(f"worktree {worktree} kept (report copy failed)")
-            else:
-                removed = run(["git", "worktree", "remove", str(worktree)], cwd=repo)
-                if removed.returncode == 0:
-                    deleted = run(["git", "branch", "-d", args.branch], cwd=repo)
-                    if deleted.returncode != 0:
-                        print(f"branch {args.branch} kept "
-                              f"({jr._bound((deleted.stderr or deleted.stdout).strip(), 200)})")
-                else:
-                    print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
+        if branch_present:
+            _cleanup_merged_worktree(run, repo, worktree, args.branch, allowlist_root)
 
         outcome = (f"merged {merge_sha} pushed origin/{target}" if pushed
                    else f"merged {merge_sha} — no remote delivery configured")
-        # `branch` is passed explicitly rather than left to `_current_branch()` (part-1 cold
-        # review): a RESUME never switches to the target, so the current checkout is whatever
-        # the tech lead happened to be standing on -- or nothing, from a detached HEAD.
-        # Requires the one-word `_update_status_md` change in the same step.
-        _update_status_md(
-            {"repo": str(repo), "kind": "merge", "runtime": None if caller == "jaxos" else caller,
-             "branch": target,
-             "dispatch_start": started_at, "worker_summary": outcome, "worker_outcome": None},
-            run=run, allowlist_root=allowlist_root,
-        )
-
-        if no_preset_block:
-            print(f"target: {target} (no preset block)")
-        print(outcome)
-        line = _merge_checks_line(checks_audit, checks_cmd)
-        if line:
-            print(line)
-        return OK
+        return _record_merge_status(
+            run, allowlist_root, repo=repo, caller=caller, target=target,
+            dispatch_start=started_at, outcome=outcome, checks_audit=checks_audit,
+            checks_cmd=checks_cmd,
+            target_note=f"target: {target} (no preset block)" if no_preset_block else None)
 
 
 def _nonblank(value):

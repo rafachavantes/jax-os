@@ -47,3 +47,22 @@ def test_jaxflow_modules_under_1800_lines(filename):
         pytest.skip(f"{filename} does not exist yet (P2)")
     lines = len(path.read_text(encoding="utf-8").splitlines())
     assert lines <= MAX_MODULE_LINES, f"{filename} has {lines} lines (cap {MAX_MODULE_LINES})"
+
+
+P1A_FUNCTIONS = (
+    "cmd_merge", "_cmd_merge_pr", "run_worker", "_run_builder_worker",
+    "_run_diff_reviewer_worker",
+)
+
+
+def test_p1a_functions_within_250_lines():
+    # P1a (workers + merge) is done: these five were 286-448 lines on base 523b04f.
+    # The full check (`test_no_function_over_250_lines`) stays xfail until P1b.
+    tree = ast.parse(Path(__file__).with_name("jaxflow.py").read_text(encoding="utf-8"))
+    sizes = {
+        node.name: node.end_lineno - node.lineno + 1
+        for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+    assert set(P1A_FUNCTIONS) <= set(sizes)
+    over = {name: sizes[name] for name in P1A_FUNCTIONS if sizes[name] > 250}
+    assert not over, over
