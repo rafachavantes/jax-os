@@ -43,6 +43,8 @@ _SKIP_SITES = [
     ("test_jaxflow_settings", "test_native_xai_captured_request_uses_own_wire_format", lambda m: (None, None)),
     ("test_jaxflow_settings", "test_writer_produced_aliases_capture_supported_transports",
      lambda m: (None, m._WRITER_CASES[2])),
+    ("test_jaxflow_settings_io", "test_native_listing_add_hide_and_alias_eligibility", lambda m: (None,)),
+    ("test_jaxflow_settings_io", "test_native_listing_hides_removed_provider_despite_catalog", lambda m: (None,)),
 ]
 
 

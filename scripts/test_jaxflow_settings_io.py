@@ -806,8 +806,6 @@ def _visibility_meta():
 
 
 def _list_models(config, tmp_path, connection=CONN):
-    if shutil.which("opencode") is None:
-        pytest.fail("installed opencode CLI is unavailable")
     env = {
         "PATH": os.environ["PATH"],
         "HOME": str(tmp_path / "vis-home"),
@@ -825,8 +823,7 @@ def _list_models(config, tmp_path, connection=CONN):
     }
     argv = ["opencode", "models", "--pure"] if connection is None else ["opencode", "models", connection, "--pure"]
     proc = subprocess.run(argv, cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=15)
-    if proc.returncode != 0:
-        pytest.fail(f"opencode models failed: {proc.stderr[-1000:]}")
+    assert proc.returncode == 0, f"opencode models failed: {proc.stderr[-1000:]}"
     prefix = f"{CONN}/"
     names = []
     for line in proc.stdout.splitlines():
@@ -841,15 +838,23 @@ def _list_models(config, tmp_path, connection=CONN):
     return names
 
 
+def _whitelist(config):
+    """The connection's whitelist as written to disk (no opencode spawn needed)."""
+    value = edit_source(config.read_text(encoding="utf-8"), [], jsonc=False)["value"]
+    return value["provider"][CONN]["whitelist"]
+
+
+@pytest.mark.opencode
 def test_native_listing_add_hide_and_alias_eligibility(tmp_path):
+    if shutil.which("opencode") is None:
+        pytest.skip("opencode binary not installed")
     paths = _paths(tmp_path)
     paths["opencode.json"].write_text(json.dumps(VISIBILITY), encoding="utf-8")
     config = paths["opencode.json"]
     meta = _visibility_meta()
-    names = _list_models(config, tmp_path)
-    assert "native-visible" in names
-    assert "wire-real-model" in names
-    assert "native-hidden" not in names
+    # Intermediate states are asserted on the written whitelist; ONE real `opencode models`
+    # listing at the end proves the final state (opencode spawn budget, D12).
+    assert _whitelist(config) == ["native-visible", "wire-real-model"]
     expected = snapshot(paths, meta)["editor_revision"]
     apply({
         "kind": "save-model",
@@ -859,34 +864,40 @@ def test_native_listing_add_hide_and_alias_eligibility(tmp_path):
             "reasoning": False, "tool_call": True, "effort_template": "none",
         },
     }, expected, OP, paths, meta)
-    names = _list_models(config, tmp_path)
-    assert "extra-model" in names
+    assert "extra-model" in _whitelist(config)
     expected = snapshot(paths, meta)["editor_revision"]
     apply({"kind": "remove-model", "connection": CONN, "model": "native-visible"}, expected, OP2, paths, meta)
-    names = _list_models(config, tmp_path)
-    assert "native-visible" not in names
-    assert "extra-model" in names
+    assert "native-visible" not in _whitelist(config)
+    assert "extra-model" in _whitelist(config)
     expected = snapshot(paths, meta)["editor_revision"]
     intent = _intent()
     intent["builders"]["default"]["routing"] = None
     intent["builders"]["fallback"]["routing"] = None
     apply(intent, expected, OP3, paths, meta)
-    names = _list_models(config, tmp_path)
-    assert "jaxflow-builder-default" in names
-    assert "jaxflow-builder-fallback" in names
-    value = edit_source(config.read_text(encoding="utf-8"), [], jsonc=False)["value"]
-    whitelist = value["provider"][CONN]["whitelist"]
+    whitelist = _whitelist(config)
     assert "jaxflow-builder-default" in whitelist
     assert "jaxflow-builder-fallback" in whitelist
+    names = _list_models(config, tmp_path)
+    assert "wire-real-model" in names
+    assert "native-hidden" not in names
+    assert "native-visible" not in names
+    assert "extra-model" in names
+    assert "jaxflow-builder-default" in names
+    assert "jaxflow-builder-fallback" in names
 
 
+@pytest.mark.opencode
 def test_native_listing_hides_removed_provider_despite_catalog(tmp_path):
+    if shutil.which("opencode") is None:
+        pytest.skip("opencode binary not installed")
     paths = _paths(tmp_path)
     paths["opencode.json"].write_text(json.dumps(VISIBILITY), encoding="utf-8")
     meta = _visibility_meta()
     expected = snapshot(paths, meta)["editor_revision"]
     apply({"kind": "remove-connection", "connection": CONN}, expected, OP, paths, meta)
-    assert _list_models(paths["opencode.json"], tmp_path, connection=None) == []
+    value = edit_source(paths["opencode.json"].read_text(encoding="utf-8"), [], jsonc=False)["value"]
+    assert CONN not in value["provider"]
+    assert value["disabled_providers"] == [CONN]
     restored = json.loads(json.dumps(VISIBILITY))
     restored["disabled_providers"] = [CONN]
     paths["opencode.json"].write_text(json.dumps(restored), encoding="utf-8")
