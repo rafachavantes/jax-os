@@ -18,12 +18,14 @@ export async function handleMissionStart(req: Request, deps: MissionRouteDeps = 
   if (originError) return originError;
   const read = await readJsonCapped(req, 4096);
   if (!read.ok) return NextResponse.json({ ok: false, error: read.error });
-  const body = read.value as { name?: unknown; goal?: unknown; milestones?: unknown } | null;
+  const body = read.value as { name?: unknown; goal?: unknown; milestones?: unknown; autonomous?: unknown } | null;
   const name = body?.name;
   const goal = body?.goal;
   const milestones = body?.milestones;
+  const autonomous = body?.autonomous;
   if (!validMissionText(name, LIMITS.missionName)) return NextResponse.json({ ok: false, error: "malformed name" });
   if (!validMissionText(goal, LIMITS.missionGoal)) return NextResponse.json({ ok: false, error: "malformed goal" });
+  if (autonomous !== undefined && typeof autonomous !== "boolean") return NextResponse.json({ ok: false, error: "malformed autonomous" });
   if (!Array.isArray(milestones) || milestones.length < 1) return NextResponse.json({ ok: false, error: "malformed milestone" });
   if (milestones.length > LIMITS.missionMilestonesMax) return NextResponse.json({ ok: false, error: "too-many-milestones" });
   const seen = new Set<string>();
@@ -46,8 +48,8 @@ export async function handleMissionStart(req: Request, deps: MissionRouteDeps = 
       // before this callback runs, so nothing can insert an active row between this check and
       // the INSERT below.
       if (deps.getActiveMission(db)) throw new Error("mission-active");
-      const created = deps.insertMission(db, { name, goal, milestones: milestones as string[] });
-      deps.insertMutation(db, { ts: new Date().toISOString(), kind: "mission-start", mission_id: created.id, name: created.name, goal: created.goal, milestones: created.milestones });
+      const created = deps.insertMission(db, { name, goal, milestones: milestones as string[], autonomous: autonomous === true });
+      deps.insertMutation(db, { ts: new Date().toISOString(), kind: "mission-start", mission_id: created.id, name: created.name, goal: created.goal, milestones: created.milestones, autonomous: created.autonomous });
       return created;
     }).immediate();
     return NextResponse.json({ ok: true, data: mission });

@@ -78,4 +78,33 @@ describe("handleMissionStart", () => {
     const res = await handleMissionStart(postRequest({ name: "A", goal: "g", milestones: ["m1"] }), failing);
     expect(await res.json()).toEqual({ ok: false, error: "mission-active" });
   });
+
+  it("stores autonomous: true, returns it with the id, and records it in the mission-start mutation", async () => {
+    const deps = depsWithDb();
+    const body = await (await handleMissionStart(postRequest({ name: "A", goal: "g", milestones: ["m1"], autonomous: true }), deps)).json();
+    expect(body.ok).toBe(true);
+    expect(body.data).toMatchObject({ autonomous: true, state: "active" });
+    expect(typeof body.data.id).toBe("number");
+    expect(deps.getActiveMission(deps.getDb())?.autonomous).toBe(true);
+    const row = deps.getDb().prepare("SELECT payload FROM mutations WHERE kind = 'mission-start'").get() as { payload: string };
+    expect(JSON.parse(row.payload)).toMatchObject({ mission_id: body.data.id, autonomous: true });
+  });
+
+  it("omitted autonomous behaves as false", async () => {
+    const deps = depsWithDb();
+    const body = await (await handleMissionStart(postRequest({ name: "A", goal: "g", milestones: ["m1"] }), deps)).json();
+    expect(body.data.autonomous).toBe(false);
+    const row = deps.getDb().prepare("SELECT payload FROM mutations WHERE kind = 'mission-start'").get() as { payload: string };
+    expect(JSON.parse(row.payload).autonomous).toBe(false);
+  });
+
+  it("refuses a non-boolean autonomous (string, number, null) with no row and no mutation", async () => {
+    const deps = depsWithDb();
+    for (const bad of ["true", 1, null, {}]) {
+      const res = await handleMissionStart(postRequest({ name: "A", goal: "g", milestones: ["m1"], autonomous: bad }), deps);
+      expect(await res.json()).toEqual({ ok: false, error: "malformed autonomous" });
+    }
+    expect(deps.getDb().prepare("SELECT COUNT(*) AS n FROM missions").get()).toEqual({ n: 0 });
+    expect(deps.getDb().prepare("SELECT COUNT(*) AS n FROM mutations WHERE kind = 'mission-start'").get()).toEqual({ n: 0 });
+  });
 });
