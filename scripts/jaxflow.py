@@ -120,10 +120,8 @@ def _check_hub_caps(fields):
             continue
         n = _utf16_len(value)
         if n > cap:
-            exc = Refusal(f"{_CAP_LABELS.get(name, name)}-too-long ({n} > {cap})")
-            if name in ("verify", "build"):
-                exc.hint = _LONG_CMD_HINT
-            raise exc
+            raise _refuse(f"{_CAP_LABELS.get(name, name)}-too-long ({n} > {cap})",
+                          _LONG_CMD_HINT if name in ("verify", "build") else None)
 
 
 def _dispatch_run(*, run, post, repo, project, phase, kind, role, run_id, session, manifest,
@@ -233,9 +231,7 @@ def _require_caller_session(env, caller):
     var = _CALLER_SESSION_VAR[caller]
     session = env.get(var)
     if not session:
-        exc = Refusal("caller-session-missing")
-        exc.hint = f"hint: set {var}"
-        raise exc
+        raise _refuse("caller-session-missing", f"hint: set {var}")
     return session
 
 
@@ -251,18 +247,14 @@ def _enabled_agents():
     unreadable settings.json refuses review and build, never falls back to defaults."""
     settings = general_settings.read_settings()
     if not settings.get("ok"):
-        exc = Refusal(settings.get("error") or "settings-unreadable")
-        exc.hint = "hint: fix settings.json or save /settings"
-        raise exc
+        raise _refuse(settings.get("error") or "settings-unreadable", "hint: fix settings.json or save /settings")
     return settings["data"]["integrations"]["agents"]
 
 
 def _require_opencode_on():
     """MOA-504 D9: every builder profile is OpenCode, so one switch gates build and --resume."""
     if not _enabled_agents()["opencode"]:
-        exc = Refusal("agent-disabled: opencode")
-        exc.hint = "hint: turn OpenCode on in /settings -> General"
-        raise exc
+        raise _refuse("agent-disabled: opencode", "hint: turn OpenCode on in /settings -> General")
 
 
 def _reviewer_runtime_line(runtime, fallback):
@@ -1780,9 +1772,7 @@ def _dispatch_resume_build(args, *, resume_id, repo, project, caller, caller_ses
         if profile_name not in ("default", "fallback"):
             raise Refusal("resume-ineligible")
         if latest != resume_id:
-            exc = Refusal("resume-ineligible")
-            exc.hint = f"hint: latest attempt is {latest}"
-            raise exc
+            raise _refuse("resume-ineligible", f"hint: latest attempt is {latest}")
         prior_session = started_payload.get("session")
         if prior_session:
             live = run(["tmux", "has-session", "-t", prior_session])
@@ -1901,9 +1891,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
     plan_text = plan_path.read_text(encoding="utf-8")
     plan_defects = _validate_plan_structure(plan_text, plan_path, allowlist_root)
     if plan_defects:
-        exc = Refusal("plan-invalid")
-        exc.hint = "hint: " + "; ".join(plan_defects)
-        raise exc
+        raise _refuse("plan-invalid", "hint: " + "; ".join(plan_defects))
 
     _require_opencode_on()
     settings = jset.read_settings()
@@ -2007,10 +1995,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         # by something unrelated -- must never be deleted; the rare git-half-created case is
         # accepted as a leftover orphan ref instead.
         shutil.rmtree(worktree, ignore_errors=True)
-        exc = Refusal("branch-exists")
-        if added.stderr:
-            exc.hint = f"hint: {added.stderr.strip()}"
-        raise exc
+        raise _refuse("branch-exists", f"hint: {added.stderr.strip()}" if added.stderr else None)
     # Past this point, `git worktree add` succeeded, so `worktree` is a registered Git
     # worktree admin entry and `args.branch` is a branch this dispatch itself just created --
     # every cleanup path below undoes both via `_cleanup_worktree` (fixes cold review round
@@ -2275,15 +2260,14 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
                 "AND type = 'run-started' LIMIT 1",
                 (builder_run_id,),
             ).fetchone()
-            exc = Refusal("unknown-run")
             if not any_started:
-                exc.hint = f"hint: no run-started row for {builder_run_id}"
+                hint = f"hint: no run-started row for {builder_run_id}"
             elif any_started["role"] == "reviewer":
-                exc.hint = f"hint: run {builder_run_id} is a reviewer run, not a build"
+                hint = f"hint: run {builder_run_id} is a reviewer run, not a build"
             else:
                 any_kind = json.loads(any_started["payload"]).get("kind", "unknown")
-                exc.hint = f"hint: run {builder_run_id} is a {any_kind} run, not a build"
-            raise exc
+                hint = f"hint: run {builder_run_id} is a {any_kind} run, not a build"
+            raise _refuse("unknown-run", hint)
     finally:
         con.close()
     # fixes cold review F1: a build that has not finished yet is treated exactly like an
@@ -2297,21 +2281,15 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         # should never fire for a legitimate row (only `build` dispatches ever write
         # `role: builder`) -- kept in case a malformed/hand-crafted row slips past the
         # role filter with the wrong `kind`.
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: run {builder_run_id} is a {started_payload.get('kind', 'unknown')} run, not a build"
-        raise exc
+        raise _refuse("unknown-run", f"hint: run {builder_run_id} is a {started_payload.get('kind', 'unknown')} run, not a build")
     if not finished:
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: build {builder_run_id} has not finished yet"
-        raise exc
+        raise _refuse("unknown-run", f"hint: build {builder_run_id} has not finished yet")
     finished_payload = json.loads(finished["payload"])
     # A build whose REPORT is missing/invalid still has a real diff: the wrapper records
     # `head_sha` regardless of `contract_status`, and verify is re-run below anyway.
     # Refusing it threw away whole builds over a report-format slip (MOA-471, b756335468ba).
     if not finished_payload.get("head_sha"):
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: build {builder_run_id} finished without a head_sha"
-        raise exc
+        raise _refuse("unknown-run", f"hint: build {builder_run_id} finished without a head_sha")
 
     project = started["project"]
     branch = started_payload["target"]
@@ -2337,9 +2315,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     builder_manifest_path = _manifest_dir(repo, builder_run_id) / "manifest.json"
 
     def _unusable_builder_manifest():
-        exc = Refusal("unknown-run")
-        exc.hint = f"hint: build manifest for {builder_run_id} missing or invalid: {builder_manifest_path}"
-        return exc
+        return _refuse("unknown-run", f"hint: build manifest for {builder_run_id} missing or invalid: {builder_manifest_path}")
 
     try:
         builder_manifest = _load_manifest(_manifest_dir(repo, builder_run_id))
@@ -2373,9 +2349,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
     # ponytail: parent dirs are the operator's own worktree, trusted; only the evidence
     # file itself is checked (diff review 4884f63bdd16 F2 rejected).
     if tests_path.is_symlink() or (tests_path.exists() and not tests_path.is_file()):
-        exc = Refusal("path-outside-allowlist")
-        exc.hint = f"hint: evidence path is a symlink or not a regular file: {tests_path}"
-        raise exc
+        raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
 
     # MOA-471 item 7: the CONCURRENCY lock always runs first and is never bypassed.
     guard_con = _open_ro(db_path)
@@ -2396,9 +2370,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
             repo, reason="review-running", target=branch, phase=phase,
             builder_run_id=builder_run_id, prior_review_run_id=running["run_id"], now=now,
         )
-        exc = Refusal("review-running")
-        exc.hint = f"hint: run {running['run_id']} is still reviewing this branch"
-        raise exc
+        raise _refuse("review-running", f"hint: run {running['run_id']} is still reviewing this branch")
 
     # The terminal-verdict lock: only among prior reviews with a real terminal verdict.
     terminal = [
@@ -2427,12 +2399,8 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
                 repo, reason="prior-review-accepted", target=branch, phase=phase,
                 builder_run_id=builder_run_id, prior_review_run_id=prior_run_id, now=now,
             )
-            exc = Refusal("prior-review-accepted")
-            exc.hint = (
-                f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
-                f"pass --full \"<reason>\" or --since {prior_run_id}"
-            )
-            raise exc
+            raise _refuse("prior-review-accepted", f"hint: run {prior_run_id} already {verdict} at {prior_head}; "
+                f"pass --full \"<reason>\" or --since {prior_run_id}")
         else:  # reject, no flags: proceeds, advisory only
             override = "none"
             print(f"hint: prior review {prior_run_id} rejected this branch; consider --since {prior_run_id}")
@@ -2497,9 +2465,7 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
         if not _write_verify_tests_file(tests_path, verify_frames, worktree=worktree):
             # fixes F3 (TOCTOU symlink race): refuse, restoring the snapshotted evidence.
             _restore_evidence()
-            exc = Refusal("path-outside-allowlist")
-            exc.hint = f"hint: evidence path is a symlink or not a regular file: {tests_path}"
-            raise exc
+            raise _refuse("path-outside-allowlist", f"hint: evidence path is a symlink or not a regular file: {tests_path}")
         if any(r.returncode != 0 for _, r in verify_frames):
             raise Refusal("verify-failed")
         verify_field = {
@@ -2549,37 +2515,28 @@ def dispatch_diff_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_
                     since_con.close()
                 if walk_error is not None:
                     kind, bad_run_id = walk_error
-                    exc = Refusal(f"since-chain-{kind}")
-                    exc.hint = f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead"
-                    raise exc
+                    raise _refuse(f"since-chain-{kind}", f"hint: chain walk failed at {bad_run_id} ({kind}); run a full review instead")
                 target_node = chain[-1]
                 if not target_node["head_sha"]:
-                    exc = Refusal("since-chain-broken")
-                    exc.hint = f"hint: {target_node['run_id']} has no head_sha; run a full review instead"
-                    raise exc
+                    raise _refuse("since-chain-broken", f"hint: {target_node['run_id']} has no head_sha; run a full review instead")
                 ancestor = run(
                     ["git", "merge-base", "--is-ancestor", target_node["head_sha"], head_sha], cwd=worktree,
                 )
                 if ancestor.returncode != 0:
-                    exc = Refusal("since-not-ancestor")
-                    exc.hint = "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead"
-                    raise exc
+                    raise _refuse("since-not-ancestor", "hint: the --since target's head_sha is not an ancestor of HEAD; run a full review instead")
                 lock_error = _validate_since_chain(
                     chain, branch=branch, current_merge_base=base_sha, run=run, worktree=worktree,
                 )
                 if lock_error:
-                    exc = Refusal(lock_error)
-                    exc.hint = "hint: run a full review instead"
-                    raise exc
+                    raise _refuse(lock_error, "hint: run a full review instead")
                 since_review_run_id = args.since
                 since_verdict = target_node["verdict"]
                 base_sha = target_node["head_sha"]
             except Refusal:
                 raise
             except (TypeError, AttributeError, ValueError, KeyError, json.JSONDecodeError) as exc:
-                bad_exc = Refusal("since-chain-missing")
-                bad_exc.hint = f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead"
-                raise bad_exc from exc
+                raise _refuse("since-chain-missing",
+                              f"hint: malformed chain data ({exc.__class__.__name__}); run a full review instead") from exc
 
         # fixes cold review round 2 F3(a): route --diff through the SAME handoff-grammar/
         # evidence validation every other reviewer dispatch gets (spec §4.3 step 3), instead of
@@ -4666,10 +4623,8 @@ def _resolve_delivery_target(repo, *, run):
     if name is None:
         return jr._default_branch(repo, run), True, None
     if name not in _LOCAL_PRESETS + _PR_PRESETS:
-        exc = Refusal("preset-unknown")
-        exc.hint = (f"hint: unknown preset `{jr._bound(name, 40)}`; valid presets: "
+        raise _refuse("preset-unknown", f"hint: unknown preset `{jr._bound(name, 40)}`; valid presets: "
                     + ", ".join(_LOCAL_PRESETS + _PR_PRESETS))
-        raise exc
     hit = _DELIVERY_TARGET_RE.search(block)
     if not hit:
         raise Refusal("preset-unknown")
@@ -5725,9 +5680,7 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
     if number is None:
         pushed = run(["git", "push", "origin", f"{sha}:refs/heads/{branch}"], cwd=repo)
         if pushed.returncode != 0:
-            exc = Refusal("push-failed")
-            exc.hint = f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}"
-            raise exc
+            raise _refuse("push-failed", f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}")
         create_argv = ["gh", "pr", "create", "--repo", repo_slug, "--head", branch,
                         "--base", target, "--title", title]
         if body_file:
@@ -5736,14 +5689,10 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
         if created.returncode != 0:
             # Spec names no dedicated code for a failed `gh pr create` -- github-unreachable
             # is the closest existing "a GitHub operation failed" bucket (Global Constraints).
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: gh pr create failed: {jr._bound((created.stderr or created.stdout).strip(), 200)}"
-            raise exc
+            raise _refuse("github-unreachable", f"hint: gh pr create failed: {jr._bound((created.stderr or created.stdout).strip(), 200)}")
         m = _GH_PR_URL_RE.match((created.stdout or "").strip())
         if not m:
-            exc = Refusal("github-unreachable")
-            exc.hint = f"hint: gh pr create printed no PR URL: {jr._bound(created.stdout.strip(), 200)}"
-            raise exc
+            raise _refuse("github-unreachable", f"hint: gh pr create printed no PR URL: {jr._bound(created.stdout.strip(), 200)}")
         number, pr_url = int(m.group(1)), created.stdout.strip()
     else:
         view = _gh_pr_view(run, repo, repo_slug, number)
@@ -5752,31 +5701,21 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
         # the approved target must refuse before any push or ledger event -- same
         # pr-identity-mismatch code _cmd_merge_pr uses for this exact shape of mismatch.
         if view["baseRefName"] != target:
-            exc = Refusal("pr-identity-mismatch")
-            exc.hint = f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}"
-            raise exc
+            raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}")
         # cold review 24597072c8ac F2: same identity guard as the base check above, for the
         # head branch -- a recorded/resolved PR number whose actual head branch isn't `branch`
         # must refuse before any push or ledger event too.
         if view["headRefName"] != branch:
-            exc = Refusal("pr-identity-mismatch")
-            exc.hint = f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {branch!r}"
-            raise exc
+            raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {branch!r}")
         if view["state"] in ("CLOSED", "MERGED"):
-            exc = Refusal("pr-closed")
-            exc.hint = f"hint: PR #{number} is {view['state'].lower()}; jaxflow never reopens one"
-            raise exc
+            raise _refuse("pr-closed", f"hint: PR #{number} is {view['state'].lower()}; jaxflow never reopens one")
         if view["headRefOid"] != sha:
             if not _is_strict_descendant(run, repo, base=view["headRefOid"], head=sha):
-                exc = Refusal("pr-remote-diverged")
-                exc.hint = (f"hint: PR #{number}'s remote head {view['headRefOid'][:12]} is not "
+                raise _refuse("pr-remote-diverged", f"hint: PR #{number}'s remote head {view['headRefOid'][:12]} is not "
                             f"an ancestor of the approved {sha[:12]}; force-push is never used")
-                raise exc
             pushed = run(["git", "push", "origin", f"{sha}:refs/heads/{branch}"], cwd=repo)
             if pushed.returncode != 0:
-                exc = Refusal("push-failed")
-                exc.hint = f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}"
-                raise exc
+                raise _refuse("push-failed", f"hint: {jr._bound((pushed.stderr or pushed.stdout).strip(), 200)}")
             print(f"fast-forwarded PR #{number} to {sha}; a NEW approval is required for this sha")
         else:
             # Spec recovery table: "PR already open" is a true no-op -- no push, no gh
@@ -5861,15 +5800,11 @@ def cmd_release(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     delivery_target, _no_preset_block, _preset = _resolve_delivery_target(repo, run=run)
     fetched = run(["git", "fetch", "origin", delivery_target], cwd=repo)
     if fetched.returncode != 0:
-        exc = Refusal("github-unreachable")
-        exc.hint = f"hint: git fetch origin {delivery_target} failed: {jr._bound((fetched.stderr or fetched.stdout).strip(), 200)}"
-        raise exc
+        raise _refuse("github-unreachable", f"hint: git fetch origin {delivery_target} failed: {jr._bound((fetched.stderr or fetched.stdout).strip(), 200)}")
     snapshot_sha = _git_read(run, repo, ["git", "rev-parse", "--verify", f"origin/{delivery_target}^{{commit}}"],
                               shape=r"[0-9a-f]{40}")
     if snapshot_sha is None:
-        exc = Refusal("github-unreachable")
-        exc.hint = f"hint: origin/{delivery_target} does not resolve to a commit after fetch"
-        raise exc
+        raise _refuse("github-unreachable", f"hint: origin/{delivery_target} does not resolve to a commit after fetch")
 
     date = now().strftime("%Y-%m-%d")
     branch = f"release/{date}-staging-promotion"
@@ -5891,9 +5826,7 @@ def cmd_release(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
 
     updated = run(["git", "update-ref", f"refs/heads/{branch}", snapshot_sha], cwd=repo)
     if updated.returncode != 0:
-        exc = Refusal("merge-failed")
-        exc.hint = f"hint: could not create local ref {branch}: {jr._bound((updated.stderr or updated.stdout).strip(), 200)}"
-        raise exc
+        raise _refuse("merge-failed", f"hint: could not create local ref {branch}: {jr._bound((updated.stderr or updated.stdout).strip(), 200)}")
 
     result = _open_pr(repo, project, caller, branch, snapshot_sha, production_target,
                        f"Release: {delivery_target} promotion {date}", body_file=None, run=run,
@@ -5920,34 +5853,24 @@ def cmd_pr_open(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
         raise Refusal("github-integration-disabled")
 
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha or ""):
-        exc = Refusal("sha-mismatch")
-        exc.hint = "hint: --sha must be the full 40-character commit sha from the approval"
-        raise exc
+        raise _refuse("sha-mismatch", "hint: --sha must be the full 40-character commit sha from the approval")
     if not (args.branch and not any(c.isspace() for c in args.branch)
             and 1 <= _utf16_len(args.branch) <= 512):
-        exc = Refusal("branch-invalid")
-        exc.hint = ("hint: --branch must be a non-empty ref of at most 512 UTF-16 code units "
+        raise _refuse("branch-invalid", "hint: --branch must be a non-empty ref of at most 512 UTF-16 code units "
                     "with no whitespace")
-        raise exc
     approved_target = args.target
     if not (isinstance(approved_target, str) and not approved_target.startswith("-")
             and not any(c.isspace() for c in approved_target)
             and 1 <= _utf16_len(approved_target) <= 512):
-        exc = Refusal("target-invalid")
-        exc.hint = ("hint: --target must be a literal branch name of 1-512 UTF-16 code units "
+        raise _refuse("target-invalid", "hint: --target must be a literal branch name of 1-512 UTF-16 code units "
                     "with no whitespace or leading dash")
-        raise exc
     fmt = run(["git", "check-ref-format", f"refs/heads/{approved_target}"], cwd=repo)
     if fmt.returncode != 0:
-        exc = Refusal("target-invalid")
-        exc.hint = f"hint: --target is not a valid branch name: {jr._bound(approved_target, 120)}"
-        raise exc
+        raise _refuse("target-invalid", f"hint: --target is not a valid branch name: {jr._bound(approved_target, 120)}")
 
     head = run(["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"], cwd=repo)
     if head.returncode != 0 or head.stdout.strip() != args.sha:
-        exc = Refusal("sha-mismatch")
-        exc.hint = f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved {args.sha}"
-        raise exc
+        raise _refuse("sha-mismatch", f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved {args.sha}")
 
     # cold review 9f7f7290c510 F2: the preset-set check comes FIRST. `_required_target_for_branch`
     # resolves the Production target for a release/* head and would raise
@@ -5955,16 +5878,12 @@ def cmd_pr_open(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
     # no-preset repo must refuse before any push or gh call, never silently deliver.
     preset = _resolve_delivery_target(repo, run=run)[2]
     if preset not in _PR_PRESETS:
-        exc = Refusal("preset-not-pr")
-        exc.hint = ("hint: jaxflow pr open only works on a repo whose AGENTS.md Preset is a PR "
+        raise _refuse("preset-not-pr", "hint: jaxflow pr open only works on a repo whose AGENTS.md Preset is a PR "
                     "preset (`single-branch-pr` or `dual-branch-pr`)")
-        raise exc
     required_target, _preset = _required_target_for_branch(repo, args.branch, run=run)
     if approved_target != required_target:
-        exc = Refusal("target-mismatch")
-        exc.hint = (f"hint: approved target {jr._bound(approved_target, 120)} differs from the "
+        raise _refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} differs from the "
                     f"configured {jr._bound(required_target, 120)}")
-        raise exc
 
     return _open_pr(repo, project, caller, args.branch, args.sha, approved_target, args.title,
                      body_file=args.body_file, run=run, post=post, env=env, now=now,
@@ -6049,9 +5968,7 @@ def _validate_merge_inputs(args, *, run, repo):
     # An abbreviated sha is an INCOMPLETE approval per merge-contract.md, not a lookup to
     # widen -- refused before any git state is touched.
     if not re.fullmatch(r"[0-9a-f]{40}", args.sha or ""):
-        exc = Refusal("sha-mismatch")
-        exc.hint = "hint: --sha must be the full 40-character commit sha from the approval"
-        raise exc
+        raise _refuse("sha-mismatch", "hint: --sha must be the full 40-character commit sha from the approval")
 
     # `--branch` reaches the commit subject AND the audit payload, where the validator
     # bounds it at `LIMITS.target` (512). `git check-ref-format` happily accepts a
@@ -6064,10 +5981,8 @@ def _validate_merge_inputs(args, *, run, repo):
     # `String.length` counts two.
     if not (args.branch and not any(c.isspace() for c in args.branch)
             and 1 <= _utf16_len(args.branch) <= 512):   # -1 means unencodable, not short
-        exc = Refusal("branch-invalid")
-        exc.hint = ("hint: --branch must be a non-empty ref of at most 512 UTF-16 code "
+        raise _refuse("branch-invalid", "hint: --branch must be a non-empty ref of at most 512 UTF-16 code "
                     "units (emoji count as two) with no whitespace")
-        raise exc
 
     # ONE canonical phase title, used byte-for-byte by the commit subject, the audit
     # payload and the resume comparison (round-4 F15/F16). Two shapes had to be refused
@@ -6098,10 +6013,8 @@ def _validate_merge_inputs(args, *, run, repo):
     # commits and then fails audit.
     if (not phase or utf16_len > 200 or phase != args.phase
             or any(c in phase for c in "\r\n\t\ufeff")):
-        exc = Refusal("phase-invalid")
-        exc.hint = ("hint: --phase must be a single line of at most 200 UTF-16 code units "
+        raise _refuse("phase-invalid", "hint: --phase must be a single line of at most 200 UTF-16 code units "
                     "(emoji count as two) with no leading or trailing whitespace")
-        raise exc
 
     # `--target` is the approved destination, asserted against policy — never an override
     # and never defaulted from current policy (MOA-458). Shape first, then a read-only
@@ -6111,16 +6024,12 @@ def _validate_merge_inputs(args, *, run, repo):
     if not (isinstance(approved_target, str) and not approved_target.startswith("-")
             and not any(c.isspace() for c in approved_target)
             and 1 <= _utf16_len(approved_target) <= 512):
-        exc = Refusal("target-invalid")
-        exc.hint = ("hint: --target must be a literal branch name of 1–512 UTF-16 code "
+        raise _refuse("target-invalid", "hint: --target must be a literal branch name of 1–512 UTF-16 code "
                     "units with no whitespace or leading dash")
-        raise exc
     fmt = run(["git", "check-ref-format", f"refs/heads/{approved_target}"], cwd=repo)
     if fmt.returncode != 0:
-        exc = Refusal("target-invalid")
-        exc.hint = (f"hint: --target is not a valid branch name: "
+        raise _refuse("target-invalid", f"hint: --target is not a valid branch name: "
                     f"{jr._bound(approved_target, 120)}")
-        raise exc
     return phase, approved_target
 
 
@@ -6140,9 +6049,7 @@ def _merge_resume_verify(args, *, run, repo, target, phase):
     merge_sha = _git_read(run, repo, ["git", "rev-parse", f"{target}^{{commit}}"],
                           shape=r"[0-9a-f]{40}")
     if merge_sha is None:
-        exc = Refusal("sha-mismatch")
-        exc.hint = f"hint: resume refused -- {target} does not resolve to a commit"
-        raise exc
+        raise _refuse("sha-mismatch", f"hint: resume refused -- {target} does not resolve to a commit")
 
     # Resolving to the approved sha does NOT prove this is the branch the approval
     # named: any alias pointing at the same commit resolves identically, and the
@@ -6158,12 +6065,10 @@ def _merge_resume_verify(args, *, run, repo, target, phase):
     subject = _git_read(run, repo, ["git", "log", "-1", "--format=%s", merge_sha])
     expected_subject = f"feat: {phase} (merge {args.branch})"
     if subject != expected_subject:
-        exc = Refusal("sha-mismatch")
-        exc.hint = (f"hint: resume refused -- {target}'s merge commit {merge_sha} does "
+        raise _refuse("sha-mismatch", f"hint: resume refused -- {target}'s merge commit {merge_sha} does "
                     f"not record {args.branch} "
                     f"(subject: {jr._bound(subject or '<unreadable>', 120)}; "
                     f"expected: {jr._bound(expected_subject, 120)})")
-        raise exc
 
     # "The branch is gone" and "the ref read failed" are different facts, and
     # `rev-parse --verify` returns 128 for both (round-5 F6). `show-ref --verify`
@@ -6175,19 +6080,15 @@ def _merge_resume_verify(args, *, run, repo, target, phase):
     if present.returncode == 1:
         branch_present = False
     elif present.returncode != 0:
-        exc = Refusal("sha-mismatch")
-        exc.hint = (f"hint: resume refused -- could not read {args.branch}: "
+        raise _refuse("sha-mismatch", f"hint: resume refused -- could not read {args.branch}: "
                     f"{jr._bound((present.stderr or present.stdout).strip(), 200)}")
-        raise exc
     if branch_present:
         src = _git_read(run, repo,
                         ["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"],
                         shape=r"[0-9a-f]{40}")
         if src != args.sha:
-            exc = Refusal("sha-mismatch")
-            exc.hint = (f"hint: resume refused -- {args.branch} now points at "
+            raise _refuse("sha-mismatch", f"hint: resume refused -- {args.branch} now points at "
                         f"{src or '<unreadable>'}, not the approved {args.sha}")
-            raise exc
     print(f"resuming: {target} already carries the merge of {args.sha}")
     return merge_sha, branch_present
 
@@ -6207,10 +6108,8 @@ def _merge_prepare_target(args, *, run, repo, target):
     # question the switch was ever asked -- does <branch> point at the approved sha?
     head = run(["git", "rev-parse", "--verify", f"{args.branch}^{{commit}}"], cwd=repo)
     if head.returncode != 0 or head.stdout.strip() != args.sha:
-        exc = Refusal("sha-mismatch")
-        exc.hint = (f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved "
+        raise _refuse("sha-mismatch", f"hint: {args.branch}@{head.stdout.strip() or '?'} is not the approved "
                     f"{args.sha}")
-        raise exc
 
     # Tracked-only: an untracked build artifact never blocks a delivery (§2.10 #1's
     # allow_untracked rule, implemented here because `merge` does not call preflight()).
@@ -6227,15 +6126,11 @@ def _merge_prepare_target(args, *, run, repo, target):
 
     switched = run(["git", "switch", target], cwd=repo)
     if switched.returncode != 0:
-        exc = Refusal("target-mismatch")
-        exc.hint = (f"hint: git switch {target} failed: "
+        raise _refuse("target-mismatch", f"hint: git switch {target} failed: "
                     f"{jr._bound((switched.stderr or switched.stdout).strip(), 200)}")
-        raise exc
     on_target = _git_read(run, repo, ["git", "branch", "--show-current"])
     if on_target != target:
-        exc = Refusal("target-mismatch")
-        exc.hint = f"hint: expected to be on {target}, got {on_target or '?'}"
-        raise exc
+        raise _refuse("target-mismatch", f"hint: expected to be on {target}, got {on_target or '?'}")
     # New (spec §4.5, 77f30f829248 F4): captured HERE, before `git merge` runs --
     # never a later HEAD re-read (AC 8). `None` on a resume path is never read,
     # since `fast_forward` below is only computed inside `if not resuming:`.
@@ -6254,9 +6149,7 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, pha
     checks_cmd = args.checks
     merged = run(["git", "merge", "--no-ff", "--no-commit", args.sha], cwd=repo)
     if merged.returncode != 0:
-        exc = Refusal("merge-failed")
-        exc.hint = f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo)}"
-        raise exc
+        raise _refuse("merge-failed", f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo)}")
 
     # The exact merge result, as an object id, BEFORE the checks touch anything.
     # `git write-tree` is what `git commit` itself runs; it succeeds here because a
@@ -6327,11 +6220,9 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, pha
     committed = run(["git", "commit", "-m", f"feat: {phase} (merge {args.branch})"],
                     cwd=repo)
     if committed.returncode != 0:
-        exc = Refusal("merge-failed")
-        exc.hint = (f"hint: commit refused: "
+        raise _refuse("merge-failed", f"hint: commit refused: "
                     f"{jr._bound((committed.stderr or committed.stdout).strip(), 200)}"
                     + _abort_merge(run, repo))
-        raise exc
     merge_sha = _git_read(run, repo, ["git", "rev-parse", "HEAD"],
                           shape=r"[0-9a-f]{40}")
     return merge_sha, checks_audit
@@ -6350,16 +6241,12 @@ def _merge_push(run, repo, target):
     # `push-failed` and the documented resume finishes the job.
     remote = run(["git", "remote", "get-url", "origin"], cwd=repo)
     if remote.returncode not in (0, 2):
-        exc = Refusal("push-failed")
-        exc.hint = (f"hint: could not probe origin: "
+        raise _refuse("push-failed", f"hint: could not probe origin: "
                     f"{jr._bound((remote.stderr or remote.stdout).strip(), 200)}")
-        raise exc
     if remote.returncode == 0:
         push = run(["git", "push", "origin", target], cwd=repo)
         if push.returncode != 0:
-            exc = Refusal("push-failed")
-            exc.hint = f"hint: {jr._bound(push.stderr.strip(), 200)}"
-            raise exc
+            raise _refuse("push-failed", f"hint: {jr._bound(push.stderr.strip(), 200)}")
         pushed = True
     return pushed
 
@@ -6561,22 +6448,16 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
     number = recorded["pr_number"] if recorded is not None else _resolve_pr_number(
         run, repo, repo_slug, args.branch, target)
     if number is None:
-        exc = Refusal("pr-not-found")
-        exc.hint = f"hint: no recorded PR for {args.branch} -- run jaxflow pr open first"
-        raise exc
+        raise _refuse("pr-not-found", f"hint: no recorded PR for {args.branch} -- run jaxflow pr open first")
 
     view = _gh_pr_view(run, repo, repo_slug, number)
     if view["baseRefName"] != target:
-        exc = Refusal("pr-identity-mismatch")
-        exc.hint = f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}"
-        raise exc
+        raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s base is {view['baseRefName']!r}, not the approved {target!r}")
     # cold review 24597072c8ac F2: base was already checked; the head BRANCH must be verified
     # too, not just its sha (below) -- a recorded/resolved PR number pointing at the wrong
     # branch is a distinct identity mismatch, unconditionally, before MERGED vs. not is decided.
     if view["headRefName"] != args.branch:
-        exc = Refusal("pr-identity-mismatch")
-        exc.hint = f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {args.branch!r}"
-        raise exc
+        raise _refuse("pr-identity-mismatch", f"hint: PR #{number}'s head branch is {view['headRefName']!r}, not the approved {args.branch!r}")
 
     merge_sha = None
     if view["state"] == "MERGED":
@@ -6586,13 +6467,9 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
         checks_audit = {"mode": "resumed"}
     else:
         if view["state"] == "CLOSED":
-            exc = Refusal("pr-closed")
-            exc.hint = f"hint: PR #{number} is closed and unmerged; jaxflow never reopens one"
-            raise exc
+            raise _refuse("pr-closed", f"hint: PR #{number} is closed and unmerged; jaxflow never reopens one")
         if view["headRefOid"] != args.sha:
-            exc = Refusal("pr-head-moved")
-            exc.hint = f"hint: PR #{number}'s head is {view['headRefOid'][:12]}, not the approved {args.sha[:12]}"
-            raise exc
+            raise _refuse("pr-head-moved", f"hint: PR #{number}'s head is {view['headRefOid'][:12]}, not the approved {args.sha[:12]}")
 
         checks_audit = _pr_run_checks(
             args, run=run, repo=repo, project=project, allowlist_root=allowlist_root)
@@ -6652,10 +6529,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
     # that does not name a usable target is exactly what `preset-unknown` already means.
     if not (target and not any(c.isspace() for c in target)
             and 1 <= _utf16_len(target) <= 512):
-        exc = Refusal("preset-unknown")
-        exc.hint = (f"hint: the delivery target is not a usable ref: "
+        raise _refuse("preset-unknown", f"hint: the delivery target is not a usable ref: "
                     f"{jr._bound(target or '<empty>', 120)}")
-        raise exc
 
     if preset in _PR_PRESETS:
         settings = general_settings.read_settings()
@@ -6663,10 +6538,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
             raise Refusal("github-integration-disabled")
         required_target, _preset = _required_target_for_branch(repo, args.branch, run=run)
         if approved_target != required_target:
-            exc = Refusal("target-mismatch")
-            exc.hint = (f"hint: approved target {jr._bound(approved_target, 120)} differs from "
+            raise _refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} differs from "
                         f"the configured {jr._bound(required_target, 120)}")
-            raise exc
         if args.branch.startswith("release/"):
             return _cmd_merge_pr(args, repo=repo, project=project, caller=caller,
                                   target=required_target, phase=phase, run=run, post=post,
@@ -6678,10 +6551,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
                                        env=env, now=now, allowlist_root=allowlist_root)
 
     if approved_target != target:
-        exc = Refusal("target-mismatch")
-        exc.hint = (f"hint: approved target {jr._bound(approved_target, 120)} "
+        raise _refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} "
                     f"differs from policy target {jr._bound(target, 120)}")
-        raise exc
 
     worktree = _branch_worktree_path(allowlist_root, project, args.branch)
     with jresume.worktree_claim(repo, worktree):
@@ -6714,10 +6585,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
         # commit into an un-auditable one. Nothing is aborted here: on the normal path the
         # commit already landed, and re-running the same `jaxflow merge` resumes from it.
         if merge_sha is None:
-            exc = Refusal("merge-failed")
-            exc.hint = ("hint: the merge commit exists but its sha could not be read; "
+            raise _refuse("merge-failed", "hint: the merge commit exists but its sha could not be read; "
                         "re-run the same jaxflow merge to resume")
-            raise exc
 
         _post_merge_audit(
             post, env, project,
