@@ -5971,6 +5971,27 @@ def cmd_pr_open(args, *, run=jr.run_command, post=_post_event, env=None, now=Non
                      allowlist_root=allowlist_root)
 
 
+def _cleanup_merged_worktree(run, repo, worktree, branch, allowlist_root):
+    """Best-effort cleanup after a delivered merge: copy the run reports out of the build
+    worktree, then remove it and delete the branch. Fails closed on a failed report copy
+    (the worktree is kept, spec §4 guard 7) and never turns a completed merge into a
+    refusal: every failure is a printed note."""
+    if not (_contained(worktree, allowlist_root) and worktree.is_dir()
+            and _is_registered_worktree(run, repo, worktree, branch)):
+        return
+    copy_result = _copy_run_reports(worktree, repo)
+    if copy_result["failed"]:
+        print(f"worktree {worktree} kept (report copy failed)")
+        return
+    removed = run(["git", "worktree", "remove", str(worktree)], cwd=repo)
+    if removed.returncode == 0:
+        deleted = run(["git", "branch", "-d", branch], cwd=repo)
+        if deleted.returncode != 0:
+            print(f"branch {branch} kept ({jr._bound((deleted.stderr or deleted.stdout).strip(), 200)})")
+    else:
+        print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
+
+
 def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env, now,
                    allowlist_root):
     """The PR-preset merge sequence (spec Commands > merge (PR path), decisions 3-7, 10).
@@ -6202,20 +6223,9 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
             print(f"local {target} not synced (tracked tree not clean)")
 
     if not args.branch.startswith("release/"):
-        worktree = _branch_worktree_path(allowlist_root, project, args.branch)
-        if (_contained(worktree, allowlist_root) and worktree.is_dir()
-                and _is_registered_worktree(run, repo, worktree, args.branch)):
-            copy_result = _copy_run_reports(worktree, repo)
-            if copy_result["failed"]:
-                print(f"worktree {worktree} kept (report copy failed)")
-            else:
-                removed = run(["git", "worktree", "remove", str(worktree)], cwd=repo)
-                if removed.returncode == 0:
-                    deleted = run(["git", "branch", "-d", args.branch], cwd=repo)
-                    if deleted.returncode != 0:
-                        print(f"branch {args.branch} kept ({jr._bound((deleted.stderr or deleted.stdout).strip(), 200)})")
-                else:
-                    print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
+        _cleanup_merged_worktree(
+            run, repo, _branch_worktree_path(allowlist_root, project, args.branch),
+            args.branch, allowlist_root)
 
     outcome = f"merged {merge_sha} via PR #{number} ({view['url']})"
     _update_status_md(
@@ -6634,21 +6644,8 @@ def cmd_merge(args, *, run=jr.run_command, post=_post_event, env=None, now=None,
 
         # Everything below is best-effort: the delivery is durable and pushed, and a failure
         # here must never turn a completed merge into a refusal.
-        if (branch_present and _contained(worktree, allowlist_root) and worktree.is_dir()
-                and _is_registered_worktree(run, repo, worktree, args.branch)):
-            copy_result = _copy_run_reports(worktree, repo)
-            # F3 (spec §4 guard 7): fails closed now, replacing catch-and-continue.
-            if copy_result["failed"]:
-                print(f"worktree {worktree} kept (report copy failed)")
-            else:
-                removed = run(["git", "worktree", "remove", str(worktree)], cwd=repo)
-                if removed.returncode == 0:
-                    deleted = run(["git", "branch", "-d", args.branch], cwd=repo)
-                    if deleted.returncode != 0:
-                        print(f"branch {args.branch} kept "
-                              f"({jr._bound((deleted.stderr or deleted.stdout).strip(), 200)})")
-                else:
-                    print(f"worktree {worktree} kept ({jr._bound(removed.stderr.strip(), 200)})")
+        if branch_present:
+            _cleanup_merged_worktree(run, repo, worktree, args.branch, allowlist_root)
 
         outcome = (f"merged {merge_sha} pushed origin/{target}" if pushed
                    else f"merged {merge_sha} — no remote delivery configured")
