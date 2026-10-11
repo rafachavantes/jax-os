@@ -54,8 +54,8 @@ one-word confirmation. Fixed order:
    `agent-deploy-verify: target=<...>; check=<...>`. `rafa-verifies` is this workflow's
    fixed name for "the owner verifies by hand," independent of who the owner is.
 7. **Project-specific hard rules and "Do NOT" traps** -- open text; `"none"` is valid.
-8. **Remote** -- yes/no; default yes for `single-branch-pr`, `dual-branch` and
-   `dual-branch-pr`, no otherwise (a PR preset needs a GitHub remote).
+8. **Remote** -- yes/no; default yes for every preset (a PR preset cannot work
+   without a GitHub remote; the others still get one as the shared origin).
 
 ## Step 3 -- summary + hard gate
 
