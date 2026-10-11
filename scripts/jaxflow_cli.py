@@ -10,8 +10,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -139,20 +137,7 @@ def _hub_rejected_code(status, decoded):
 MISSION_BASE_URL = f"{jenv.api_base_url()}/api/mission"
 
 
-def _get(url, *, opener=urllib.request.urlopen, timeout=5):
-    """GET counterpart to `_post` -- same (status, decoded_body) return shape, raising only on
-    a transport error. The one mission subcommand that reads instead of posting (`show`) uses
-    this instead of `_post`."""
-    req = urllib.request.Request(url, method="GET")
-    try:
-        with opener(req, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        try:
-            decoded = json.loads(exc.read().decode("utf-8"))
-        except (ValueError, OSError):
-            decoded = {}
-        return exc.code, decoded
+_get = jc._get  # moved to jaxflow_common so jaxflow_merge can reach it (the cli imports merge)
 
 
 _DOCTOR_SKILL_DIRS = {
@@ -350,7 +335,12 @@ def _mission_post(url, payload, *, post=jc._post):
 def cmd_mission_start(args, *, post=jc._post):
     if not args.milestones:
         raise Refusal("malformed milestone")
-    _mission_post(MISSION_BASE_URL, {"name": args.name, "goal": args.goal, "milestones": args.milestones}, post=post)
+    body = {"name": args.name, "goal": args.goal, "milestones": args.milestones}
+    if getattr(args, "autonomous", False):
+        body["autonomous"] = True
+    data = _mission_post(MISSION_BASE_URL, body, post=post)
+    mission_id = data.get("id") if isinstance(data, dict) else None
+    return f"mission {mission_id}" if isinstance(mission_id, int) else "mission started"
 
 
 def cmd_mission_status(args, *, post=jc._post):
@@ -370,7 +360,9 @@ def cmd_mission_finish(outcome, *, post=jc._post):
 def _format_mission_show(data):
     if data is None:
         return "no active mission"
-    lines = [f"{data['name']}: {data['goal']}", f"status: {data['statusLine']}"]
+    lines = [f"{data['name']}: {data['goal']}", f"id: {data.get('id', '?')}",
+             f"mode: {'autonomous' if data.get('autonomous') is True else 'normal'}",
+             f"status: {data['statusLine']}"]
     marks = {"done": "x", "in-progress": "~", "pending": " "}
     for m in data["milestones"]:
         lines.append(f"  [{marks[m['state']]}] {m['title']}")
@@ -1449,6 +1441,7 @@ def _add_mission_parser(sub):
     mstart.add_argument("--goal", required=True)
     mstart.add_argument("--milestone", dest="milestones", action="append", default=[],
                          help="Repeatable; at least one is required.")
+    mstart.add_argument("--autonomous", action="store_true", help="Opt in to the autonomous mission mode (the jaxflow-mission skill runs its dialogue first).")
     mstatus = mission_sub.add_parser("status", help="Update the active mission's free-text status line.")
     mstatus.add_argument("text")
     mmark = mission_sub.add_parser("mark", help="Set one milestone's state.")
@@ -1551,7 +1544,7 @@ def _cli_mission(args, deps):
     if args.mission_command == "show":
         print(cmd_mission_show(get=_get))
     elif args.mission_command == "start":
-        cmd_mission_start(args, post=jc._post)
+        print(cmd_mission_start(args, post=jc._post))
     elif args.mission_command == "status":
         cmd_mission_status(args, post=jc._post)
     elif args.mission_command == "mark":

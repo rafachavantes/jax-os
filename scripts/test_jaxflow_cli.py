@@ -1975,12 +1975,47 @@ def test_mission_show_formats_the_active_mission():
     def get(url):
         assert url == f"{jaxflow_cli.MISSION_BASE_URL}/current"
         return 200, {"ok": True, "data": {
+            "id": 7, "autonomous": False,
             "name": "Ship it", "goal": "6 phases tonight", "statusLine": "phase 1 merged",
             "milestones": [{"title": "Phase 1", "state": "done"}, {"title": "Phase 2", "state": "in-progress"}, {"title": "Phase 3", "state": "pending"}],
         }}
     assert jaxflow_cli.cmd_mission_show(get=get) == (
-        "Ship it: 6 phases tonight\nstatus: phase 1 merged\n  [x] Phase 1\n  [~] Phase 2\n  [ ] Phase 3"
+        "Ship it: 6 phases tonight\nid: 7\nmode: normal\nstatus: phase 1 merged\n  [x] Phase 1\n  [~] Phase 2\n  [ ] Phase 3"
     )
+
+
+def test_mission_show_prints_mode_autonomous():
+    def get(url):
+        return 200, {"ok": True, "data": {"id": 9, "autonomous": True, "name": "N", "goal": "g",
+                                          "statusLine": "", "milestones": []}}
+    assert jaxflow_cli.cmd_mission_show(get=get).splitlines()[1:3] == ["id: 9", "mode: autonomous"]
+
+
+def test_mission_show_tolerates_a_hub_reply_without_id_or_autonomous():
+    def get(url):
+        return 200, {"ok": True, "data": {"name": "N", "goal": "g", "statusLine": "", "milestones": []}}
+    out = jaxflow_cli.cmd_mission_show(get=get).splitlines()
+    assert out[1:3] == ["id: ?", "mode: normal"]
+
+
+def test_mission_start_autonomous_posts_the_flag_and_returns_the_id():
+    post, calls = _recording_post(200, {"ok": True, "data": {"id": 12}})
+    args = SimpleNamespace(name="N", goal="g", milestones=["m1"], autonomous=True)
+    assert jaxflow_cli.cmd_mission_start(args, post=post) == "mission 12"
+    assert calls == [(jaxflow_cli.MISSION_BASE_URL, {"name": "N", "goal": "g", "milestones": ["m1"], "autonomous": True})]
+
+
+def test_mission_start_normal_omits_the_flag_and_returns_the_id():
+    post, calls = _recording_post(200, {"ok": True, "data": {"id": 3}})
+    args = SimpleNamespace(name="N", goal="g", milestones=["m1"], autonomous=False)
+    assert jaxflow_cli.cmd_mission_start(args, post=post) == "mission 3"
+    assert "autonomous" not in calls[0][1]
+
+
+def test_mission_start_without_an_id_in_the_reply_still_succeeds():
+    post, _ = _recording_post(200, {"ok": True, "data": None})
+    args = SimpleNamespace(name="N", goal="g", milestones=["m1"])
+    assert jaxflow_cli.cmd_mission_start(args, post=post) == "mission started"
 
 
 def test_mission_show_transport_failure_is_mission_hub_unreachable():
@@ -2006,6 +2041,19 @@ def test_mission_argparse_wiring_end_to_end(monkeypatch):
     monkeypatch.setattr(jaxflow_cli, "_get", fake_get)
     rc2 = jaxflow_cli.main(["mission", "show"])
     assert rc2 == jaxflow_common.OK
+
+
+def test_mission_start_cli_prints_the_id_line_and_accepts_the_autonomous_flag(monkeypatch, capsys):
+    calls = []
+    def fake_post(url, payload):
+        calls.append(payload)
+        return 200, {"ok": True, "data": {"id": 21}}
+    monkeypatch.setattr(jaxflow_common, "_post", fake_post)
+    rc = jaxflow_cli.main(["mission", "start", "--name", "N", "--goal", "g", "--milestone", "M1", "--autonomous"])
+    assert rc == jaxflow_common.OK
+    assert capsys.readouterr().out == "mission 21\n"
+    assert calls[0]["autonomous"] is True
+    assert jaxflow_cli.parse_args(["mission", "start", "--name", "N", "--goal", "g"]).autonomous is False
 
 
 def test_mission_argparse_requires_at_least_one_milestone_flag():
