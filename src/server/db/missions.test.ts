@@ -29,6 +29,17 @@ describe("insertMission / getActiveMission (spec §6 Decision 1, §14 Risk 2)", 
     insertMission(db, { name: "A", goal: "g", milestones: ["m1"] }, NOW);
     expect(() => insertMission(db, { name: "B", goal: "g", milestones: ["m1"] }, NOW)).toThrow();
   });
+
+  it("autonomous defaults to false and round-trips true through getActiveMission", () => {
+    const db = openDb(":memory:");
+    const normal = insertMission(db, { name: "A", goal: "g", milestones: ["m1"] }, NOW);
+    expect(normal.autonomous).toBe(false);
+    expect(getActiveMission(db)?.autonomous).toBe(false);
+    finishMission(db, normal.id, "done", NOW);
+    const auto = insertMission(db, { name: "B", goal: "g", milestones: ["m1"], autonomous: true }, NOW);
+    expect(auto.autonomous).toBe(true);
+    expect(getActiveMission(db)).toEqual(auto);
+  });
 });
 
 describe("resolveMilestoneIndex (spec §6 Decision 5)", () => {

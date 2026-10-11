@@ -1202,6 +1202,23 @@ describe("merge-approved", () => {
   it("a local-preset merge omits pr_number/pr_url and still validates (unchanged from today)", () => {
     expect(parseIngress(mergeEvent()).ok).toBe(true);
   });
+
+  describe("mission_id (MOA-508 audit tie)", () => {
+    const withPayload = (extra: Record<string, unknown>) => {
+      const ev = mergeEvent();
+      Object.assign(ev.payload as Record<string, unknown>, extra);
+      return ev;
+    };
+    it("accepts an optional positive-integer mission_id", () => {
+      expect(parseIngress(withPayload({ mission_id: 7 })).ok).toBe(true);
+    });
+    it.each([0, -1, 1.5, "7", null, true])("rejects mission_id %j", (bad) => {
+      expect(parseIngress(withPayload({ mission_id: bad })).ok).toBe(false);
+    });
+    it("still rejects approved_by other than rafa when mission_id is valid", () => {
+      expect(parseIngress(withPayload({ mission_id: 7, approved_by: "claude" })).ok).toBe(false);
+    });
+  });
 });
 
 describe("run-finished — findings (round-3 cold review F1, MOA-480)", () => {

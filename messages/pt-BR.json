@@ -349,6 +349,7 @@
   },
   "missionBlock": {
     "milestonesLabel": "Marcos da missão",
+    "autonomous": "autônoma",
     "milestoneState": {
       "done": "concluído",
       "inProgress": "em andamento",

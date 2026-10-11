@@ -17,18 +17,20 @@ export type UserMission = {
   startedAt: string;
   endedAt: string | null;
   milestones: MissionMilestone[];
+  autonomous: boolean;
 };
 
-const COLS = "id, name, goal, status_line, state, started_at, ended_at, milestones";
+const COLS = "id, name, goal, status_line, state, started_at, ended_at, milestones, autonomous";
 type RawRow = {
   id: number; name: string; goal: string; status_line: string; state: UserMissionState;
-  started_at: string; ended_at: string | null; milestones: string;
+  started_at: string; ended_at: string | null; milestones: string; autonomous: number;
 };
 
 function rowOf(r: RawRow): UserMission {
   return {
     id: r.id, name: r.name, goal: r.goal, statusLine: r.status_line, state: r.state,
     startedAt: r.started_at, endedAt: r.ended_at, milestones: JSON.parse(r.milestones) as MissionMilestone[],
+    autonomous: r.autonomous === 1,
   };
 }
 
@@ -44,18 +46,19 @@ export function getActiveMission(db: Database.Database): UserMission | null {
 // a plain insert, not a second validation pass.
 export function insertMission(
   db: Database.Database,
-  input: { name: string; goal: string; milestones: string[] },
+  input: { name: string; goal: string; milestones: string[]; autonomous?: boolean },
   now = new Date(),
 ): UserMission {
   const milestones: MissionMilestone[] = input.milestones.map((title) => ({ title, state: "pending" }));
   const startedAt = now.toISOString();
+  const autonomous = input.autonomous === true;
   const r = db.prepare(
-    `INSERT INTO missions (name, goal, status_line, state, started_at, ended_at, milestones)
-     VALUES (?, ?, '', 'active', ?, NULL, ?)`,
-  ).run(input.name, input.goal, startedAt, JSON.stringify(milestones));
+    `INSERT INTO missions (name, goal, status_line, state, started_at, ended_at, milestones, autonomous)
+     VALUES (?, ?, '', 'active', ?, NULL, ?, ?)`,
+  ).run(input.name, input.goal, startedAt, JSON.stringify(milestones), autonomous ? 1 : 0);
   return {
     id: Number(r.lastInsertRowid), name: input.name, goal: input.goal, statusLine: "",
-    state: "active", startedAt, endedAt: null, milestones,
+    state: "active", startedAt, endedAt: null, milestones, autonomous,
   };
 }
 

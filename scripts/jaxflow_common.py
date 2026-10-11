@@ -528,6 +528,22 @@ def _post(url, payload, *, opener=urllib.request.urlopen, timeout=5):
         return exc.code, decoded
 
 
+def _get(url, *, opener=urllib.request.urlopen, timeout=5):
+    """GET counterpart to `_post` -- same (status, decoded_body) return shape, raising only on
+    a transport error. The one mission subcommand that reads instead of posting (`show`) uses
+    this instead of `_post`."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with opener(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            decoded = json.loads(exc.read().decode("utf-8"))
+        except (ValueError, OSError):
+            decoded = {}
+        return exc.code, decoded
+
+
 class HubRejected(RuntimeError):
     def __init__(self, status, error=None):
         self.status = status
