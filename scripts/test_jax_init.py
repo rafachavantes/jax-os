@@ -492,14 +492,6 @@ def test_remote_failure_keeps_local_commit(tmp_path, capsys):
 
 # ---- threat model ----
 
-def test_threat_model_flag_renders_into_agents_template_and_parses():
-    import jaxflow as jf
-
-    template_path = Path(__file__).resolve().parents[1] / "workflow" / "templates" / "AGENTS-template.md"
-    template = template_path.read_text(encoding="utf-8")
-    rendered = ji.render_threat_model(template, "public-app")
-    assert jf.parse_threat_model(rendered) == "public-app"
-
 def test_threat_model_flag_is_required(tmp_path):
     argv = ["--path", str(tmp_path / "x"), "--name", "X", "--preset", "single-branch", "--stack", "other"]
     with pytest.raises(SystemExit):

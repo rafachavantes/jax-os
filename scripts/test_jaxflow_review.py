@@ -32,7 +32,6 @@ from testkit import (  # noqa: F401  (autouse fixtures included on purpose)
     _build_args,
     _diff_args,
     _fixed_now,
-    _forbidden_tmux,
     _fresh_db,
     _git,
     _init_repo,
@@ -3368,11 +3367,11 @@ def test_cmd_result_still_prints_the_fallback_line_when_the_report_is_missing(ca
 
 def test_send_callback_appends_the_fallback_suffix_as_the_last_segment():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID, fallback="codex off")
-    jaxflow_workerkit._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x", report_path="/report.md")
+    jaxflow_workerkit._send_callback(manifest, kind="spec", outcome="approve", report_path="/report.md")
     line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
         "[JAXFLOW] spec aaaabbbbcccc finished — approve — /report.md (fallback: codex off)\n")
-    jaxflow_workerkit._send_callback(manifest, run=_forbidden_tmux, kind="spec", outcome="approve", summary="x",
+    jaxflow_workerkit._send_callback(manifest, kind="spec", outcome="approve",
                            report_path="/report.md", ledger_pending=True)
     assert line_path.read_text(encoding="utf-8") == (
         "[JAXFLOW] spec aaaabbbbcccc finished — approve — /report.md · ledger pending (fallback: codex off)\n")

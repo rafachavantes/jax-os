@@ -582,8 +582,8 @@ def _reap_run(row, *, db_path, run=None, now=None, allowlist_root=None):
     outcome = "failure" if role == "builder" else "no verdict"
     kind = started_payload.get("kind") or ("build" if role == "builder" else "diff")
     jaxflow._send_callback(
-        callback_manifest, run=run, kind=kind, outcome=outcome,
-        summary=payload["summary"], report_path=None, stage=stage, diagnostic=diagnostic,
+        callback_manifest, kind=kind, outcome=outcome,
+        report_path=None, stage=stage, diagnostic=diagnostic,
         contract_status="interrupted", ledger_pending=not delivered,
     )
     return True
