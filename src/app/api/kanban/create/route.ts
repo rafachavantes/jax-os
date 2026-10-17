@@ -1,15 +1,12 @@
 import { NextResponse } from "next/server";
 import { createIssue, type IssueCreateInput } from "../../../../server/collectors/linear";
-import { readGeneralSettings } from "../../../../server/settings";
+import { linearEnabled } from "../../../../server/gates";
 import { runMutation } from "../../../../server/mutations";
 import { readJsonObject } from "../../../../server/api";
 import { COMMENT_CAP, COMMENT_JSON_CAP, boundedString } from "../../../../server/inputLimits";
 
 export async function POST(req: Request) {
-  const settings = readGeneralSettings();
-  if (!(settings.ok && settings.data.integrations.linear)) {
-    return NextResponse.json({ ok: false, error: "disabled" });
-  }
+  if (!linearEnabled()) return NextResponse.json({ ok: false, error: "disabled" });
   const parsed = await readJsonObject(req, COMMENT_JSON_CAP);
   if ("error" in parsed) return parsed.error;
   const payload = parsed.payload;

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { gateVaultRoot, READ_CAP, ROOTS, writeFile, type Root } from "../../../../server/collectors/files";
-import { readGeneralSettings } from "../../../../server/settings";
+import { vaultUsableNow } from "../../../../server/gates";
 import { fileEffect, runMutation } from "../../../../server/mutations";
 import { readJsonObject } from "../../../../server/api";
 import { WRITE_JSON_CAP, boundedString, validRel } from "../../../../server/inputLimits";
@@ -19,8 +19,7 @@ export async function POST(req: Request) {
   ) {
     return NextResponse.json({ ok: false, error: "invalid payload" });
   }
-  const settings = readGeneralSettings();
-  if (gateVaultRoot(root, settings.ok && settings.data.integrations.vault && settings.data.vaultPath !== null)) {
+  if (gateVaultRoot(root, vaultUsableNow())) {
     return NextResponse.json({ ok: false, error: "disabled" });
   }
   const result = await runMutation(

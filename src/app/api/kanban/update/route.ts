@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { updateIssue, type IssuePatch } from "../../../../server/collectors/linear";
-import { readGeneralSettings } from "../../../../server/settings";
+import { linearEnabled } from "../../../../server/gates";
 import { runMutation } from "../../../../server/mutations";
 import { readJsonObject } from "../../../../server/api";
 import { SMALL_JSON_CAP, COMMENT_CAP, boundedString } from "../../../../server/inputLimits";
@@ -14,10 +14,7 @@ const FIELD_KIND: Record<string, string> = {
 };
 
 export async function POST(req: Request) {
-  const settings = readGeneralSettings();
-  if (!(settings.ok && settings.data.integrations.linear)) {
-    return NextResponse.json({ ok: false, error: "disabled" });
-  }
+  if (!linearEnabled()) return NextResponse.json({ ok: false, error: "disabled" });
   const parsed = await readJsonObject(req, SMALL_JSON_CAP);
   if ("error" in parsed) return parsed.error;
   const payload = parsed.payload;
