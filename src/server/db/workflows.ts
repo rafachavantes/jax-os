@@ -204,6 +204,18 @@ function webhookIntegrationEnabled(): boolean {
   return settings.ok && settings.data.integrations.webhook === true;
 }
 
+// First stored row of `type` for `project` whose payload fields equal `keys` (the idempotent-audit
+// probe). Field names are code constants, never input. A missing key binds as NULL, and
+// `json_extract(...) = NULL` is never true, so such an event simply never suppresses.
+function firstByPayloadKeys(
+  db: Database.Database, type: EventType, project: string, keys: Record<string, string | undefined>,
+): RawRow | undefined {
+  const where = Object.keys(keys).map((k) => `AND json_extract(payload, '$.${k}') = ?`).join(" ");
+  return db
+    .prepare(`SELECT ${COLS} FROM workflow_events WHERE type = ? AND project = ? ${where} ORDER BY id LIMIT 1`)
+    .get(type, project, ...Object.values(keys).map((v) => v ?? null)) as RawRow | undefined;
+}
+
 export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now = new Date()): WorkflowEventRow {
   const rule = EVENT_MATRIX[ev.type];
   const pane = ev.pane ?? null;
@@ -253,19 +265,8 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
     // No index: measured 2026-09-08 at 7 rows with a full scan. Spec §2.6 names ~1000
     // `merge-approved` rows as the threshold to revisit.
     if (ev.type === "merge-approved") {
-      // `?? null` keeps the binding valid for a payload missing either key — the ingress
-      // validator requires both, and `json_extract(...) = NULL` is never true, so such an
-      // event simply never suppresses.
       const { target, merge_sha } = ev.payload as { target?: string; merge_sha?: string };
-      const existing = db
-        .prepare(
-          `SELECT ${COLS} FROM workflow_events
-           WHERE type = 'merge-approved' AND project = ?
-             AND json_extract(payload, '$.target') = ?
-             AND json_extract(payload, '$.merge_sha') = ?
-           ORDER BY id LIMIT 1`,
-        )
-        .get(ev.project, target ?? null, merge_sha ?? null) as RawRow | undefined;
+      const existing = firstByPayloadKeys(db, "merge-approved", ev.project, { target, merge_sha });
       if (existing) return rowOf(existing);
     }
     // MOA-465 Ledger & card: same idempotent-audit shape as merge-approved above, keyed on
@@ -274,15 +275,7 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
     // refresh posts a NEW sha and therefore a NEW row on purpose.
     if (ev.type === "pr-opened") {
       const { branch, sha } = ev.payload as { branch?: string; sha?: string };
-      const existing = db
-        .prepare(
-          `SELECT ${COLS} FROM workflow_events
-           WHERE type = 'pr-opened' AND project = ?
-             AND json_extract(payload, '$.branch') = ?
-             AND json_extract(payload, '$.sha') = ?
-           ORDER BY id LIMIT 1`,
-        )
-        .get(ev.project, branch ?? null, sha ?? null) as RawRow | undefined;
+      const existing = firstByPayloadKeys(db, "pr-opened", ev.project, { branch, sha });
       if (existing) return rowOf(existing);
     }
     let payload = ev.payload;
@@ -429,13 +422,7 @@ export function claimAnswer(db: Database.Database, request: AnswerRequest, now =
       if (!row.pane || !row.tmux_incarnation) return { ok: false, reason: "invalid-target" };
       const ref: PaneRef = { pane: row.pane, tmuxIncarnation: row.tmux_incarnation };
       const key = paneKey(ref.pane, ref.tmuxIncarnation);
-      let payload: Record<string, unknown> = {};
-      try {
-        const v: unknown = row.payload ? JSON.parse(row.payload) : {};
-        if (v && typeof v === "object" && !Array.isArray(v)) payload = v as Record<string, unknown>;
-      } catch {
-        return { ok: false, reason: "not-pending" };
-      }
+      const payload = parseStoredPayload(row.payload); // corrupt/non-object -> {} -> no tool_use_id -> not-pending
       const tool_use_id = payload.tool_use_id;
       if (typeof tool_use_id !== "string" || !tool_use_id) return { ok: false, reason: "not-pending" };
       // Spec B §4.1 (migration 5): every per-pane guard keys on the generated pane_key column
@@ -626,6 +613,41 @@ export type StalenessResult = {
   tmuxSourceOk: boolean;
 };
 
+// Pure staleness math shared by the tmux and codex halves of evaluateStaleness; only the
+// transport fields (pane/incarnation vs threadId) differ and are spread on by the caller.
+type StaleBody = { reason: "possibly-stuck" | "no-signal"; referenceEventId: number; payload: Record<string, unknown> };
+
+// Verdict on the newest turn-stopped row's capsule: "settled" = no alert and no no-signal
+// fallback (done/needs_input/blocked, or a waiting capsule still inside its deadline); a body =
+// possibly-stuck; null = capsule_status "unknown" (or anything else) falls through to no-signal.
+function capsuleStale(ts: { id: number; ts: string; payload: string }, now: number): StaleBody | "settled" | null {
+  const capsule = JSON.parse(ts.payload) as { capsule_status: string; capsule_minutes?: number };
+  if (capsule.capsule_status === "done" || capsule.capsule_status === "needs_input" || capsule.capsule_status === "blocked") {
+    return "settled"; // no synthetic alert, ever
+  }
+  if (capsule.capsule_status === "waiting" && typeof capsule.capsule_minutes === "number") {
+    const declaredAtMs = Date.parse(ts.ts);
+    const n = capsule.capsule_minutes;
+    const deadlineMs = declaredAtMs + (n * 60 + Math.max(120, n * 60 * 0.2)) * 1000;
+    if (!(now > deadlineMs)) return "settled"; // `!(>)`, not `<=`: a NaN deadline must settle, as the original `if (now > deadlineMs)` did
+    return {
+      reason: "possibly-stuck", referenceEventId: ts.id,
+      payload: { reason: "possibly-stuck", capsule_minutes: n, declared_at: ts.ts, overdue_by_s: Math.round((now - deadlineMs) / 1000), reference_event_id: ts.id },
+    };
+  }
+  return null;
+}
+
+// No-signal fallback: the newest agent-sourced row is older than 120 minutes.
+function quietStale(last: { id: number; ts: string }, now: number): StaleBody | null {
+  const quietForMs = now - Date.parse(last.ts);
+  if (!(quietForMs > 120 * 60 * 1000)) return null;
+  return {
+    reason: "no-signal", referenceEventId: last.id,
+    payload: { reason: "no-signal", since: last.ts, quiet_for_s: Math.round(quietForMs / 1000), reference_event_id: last.id },
+  };
+}
+
 export function evaluateStaleness(
   db: Database.Database, now: number, livePaneIds: Set<string>, liveIncarnation: string | null,
   codex: CodexSnapshot | null = null, tmuxSourceOk = true,
@@ -667,20 +689,10 @@ export function evaluateStaleness(
 
       const supersededByLaterStart = tst && (!ts || tst.id > ts.id);
       if (!supersededByLaterStart && ts) {
-        const capsule = JSON.parse(ts.payload) as { capsule_status: string; capsule_minutes?: number };
-        if (capsule.capsule_status === "done" || capsule.capsule_status === "needs_input" || capsule.capsule_status === "blocked") {
-          continue; // no synthetic alert, ever
-        }
-        if (capsule.capsule_status === "waiting" && typeof capsule.capsule_minutes === "number") {
-          const declaredAtMs = Date.parse(ts.ts);
-          const n = capsule.capsule_minutes;
-          const deadlineMs = declaredAtMs + (n * 60 + Math.max(120, n * 60 * 0.2)) * 1000;
-          if (now > deadlineMs) {
-            candidates.push({
-              transport: "tmux",
-              pane, tmuxIncarnation: liveIncarnation, project, role, reason: "possibly-stuck", referenceEventId: ts.id,
-              payload: { reason: "possibly-stuck", capsule_minutes: n, declared_at: ts.ts, overdue_by_s: Math.round((now - deadlineMs) / 1000), reference_event_id: ts.id },
-            });
+        const verdict = capsuleStale(ts, now);
+        if (verdict) {
+          if (verdict !== "settled") {
+            candidates.push({ transport: "tmux", pane, tmuxIncarnation: liveIncarnation, project, role, ...verdict });
           }
           continue;
         }
@@ -691,14 +703,8 @@ export function evaluateStaleness(
       const last = db.prepare(
         `SELECT id, ts FROM workflow_events WHERE pane_key = ? AND ${paneAgentFilter()} ORDER BY id DESC LIMIT 1`,
       ).get(key) as { id: number; ts: string };
-      const quietForMs = now - Date.parse(last.ts);
-      if (quietForMs > 120 * 60 * 1000) {
-        candidates.push({
-          transport: "tmux",
-          pane, tmuxIncarnation: liveIncarnation, project, role, reason: "no-signal", referenceEventId: last.id,
-          payload: { reason: "no-signal", since: last.ts, quiet_for_s: Math.round(quietForMs / 1000), reference_event_id: last.id },
-        });
-      }
+      const quiet = quietStale(last, now);
+      if (quiet) candidates.push({ transport: "tmux", pane, tmuxIncarnation: liveIncarnation, project, role, ...quiet });
     }
   }
 
@@ -727,18 +733,10 @@ export function evaluateStaleness(
       ).get(row.session) as { id: number } | undefined;
       const supersededByLaterStart = tst && (!ts || tst.id > ts.id);
       if (!supersededByLaterStart && ts) {
-        const capsule = JSON.parse(ts.payload) as { capsule_status: string; capsule_minutes?: number };
-        if (capsule.capsule_status === "done" || capsule.capsule_status === "needs_input" || capsule.capsule_status === "blocked") continue;
-        if (capsule.capsule_status === "waiting" && typeof capsule.capsule_minutes === "number") {
-          const declaredAtMs = Date.parse(ts.ts);
-          const n = capsule.capsule_minutes;
-          const deadlineMs = declaredAtMs + (n * 60 + Math.max(120, n * 60 * 0.2)) * 1000;
-          if (now > deadlineMs) {
-            candidates.push({
-              transport: "codex", threadId: row.session, project: row.project, role: row.role,
-              reason: "possibly-stuck", referenceEventId: ts.id,
-              payload: { reason: "possibly-stuck", capsule_minutes: n, declared_at: ts.ts, overdue_by_s: Math.round((now - deadlineMs) / 1000), reference_event_id: ts.id },
-            });
+        const verdict = capsuleStale(ts, now);
+        if (verdict) {
+          if (verdict !== "settled") {
+            candidates.push({ transport: "codex", threadId: row.session, project: row.project, role: row.role, ...verdict });
           }
           continue;
         }
@@ -748,14 +746,8 @@ export function evaluateStaleness(
          WHERE harness_session = ? AND emitter IN ('codex-stop','codex-permission','codex-userprompt')
          ORDER BY id DESC LIMIT 1`,
       ).get(row.session) as { id: number; ts: string };
-      const quietForMs = now - Date.parse(last.ts);
-      if (quietForMs > 120 * 60 * 1000) {
-        candidates.push({
-          transport: "codex", threadId: row.session, project: row.project, role: row.role,
-          reason: "no-signal", referenceEventId: last.id,
-          payload: { reason: "no-signal", since: last.ts, quiet_for_s: Math.round(quietForMs / 1000), reference_event_id: last.id },
-        });
-      }
+      const quiet = quietStale(last, now);
+      if (quiet) candidates.push({ transport: "codex", threadId: row.session, project: row.project, role: row.role, ...quiet });
     }
   }
   return { candidates, nullIncarnation, checked, codexSourceOk, tmuxSourceOk };
@@ -1102,6 +1094,26 @@ function mergeFields(p: { merge_ask?: number; merge_branch?: string; merge_targe
     : {};
 }
 
+// The Capsule both lastCapsule (claude pane) and lastCodexCapsule (native codex) read off the same
+// payload keys; `answerable` is decided by the caller (D4).
+function capsuleFrom(
+  status: string,
+  p: { capsule_minutes?: number; merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string },
+  row: { id: number; ts: string },
+  answerable: boolean,
+): Capsule {
+  return {
+    status,
+    minutes: typeof p.capsule_minutes === "number" ? p.capsule_minutes : null,
+    declaredAt: row.ts,
+    eventId: row.id, // Phase 2 Decision 2: the free-text answer's event_id
+    mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
+    question: deriveQuestion(p.message_tail),
+    answerable,
+    ...mergeFields(p),
+  };
+}
+
 // project-scoped (Finding 1): a pane_key persists across a project switch, so a pane_key-only
 // query here would surface the OTHER project's latest turn-stopped capsule on this project's row
 // once the pane moves on. `project` is always the project currently being enumerated by
@@ -1161,16 +1173,7 @@ function lastCapsule(
     const answerable = (p.capsule_status === "needs_input" || p.capsule_status === "blocked")
       ? row.harness_session !== null && isAlive(row.harness_session, row.id)
       : true;
-    return {
-      status: p.capsule_status,
-      minutes: typeof p.capsule_minutes === "number" ? p.capsule_minutes : null,
-      declaredAt: row.ts,
-      eventId: row.id, // Phase 2 Decision 2: the free-text answer's event_id
-      mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
-      question: deriveQuestion(p.message_tail),
-      answerable,
-      ...mergeFields(p),
-    };
+    return capsuleFrom(p.capsule_status, p, row, answerable);
   } catch {
     return null;
   }
@@ -1205,15 +1208,8 @@ function pendingQuestionFor(db: Database.Database, ref: PaneRef, project: string
     )
     .get(paneKey(ref.pane, ref.tmuxIncarnation), project) as { id: number; payload: string | null } | undefined;
   if (!row) return null;
-  let payload: Record<string, unknown> = {};
-  if (row.payload) {
-    try {
-      const v: unknown = JSON.parse(row.payload);
-      if (v && typeof v === "object" && !Array.isArray(v)) payload = v as Record<string, unknown>;
-    } catch {
-      // malformed payload — surface the question with an empty body rather than dropping it
-    }
-  }
+  // malformed payload degrades to {} — surface the question with an empty body rather than dropping it
+  const payload = parseStoredPayload(row.payload);
   return { eventId: row.id, pane: ref.pane, tmuxIncarnation: ref.tmuxIncarnation, payload };
 }
 
@@ -1516,11 +1512,11 @@ function unfinishedRunStartedRows(db: Database.Database, project: string): RawRo
 }
 
 // The kind/runtime/target/startedAt fields both activeRunFor and activeRunsFor project off a
-// run-started row's own payload — factored out so the two never drift (activeRunsFor Task 1).
-function activeRunFields(row: WorkflowEventRow): {
-  runId: string; startedAt: string | null; kind: HubActiveRun["kind"]; runtime: HubActiveRun["runtime"]; target: string | null;
+// run-started row's own payload — factored out so the two never drift (activeRunsFor Task 1);
+// boundedRunFields is shared with lastRunFor too.
+function boundedRunFields(p: Record<string, unknown>): {
+  kind: HubActiveRun["kind"]; runtime: HubActiveRun["runtime"]; target: string | null;
 } {
-  const p = projectPayload("run-started", row.payload);
   const kind = typeof p.kind === "string" &&
     (RUN_KINDS as readonly string[]).includes(p.kind)
     ? p.kind as HubActiveRun["kind"] : null;
@@ -1533,8 +1529,14 @@ function activeRunFields(row: WorkflowEventRow): {
   const target = !kind || !rawTarget ? null
     : kind === "spec" || kind === "plan"
       ? rawTarget.split("/").at(-1) || null : rawTarget;
+  return { kind, runtime, target };
+}
+
+function activeRunFields(row: WorkflowEventRow): {
+  runId: string; startedAt: string | null; kind: HubActiveRun["kind"]; runtime: HubActiveRun["runtime"]; target: string | null;
+} {
   const startedAt = Number.isFinite(Date.parse(row.ts)) ? row.ts : null;
-  return { runId: row.run_id as string, startedAt, kind, runtime, target };
+  return { runId: row.run_id as string, startedAt, ...boundedRunFields(projectPayload("run-started", row.payload)) };
 }
 
 function activeRunFor(db: Database.Database, project: string, readChildLogTail: ChildLogTailReader | null = null): HubActiveRun | null {
@@ -1595,16 +1597,7 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
     .get(project, row.run_id) as { payload: string | null } | undefined;
   const sp = startedRow ? projectPayload("run-started", parseStoredPayload(startedRow.payload)) : {};
 
-  const kind = typeof sp.kind === "string" && (RUN_KINDS as readonly string[]).includes(sp.kind)
-    ? sp.kind as HubLastRun["kind"] : null;
-  const runtime = typeof sp.runtime === "string" && (RUNTIMES as readonly string[]).includes(sp.runtime)
-    ? sp.runtime as HubLastRun["runtime"] : null;
-  const rawTarget = typeof sp.target === "string" && sp.target.length > 0 &&
-    sp.target.length <= LIMITS.target && !/[\x00-\x1f\x7f]/.test(sp.target)
-    ? sp.target : null;
-  const target = !kind || !rawTarget ? null
-    : kind === "spec" || kind === "plan"
-      ? rawTarget.split("/").at(-1) || null : rawTarget;
+  const { kind, runtime, target } = boundedRunFields(sp);
 
   const contractStatus = (typeof p.contract_status === "string" &&
     (CONTRACT_STATUSES as readonly string[]).includes(p.contract_status)
@@ -1833,20 +1826,12 @@ function lastCodexCapsule(db: Database.Database, project: string, threadId: stri
   try {
     const p = JSON.parse(row.payload) as { capsule_status?: string; capsule_minutes?: number; merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string };
     if (typeof p.capsule_status !== "string" || !p.capsule_status) return null;
-    return {
-      status: p.capsule_status,
-      minutes: typeof p.capsule_minutes === "number" ? p.capsule_minutes : null,
-      declaredAt: row.ts,
-      eventId: row.id,
-      // D2: the same payload keys lastCapsule reads, and the same deriveQuestion helper — a
-      // codex-stop row now reaches Jev (D1), so its classified merge_ask/message_tail are real
-      // signal here too. No rung-6 pass exists on this path, only the poller's.
-      mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
-      question: deriveQuestion(p.message_tail),
-      answerable: true, // D4: no proactive Codex liveness check — a dead session just drops out
-      // of card.sessions entirely (collectCodexSnapshot); nothing left here to disable.
-      ...mergeFields(p),
-    };
+    // D2: the same payload keys lastCapsule reads, and the same deriveQuestion helper — a
+    // codex-stop row now reaches Jev (D1), so its classified merge_ask/message_tail are real
+    // signal here too. No rung-6 pass exists on this path, only the poller's.
+    // D4: no proactive Codex liveness check — a dead session just drops out of card.sessions
+    // entirely (collectCodexSnapshot); nothing left here to disable.
+    return capsuleFrom(p.capsule_status, p, row, true);
   } catch {
     return null;
   }
@@ -1893,20 +1878,14 @@ function codexSessionFrom(
 ): Omit<HubCodexSession, "subagentCount"> {
   const capsule = lastCodexCapsule(db, project, threadId);
   const { pendingAttention, runInFlight } = codexCurrentCorrelation(db, project, threadId);
-  if (!thread) {
-    // A stored thread with no live runtime row is NOT active — a stale turn-started alone is not
-    // liveness (spec §4). `working`/`attention` stay false; the row is visible as unavailable.
-    return {
-      threadId, status: "unknown", activeFlags: [], sourceOk,
-      working: false, attention: false, pendingAttention, runInFlight, capsule, lastEventTs,
-    };
-  }
-  const attention = thread.status === "active" && thread.activeFlags.some(
+  // A stored thread with no live runtime row is NOT active — a stale turn-started alone is not
+  // liveness (spec §4). `working`/`attention` stay false; the row is visible as unavailable.
+  const attention = thread?.status === "active" && thread.activeFlags.some(
     (f) => f === "waitingOnApproval" || f === "waitingOnUserInput",
   );
-  const working = thread.status === "active" && !attention;
+  const working = thread?.status === "active" && !attention;
   return {
-    threadId, status: thread.status, activeFlags: thread.activeFlags, sourceOk,
+    threadId, status: thread?.status ?? "unknown", activeFlags: thread?.activeFlags ?? [], sourceOk,
     working, attention, pendingAttention, runInFlight, capsule, lastEventTs,
   };
 }
@@ -1921,10 +1900,8 @@ export function getCodexSessions(
   nowMs: number = Date.now(),
 ): { sessions: HubCodexSession[]; sourceOk: boolean; untracked: boolean } {
   const sourceOk = snapshot?.ok === true;
-  const byId = new Map<string, CodexThread>();
-  if (snapshot?.ok) {
-    for (const t of snapshot.threads) byId.set(t.threadId, t);
-  }
+  const threads = snapshot?.ok ? snapshot.threads : [];
+  const byId = new Map(threads.map((t) => [t.threadId, t]));
   const rows = db
     .prepare(
       `SELECT harness_session AS session, MAX(ts) AS lastTs
@@ -1943,13 +1920,8 @@ export function getCodexSessions(
   // it is only evidence that telemetry may be missing. Warn even when another root in the SAME
   // project already has events (C3): ownership comes from the collector's Git resolution, never a
   // basename guess, and is not gated on an empty session list.
-  let untracked = false;
-  if (sourceOk) {
-    const tracked = new Set(rows.map((r) => r.session));
-    untracked = (snapshot as Extract<CodexSnapshot, { ok: true }>).threads.some(
-      (t) => t.owner === project && !tracked.has(t.threadId),
-    );
-  }
+  const tracked = new Set(rows.map((r) => r.session));
+  const untracked = threads.some((t) => t.owner === project && !tracked.has(t.threadId));
   return { sessions, sourceOk, untracked };
 }
 
