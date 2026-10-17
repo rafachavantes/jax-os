@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildIndex, gateVaultScope, parseScope } from "@/server/collectors/files";
-import { readGeneralSettings } from "@/server/settings";
+import { vaultUsableNow } from "@/server/gates";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const scope = parseScope(new URL(req.url).searchParams.get("scope"));
   if (!scope) return NextResponse.json({ ok: false, error: "invalid payload" });
-  const settings = readGeneralSettings();
-  const gated = gateVaultScope(scope, settings.ok && settings.data.integrations.vault && settings.data.vaultPath !== null);
+  const gated = gateVaultScope(scope, vaultUsableNow());
   if (gated === "refuse") return NextResponse.json({ ok: false, error: "disabled" });
   try {
     const result = await buildIndex(gated);
