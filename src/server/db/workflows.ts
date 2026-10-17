@@ -204,6 +204,18 @@ function webhookIntegrationEnabled(): boolean {
   return settings.ok && settings.data.integrations.webhook === true;
 }
 
+// First stored row of `type` for `project` whose payload fields equal `keys` (the idempotent-audit
+// probe). Field names are code constants, never input. A missing key binds as NULL, and
+// `json_extract(...) = NULL` is never true, so such an event simply never suppresses.
+function firstByPayloadKeys(
+  db: Database.Database, type: EventType, project: string, keys: Record<string, string | undefined>,
+): RawRow | undefined {
+  const where = Object.keys(keys).map((k) => `AND json_extract(payload, '$.${k}') = ?`).join(" ");
+  return db
+    .prepare(`SELECT ${COLS} FROM workflow_events WHERE type = ? AND project = ? ${where} ORDER BY id LIMIT 1`)
+    .get(type, project, ...Object.values(keys).map((v) => v ?? null)) as RawRow | undefined;
+}
+
 export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now = new Date()): WorkflowEventRow {
   const rule = EVENT_MATRIX[ev.type];
   const pane = ev.pane ?? null;
@@ -253,19 +265,8 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
     // No index: measured 2026-09-08 at 7 rows with a full scan. Spec §2.6 names ~1000
     // `merge-approved` rows as the threshold to revisit.
     if (ev.type === "merge-approved") {
-      // `?? null` keeps the binding valid for a payload missing either key — the ingress
-      // validator requires both, and `json_extract(...) = NULL` is never true, so such an
-      // event simply never suppresses.
       const { target, merge_sha } = ev.payload as { target?: string; merge_sha?: string };
-      const existing = db
-        .prepare(
-          `SELECT ${COLS} FROM workflow_events
-           WHERE type = 'merge-approved' AND project = ?
-             AND json_extract(payload, '$.target') = ?
-             AND json_extract(payload, '$.merge_sha') = ?
-           ORDER BY id LIMIT 1`,
-        )
-        .get(ev.project, target ?? null, merge_sha ?? null) as RawRow | undefined;
+      const existing = firstByPayloadKeys(db, "merge-approved", ev.project, { target, merge_sha });
       if (existing) return rowOf(existing);
     }
     // MOA-465 Ledger & card: same idempotent-audit shape as merge-approved above, keyed on
@@ -274,15 +275,7 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
     // refresh posts a NEW sha and therefore a NEW row on purpose.
     if (ev.type === "pr-opened") {
       const { branch, sha } = ev.payload as { branch?: string; sha?: string };
-      const existing = db
-        .prepare(
-          `SELECT ${COLS} FROM workflow_events
-           WHERE type = 'pr-opened' AND project = ?
-             AND json_extract(payload, '$.branch') = ?
-             AND json_extract(payload, '$.sha') = ?
-           ORDER BY id LIMIT 1`,
-        )
-        .get(ev.project, branch ?? null, sha ?? null) as RawRow | undefined;
+      const existing = firstByPayloadKeys(db, "pr-opened", ev.project, { branch, sha });
       if (existing) return rowOf(existing);
     }
     let payload = ev.payload;
