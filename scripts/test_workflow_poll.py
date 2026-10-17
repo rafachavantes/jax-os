@@ -539,12 +539,12 @@ def _iso(dt):
 
 def _init_repo(root):
     root.mkdir(parents=True, exist_ok=True)
-    jaxflow.jr.run_command(["git", "init", "-q"], cwd=root)
-    jaxflow.jr.run_command(["git", "config", "user.email", "t@t"], cwd=root)
-    jaxflow.jr.run_command(["git", "config", "user.name", "t"], cwd=root)
+    jr.run_command(["git", "init", "-q"], cwd=root)
+    jr.run_command(["git", "config", "user.email", "t@t"], cwd=root)
+    jr.run_command(["git", "config", "user.name", "t"], cwd=root)
     (root / "README.md").write_text("x\n", encoding="utf-8")
-    jaxflow.jr.run_command(["git", "add", "README.md"], cwd=root)
-    jaxflow.jr.run_command(["git", "commit", "-q", "-m", "init"], cwd=root)
+    jr.run_command(["git", "add", "README.md"], cwd=root)
+    jr.run_command(["git", "commit", "-q", "-m", "init"], cwd=root)
 
 
 class _DeadTmux:

@@ -1273,7 +1273,7 @@ def test_answer_watcher_expires_silently(tmp_path, monkeypatch, capsys):
     session_dir.mkdir(parents=True)
     armed = session_dir / "answer-5.armed"
     armed.write_text("", encoding="utf-8")
-    code = hook._watch_for_answer(session_dir, _SESSION_A, 5)
+    code = hook._watch_for_answer(session_dir, 5)
     assert code == 0
     assert capsys.readouterr().err == ""
     assert not armed.exists()
@@ -1290,7 +1290,7 @@ def test_answer_watcher_supersession_exits_silently_and_keeps_the_newer_marker(t
         (session_dir / "answer-6.armed").write_text("", encoding="utf-8")
 
     with patch.object(hook.time, "sleep", side_effect=fake_sleep):
-        code = hook._watch_for_answer(session_dir, _SESSION_A, 5)
+        code = hook._watch_for_answer(session_dir, 5)
     assert code == 0
     assert not old_armed.exists()
     assert (session_dir / "answer-6.armed").exists()
@@ -1309,7 +1309,7 @@ def test_answer_watcher_supersession_with_own_answer_present_discards_it_unread(
     own_answer.write_text("[Jax OS · Rafa] pode\n", encoding="utf-8")
     (session_dir / "answer-6.armed").write_text("", encoding="utf-8")
 
-    code = hook._watch_for_answer(session_dir, _SESSION_A, 5)
+    code = hook._watch_for_answer(session_dir, 5)
     assert code == 0
     assert capsys.readouterr().err == ""
     assert not own_armed.exists()
@@ -1331,7 +1331,7 @@ def test_answer_watcher_ignores_an_older_marker(tmp_path, monkeypatch, capsys):
         (session_dir / "answer-6.answer").write_text("[Jax OS · Rafa] pode\n", encoding="utf-8")
 
     with patch.object(hook.time, "sleep", side_effect=fake_sleep):
-        code = hook._watch_for_answer(session_dir, _SESSION_A, 6)
+        code = hook._watch_for_answer(session_dir, 6)
     assert code == 2
     assert capsys.readouterr().err.strip() == "[Jax OS · Rafa] pode"
     assert not own_armed.exists()

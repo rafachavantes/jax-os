@@ -36,7 +36,6 @@ from testkit import (  # noqa: F401  (autouse fixtures included on purpose)
     _checkpoint_path,
     _diff_args,
     _fixed_now,
-    _forbidden_tmux,
     _fresh_db,
     _git,
     _init_repo,
@@ -1005,8 +1004,8 @@ def test_codex_callback_targets_captured_thread(monkeypatch, kind, pane):
     manifest = dict(run_id="aaaabbbbcccc", caller="codex",
                     caller_session=captured, caller_pane=pane,
                     caller_incarnation="111:222")
-    jaxflow_workerkit._send_callback(manifest, run=_forbidden_tmux, kind=kind,
-                           outcome="success", summary="done", report_path="/report.md")
+    jaxflow_workerkit._send_callback(manifest, kind=kind,
+                           outcome="success", report_path="/report.md")
     assert calls == [([
         "codex", "queue", "--thread", captured, "--message",
         f"[JAXFLOW] {kind} aaaabbbbcccc finished — success — /report.md"
@@ -1026,8 +1025,8 @@ def test_no_callback_skips_queue_and_tmux(monkeypatch, caller, session):
     manifest = dict(run_id="aaaabbbbcccc", caller=caller, caller_session=session,
                     caller_pane="%3", caller_incarnation="111:222", no_callback=True)
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="spec", outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind="spec", outcome="success",
+        report_path="/report.md",
     )
 
 
@@ -1048,8 +1047,8 @@ def test_codex_callback_invalid_session_warns_without_delivery(monkeypatch, caps
     manifest = dict(run_id="aaaabbbbcccc", caller="codex", caller_session=session,
                     caller_pane="%3", caller_incarnation="111:222")
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="spec", outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind="spec", outcome="success",
+        report_path="/report.md",
     )
     err = capsys.readouterr().err
     assert err.strip() == (
@@ -1084,8 +1083,8 @@ def test_codex_callback_queue_failures_warn_once_without_tmux(monkeypatch, capsy
                     caller_session=_CAPTURED_THREAD, caller_pane="%3",
                     caller_incarnation="111:222")
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="spec", outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind="spec", outcome="success",
+        report_path="/report.md",
     )
     assert calls == [([
         "codex", "queue", "--thread", _CAPTURED_THREAD, "--message",
@@ -1197,8 +1196,8 @@ def test_refusal_paths_spool_before_post_keep_on_failure_delete_on_delivery(tmp_
 def test_send_callback_omits_stage_segment_on_the_happy_path(kind):
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind=kind, outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind=kind, outcome="success",
+        report_path="/report.md",
     )
     line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
     assert line_path.read_text(encoding="utf-8") == (
@@ -1209,8 +1208,8 @@ def test_send_callback_omits_stage_segment_on_the_happy_path(kind):
 def test_send_callback_renders_stage_diagnostic_and_report_flag():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="build", outcome="failure",
-        summary="unused", report_path="/report.md", stage="runtime",
+        manifest, kind="build", outcome="failure",
+        report_path="/report.md", stage="runtime",
         diagnostic="APIError 403 budget exceeded", contract_status="invalid",
     )
     line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
@@ -1223,7 +1222,7 @@ def test_send_callback_renders_stage_diagnostic_and_report_flag():
 def test_send_callback_renders_no_report_literal_and_ledger_pending():
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="build", outcome="failure", summary="unused",
+        manifest, kind="build", outcome="failure",
         report_path=None, stage="worker", diagnostic="worker interrupted by SIGTERM",
         ledger_pending=True,
     )
@@ -1238,7 +1237,7 @@ def test_send_callback_never_flags_report_status_on_ok_cancelled_or_interrupted(
     manifest = dict(run_id="aaaabbbbcccc", caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID)
     for status in ("ok", "cancelled", "interrupted"):
         jaxflow_workerkit._send_callback(
-            manifest, run=_forbidden_tmux, kind="build", outcome="x", summary="unused",
+            manifest, kind="build", outcome="x",
             report_path=None, contract_status=status,
         )
         line_path = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID / "aaaabbbbcccc.line"
@@ -1250,8 +1249,8 @@ def test_send_callback_claude_skips_line_for_noncanonical_session(capsys):
         run_id="aaaabbbbcccc", caller="claude", caller_session="not-a-uuid",
     )
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="spec", outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind="spec", outcome="success",
+        report_path="/report.md",
     )
     assert not (jaxflow_common.CALLBACKS_ROOT / "not-a-uuid").exists()
     err = capsys.readouterr().err.strip()
@@ -1270,8 +1269,8 @@ def test_send_callback_claude_rejects_unsafe_run_id(capsys, bad_run_id):
         run_id=bad_run_id, caller="claude", caller_session=_TEST_CLAUDE_SESSION_ID,
     )
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="spec", outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind="spec", outcome="success",
+        report_path="/report.md",
     )
     session_dir = jaxflow_common.CALLBACKS_ROOT / _TEST_CLAUDE_SESSION_ID
     assert not session_dir.exists() or not any(session_dir.iterdir())
@@ -1298,8 +1297,8 @@ def test_send_callback_publish_failure_does_not_affect_result(monkeypatch, capsy
     # which is what a worker relies on (its own `worker_outcome` is set BEFORE this
     # call, per every one of the 6 real call sites read in Task 1's investigation).
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="spec", outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind="spec", outcome="success",
+        report_path="/report.md",
     )
     err = capsys.readouterr().err.strip()
     assert err == "callback delivery failed: aaaabbbbcccc write-error; use jaxflow status/result"
@@ -1319,8 +1318,8 @@ def test_send_callback_codex_path_unchanged_with_no_pane_fields(monkeypatch):
     monkeypatch.setattr(subprocess, "run", queue)
     manifest = dict(run_id="aaaabbbbcccc", caller="codex", caller_session=_CAPTURED_THREAD)
     jaxflow_workerkit._send_callback(
-        manifest, run=_forbidden_tmux, kind="build", outcome="success",
-        summary="done", report_path="/report.md",
+        manifest, kind="build", outcome="success",
+        report_path="/report.md",
     )
     assert calls == [([
         "codex", "queue", "--thread", _CAPTURED_THREAD, "--message",

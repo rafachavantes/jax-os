@@ -559,13 +559,12 @@ def _armed_event_id(path):
         return -1
 
 
-def _watch_for_answer(session_dir, harness_session, event_id):
+def _watch_for_answer(session_dir, event_id):
     """D3: the Stop hook's own answer-watch loop -- polls `answer-<event_id>.answer` every
     POLL_INTERVAL_S seconds, deadlined at WATCH_DEADLINE_S, mirroring `_watch_for_line`/
     `_deliver_line` but with its own filenames (`.armed`/`.answer`, never `.json`/`.claimed`/
     `.line`) and no claim/rename step -- one Stop fires at a time, no concurrent race like
-    PostToolUse(Bash). `harness_session` is kept for call-site readability, unused here."""
-    del harness_session
+    PostToolUse(Bash)."""
     armed_path = session_dir / f"answer-{event_id}.armed"
     answer_path = session_dir / f"answer-{event_id}.answer"
     deadline = time.monotonic() + WATCH_DEADLINE_S
@@ -677,7 +676,7 @@ def main(argv=None, stdin=None, run=run_command, post=post_json):
                 session_dir = CALLBACKS_ROOT / harness_session
                 session_dir.mkdir(parents=True, exist_ok=True)
                 (session_dir / f"answer-{event_id}.armed").write_text("", encoding="utf-8")
-                return _watch_for_answer(session_dir, harness_session, event_id)
+                return _watch_for_answer(session_dir, event_id)
     except Exception as exc:
         print(f"jaxflow-hook: {_bound_error(exc)}", file=sys.stderr)
     return 0

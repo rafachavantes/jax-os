@@ -2043,7 +2043,7 @@ def _write_fixture(name, run_id, role, finished_payload, expected, kind="build")
 
 
 def test_export_moa474_boundary_fixtures():
-    import jaxflow as jf
+    import jaxflow_workerkit
 
     happy = jr.derive_outcome(_builder_evidence(stream_last_line=_CLEAN_STREAM_LAST_LINE))
     _write_fixture(
@@ -2083,7 +2083,7 @@ def test_export_moa474_boundary_fixtures():
          "contractStatus": "missing", "headSha": "a" * 40},
     )
 
-    interrupted = jf._interrupted_payload(role="builder", phase="P1", signal_name="SIGTERM")
+    interrupted = jaxflow_workerkit._interrupted_payload(role="builder", phase="P1", signal_name="SIGTERM")
     _write_fixture(
         "builder-interrupted-worker", "ddddeeeeffff", "builder", interrupted,
         {"outcome": interrupted.get("result"), "stage": interrupted.get("stage"),
