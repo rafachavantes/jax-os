@@ -3,7 +3,7 @@ import {
   LIMITS, RUN_ID_RE, validOptionalFocus, validPhaseToken, validRefName, validSingleLineCommand,
 } from "../../../../lib/workflow";
 import { MutationRejected } from "../../../../lib/mutationOutcome";
-import { readJsonCapped, requireSameOrigin } from "../../../../server/api";
+import { readJsonObject } from "../../../../server/api";
 import { validBasename, validRel } from "../../../../server/inputLimits";
 import { runMutation } from "../../../../server/mutations";
 import { getProjects, REPOS_ROOT, type ProjectScan } from "../../../../server/collectors/projects";
@@ -69,12 +69,9 @@ export function buildDispatchArgv(body: unknown, resolveDoc: (rel: string) => st
 }
 
 export async function handleDispatchPost(req: Request, deps: DispatchRouteDeps = systemDeps) {
-  const guard = requireSameOrigin(req);
-  if (guard) return guard;
-  const read = await readJsonCapped(req, LIMITS.requestBytes);
-  if (!read.ok) return NextResponse.json({ ok: false, error: read.error });
-  const body = read.value;
-  if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ ok: false, error: "invalid payload" });
+  const parsed = await readJsonObject(req, LIMITS.requestBytes);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.payload;
   const { project, command } = body as Record<string, unknown>;
   // Round-1 F4: a scan failure must return the agreed 200 {ok:false} envelope, never a 5xx.
   let scan: ProjectScan;
