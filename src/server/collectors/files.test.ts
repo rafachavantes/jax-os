@@ -23,7 +23,7 @@ vi.hoisted(() => {
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveWithin, resolveNewWithin, isBinary, hashBytes, listDirAt, readFileAt, writeFileAt, READ_CAP, createEntryAt, renameEntryAt, deleteEntryAt, resolveExisting, createEntry, renameEntry, deleteEntry, uploadFile, imageMime, mediaMime, ROOTS, relativeWithin, planSlices, splitTotalCaps, parseScope, listRepoNames, searchByName, buildIndex, buildIndexUncached, gateVaultRoot, gateVaultScope } from "./files";
+import { resolveWithin, resolveNewWithin, isBinary, hashBytes, listDirAt, readFileAt, writeFileAt, READ_CAP, createEntryAt, renameEntryAt, deleteEntryAt, resolveExisting, createEntry, renameEntry, uploadFile, imageMime, mediaMime, ROOTS, relativeWithin, planSlices, splitTotalCaps, parseScope, listRepoNames, searchByName, buildIndex, buildIndexUncached, gateVaultRoot, gateVaultScope } from "./files";
 
 it("ROOTS.repos is never null; ROOTS.vault is a string when settings configure one", () => {
   expect(typeof ROOTS.repos).toBe("string");
@@ -193,8 +193,8 @@ describe("Root wrappers gate the real allowlist", () => {
   it("uploadFile refuses a parent dir that escapes the root", () => {
     expect(() => uploadFile("repos", "../../../etc", "jax-x", Buffer.from("x"))).toThrow();
   });
-  it("deleteEntry refuses a target outside the root", () => {
-    expect(() => deleteEntry("repos", "../../../etc")).toThrow();
+  it("deleteEntryAt refuses a target that resolves outside the root", () => {
+    expect(() => deleteEntryAt(resolveExisting("repos", "../../../etc"))).toThrow();
   });
   it("renameEntry refuses a source outside the root", () => {
     expect(() => renameEntry("repos", "../../../etc", "x")).toThrow();

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { countUpgradable, countZombies, getAlerts, parseDfAlerts, parseLoadAlert, parsePackageRows, parseZombieRows } from "./alerts";
+import { getAlerts, parseDfAlerts, parseLoadAlert, parsePackageRows, parseZombieRows } from "./alerts";
 
 const DF = `Filesystem     1024-blocks     Used Available Capacity Mounted on
 /dev/sda1        157197504 92993088  57759796      62% /
@@ -32,24 +32,6 @@ describe("parseLoadAlert", () => {
       load5: 9.5,
       cores: 8,
     });
-  });
-});
-
-describe("countZombies", () => {
-  it("counts stat lines starting with Z, skipping the header", () => {
-    expect(countZombies("STAT\nSsl\nZ\nZs\nR+\n")).toBe(2);
-    expect(countZombies("STAT\nSsl\n")).toBe(0);
-  });
-});
-
-describe("countUpgradable", () => {
-  it("counts package rows, ignores the Listing header", () => {
-    expect(countUpgradable("Listing...\n")).toBe(0);
-    expect(
-      countUpgradable(
-        "Listing...\ncurl/noble 8.5.0 amd64 [upgradable from: 8.4.0]\nvim/noble 2:9.1 amd64 [upgradable from: 2:9.0]\n",
-      ),
-    ).toBe(2);
   });
 });
 

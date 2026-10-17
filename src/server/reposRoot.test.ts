@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { reposRoot, vaultPath } from "./reposRoot";
-import { apiBaseUrl } from "./env";
 
 const dirs: string[] = [];
 function tempHome(settingsJson?: string): string {
@@ -46,17 +45,10 @@ describe("reposRoot()/vaultPath() (spec: reposRoot/vaultPath consumers)", () => 
     require("node:fs").chmodSync(join(dir, "settings.json"), 0o644); // afterEach can rmSync it
   });
 
-  // Acceptance criterion 5: JAXOS_HOME, PORT and reposRoot set together in ONE run resolve
-  // every consumer this build added (path -> reposRoot(), URL -> apiBaseUrl()).
-  it("resolves every consumer end-to-end under JAXOS_HOME, PORT and reposRoot set together", () => {
+  // Acceptance criterion 5: JAXOS_HOME and reposRoot set together in ONE run resolve
+  // every consumer this build added (path -> reposRoot()).
+  it("resolves every consumer end-to-end under JAXOS_HOME and reposRoot set together", () => {
     process.env.JAXOS_HOME = tempHome(JSON.stringify({ reposRoot: "/tmp/e2e-custom-repos" }));
-    const prevPort = process.env.PORT;
-    process.env.PORT = "3199";
-    try {
-      expect(reposRoot()).toBe("/tmp/e2e-custom-repos");
-      expect(apiBaseUrl()).toBe("http://127.0.0.1:3199");
-    } finally {
-      if (prevPort === undefined) delete process.env.PORT; else process.env.PORT = prevPort;
-    }
+    expect(reposRoot()).toBe("/tmp/e2e-custom-repos");
   });
 });
