@@ -1,22 +1,15 @@
 import { NextResponse } from "next/server";
 import { createComment } from "../../../../server/collectors/linear";
-import { readGeneralSettings } from "../../../../server/settings";
+import { linearEnabled } from "../../../../server/gates";
 import { runMutation } from "../../../../server/mutations";
-import { readJsonCapped, requireSameOrigin } from "../../../../server/api";
+import { readJsonObject } from "../../../../server/api";
 import { COMMENT_CAP, COMMENT_JSON_CAP, boundedString } from "../../../../server/inputLimits";
 
 export async function POST(req: Request) {
-  const settings = readGeneralSettings();
-  if (!(settings.ok && settings.data.integrations.linear)) {
-    return NextResponse.json({ ok: false, error: "disabled" });
-  }
-  const csrf = requireSameOrigin(req);
-  if (csrf) return csrf;
-  const bodyRead = await readJsonCapped(req, COMMENT_JSON_CAP);
-  if (!bodyRead.ok) return NextResponse.json({ ok: false, error: bodyRead.error });
-  const payload = bodyRead.value;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload))
-    return NextResponse.json({ ok: false, error: "invalid payload" });
+  if (!linearEnabled()) return NextResponse.json({ ok: false, error: "disabled" });
+  const parsed = await readJsonObject(req, COMMENT_JSON_CAP);
+  if ("error" in parsed) return parsed.error;
+  const payload = parsed.payload;
   const { issueId, body } = payload as { issueId?: unknown; body?: unknown };
   if (!boundedString(issueId, 256) || !boundedString(body, COMMENT_CAP) || !body.trim()) {
     return NextResponse.json({ ok: false, error: "invalid payload" });

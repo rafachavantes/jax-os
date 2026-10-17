@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import { applyAgentSettings, previewAgentSettings, snapshotAgentSettings, type BindingRef, type HelperRunner } from "./agent-settings";
 import { CONNECTION_ADAPTERS, type ConnectionChoice, type ModelChoice } from "../../lib/agent-settings";
+import { isObj } from "../inputLimits";
 
 const CONN_KEYS = [
   "id",
@@ -20,10 +21,6 @@ const CONNECTION_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const ADAPTERS = new Set<string>(CONNECTION_ADAPTERS);
 
 export type ProviderConnectionDraft = { id: string; adapter: string; label?: string; base_url?: string };
-
-function isObj(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function keysOk(obj: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
   const allow = new Set([...required, ...optional]);

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { readBodyCapped, readJsonCapped, requireSameOrigin } from "./api";
+import { readBodyCapped, readJsonCapped, readJsonObject, requireSameOrigin } from "./api";
 
 const post = (body: string, headers?: Record<string, string>) =>
   new Request("http://127.0.0.1/x", { method: "POST", body, headers });
@@ -70,6 +70,56 @@ describe("readJsonCapped", () => {
       },
     });
     expect(await readJsonCapped(streamed(stream), 100)).toEqual({ ok: true, value: "é" });
+  });
+});
+
+describe("readJsonObject", () => {
+  async function expectFailure(
+    res: Awaited<ReturnType<typeof readJsonObject>>,
+    error: string,
+  ) {
+    expect("error" in res).toBe(true);
+    if (!("error" in res)) return;
+    expect(res.error.status).toBe(200);
+    expect(await res.error.json()).toEqual({ ok: false, error });
+  }
+
+  it("blocks a cross-site request", async () => {
+    await expectFailure(await readJsonObject(reqWith("cross-site"), 1000), "cross-site request blocked");
+  });
+
+  it("rejects an oversized body", async () => {
+    await expectFailure(
+      await readJsonObject(post("x".repeat(50), { "content-length": "50" }), 10),
+      "request too large",
+    );
+  });
+
+  it("rejects invalid JSON", async () => {
+    await expectFailure(await readJsonObject(post("not json"), 1000), "invalid JSON");
+  });
+
+  it("rejects array, null and number payloads as invalid payload", async () => {
+    for (const body of ["[1]", "null", "5"]) {
+      await expectFailure(await readJsonObject(post(body), 1000), "invalid payload");
+    }
+  });
+
+  it("checks origin before the body (cross-site wins over invalid JSON)", async () => {
+    await expectFailure(
+      await readJsonObject(post("not json", { "sec-fetch-site": "cross-site" }), 1000),
+      "cross-site request blocked",
+    );
+  });
+
+  it("returns the parsed plain object", async () => {
+    const res = await readJsonObject(post('{"a":1}'), 1000);
+    expect(res).toEqual({ payload: { a: 1 } });
+    expect("error" in res).toBe(false);
+  });
+
+  it("treats an empty body as {}", async () => {
+    expect(await readJsonObject(post(""), 1000)).toEqual({ payload: {} });
   });
 });
 

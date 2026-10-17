@@ -24,12 +24,8 @@ import {
 import { agentsOf, useGeneralSettings, type Agents } from "@/lib/settingsQuery";
 import { OpenRouterRouting } from "./OpenRouterRouting";
 import { classifyWrite, postJson, useToolsDraft, writeKindText } from "./ToolsDraftProvider";
+import { BTN, GHOST } from "./ui";
 import css from "./tools.module.css";
-
-const BTN =
-  "rounded-md bg-brand px-3 py-1.5 text-[12.5px] font-medium text-on-brand hover:bg-brand/90 disabled:opacity-60";
-const GHOST =
-  "rounded-md border border-line px-3 py-1.5 text-[12.5px] text-body-ink hover:bg-surface-2 disabled:opacity-60";
 
 type Payload = {
   editor_revision?: EditorRevision;

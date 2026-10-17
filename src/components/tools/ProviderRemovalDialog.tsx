@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
+import { GHOST } from "./ui";
+import { ModalDialog } from "../ModalDialog";
 import css from "./tools.module.css";
 
 const BTN =
   "rounded-md bg-danger px-3 py-1.5 text-[12.5px] font-medium text-on-brand hover:bg-danger/90 disabled:opacity-60";
-const GHOST =
-  "rounded-md border border-line px-3 py-1.5 text-[12.5px] text-body-ink hover:bg-surface-2 disabled:opacity-60";
 
 export type RemovalTarget =
   | { kind: "connection"; id: string }
@@ -27,12 +26,6 @@ export function ProviderRemovalDialog({
   onClose: () => void;
 }) {
   const t = useTranslations("tools");
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
-  }, []);
 
   const title = target.kind === "connection"
     ? t("removeConnection")
@@ -42,14 +35,10 @@ export function ProviderRemovalDialog({
     : (target.catalog ? t("removeModelCatalogConfirm", { id: target.id, model: target.model }) : t("removeModelConfirm", { id: target.id, model: target.model }));
 
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={title}
+    <ModalDialog
+      pending={pending}
       onClose={onClose}
-      onCancel={(e) => {
-        e.preventDefault();
-        if (!pending) onClose();
-      }}
+      aria-label={title}
       className={`${css.providerDialog} rounded-lg border border-line bg-surface`}
     >
       <div className="flex flex-col gap-3 p-4">
@@ -69,6 +58,6 @@ export function ProviderRemovalDialog({
           </button>
         </div>
       </div>
-    </dialog>
+    </ModalDialog>
   );
 }

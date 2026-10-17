@@ -5,6 +5,7 @@ import {
   type Source, type WorkflowEventRow, validMissionText,
 } from "../../lib/workflow";
 import type { WorkflowSessionInput } from "../db/workflows";
+import { isObj } from "../inputLimits";
 
 // Ingress validation for POST /api/workflow/events — the event matrix (spec
 // §4.2) as code. Pure: body in, normalized event or a reason out. Every check
@@ -23,9 +24,6 @@ export const FINDINGS_COUNT_MAX = 999;
 class Invalid extends Error {}
 function fail(msg: string): never {
   throw new Invalid(msg);
-}
-function isObj(v: unknown): v is Obj {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function oneOf<T extends string>(v: unknown, list: readonly T[]): v is T {
   return typeof v === "string" && (list as readonly string[]).includes(v);

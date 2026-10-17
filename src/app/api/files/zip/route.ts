@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { basename } from "node:path";
 import { gateVaultRoot, planZip, ROOTS, strictRel, zipStream, type Root } from "../../../../server/collectors/files";
 import { contentDisposition } from "../../../../server/collectors/fileDownload";
-import { readGeneralSettings } from "../../../../server/settings";
+import { vaultUsableNow } from "../../../../server/gates";
 import { validRel } from "../../../../server/inputLimits";
 
 export const dynamic = "force-dynamic";
@@ -12,8 +12,7 @@ export async function GET(req: Request) {
   const root = u.searchParams.get("root") ?? "";
   const rel = u.searchParams.get("rel") ?? "";
   if (!Object.hasOwn(ROOTS, root)) return NextResponse.json({ ok: false, error: "bad root" });
-  const settings = readGeneralSettings();
-  if (gateVaultRoot(root, settings.ok && settings.data.integrations.vault && settings.data.vaultPath !== null)) {
+  if (gateVaultRoot(root, vaultUsableNow())) {
     return NextResponse.json({ ok: false, error: "disabled" });
   }
   if (!validRel(rel, true) || !strictRel(rel, true)) return NextResponse.json({ ok: false, error: "invalid payload" });

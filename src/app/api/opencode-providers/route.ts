@@ -15,6 +15,7 @@ import { MutationRejected } from "../../../lib/mutationOutcome";
 import { readBodyCapped, requireSameOrigin } from "../../../server/api";
 import { HelperRefusal } from "../../../server/collectors/agent-settings";
 import { loadJaxosEnv } from "../../../server/envFile";
+import { isObj } from "../../../server/inputLimits";
 import {
   applyProviders,
   parseProviderConnection,
@@ -52,10 +53,6 @@ function reply(body: unknown) {
   const res = NextResponse.json(body);
   res.headers.set("Cache-Control", "no-store");
   return res;
-}
-
-function isObj(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function keysOk(obj: Record<string, unknown>, required: string[], optional: string[] = []): boolean {

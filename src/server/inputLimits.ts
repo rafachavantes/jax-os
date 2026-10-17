@@ -14,3 +14,6 @@ export function validBasename(value: unknown): value is string {
   return boundedString(value, 255) && !value.includes("/")
     && !value.includes("..") && !value.includes("\0");
 }
+export function isObj(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}

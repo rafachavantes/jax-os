@@ -1,18 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import { validateModelInput, type EditorRevision, type ModelChoice } from "@/lib/agent-settings";
 import { classifyWrite, postJson, writeKindText } from "./ToolsDraftProvider";
+import { BTN, FIELD, GHOST } from "./ui";
+import { ModalDialog } from "../ModalDialog";
 import css from "./tools.module.css";
-
-const FIELD =
-  "w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[13px] text-ink outline-none focus:border-line-strong disabled:opacity-60";
-const BTN =
-  "rounded-md bg-brand px-3 py-1.5 text-[12.5px] font-medium text-on-brand hover:bg-brand/90 disabled:opacity-60";
-const GHOST =
-  "rounded-md border border-line px-3 py-1.5 text-[12.5px] text-body-ink hover:bg-surface-2 disabled:opacity-60";
 
 export function resolveEffortSource(
   editing: boolean,
@@ -41,7 +36,6 @@ export function ProviderModelDialog({
 }) {
   const t = useTranslations("tools");
   const qc = useQueryClient();
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const editing = model != null;
   const [id, setId] = useState(model?.id ?? "");
   const [label, setLabel] = useState(model?.label ?? "");
@@ -57,8 +51,6 @@ export function ProviderModelDialog({
   const matchEfforts = (editing ? null : source)?.efforts.join(",") ?? "";
 
   useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
     return () => {
       if (invoker?.isConnected) invoker.focus();
     };
@@ -109,14 +101,9 @@ export function ProviderModelDialog({
   }
 
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={editing ? t("editModel") : t("addModel")}
+    <ModalDialog
       onClose={close}
-      onCancel={(e) => {
-        e.preventDefault();
-        close();
-      }}
+      aria-label={editing ? t("editModel") : t("addModel")}
       className={`${css.providerDialog} rounded-lg border border-line bg-surface`}
     >
       <form
@@ -187,6 +174,6 @@ export function ProviderModelDialog({
           </button>
         </div>
       </form>
-    </dialog>
+    </ModalDialog>
   );
 }

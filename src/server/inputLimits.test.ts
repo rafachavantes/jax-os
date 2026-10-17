@@ -5,6 +5,7 @@ import {
   SMALL_JSON_CAP,
   WRITE_JSON_CAP,
   boundedString,
+  isObj,
   validBasename,
   validRel,
 } from "./inputLimits";
@@ -15,6 +16,22 @@ describe("caps", () => {
     expect(WRITE_JSON_CAP).toBe(16 * 1024 * 1024);
     expect(COMMENT_JSON_CAP).toBe(256 * 1024);
     expect(COMMENT_CAP).toBe(32 * 1024);
+  });
+});
+
+describe("isObj", () => {
+  it("accepts plain objects", () => {
+    expect(isObj({})).toBe(true);
+    expect(isObj({ a: 1 })).toBe(true);
+  });
+  it("rejects null, undefined, arrays and primitives", () => {
+    expect(isObj(null)).toBe(false);
+    expect(isObj(undefined)).toBe(false);
+    expect(isObj([])).toBe(false);
+    expect(isObj([1])).toBe(false);
+    expect(isObj("s")).toBe(false);
+    expect(isObj(5)).toBe(false);
+    expect(isObj(true)).toBe(false);
   });
 });
 
