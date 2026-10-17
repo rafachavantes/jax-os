@@ -1101,6 +1101,26 @@ function mergeFields(p: { merge_ask?: number; merge_branch?: string; merge_targe
     : {};
 }
 
+// The Capsule both lastCapsule (claude pane) and lastCodexCapsule (native codex) read off the same
+// payload keys; `answerable` is decided by the caller (D4).
+function capsuleFrom(
+  status: string,
+  p: { capsule_minutes?: number; merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string },
+  row: { id: number; ts: string },
+  answerable: boolean,
+): Capsule {
+  return {
+    status,
+    minutes: typeof p.capsule_minutes === "number" ? p.capsule_minutes : null,
+    declaredAt: row.ts,
+    eventId: row.id, // Phase 2 Decision 2: the free-text answer's event_id
+    mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
+    question: deriveQuestion(p.message_tail),
+    answerable,
+    ...mergeFields(p),
+  };
+}
+
 // project-scoped (Finding 1): a pane_key persists across a project switch, so a pane_key-only
 // query here would surface the OTHER project's latest turn-stopped capsule on this project's row
 // once the pane moves on. `project` is always the project currently being enumerated by
@@ -1160,16 +1180,7 @@ function lastCapsule(
     const answerable = (p.capsule_status === "needs_input" || p.capsule_status === "blocked")
       ? row.harness_session !== null && isAlive(row.harness_session, row.id)
       : true;
-    return {
-      status: p.capsule_status,
-      minutes: typeof p.capsule_minutes === "number" ? p.capsule_minutes : null,
-      declaredAt: row.ts,
-      eventId: row.id, // Phase 2 Decision 2: the free-text answer's event_id
-      mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
-      question: deriveQuestion(p.message_tail),
-      answerable,
-      ...mergeFields(p),
-    };
+    return capsuleFrom(p.capsule_status, p, row, answerable);
   } catch {
     return null;
   }
@@ -1822,20 +1833,12 @@ function lastCodexCapsule(db: Database.Database, project: string, threadId: stri
   try {
     const p = JSON.parse(row.payload) as { capsule_status?: string; capsule_minutes?: number; merge_ask?: number; message_tail?: string; merge_branch?: string; merge_target?: string };
     if (typeof p.capsule_status !== "string" || !p.capsule_status) return null;
-    return {
-      status: p.capsule_status,
-      minutes: typeof p.capsule_minutes === "number" ? p.capsule_minutes : null,
-      declaredAt: row.ts,
-      eventId: row.id,
-      // D2: the same payload keys lastCapsule reads, and the same deriveQuestion helper — a
-      // codex-stop row now reaches Jev (D1), so its classified merge_ask/message_tail are real
-      // signal here too. No rung-6 pass exists on this path, only the poller's.
-      mergeAsk: typeof p.merge_ask === "number" ? p.merge_ask : null,
-      question: deriveQuestion(p.message_tail),
-      answerable: true, // D4: no proactive Codex liveness check — a dead session just drops out
-      // of card.sessions entirely (collectCodexSnapshot); nothing left here to disable.
-      ...mergeFields(p),
-    };
+    // D2: the same payload keys lastCapsule reads, and the same deriveQuestion helper — a
+    // codex-stop row now reaches Jev (D1), so its classified merge_ask/message_tail are real
+    // signal here too. No rung-6 pass exists on this path, only the poller's.
+    // D4: no proactive Codex liveness check — a dead session just drops out of card.sessions
+    // entirely (collectCodexSnapshot); nothing left here to disable.
+    return capsuleFrom(p.capsule_status, p, row, true);
   } catch {
     return null;
   }
@@ -1882,20 +1885,14 @@ function codexSessionFrom(
 ): Omit<HubCodexSession, "subagentCount"> {
   const capsule = lastCodexCapsule(db, project, threadId);
   const { pendingAttention, runInFlight } = codexCurrentCorrelation(db, project, threadId);
-  if (!thread) {
-    // A stored thread with no live runtime row is NOT active — a stale turn-started alone is not
-    // liveness (spec §4). `working`/`attention` stay false; the row is visible as unavailable.
-    return {
-      threadId, status: "unknown", activeFlags: [], sourceOk,
-      working: false, attention: false, pendingAttention, runInFlight, capsule, lastEventTs,
-    };
-  }
-  const attention = thread.status === "active" && thread.activeFlags.some(
+  // A stored thread with no live runtime row is NOT active — a stale turn-started alone is not
+  // liveness (spec §4). `working`/`attention` stay false; the row is visible as unavailable.
+  const attention = thread?.status === "active" && thread.activeFlags.some(
     (f) => f === "waitingOnApproval" || f === "waitingOnUserInput",
   );
-  const working = thread.status === "active" && !attention;
+  const working = thread?.status === "active" && !attention;
   return {
-    threadId, status: thread.status, activeFlags: thread.activeFlags, sourceOk,
+    threadId, status: thread?.status ?? "unknown", activeFlags: thread?.activeFlags ?? [], sourceOk,
     working, attention, pendingAttention, runInFlight, capsule, lastEventTs,
   };
 }
@@ -1910,10 +1907,8 @@ export function getCodexSessions(
   nowMs: number = Date.now(),
 ): { sessions: HubCodexSession[]; sourceOk: boolean; untracked: boolean } {
   const sourceOk = snapshot?.ok === true;
-  const byId = new Map<string, CodexThread>();
-  if (snapshot?.ok) {
-    for (const t of snapshot.threads) byId.set(t.threadId, t);
-  }
+  const threads = snapshot?.ok ? snapshot.threads : [];
+  const byId = new Map(threads.map((t) => [t.threadId, t]));
   const rows = db
     .prepare(
       `SELECT harness_session AS session, MAX(ts) AS lastTs
@@ -1932,13 +1927,8 @@ export function getCodexSessions(
   // it is only evidence that telemetry may be missing. Warn even when another root in the SAME
   // project already has events (C3): ownership comes from the collector's Git resolution, never a
   // basename guess, and is not gated on an empty session list.
-  let untracked = false;
-  if (sourceOk) {
-    const tracked = new Set(rows.map((r) => r.session));
-    untracked = (snapshot as Extract<CodexSnapshot, { ok: true }>).threads.some(
-      (t) => t.owner === project && !tracked.has(t.threadId),
-    );
-  }
+  const tracked = new Set(rows.map((r) => r.session));
+  const untracked = threads.some((t) => t.owner === project && !tracked.has(t.threadId));
   return { sessions, sourceOk, untracked };
 }
 
