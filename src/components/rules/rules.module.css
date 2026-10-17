@@ -1,0 +1,464 @@
+/* Scoped layout port of the approved tools mockup's Rules workspace.
+   Colors/fonts come from the app DS tokens, never a second palette. */
+
+.heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.heading h2 {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.heading p {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.processStrip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 18px;
+}
+
+.step {
+  display: inline-grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  margin-right: 5px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  font: 10px var(--font-mono);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  min-width: 0;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 195px minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.menu {
+  padding: 18px 10px;
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+}
+
+.menuEyebrow {
+  padding: 0 10px;
+  margin-bottom: 9px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.menuEyebrow + .ruleChoice {
+  margin-top: 0;
+}
+
+.menuEyebrow:not(:first-child) {
+  margin-top: 24px;
+}
+
+.ruleChoice {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ruleChoice:hover {
+  background: var(--surface-3);
+}
+
+.ruleChoice[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text-strong);
+  box-shadow: inset 2px 0 var(--brand);
+}
+
+.ruleChoice small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ruleMain {
+  padding: 23px;
+  min-width: 0;
+}
+
+.eyebrow {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.ruleTitle {
+  margin-top: 7px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.reader,
+.editor {
+  width: 100%;
+  min-height: 220px;
+  margin: 18px 0 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--body-ink);
+  font: 12px/1.85 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.editor {
+  display: block;
+  resize: vertical;
+  outline: none;
+}
+
+.editor:focus {
+  border-color: var(--border-strong);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.primaryButton {
+  padding: 8px 14px;
+  border: 1px solid var(--brand-soft-border);
+  border-radius: 7px;
+  background: var(--brand);
+  color: var(--text-on-brand);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.primaryButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.secondaryButton,
+.dialogClose {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--body-ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.secondaryButton:disabled,
+.dialogClose:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dirtyTag {
+  font-size: 11px;
+  color: var(--warning);
+}
+
+.destinations {
+  margin-top: 22px;
+}
+
+.destinationGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.destination {
+  padding: 16px;
+}
+
+.destTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+
+.destTitle h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.destCode {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--text-muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.destBody {
+  min-height: 34px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-3);
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: normal;
+}
+
+.tagSuccess {
+  background: var(--success-soft);
+  border-color: transparent;
+  color: var(--success);
+}
+
+.tagWarning {
+  background: var(--warning-soft);
+  border-color: transparent;
+  color: var(--warning);
+}
+
+.statusPending,
+.statusSuccess,
+.statusError {
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  padding: 9px 13px;
+  font-size: 12px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.statusSuccess {
+  border-color: var(--success);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.statusError {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* --- RuleDiffModal --- */
+
+.diffDialog {
+  width: calc(100% - 32px);
+  max-width: 860px;
+  max-height: 88vh;
+  overflow: auto;
+  /* Tailwind's reset zeroes the UA dialog margin; restore native centering. */
+  margin: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-strong);
+}
+
+.dialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+}
+
+.dialogTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.dialogTitle h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.diffGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  font: 12px var(--font-mono);
+}
+
+.diffCol {
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+}
+
+.diffCol + .diffCol {
+  border-left: 1px solid var(--border);
+}
+
+.diffLabel {
+  margin-bottom: 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.diffLine {
+  padding: 0 4px;
+  white-space: pre-wrap;
+  color: var(--body-ink);
+}
+
+.diffRemove {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.diffAdd {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.confirmLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.confirmLine input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  flex: none;
+  accent-color: var(--brand);
+}
+
+.dialogFooter {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 760px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .menu {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .menuEyebrow {
+    width: 100%;
+    margin: 3px 0 4px;
+  }
+
+  .menuEyebrow:not(:first-child) {
+    margin-top: 10px;
+  }
+
+  .ruleChoice {
+    width: auto;
+    font-size: 11px;
+  }
+
+  .ruleMain {
+    padding: 16px;
+  }
+
+  .reader,
+  .editor {
+    min-height: 200px;
+    padding: 12px;
+    font-size: 11px;
+  }
+
+  .destinationGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .destBody {
+    min-height: 0;
+  }
+
+  .destinationGrid,
+  .diffGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .diffCol + .diffCol {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .dialogBody {
+    padding: 18px;
+  }
+}
