@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
 import type { SubscriptionsPayload } from "@/server/collectors/subscriptions";
 import { formatResetLine, usageWindows } from "@/lib/usageWindows";
+import { ModalDialog } from "./ModalDialog";
 
 export { formatResetLine, highestWindow } from "@/lib/usageWindows";
 
@@ -89,26 +89,14 @@ export function ProviderUsageModal({
   tMission: (key: string, values?: Record<string, string | number>) => string;
   onClose: () => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
-  }, []);
-
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={tMission("rings.detailsTitle")}
+    <ModalDialog
       onClose={onClose}
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
       onClick={(e) => {
         // native <dialog>: a click on the element itself (not a child) is the backdrop.
-        if (e.target === dialogRef.current) onClose();
+        if (e.target === e.currentTarget) onClose();
       }}
+      aria-label={tMission("rings.detailsTitle")}
       className="w-[min(92vw,420px)] rounded-lg border border-line bg-surface p-0 backdrop:bg-base/60"
     >
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
@@ -150,6 +138,6 @@ export function ProviderUsageModal({
           );
         })}
       </div>
-    </dialog>
+    </ModalDialog>
   );
 }

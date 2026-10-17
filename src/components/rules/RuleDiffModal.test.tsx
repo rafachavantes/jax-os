@@ -7,7 +7,7 @@ vi.mock("next-intl", () => ({
   useLocale: () => "en-US",
 }));
 
-import { RuleDiffModal, requestRuleClose } from "./RuleDiffModal";
+import { RuleDiffModal } from "./RuleDiffModal";
 
 describe("RuleDiffModal", () => {
   it("renders a native dialog with the diff and a pending apply control", () => {
@@ -111,15 +111,5 @@ describe("RuleDiffModal", () => {
       }),
     );
     expect(html).toContain("previewStale");
-  });
-});
-
-describe("requestRuleClose (dialog pending-close guard)", () => {
-  it("blocks close while a write is pending and allows it once settled", () => {
-    const close = vi.fn();
-    requestRuleClose(true, close);
-    expect(close).not.toHaveBeenCalled();
-    requestRuleClose(false, close);
-    expect(close).toHaveBeenCalledTimes(1);
   });
 });

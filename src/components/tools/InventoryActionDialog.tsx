@@ -1,13 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import type { InventoryItem, InventoryPreview } from "@/server/collectors/inventory"; // type-only
+import { ModalDialog } from "../ModalDialog";
 import css from "./tools.module.css";
-
-export function requestInventoryClose(pending: boolean, close: () => void) {
-  if (!pending) close();
-}
 
 export function InventoryActionDialog({
   item,
@@ -35,24 +32,14 @@ export function InventoryActionDialog({
   onClose: () => void;
 }) {
   const t = useTranslations("tools.inv");
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const [confirmed, setConfirmed] = useState(false);
   const busy = pending || status?.tone === "pending";
 
-  useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
-  }, []);
-
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={t("dialogTitle")}
+    <ModalDialog
+      pending={busy}
       onClose={onClose}
-      onCancel={(e) => {
-        e.preventDefault();
-        requestInventoryClose(busy, onClose);
-      }}
+      aria-label={t("dialogTitle")}
       className={css.invDialog}
     >
       <div className={css.invDialogBody}>
@@ -114,6 +101,6 @@ export function InventoryActionDialog({
           </button>
         </div>
       </div>
-    </dialog>
+    </ModalDialog>
   );
 }
