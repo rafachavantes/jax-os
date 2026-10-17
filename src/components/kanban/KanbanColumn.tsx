@@ -39,8 +39,8 @@ export async function moveIssue(opts: {
 type Props = {
   state: KanbanState;
   issues: KanbanIssue[];
-  onDropIssue?: (issueId: string, stateId: string) => void;
-  onOpenIssue?: (issue: KanbanIssue) => void;
+  onDropIssue: (issueId: string, stateId: string) => void;
+  onOpenIssue: (issue: KanbanIssue) => void;
 };
 
 export function KanbanColumn({ state, issues, onDropIssue, onOpenIssue }: Props) {
@@ -53,15 +53,12 @@ export function KanbanColumn({ state, issues, onDropIssue, onOpenIssue }: Props)
       }`}
       onDragOver={(e) => {
         // preventDefault is REQUIRED or onDrop never fires (native DnD)
-        if (onDropIssue) {
-          e.preventDefault();
-          setOver(true);
-        }
+        e.preventDefault();
+        setOver(true);
       }}
       onDragLeave={() => setOver(false)}
       onDrop={(e) => {
         setOver(false);
-        if (!onDropIssue) return;
         const issueId = e.dataTransfer.getData("text/plain");
         if (issueId) onDropIssue(issueId, state.id);
       }}
@@ -79,12 +76,8 @@ export function KanbanColumn({ state, issues, onDropIssue, onOpenIssue }: Props)
           <IssueCard
             key={i.id}
             issue={i}
-            onDragStart={
-              onDropIssue
-                ? (e) => e.dataTransfer.setData("text/plain", i.id)
-                : undefined
-            }
-            onOpen={onOpenIssue ? () => onOpenIssue(i) : undefined}
+            onDragStart={(e) => e.dataTransfer.setData("text/plain", i.id)}
+            onOpen={() => onOpenIssue(i)}
           />
         ))}
       </div>
