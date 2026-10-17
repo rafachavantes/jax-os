@@ -28,7 +28,6 @@ import jaxflow_env as jenv
 NATIVE_CAP = 1024 * 1024
 INPUT_CAP = 64 * 1024
 OUTPUT_CAP = 4 * 1024 * 1024
-PROVENANCE_CAP = 32 * 1024
 OWNERSHIP_WALK_CAP = 4096
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 LOCAL_PLUGIN_SUFFIXES = (".js", ".ts", ".tsx")
@@ -456,8 +455,6 @@ def _snapshot_claude(roots):
     doc = _claude_doc(roots)
     items = _claude_plugin_items(doc, path)
     overrides = doc.get("skillOverrides")
-    if overrides is not None and type(overrides) is not dict:
-        raise Refusal("inventory-format-unsupported")
     items.extend(_claude_override_items(doc, path))
     items.extend(_scan_skill_dirs("claude", Path(roots["claude_dir"]) / "skills", roots, overrides=overrides))
     enabled = doc.get("enabledPlugins") or {}
@@ -803,7 +800,7 @@ def _revision_for(roots, item):
     return _revision_with_source(roots, item, _source_bytes(roots, item["executor"]))
 
 
-def _claude_edit_text(root_text, doc, item, change, provenance):
+def _claude_edit_text(root_text, doc, item, change):
     if root_text is None:
         raise Refusal("inventory-format-unsupported")
     if item["kind"] == "plugin" and item["origin"] == "settings":
@@ -815,32 +812,6 @@ def _claude_edit_text(root_text, doc, item, change, provenance):
             raise Refusal("inventory-already-settled")
         edits = [{"path": ["enabledPlugins", item["registration"]], "value": target_enabled}]
         return sio.edit_source(root_text, edits, jsonc=False)["text"], {"prior": plugins[item["registration"]]}
-    if item["kind"] == "skill" and item["origin"] == "skill-override":
-        overrides = doc.get("skillOverrides")
-        if type(overrides) is not dict or item["registration"] not in overrides:
-            raise Refusal("inventory-item-unknown")
-        prior = overrides[item["registration"]]
-        if change == "disable":
-            new_value = "off"
-        elif change == "enable":
-            prov = provenance if type(provenance) is dict else {}
-            if prov.get("selector") != item["registration"]:
-                raise Refusal("inventory-no-managed-state")
-            if "prior" not in prov:
-                raise Refusal("inventory-no-managed-state")
-            prior = prov.get("prior")
-            if prov.get("priorPresent") is False or prior is None:
-                return sio.edit_source(root_text, [{"path": ["skillOverrides", item["registration"]], "remove": True}], jsonc=False)["text"], {
-                    "prior": None, "priorPresent": False,
-                }
-            if prior not in CLAUDE_OVERRIDE_VALUES:
-                raise Refusal("inventory-no-managed-state")
-            return sio.edit_source(root_text, [{"path": ["skillOverrides", item["registration"]], "value": prior}], jsonc=False)["text"], {
-                "prior": prior, "priorPresent": True,
-            }
-        else:
-            raise Refusal("inventory-unsupported")
-        return sio.edit_source(root_text, [{"path": ["skillOverrides", item["registration"]], "value": new_value}], jsonc=False)["text"], {"prior": prior}
     raise Refusal("inventory-unsupported")
 
 
@@ -972,11 +943,10 @@ class _ProtectedWriter:
             os.close(parent_fd)
 
 
-def _check_symlink_free_tree(root, cap=None):
+def _check_symlink_free_tree(root):
     """Complete ownership walk: no symlinked ancestor/descendant, no hard-linked
     file, bounded entries. Refuses inability to prove ownership."""
     root = Path(root)
-    limit = OWNERSHIP_WALK_CAP if cap is None else cap
     try:
         root_info = root.lstat()
     except OSError as exc:
@@ -993,7 +963,7 @@ def _check_symlink_free_tree(root, cap=None):
         except OSError as exc:
             raise Refusal("inventory-permissions") from exc
         seen += 1
-        if seen > limit:
+        if seen > OWNERSHIP_WALK_CAP:
             raise Refusal("inventory-too-large")
         if stat.S_ISLNK(info.st_mode):
             raise Refusal("inventory-symlink")
@@ -1200,8 +1170,6 @@ def preview(roots, item_id, change, provenance=None):
             effect = f"{change} skill {item['name']}"
             if change == "disable":
                 restoration = _disable_restoration(roots, item)
-            else:
-                restoration = _enable_restoration(roots, item)
     elif change == "remove-registration":
         if item["origin"] != "registration-link" and not (item["executor"] == "opencode" and item["origin"] == "config-array"):
             raise Refusal("inventory-unsupported")
@@ -1265,12 +1233,6 @@ def _disable_restoration(roots, item):
     return None
 
 
-def _enable_restoration(roots, item):
-    """Reconstruct the prior policy a managed disable recorded (the stored
-    provenance is passed by the route on apply; preview only reflects it)."""
-    return None
-
-
 def _apply_inventory_claim(roots):
     return jset.configuration_claim(Path(roots["jax_os"]) / "inventory.lock", create=True)
 
@@ -1330,7 +1292,7 @@ def _candidate_edit(roots, executor, item, change, provenance):
         doc = _parse_json(root_text)
         if item["kind"] == "skill" and item["origin"] in ("independent", "skill-override"):
             return _claude_skill_text(root_text, doc, item, change, provenance, roots)
-        return _claude_edit_text(root_text, doc, item, change, provenance)
+        return _claude_edit_text(root_text, doc, item, change)
     if executor == "codex":
         raw = _read_bytes(_codex_config_path(roots))
         root_text = raw.decode("utf-8") if raw is not None else ""
@@ -1535,7 +1497,7 @@ def _claude_change(roots, item, change, expected_revision, operation_id, provena
             text, prov = _claude_skill_text(root_text, doc, item, change, provenance, roots)
             _ProtectedWriter(path, operation_id).write(text, root_text.encode("utf-8") if root_text else b"")
             return {"effect": "applied", "provenance": prov, "requiresNewSession": True}
-        text, prov = _claude_edit_text(root_text, doc, item, change, provenance)
+        text, prov = _claude_edit_text(root_text, doc, item, change)
         _ProtectedWriter(path, operation_id).write(text, root_text.encode("utf-8") if root_text else b"")
     return {"effect": "applied", "provenance": {"prior": prov["prior"]}, "requiresNewSession": True}
 
@@ -1632,20 +1594,19 @@ def _publish_opencode_edit(paths, texts, target_name, new_text, operation_id):
         {"reviewers": settings["reviewers"], "builders": settings["builders"]}, operation_id, candidates
     )
     expected_sources = {name: jset._source_token(Path(paths[name])) for name in jset.SOURCE_FILES}
-    result = sio.publish_candidates(
+    return sio.publish_candidates(
         operation_id, paths, candidates,
         affected=[target_name],
         expected_sources=expected_sources,
         expected_settings=settings["revision"],
         settings_spec={"raw": settings_raw, "revision": revision},
     )
-    return result
 
 
-def _opencode_skill_change(roots, item, change, operation_id, provenance, expected_revision=None):
+def _opencode_skill_change(roots, item, change, operation_id, provenance, expected_revision):
     paths = _settings_paths(roots)
     with jset.configuration_claim(Path(paths["lock"]), create=True):
-        if expected_revision is not None and _revision_for(roots, item) != expected_revision:
+        if _revision_for(roots, item) != expected_revision:
             raise Refusal("inventory-source-changed")
         texts, values = sio._load_sources(paths)
         target_name = _opencode_source_name(roots, item)
@@ -1653,8 +1614,7 @@ def _opencode_skill_change(roots, item, change, operation_id, provenance, expect
         if type(value) is not dict:
             raise Refusal("inventory-source-changed")
         new_text, prov_out = _opencode_skill_edit_text(texts[target_name], value, item, change, provenance)
-        edited_text = new_text if isinstance(new_text, str) else new_text
-        result = _publish_opencode_edit(paths, texts, target_name, edited_text, operation_id)
+        result = _publish_opencode_edit(paths, texts, target_name, new_text, operation_id)
         if change == "disable":
             result = {**result, "provenance": prov_out}
         return result

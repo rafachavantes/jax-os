@@ -1172,3 +1172,9 @@ def test_revision_digests_are_pinned():
     skill = {"path": "/c/settings.json", "executor": "claude", "kind": "skill", "registration": "s"}
     assert inv._revision_with_source(r, skill, b"{}") == "79e3e304d3c346db762afa75157ceb86546caf9d6980628649e747d4fb8feea9"
     assert inv._revision_with_source(r, skill, None) == "5d7408ab75d78e7aee70b4c164f6ecf297107b5c8008aeedfa4209d0c2246639"
+
+
+def test_claude_snapshot_refuses_a_non_object_skill_overrides_map(tmp_path):
+    r = roots(tmp_path)
+    write(Path(r["claude_dir"]) / "settings.json", '{"skillOverrides": ["off"]}')
+    assert inv.snapshot(r)["executors"]["claude"] == {"ok": False, "error": "inventory-format-unsupported", "items": []}
