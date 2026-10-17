@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""$JAXOS_HOME/settings.json schema, reader, writer (MOA-497 Build A). Mirrors
+"""$JAXOS_HOME/settings.json schema, reader (MOA-497 Build A). Mirrors
 src/server/settings.ts field-for-field -- same JSON keys, same closed-object rule at every
 level, same independent-nested-defaults rule. Stdlib only, plus the local jaxflow_env
 resolver."""
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
 import stat
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 import jaxflow_env as jenv
@@ -178,65 +174,3 @@ def read_settings(path=None):
         return {"ok": True, "data": parse_settings(parsed)}
     except SettingsError as exc:
         return {"ok": False, "error": exc.code}
-
-
-def _check_audit_store(db_path):
-    """Round 1 F1: raise BEFORE any write to settings.json if the mutations audit store is
-    unavailable -- a missing jaxos.db, or a jaxos.db without the mutations table (an
-    unmigrated or foreign file), must fail the whole write, never silently skip the audit
-    row and still replace the file."""
-    if not db_path.exists():
-        raise SettingsError("settings-audit-unavailable")
-    con = sqlite3.connect(db_path, timeout=5)
-    try:
-        con.execute("SELECT 1 FROM mutations LIMIT 1")
-    except sqlite3.OperationalError:
-        raise SettingsError("settings-audit-unavailable")
-    finally:
-        con.close()
-
-
-def _record_mutation(db_path, changed):
-    con = sqlite3.connect(db_path, timeout=5)
-    try:
-        with con:
-            con.execute(
-                "INSERT INTO mutations (ts, kind, ok, error, payload) VALUES (?, ?, ?, ?, ?)",
-                (
-                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-3] + "Z",
-                    "general-settings-write", 1, None, json.dumps({"changed": changed}),
-                ),
-            )
-    finally:
-        con.close()
-
-
-def write_settings(data, *, path=None, db_path=None):
-    """Atomic mkstemp+os.replace in the settings file's own directory -- a fresh unique
-    name per call (round 1 F4: two concurrent writers never share a temp file) -- mirroring
-    collect_metrics.py's own connect/with/close mutations-write pattern (same WAL-mode
-    jaxos.db, two writer processes by design). The audit store is checked BEFORE any disk
-    write (round 1 F1): an unavailable mutations table raises SettingsError and leaves
-    settings.json untouched, never a silent skip. No transaction spans the replace and the
-    insert (round 2 F2, accepted as LOW): an insert failure after the replace raises
-    SettingsError("settings-audit-failed") -- the file change stands."""
-    path = path or (jenv.jaxos_home() / "settings.json")
-    db_path = db_path if db_path is not None else jenv.jaxos_home() / "jaxos.db"
-    _check_audit_store(db_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, indent=2) + "\n")
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
-    # Round 2 F2 (downgraded HIGH->LOW, accepted at that severity): no transaction spans the
-    # replace above and this insert -- the file change already stands by the time we get
-    # here. A failure here is reported as a distinct named error, never swallowed, but it is
-    # NOT rolled back (KISS; see round 2 triage).
-    try:
-        _record_mutation(db_path, list(data.keys()))
-    except sqlite3.Error as exc:
-        raise SettingsError("settings-audit-failed") from exc
