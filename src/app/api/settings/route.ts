@@ -3,7 +3,7 @@ import { parseSettings, readGeneralSettings, writeGeneralSettings } from "../../
 import { envFileStatus } from "../../../server/envFile";
 import { nativeCredentialsConfigured } from "../../../server/collectors/subscriptions";
 import { getDb } from "../../../server/db";
-import { readJsonCapped, requireSameOrigin } from "../../../server/api";
+import { readJsonObject } from "../../../server/api";
 import { SMALL_JSON_CAP } from "../../../server/inputLimits";
 
 export const dynamic = "force-dynamic";
@@ -29,13 +29,9 @@ export async function GET() {
 const TOP_KEYS = ["ownerName", "locale", "reposRoot", "vaultPath", "monitoredUnits", "integrations"] as const;
 
 export async function PUT(req: Request) {
-  const csrf = requireSameOrigin(req);
-  if (csrf) return csrf;
-  const body = await readJsonCapped(req, SMALL_JSON_CAP);
-  if (!body.ok) return NextResponse.json({ ok: false, error: body.error });
-  const payload = body.value;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload))
-    return NextResponse.json({ ok: false, error: "invalid payload" });
+  const parsed = await readJsonObject(req, SMALL_JSON_CAP);
+  if ("error" in parsed) return parsed.error;
+  const payload = parsed.payload;
 
   const current = readGeneralSettings();
   if (!current.ok && current.error === "settings-unreadable") {

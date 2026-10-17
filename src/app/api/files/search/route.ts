@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { gateVaultScope, parseScope, searchByName } from "../../../../server/collectors/files";
-import { readGeneralSettings } from "../../../../server/settings";
+import { vaultUsableNow } from "../../../../server/gates";
 import { boundedString } from "../../../../server/inputLimits";
 
 export const dynamic = "force-dynamic";
@@ -11,8 +11,7 @@ export async function GET(req: Request) {
   if (!boundedString(q, 256, true)) return NextResponse.json({ ok: false, error: "invalid payload" });
   const scope = parseScope(url.searchParams.get("scope"));
   if (!scope) return NextResponse.json({ ok: false, error: "invalid payload" });
-  const settings = readGeneralSettings();
-  const gated = gateVaultScope(scope, settings.ok && settings.data.integrations.vault && settings.data.vaultPath !== null);
+  const gated = gateVaultScope(scope, vaultUsableNow());
   if (gated === "refuse") return NextResponse.json({ ok: false, error: "disabled" });
   try {
     const result = await searchByName(q, gated, req.signal);

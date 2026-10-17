@@ -1,18 +1,14 @@
 import { NextResponse } from "next/server";
 import { gateVaultRoot, ROOTS, createEntry, type Root } from "../../../../server/collectors/files";
-import { readGeneralSettings } from "../../../../server/settings";
+import { vaultUsableNow } from "../../../../server/gates";
 import { fileEffect, runMutation } from "../../../../server/mutations";
-import { readJsonCapped, requireSameOrigin } from "../../../../server/api";
+import { readJsonObject } from "../../../../server/api";
 import { SMALL_JSON_CAP, validBasename, validRel } from "../../../../server/inputLimits";
 
 export async function POST(req: Request) {
-  const csrf = requireSameOrigin(req);
-  if (csrf) return csrf;
-  const body = await readJsonCapped(req, SMALL_JSON_CAP);
-  if (!body.ok) return NextResponse.json({ ok: false, error: body.error });
-  const payload = body.value;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload))
-    return NextResponse.json({ ok: false, error: "invalid payload" });
+  const parsed = await readJsonObject(req, SMALL_JSON_CAP);
+  if ("error" in parsed) return parsed.error;
+  const payload = parsed.payload;
   const { root, relParentDir, basename, kind } = payload as Record<string, unknown>;
   if (
     !(typeof root === "string" && Object.hasOwn(ROOTS, root)) ||
@@ -22,8 +18,7 @@ export async function POST(req: Request) {
   ) {
     return NextResponse.json({ ok: false, error: "invalid payload" });
   }
-  const settings = readGeneralSettings();
-  if (gateVaultRoot(root, settings.ok && settings.data.integrations.vault && settings.data.vaultPath !== null)) {
+  if (gateVaultRoot(root, vaultUsableNow())) {
     return NextResponse.json({ ok: false, error: "disabled" });
   }
   const result = await runMutation(

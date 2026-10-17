@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { LIMITS, RUN_ID_RE } from "../../../../lib/workflow";
 import { MutationRejected } from "../../../../lib/mutationOutcome";
-import { readJsonCapped, requireSameOrigin } from "../../../../server/api";
+import { readJsonObject } from "../../../../server/api";
 import { runMutation } from "../../../../server/mutations";
 import {
   CANCEL_TIMEOUT_MS, childDetails, jaxflow, lastLine, runChild, type ChildResult, type ChildRunner,
@@ -13,12 +13,9 @@ const systemDeps: CancelRouteDeps = { run: runChild };
 // Spec Decision 5: exactly `jaxflow cancel <run_id>` — no cwd (the verb is repo-independent), no
 // caller identity, a 25s child timeout above cmd_cancel's own 15s wait.
 export async function handleCancelPost(req: Request, deps: CancelRouteDeps = systemDeps) {
-  const guard = requireSameOrigin(req);
-  if (guard) return guard;
-  const read = await readJsonCapped(req, LIMITS.requestBytes);
-  if (!read.ok) return NextResponse.json({ ok: false, error: read.error });
-  const body = read.value;
-  if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ ok: false, error: "invalid payload" });
+  const parsed = await readJsonObject(req, LIMITS.requestBytes);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.payload;
   const { run_id } = body as Record<string, unknown>;
   if (typeof run_id !== "string" || !RUN_ID_RE.test(run_id)) return NextResponse.json({ ok: false, error: "invalid payload" });
 

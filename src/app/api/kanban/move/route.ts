@@ -1,22 +1,15 @@
 import { NextResponse } from "next/server";
 import { moveIssue } from "../../../../server/collectors/linear";
-import { readGeneralSettings } from "../../../../server/settings";
+import { linearEnabled } from "../../../../server/gates";
 import { runMutation } from "../../../../server/mutations";
-import { readJsonCapped, requireSameOrigin } from "../../../../server/api";
+import { readJsonObject } from "../../../../server/api";
 import { SMALL_JSON_CAP, boundedString } from "../../../../server/inputLimits";
 
 export async function POST(req: Request) {
-  const settings = readGeneralSettings();
-  if (!(settings.ok && settings.data.integrations.linear)) {
-    return NextResponse.json({ ok: false, error: "disabled" });
-  }
-  const csrf = requireSameOrigin(req);
-  if (csrf) return csrf;
-  const body = await readJsonCapped(req, SMALL_JSON_CAP);
-  if (!body.ok) return NextResponse.json({ ok: false, error: body.error });
-  const payload = body.value;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload))
-    return NextResponse.json({ ok: false, error: "invalid payload" });
+  if (!linearEnabled()) return NextResponse.json({ ok: false, error: "disabled" });
+  const parsed = await readJsonObject(req, SMALL_JSON_CAP);
+  if ("error" in parsed) return parsed.error;
+  const payload = parsed.payload;
   const { issueId, stateId } = payload as { issueId?: unknown; stateId?: unknown };
   if (!boundedString(issueId, 256) || !boundedString(stateId, 256)) {
     return NextResponse.json({ ok: false, error: "invalid payload" });
