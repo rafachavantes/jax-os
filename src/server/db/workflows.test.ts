@@ -456,6 +456,19 @@ describe("claimAnswer", () => {
     expect(db.prepare("SELECT COUNT(*) AS c FROM mutations").get()).toEqual({ c: 1 });
     db.close();
   });
+
+  it("claimAnswer treats an unparseable or non-object stored question payload as not-pending", () => {
+    const db = openDb(":memory:");
+    for (const raw of ["{not json", "[1]", "5", "null"]) {
+      const q = insertEvent(db, question("t-corrupt"), NOW);
+      db.prepare("UPDATE workflow_events SET payload = ? WHERE id = ?").run(raw, q.id);
+      expect(claimAnswer(db, { question_event_id: q.id, reply: "0: 0" }, NOW)).toEqual({
+        ok: false, reason: "not-pending",
+      });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM workflow_answer_claims").get()).toEqual({ n: 0 });
+    }
+    db.close();
+  });
 });
 
 describe("claimAnswer — reads pane/tmux_incarnation off the question row, leadTarget deleted (D1)", () => {
@@ -1106,6 +1119,32 @@ describe("evaluateStaleness (§4.4.1-4.4.2, TS/TSt algorithm)", () => {
     const { candidates } = evaluateStaleness(db, STALE_NOW, new Set(["%1"]), INC);
     expect(candidates).toEqual([expect.objectContaining({ referenceEventId: ref.id, reason: "possibly-stuck" })]);
   });
+
+  it("a waiting capsule not yet overdue settles the pane — no no-signal fallback even when quiet > 120 min", () => {
+    const db = openDb(":memory:");
+    seedTurnStopped(db, { payload: { capsule_status: "waiting", capsule_minutes: 300, capsule_rule: "tag" } },
+      new Date(STALE_NOW - 130 * 60 * 1000));
+    expect(evaluateStaleness(db, STALE_NOW, new Set(["%1"]), INC).candidates).toEqual([]);
+    db.close();
+  });
+
+  it("possibly-stuck carries the exact payload", () => {
+    const db = openDb(":memory:");
+    const ref = seedTurnStopped(db);
+    const { candidates } = evaluateStaleness(db, STALE_NOW, new Set(["%1"]), INC);
+    expect(candidates[0].payload).toEqual({
+      reason: "possibly-stuck", capsule_minutes: 1, declared_at: ref.ts, overdue_by_s: 120, reference_event_id: ref.id,
+    });
+    db.close();
+  });
+
+  it("an unparseable stored ts on a waiting capsule emits no candidate (NaN deadline)", () => {
+    const db = openDb(":memory:");
+    const ref = seedTurnStopped(db);
+    db.prepare("UPDATE workflow_events SET ts = 'not-a-date' WHERE id = ?").run(ref.id);
+    expect(evaluateStaleness(db, STALE_NOW, new Set(["%1"]), INC).candidates).toEqual([]);
+    db.close();
+  });
 });
 
 type TmuxCandidate = Extract<StalenessCandidate, { transport: "tmux" }>;
@@ -1694,6 +1733,24 @@ describe("getProjectPanes (§4.1, Findings 4/5)", () => {
     expect(panesB[0].capsule).toMatchObject({ status: "needs_input" });
     expect(panesB[0].pendingQuestion).toMatchObject({ payload: { tool_use_id: "tu_b" } });
 
+    db.close();
+  });
+
+  it("pendingQuestionFor surfaces a question with a corrupt payload as an empty body", () => {
+    const db = openDb(":memory:");
+    setAfkOn(db);
+    const q = insertEvent(
+      db,
+      { run_id: null, project: "p1", role: "lead", type: "question", source: "deterministic",
+        emitter: "claude-pretool", pane: "%1", tmux_incarnation: "100:1",
+        payload: { tool_use_id: "tu_corrupt", questions: [{ question: "corrupt?", options: [{ label: "a" }] }] } },
+      new Date("2026-08-27T10:00:00Z"),
+    );
+    db.prepare("UPDATE workflow_events SET payload = ? WHERE id = ?").run("{not json", q.id);
+    const live: LiveSnapshot = { paneCommands: new Map(), paneIds: new Set(["%1"]), incarnation: "100:1" };
+    expect(getProjectPanes(db, "p1", live)[0].pendingQuestion).toEqual({
+      eventId: q.id, pane: "%1", tmuxIncarnation: "100:1", payload: {},
+    });
     db.close();
   });
 });
@@ -2887,6 +2944,22 @@ describe("MOA-464 — unfinished run hub projection", () => {
     db.close();
   });
 
+  it("lastRunFor bounds the stored run-started kind/runtime/target the same way activeRunsFor does", () => {
+    const db = openDb(":memory:");
+    start(db, { run_id: "spec-run" }, { kind: "spec", runtime: "claude", target: "docs/specs/x-spec.md" }, T_BUILD);
+    finish(db, { run_id: "spec-run" }, {}, T_DIFF);
+    expect(lastRunFor(db, "p1")).toMatchObject({ kind: "spec", runtime: "claude", target: "x-spec.md" });
+
+    start(db, { run_id: "ctrl-run" }, { kind: "build", runtime: "claude", target: "feat/a\u0007b" }, T_BUILD);
+    finish(db, { run_id: "ctrl-run" }, {}, T_DIFF);
+    expect(lastRunFor(db, "p1")).toMatchObject({ kind: "build", target: null });
+
+    start(db, { run_id: "bogus-run" }, { kind: "bogus", runtime: "bogus", target: "feat/x" }, T_BUILD);
+    finish(db, { run_id: "bogus-run" }, {}, T_DIFF);
+    expect(lastRunFor(db, "p1")).toMatchObject({ kind: null, runtime: null, target: null });
+    db.close();
+  });
+
   it("carries findings through only when the stored payload has a valid one", () => {
     const db = openDb(":memory:");
     start(db, { run_id: "r1", role: "reviewer" }, { kind: "diff", runtime: "codex", target: "feat/old" }, T_BUILD);
@@ -3323,6 +3396,58 @@ describe("MOA-469 — native Codex staleness", () => {
     setAfkOn(db);
     expect(maybeInsertStalenessAlert(db, cand, now)).toBe(true);
     expect(maybeInsertStalenessAlert(db, cand, now)).toBe(false); // dedup by reference
+    db.close();
+  });
+
+  it("done/needs_input/blocked codex capsules never alert regardless of age", () => {
+    for (const status of ["done", "needs_input", "blocked"]) {
+      const db = openDb(":memory:");
+      insertEvent(db, codexStop({ payload: { capsule_status: status, capsule_rule: "tag" } }), new Date("2026-09-10T00:00:00.000Z"));
+      const r = evaluateStaleness(db, Date.parse("2026-09-10T20:00:00.000Z"), LIVE.paneIds, null, SNAP([idleThread()]));
+      expect(r.candidates.filter((c) => c.transport === "codex")).toEqual([]);
+      db.close();
+    }
+  });
+
+  it("a waiting codex capsule not yet overdue settles the session — no no-signal fallback", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, codexStop({ payload: { capsule_status: "waiting", capsule_minutes: 300, capsule_rule: "tag" } }), new Date("2026-09-10T00:00:00.000Z"));
+    const now = Date.parse("2026-09-10T02:10:00.000Z"); // 130 min quiet, deadline 300 min out
+    expect(evaluateStaleness(db, now, LIVE.paneIds, null, SNAP([idleThread()])).candidates.filter((c) => c.transport === "codex")).toEqual([]);
+    db.close();
+  });
+
+  it("an unknown codex capsule falls through to the no-signal fallback", () => {
+    const db = openDb(":memory:");
+    const stop = insertEvent(db, codexStop({ payload: { capsule_status: "unknown", capsule_rule: "abandoned" } }), new Date("2026-09-10T00:00:00.000Z"));
+    const now = Date.parse("2026-09-10T02:05:00.000Z"); // 125 min
+    expect(evaluateStaleness(db, now, LIVE.paneIds, null, SNAP([idleThread()])).candidates.filter((c) => c.transport === "codex")).toEqual([
+      expect.objectContaining({
+        transport: "codex", threadId: UUID, reason: "no-signal", referenceEventId: stop.id,
+        payload: { reason: "no-signal", since: stop.ts, quiet_for_s: 7500, reference_event_id: stop.id },
+      }),
+    ]);
+    db.close();
+  });
+
+  it("an unparseable stored ts on a waiting codex capsule emits no candidate (NaN deadline)", () => {
+    const db = openDb(":memory:");
+    const stop = insertEvent(db, codexStop({ payload: { capsule_status: "waiting", capsule_minutes: 1, capsule_rule: "tag" } }), new Date("2026-09-10T00:00:00.000Z"));
+    db.prepare("UPDATE workflow_events SET ts = 'not-a-date' WHERE id = ?").run(stop.id);
+    const now = Date.parse("2026-09-10T20:00:00.000Z");
+    expect(evaluateStaleness(db, now, LIVE.paneIds, null, SNAP([idleThread()])).candidates.filter((c) => c.transport === "codex")).toEqual([]);
+    db.close();
+  });
+
+  it("codex possibly-stuck carries the exact payload", () => {
+    const db = openDb(":memory:");
+    const stop = insertEvent(db, codexStop({ payload: { capsule_status: "waiting", capsule_minutes: 1, capsule_rule: "tag" } }), new Date("2026-09-10T00:00:00.000Z"));
+    const now = Date.parse("2026-09-10T00:03:01.000Z");
+    const r = evaluateStaleness(db, now, LIVE.paneIds, null, SNAP([idleThread()]));
+    const cand = r.candidates.find((c) => c.transport === "codex");
+    expect(cand!.payload).toEqual({
+      reason: "possibly-stuck", capsule_minutes: 1, declared_at: stop.ts, overdue_by_s: 1, reference_event_id: stop.id,
+    });
     db.close();
   });
 });
