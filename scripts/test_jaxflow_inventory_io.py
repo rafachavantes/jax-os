@@ -1085,3 +1085,90 @@ def test_opencode_scalar_restore_refuses_a_concurrent_unrelated_permission(tmp_p
             OP2, provenance=prov,
         )
     assert exc.value.code == "inventory-source-changed"
+
+
+# ---- Lote C2 characterization: directory scans, restoration shapes, pinned digests ----
+
+# (executor bucket, directory the scan lists, two children created inside it)
+DIR_SCAN_CASES = [
+    ("claude", "claude/skills", ["a/SKILL.md", "b/SKILL.md"]),
+    ("claude", "claude/agents", ["a.md", "b.md"]),
+    ("claude", "claude/plugins/cache", ["m1/x", "m2/x"]),
+    ("claude", "claude/plugins/cache/mp", ["p1/x", "p2/x"]),
+    ("claude", "claude/plugins/cache/mp/pl", ["1.0.0/x", "2.0.0/x"]),
+    ("opencode", "config/opencode/plugin", ["a.js", "b.js"]),
+]
+
+
+@pytest.mark.parametrize("executor,rel,children", DIR_SCAN_CASES)
+@pytest.mark.parametrize("failure,code", [("too-large", "inventory-too-large"), ("unreadable", "inventory-permissions")])
+def test_snapshot_dir_scans_refuse_oversized_and_unreadable_dirs(tmp_path, monkeypatch, executor, rel, children, failure, code):
+    r = roots(tmp_path)
+    for child in children:
+        write(tmp_path / rel / child, "x")
+    if failure == "too-large":
+        monkeypatch.setattr(inv, "OWNERSHIP_WALK_CAP", 1)
+    else:
+        target, real_iterdir = tmp_path / rel, Path.iterdir
+
+        def fake_iterdir(self):
+            if self == target:
+                raise PermissionError("denied")
+            return real_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+    bucket = inv.snapshot(r)["executors"][executor]
+    assert bucket == {"ok": False, "error": code, "items": []}
+
+
+@pytest.mark.parametrize("failure,code", [("too-large", "inventory-too-large"), ("unreadable", "inventory-permissions")])
+def test_path_fingerprint_refuses_oversized_and_unreadable_dirs(tmp_path, monkeypatch, failure, code):
+    d = tmp_path / "skilldir"
+    write(d / "a", "1")
+    write(d / "b", "2")
+    if failure == "too-large":
+        monkeypatch.setattr(inv, "OWNERSHIP_WALK_CAP", 1)
+    else:
+        real_iterdir = Path.iterdir
+
+        def fake_iterdir(self):
+            if self == d:
+                raise PermissionError("denied")
+            return real_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+    with pytest.raises(Refusal) as exc:
+        inv._path_fingerprint(d)
+    assert exc.value.code == code
+
+
+def test_opencode_disable_restoration_shapes(tmp_path):
+    cases = [
+        ('{"permission":{"skill":"ask"}}', {"container": "skill-scalar", "prior": "ask"}),
+        ('{"permission":"ask"}', {"container": "root-scalar", "prior": "ask"}),
+        ('{"permission":{"skill":{"a":"allow","mine":"ask","b":"deny"}}}',
+         {"selector": "mine", "prior": "ask", "priorPresent": True, "position": 1}),
+        ('{"permission":{"skill":{"a":"allow"}}}',
+         {"selector": "mine", "prior": None, "priorPresent": False, "position": None}),
+        ('{"permission":{"bash":"ask"}}', {"selector": "mine", "prior": None, "priorPresent": False}),
+        ('{}', {"selector": "mine", "prior": None, "priorPresent": False}),
+    ]
+    for n, (config, expected) in enumerate(cases):
+        r = roots(tmp_path / str(n))
+        write(Path(r["opencode_dir"]) / "skills" / "mine" / "SKILL.md", "# m\n")
+        write(Path(r["opencode_dir"]) / "opencode.jsonc", config)
+        items = inv.snapshot(r)["executors"]["opencode"]["items"]
+        item = next(i for i in items if i["name"] == "mine" and i["origin"] == "independent")
+        assert inv.preview(r, item["id"], "disable")["restoration"] == expected, config
+
+
+def test_revision_digests_are_pinned():
+    # Golden values captured from the pre-refactor implementation: stored revisions depend on them.
+    assert inv._managed_disable_digest_from("claude", "skill", "/x/y", b"abc") == "c6256f37ad720dbbe18d2c96876f2069fda5d8f0522673be0b3299f1459d1ee9"
+    assert inv._managed_disable_digest_from("codex", "skill", "/x/y", None) == "8e885f55ab76cb3f3d898eaf21f043064fde1966269856b95efab8a8e219941c"
+    r = {"claude_dir": "/c", "codex_dir": "/x", "opencode_dir": "/o", "jax_os": "/j"}
+    plugin = {"path": "", "executor": "claude", "kind": "plugin", "registration": "p@m"}
+    assert inv._revision_with_source(r, plugin, None) == "3c2c0c70279e32826fbb7ebb1be3ea2a78d2e7d0cf1ae14a41353f078573b496"
+    skill = {"path": "/c/settings.json", "executor": "claude", "kind": "skill", "registration": "s"}
+    assert inv._revision_with_source(r, skill, b"{}") == "79e3e304d3c346db762afa75157ceb86546caf9d6980628649e747d4fb8feea9"
+    assert inv._revision_with_source(r, skill, None) == "5d7408ab75d78e7aee70b4c164f6ecf297107b5c8008aeedfa4209d0c2246639"
