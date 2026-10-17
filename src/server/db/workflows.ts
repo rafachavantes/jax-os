@@ -1508,11 +1508,11 @@ function unfinishedRunStartedRows(db: Database.Database, project: string): RawRo
 }
 
 // The kind/runtime/target/startedAt fields both activeRunFor and activeRunsFor project off a
-// run-started row's own payload — factored out so the two never drift (activeRunsFor Task 1).
-function activeRunFields(row: WorkflowEventRow): {
-  runId: string; startedAt: string | null; kind: HubActiveRun["kind"]; runtime: HubActiveRun["runtime"]; target: string | null;
+// run-started row's own payload — factored out so the two never drift (activeRunsFor Task 1);
+// boundedRunFields is shared with lastRunFor too.
+function boundedRunFields(p: Record<string, unknown>): {
+  kind: HubActiveRun["kind"]; runtime: HubActiveRun["runtime"]; target: string | null;
 } {
-  const p = projectPayload("run-started", row.payload);
   const kind = typeof p.kind === "string" &&
     (RUN_KINDS as readonly string[]).includes(p.kind)
     ? p.kind as HubActiveRun["kind"] : null;
@@ -1525,8 +1525,14 @@ function activeRunFields(row: WorkflowEventRow): {
   const target = !kind || !rawTarget ? null
     : kind === "spec" || kind === "plan"
       ? rawTarget.split("/").at(-1) || null : rawTarget;
+  return { kind, runtime, target };
+}
+
+function activeRunFields(row: WorkflowEventRow): {
+  runId: string; startedAt: string | null; kind: HubActiveRun["kind"]; runtime: HubActiveRun["runtime"]; target: string | null;
+} {
   const startedAt = Number.isFinite(Date.parse(row.ts)) ? row.ts : null;
-  return { runId: row.run_id as string, startedAt, kind, runtime, target };
+  return { runId: row.run_id as string, startedAt, ...boundedRunFields(projectPayload("run-started", row.payload)) };
 }
 
 function activeRunFor(db: Database.Database, project: string, readChildLogTail: ChildLogTailReader | null = null): HubActiveRun | null {
@@ -1587,16 +1593,7 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
     .get(project, row.run_id) as { payload: string | null } | undefined;
   const sp = startedRow ? projectPayload("run-started", parseStoredPayload(startedRow.payload)) : {};
 
-  const kind = typeof sp.kind === "string" && (RUN_KINDS as readonly string[]).includes(sp.kind)
-    ? sp.kind as HubLastRun["kind"] : null;
-  const runtime = typeof sp.runtime === "string" && (RUNTIMES as readonly string[]).includes(sp.runtime)
-    ? sp.runtime as HubLastRun["runtime"] : null;
-  const rawTarget = typeof sp.target === "string" && sp.target.length > 0 &&
-    sp.target.length <= LIMITS.target && !/[\x00-\x1f\x7f]/.test(sp.target)
-    ? sp.target : null;
-  const target = !kind || !rawTarget ? null
-    : kind === "spec" || kind === "plan"
-      ? rawTarget.split("/").at(-1) || null : rawTarget;
+  const { kind, runtime, target } = boundedRunFields(sp);
 
   const contractStatus = (typeof p.contract_status === "string" &&
     (CONTRACT_STATUSES as readonly string[]).includes(p.contract_status)
