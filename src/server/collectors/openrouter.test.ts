@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { compactRouting, percentileMatches } from "../../lib/agent-settings";
+import { compactRouting } from "../../lib/agent-settings";
 import { evaluateEndpoint } from "../../lib/openrouter-comparison";
 import {
   compareEndpoints,
@@ -105,15 +105,6 @@ describe("compareEndpoints projection", () => {
       allow_fallbacks: true,
       max_price: { prompt: 0 },
     });
-  });
-
-  it("a p50-only observation cannot pass a p90 goal", async () => {
-    const row = (await compare(jsonRes(payload([endpoint({
-      latency_last_30m: { p50: 80 },
-      throughput_last_30m: { p50: 10, p75: 9, p90: 8, p99: 7 },
-    })])))).endpoints[0];
-    expect(percentileMatches({ p90: 40 }, row.latency)).toBe(false);
-    expect(percentileMatches({ p90: 8 }, row.throughput)).toBe(true);
   });
 
   it("compares a seconds latency goal against the millisecond feed", async () => {

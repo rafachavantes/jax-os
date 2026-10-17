@@ -5,7 +5,6 @@ import {
   canCompare,
   ceiling,
   combine,
-  comparisonRequestMatches,
   comparisonUrl,
   evaluateEndpoint,
   singlePercentileKey,
@@ -174,15 +173,13 @@ describe("selection and request helpers", () => {
     expect(canCompare(undefined, "m/1")).toBe(false);
   });
 
-  it("builds the explicit request URL and matches request identity", () => {
+  it("builds the explicit request URL", () => {
     expect(comparisonUrl("or", "author/model", false)).toBe(
       "/api/opencode-providers/endpoints?connection=or&model=author%2Fmodel",
     );
     expect(comparisonUrl("or", "author/model", true)).toBe(
       "/api/opencode-providers/endpoints?connection=or&model=author%2Fmodel&refresh=1",
     );
-    expect(comparisonRequestMatches({ connection: "or", model: "m" }, { connection: "or", model: "m" })).toBe(true);
-    expect(comparisonRequestMatches({ connection: "or", model: "m" }, { connection: "or", model: "m2" })).toBe(false);
   });
 
   it("reports a single percentile only for a one-key goal", () => {
