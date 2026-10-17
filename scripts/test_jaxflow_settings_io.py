@@ -1889,3 +1889,48 @@ def test_public_model_dto_exposes_context_and_effort_template(tmp_path):
     dumped = json.dumps(row)
     assert "163840" not in dumped
     assert "@custom/pkg" not in dumped
+
+
+# ---- Lote C2 characterization ----
+
+@pytest.mark.parametrize("url,ok", [
+    ("https://api.example.com/v1", True),
+    ("https://api.example.com:8443/v1/x", True),
+    ("http://api.example.com", False),
+    ("https://user@api.example.com", False),
+    ("https://user:pw@api.example.com", False),
+    ("https://api.example.com/?k=1", False),
+    ("https://api.example.com/#frag", False),
+    ("https://localhost/v1", False),
+    ("https://127.0.0.1/v1", False),
+    ("https://[::1]/v1", False),
+    ("https://10.0.0.5/v1", False),
+    ("https://api.exa\x01mple.com", False),
+    ("https://[bad/", False),
+    ("https:///path", False),
+    ("", False),
+    (None, False),
+    (5, False),
+])
+def test_require_https_url_accepts_only_public_https_without_userinfo(url, ok):
+    if ok:
+        io._require_https_url(url)
+        return
+    with pytest.raises(Refusal) as exc:
+        io._require_https_url(url)
+    assert exc.value.code == "agent-settings-malformed"
+
+
+def test_load_sources_maps_absent_valid_and_undecodable_sources(tmp_path):
+    paths = {"opencode.json": tmp_path / "opencode.json", "opencode.jsonc": tmp_path / "opencode.jsonc"}
+    texts, values = io._load_sources(paths)
+    assert texts == {"opencode.json": None, "opencode.jsonc": None}
+    assert values == {"opencode.json": None, "opencode.jsonc": None}
+    paths["opencode.jsonc"].write_text('{"a": 1} // c\n', encoding="utf-8")
+    texts, values = io._load_sources(paths)
+    assert texts["opencode.jsonc"] == '{"a": 1} // c\n' and texts["opencode.json"] is None
+    assert values["opencode.jsonc"] == {"a": 1} and values["opencode.json"] is None
+    paths["opencode.json"].write_bytes(b"\xff\xfe{}")
+    with pytest.raises(Refusal) as exc:
+        io._load_sources(paths)
+    assert exc.value.code == "native-config-malformed"

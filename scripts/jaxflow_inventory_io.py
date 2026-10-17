@@ -28,7 +28,6 @@ import jaxflow_env as jenv
 NATIVE_CAP = 1024 * 1024
 INPUT_CAP = 64 * 1024
 OUTPUT_CAP = 4 * 1024 * 1024
-PROVENANCE_CAP = 32 * 1024
 OWNERSHIP_WALK_CAP = 4096
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 LOCAL_PLUGIN_SUFFIXES = (".js", ".ts", ".tsx")
@@ -112,6 +111,18 @@ def _read_text(path):
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise Refusal("inventory-format-unsupported") from exc
+
+
+def _children(path, keep=None):
+    """Name-sorted children of `path` (optionally filtered by `keep`). Unreadable ->
+    inventory-permissions; more than OWNERSHIP_WALK_CAP entries -> inventory-too-large."""
+    try:
+        children = sorted((c for c in path.iterdir() if keep is None or keep(c)), key=lambda p: p.name)
+    except OSError:
+        raise Refusal("inventory-permissions") from None
+    if len(children) > OWNERSHIP_WALK_CAP:
+        raise Refusal("inventory-too-large")
+    return children
 
 
 def _strip_jsonc(text):
@@ -248,16 +259,9 @@ def _source_bytes(roots, executor):
 
 def _managed_disable_digest_from(executor, kind, registration, raw):
     """Digest a checked post-disable candidate (never the pre-disable bytes)."""
-    h = hashlib.sha256()
-    h.update(b"managed-disable-v1\x00")
-    h.update(executor.encode())
-    h.update(b"\x00")
-    h.update(kind.encode())
-    h.update(b"\x00")
-    h.update(registration.encode())
-    h.update(b"\x00")
-    h.update(raw if raw is not None else b"absent")
-    return h.hexdigest()
+    parts = [b"managed-disable-v1", executor.encode(), kind.encode(), registration.encode(),
+             raw if raw is not None else b"absent"]
+    return hashlib.sha256(b"\x00".join(parts)).hexdigest()
 
 
 def _managed_disable_digest(roots, executor, kind, registration):
@@ -320,12 +324,7 @@ def _scan_skill_dirs(executor, root, roots, overrides=None):
     items = []
     if not root.is_dir():
         return items
-    try:
-        children = sorted(root.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(children) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    children = _children(root)
     for child in children:
         if child.name.startswith("."):
             continue
@@ -399,33 +398,15 @@ def _claude_cache_index(roots):
     cache = Path(roots["claude_dir"]) / "plugins" / "cache"
     if not cache.is_dir():
         return index
-    try:
-        marketplaces = sorted(cache.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(marketplaces) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    marketplaces = _children(cache)
     for mp in marketplaces:
         if not mp.is_dir() or mp.name.startswith("."):
             continue
-        try:
-            plugins = sorted(mp.iterdir(), key=lambda p: p.name)
-        except OSError:
-            raise Refusal("inventory-permissions") from None
-        if len(plugins) > OWNERSHIP_WALK_CAP:
-            raise Refusal("inventory-too-large")
+        plugins = _children(mp)
         for plugin in plugins:
             if not plugin.is_dir() or plugin.name.startswith("."):
                 continue
-            try:
-                versions = sorted(
-                    (v for v in plugin.iterdir() if v.is_dir() and not v.name.startswith(".")),
-                    key=lambda p: p.name,
-                )
-            except OSError:
-                raise Refusal("inventory-permissions") from None
-            if len(versions) > OWNERSHIP_WALK_CAP:
-                raise Refusal("inventory-too-large")
+            versions = _children(plugin, lambda v: v.is_dir() and not v.name.startswith("."))
             index[f"{plugin.name}@{mp.name}"] = (plugin, _select_version_dir(versions))
     return index
 
@@ -450,12 +431,7 @@ def _scan_agent_dir(executor, root):
     items = []
     if not root.is_dir():
         return items
-    try:
-        children = sorted(root.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(children) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    children = _children(root)
     for child in children:
         if child.name.startswith(".") or not child.name.endswith(".md"):
             continue
@@ -479,8 +455,6 @@ def _snapshot_claude(roots):
     doc = _claude_doc(roots)
     items = _claude_plugin_items(doc, path)
     overrides = doc.get("skillOverrides")
-    if overrides is not None and type(overrides) is not dict:
-        raise Refusal("inventory-format-unsupported")
     items.extend(_claude_override_items(doc, path))
     items.extend(_scan_skill_dirs("claude", Path(roots["claude_dir"]) / "skills", roots, overrides=overrides))
     enabled = doc.get("enabledPlugins") or {}
@@ -703,12 +677,7 @@ def _scan_local_plugins(roots, source_path):
     root = Path(roots["opencode_dir"]) / "plugin"
     if not root.is_dir():
         return items
-    try:
-        children = sorted(root.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(children) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    children = _children(root)
     for child in children:
         if child.is_symlink() or not child.is_file() or child.suffix not in LOCAL_PLUGIN_SUFFIXES:
             continue
@@ -781,12 +750,7 @@ def _path_fingerprint(path):
         h.update(b"\x00")
         h.update(str(info.st_dev).encode("utf-8"))
         h.update(b"\x00")
-        try:
-            children = sorted(path.iterdir(), key=lambda p: p.name)
-        except OSError as exc:
-            raise Refusal("inventory-permissions") from exc
-        if len(children) > OWNERSHIP_WALK_CAP:
-            raise Refusal("inventory-too-large")
+        children = _children(path)
         for child in children:
             h.update(child.name.encode("utf-8"))
             h.update(b"\x00")
@@ -827,25 +791,16 @@ def _revision_with_source(roots, item, source_bytes):
         raw = source_bytes if source_bytes is not None else b"absent"
     else:
         raw = _path_fingerprint(path) if path else b"absent"
-    h = hashlib.sha256()
-    h.update(b"inventory-v2\x00")
-    h.update(item["executor"].encode())
-    h.update(b"\x00")
-    h.update(item["kind"].encode())
-    h.update(b"\x00")
-    h.update(item["registration"].encode())
-    h.update(b"\x00")
-    h.update(raw)
-    h.update(b"\x00")
-    h.update(source_bytes if source_bytes is not None else b"absent")
-    return h.hexdigest()
+    parts = [b"inventory-v2", item["executor"].encode(), item["kind"].encode(), item["registration"].encode(),
+             raw, source_bytes if source_bytes is not None else b"absent"]
+    return hashlib.sha256(b"\x00".join(parts)).hexdigest()
 
 
 def _revision_for(roots, item):
     return _revision_with_source(roots, item, _source_bytes(roots, item["executor"]))
 
 
-def _claude_edit_text(root_text, doc, item, change, provenance):
+def _claude_edit_text(root_text, doc, item, change):
     if root_text is None:
         raise Refusal("inventory-format-unsupported")
     if item["kind"] == "plugin" and item["origin"] == "settings":
@@ -857,32 +812,6 @@ def _claude_edit_text(root_text, doc, item, change, provenance):
             raise Refusal("inventory-already-settled")
         edits = [{"path": ["enabledPlugins", item["registration"]], "value": target_enabled}]
         return sio.edit_source(root_text, edits, jsonc=False)["text"], {"prior": plugins[item["registration"]]}
-    if item["kind"] == "skill" and item["origin"] == "skill-override":
-        overrides = doc.get("skillOverrides")
-        if type(overrides) is not dict or item["registration"] not in overrides:
-            raise Refusal("inventory-item-unknown")
-        prior = overrides[item["registration"]]
-        if change == "disable":
-            new_value = "off"
-        elif change == "enable":
-            prov = provenance if type(provenance) is dict else {}
-            if prov.get("selector") != item["registration"]:
-                raise Refusal("inventory-no-managed-state")
-            if "prior" not in prov:
-                raise Refusal("inventory-no-managed-state")
-            prior = prov.get("prior")
-            if prov.get("priorPresent") is False or prior is None:
-                return sio.edit_source(root_text, [{"path": ["skillOverrides", item["registration"]], "remove": True}], jsonc=False)["text"], {
-                    "prior": None, "priorPresent": False,
-                }
-            if prior not in CLAUDE_OVERRIDE_VALUES:
-                raise Refusal("inventory-no-managed-state")
-            return sio.edit_source(root_text, [{"path": ["skillOverrides", item["registration"]], "value": prior}], jsonc=False)["text"], {
-                "prior": prior, "priorPresent": True,
-            }
-        else:
-            raise Refusal("inventory-unsupported")
-        return sio.edit_source(root_text, [{"path": ["skillOverrides", item["registration"]], "value": new_value}], jsonc=False)["text"], {"prior": prior}
     raise Refusal("inventory-unsupported")
 
 
@@ -1014,11 +943,10 @@ class _ProtectedWriter:
             os.close(parent_fd)
 
 
-def _check_symlink_free_tree(root, cap=None):
+def _check_symlink_free_tree(root):
     """Complete ownership walk: no symlinked ancestor/descendant, no hard-linked
     file, bounded entries. Refuses inability to prove ownership."""
     root = Path(root)
-    limit = OWNERSHIP_WALK_CAP if cap is None else cap
     try:
         root_info = root.lstat()
     except OSError as exc:
@@ -1035,7 +963,7 @@ def _check_symlink_free_tree(root, cap=None):
         except OSError as exc:
             raise Refusal("inventory-permissions") from exc
         seen += 1
-        if seen > limit:
+        if seen > OWNERSHIP_WALK_CAP:
             raise Refusal("inventory-too-large")
         if stat.S_ISLNK(info.st_mode):
             raise Refusal("inventory-symlink")
@@ -1242,8 +1170,6 @@ def preview(roots, item_id, change, provenance=None):
             effect = f"{change} skill {item['name']}"
             if change == "disable":
                 restoration = _disable_restoration(roots, item)
-            else:
-                restoration = _enable_restoration(roots, item)
     elif change == "remove-registration":
         if item["origin"] != "registration-link" and not (item["executor"] == "opencode" and item["origin"] == "config-array"):
             raise Refusal("inventory-unsupported")
@@ -1303,25 +1229,7 @@ def _disable_restoration(roots, item):
             return {"selector": canonical, "prior": target.get("enabled"), "priorPresent": "enabled" in target}
         return None
     if executor == "opencode":
-        doc, _path, _sources = _opencode_doc(roots)
-        policy = _opencode_skill_policy(doc)
-        permission = doc.get("permission")
-        name = item["name"]
-        if type(policy) is str:
-            return {"container": "skill-scalar", "prior": policy}
-        if type(permission) is str:
-            return {"container": "root-scalar", "prior": permission}
-        if type(policy) is dict:
-            prior = policy.get(name)
-            position = list(policy).index(name) if name in policy else None
-            return {"selector": name, "prior": prior, "priorPresent": prior is not None, "position": position}
-        return {"selector": name, "prior": None, "priorPresent": False}
-    return None
-
-
-def _enable_restoration(roots, item):
-    """Reconstruct the prior policy a managed disable recorded (the stored
-    provenance is passed by the route on apply; preview only reflects it)."""
+        return _disable_restoration_from(_opencode_doc(roots)[0], item["name"])
     return None
 
 
@@ -1384,7 +1292,7 @@ def _candidate_edit(roots, executor, item, change, provenance):
         doc = _parse_json(root_text)
         if item["kind"] == "skill" and item["origin"] in ("independent", "skill-override"):
             return _claude_skill_text(root_text, doc, item, change, provenance, roots)
-        return _claude_edit_text(root_text, doc, item, change, provenance)
+        return _claude_edit_text(root_text, doc, item, change)
     if executor == "codex":
         raw = _read_bytes(_codex_config_path(roots))
         root_text = raw.decode("utf-8") if raw is not None else ""
@@ -1589,7 +1497,7 @@ def _claude_change(roots, item, change, expected_revision, operation_id, provena
             text, prov = _claude_skill_text(root_text, doc, item, change, provenance, roots)
             _ProtectedWriter(path, operation_id).write(text, root_text.encode("utf-8") if root_text else b"")
             return {"effect": "applied", "provenance": prov, "requiresNewSession": True}
-        text, prov = _claude_edit_text(root_text, doc, item, change, provenance)
+        text, prov = _claude_edit_text(root_text, doc, item, change)
         _ProtectedWriter(path, operation_id).write(text, root_text.encode("utf-8") if root_text else b"")
     return {"effect": "applied", "provenance": {"prior": prov["prior"]}, "requiresNewSession": True}
 
@@ -1686,20 +1594,19 @@ def _publish_opencode_edit(paths, texts, target_name, new_text, operation_id):
         {"reviewers": settings["reviewers"], "builders": settings["builders"]}, operation_id, candidates
     )
     expected_sources = {name: jset._source_token(Path(paths[name])) for name in jset.SOURCE_FILES}
-    result = sio.publish_candidates(
+    return sio.publish_candidates(
         operation_id, paths, candidates,
         affected=[target_name],
         expected_sources=expected_sources,
         expected_settings=settings["revision"],
         settings_spec={"raw": settings_raw, "revision": revision},
     )
-    return result
 
 
-def _opencode_skill_change(roots, item, change, operation_id, provenance, expected_revision=None):
+def _opencode_skill_change(roots, item, change, operation_id, provenance, expected_revision):
     paths = _settings_paths(roots)
     with jset.configuration_claim(Path(paths["lock"]), create=True):
-        if expected_revision is not None and _revision_for(roots, item) != expected_revision:
+        if _revision_for(roots, item) != expected_revision:
             raise Refusal("inventory-source-changed")
         texts, values = sio._load_sources(paths)
         target_name = _opencode_source_name(roots, item)
@@ -1707,8 +1614,7 @@ def _opencode_skill_change(roots, item, change, operation_id, provenance, expect
         if type(value) is not dict:
             raise Refusal("inventory-source-changed")
         new_text, prov_out = _opencode_skill_edit_text(texts[target_name], value, item, change, provenance)
-        edited_text = new_text if isinstance(new_text, str) else new_text
-        result = _publish_opencode_edit(paths, texts, target_name, edited_text, operation_id)
+        result = _publish_opencode_edit(paths, texts, target_name, new_text, operation_id)
         if change == "disable":
             result = {**result, "provenance": prov_out}
         return result
