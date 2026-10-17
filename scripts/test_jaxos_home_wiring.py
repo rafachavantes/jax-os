@@ -26,7 +26,7 @@ def _resolve(module, expr, env_overrides):
 # (module, expr, path suffix under JAXOS_HOME) -- every path-based row of the spec's table.
 PATH_CASES = [
     ("jaxflow_run", "m.DB_PATH", "jaxos.db"),
-    ("jaxflow", "m.CALLBACKS_ROOT", "callbacks"),
+    ("jaxflow_common", "m.CALLBACKS_ROOT", "callbacks"),
     ("jaxflow_hook", "m.CALLBACKS_ROOT", "callbacks"),
     ("jaxflow_hook", "m.THROTTLE_ROOT", "hook-throttle"),
     ("jaxflow_settings", "m.SETTINGS_PATH", "agent-settings.json"),
@@ -40,7 +40,7 @@ PATH_CASES = [
 # (module, expr, URL suffix after the host:port) -- every URL-based row.
 URL_CASES = [
     ("jaxflow_run", "m.EVENTS_URL", "/api/workflow/events"),
-    ("jaxflow", "m.MISSION_BASE_URL", "/api/mission"),
+    ("jaxflow_cli", "m.MISSION_BASE_URL", "/api/mission"),
     ("jaxflow_hook", "m.EVENTS_URL", "/api/workflow/events"),
     ("jaxflow_hook", "m.SESSIONS_URL", "/api/workflow/sessions"),
     ("workflow_poll", "m.EVENTS_URL", "/api/workflow/events?pending=1&limit=20"),

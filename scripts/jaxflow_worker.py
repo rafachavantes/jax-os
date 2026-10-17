@@ -368,7 +368,7 @@ def _refuse_builder_run(message, *, manifest, run, post, control_repo, worktree,
     manifest["worker_contract_status"] = "cancelled"
     manifest["worker_outcome"] = None
     jk._send_callback(
-        manifest, run=run, kind=manifest["kind"], outcome="cancelled", summary=bounded,
+        manifest, kind=manifest["kind"], outcome="cancelled",
         report_path=None, ledger_pending=not delivered,
     )
     return jc.REFUSED
@@ -410,7 +410,7 @@ def _refuse_unvalidated_builder_run(message, *, manifest, manifest_path, run, po
     manifest["worker_contract_status"] = "cancelled"
     manifest["worker_outcome"] = None
     jk._send_callback(
-        manifest, run=run, kind=manifest.get("kind"), outcome="cancelled", summary=bounded,
+        manifest, kind=manifest.get("kind"), outcome="cancelled",
         report_path=None, ledger_pending=not delivered,
     )
     return jc.REFUSED
@@ -934,7 +934,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
         if verify_contradicts:
             result_text = f"{result_text} (jaxflow verify passed — read the evidence)"
         jk._send_callback(
-            manifest, run=run, kind="build", outcome=result_text, summary=summary,
+            manifest, kind="build", outcome=result_text,
             report_path=paths["report"], stage=outcome["stage"], diagnostic=outcome["diagnostic"],
             contract_status=contract_status, ledger_pending=not delivered,
         )

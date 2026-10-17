@@ -338,8 +338,6 @@ export type WorkspaceDeps = {
   revealLine: (root: Root, rel: string, line: number) => void;
 };
 
-export type FilesController = ReturnType<typeof createFilesController>;
-
 export function createFilesController(opts: { getDeps: () => WorkspaceDeps }) {
   let treeSnap: FilesTreeState = { expanded: new Set(), tabs: [], activeIdx: null, hydrated: false, scope: { kind: "repo", name: "jax-os" }, selected: null };
   let editSnap: FilesEditState = { edits: {} };

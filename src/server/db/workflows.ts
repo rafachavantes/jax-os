@@ -1026,29 +1026,6 @@ export type HubEnvelopeData = {
 const HUB_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, §7.1b
 const HISTORICAL_CAP = 50; // §7.1b
 
-// An "open turn" is a turn-started with no later turn-stopped for the same pane IDENTITY
-// (pane, tmux_incarnation) — agent-sourced rows only. This alone is NOT "working": a dead pane
-// with an open turn is idle, not working (§4.1, test 17) — see isWorking below.
-export function hasOpenTurn(db: Database.Database, ref: PaneRef): boolean {
-  const key = paneKey(ref.pane, ref.tmuxIncarnation);
-  const started = db
-    .prepare(
-      `SELECT id FROM workflow_events
-       WHERE pane_key = ? AND type = 'turn-started' AND ${paneAgentFilter()}
-       ORDER BY id DESC LIMIT 1`,
-    )
-    .get(key) as { id: number } | undefined;
-  if (!started) return false;
-  const stopped = db
-    .prepare(
-      `SELECT 1 FROM workflow_events
-       WHERE pane_key = ? AND type = 'turn-stopped' AND ${paneAgentFilter()} AND id > ?
-       LIMIT 1`,
-    )
-    .get(key, started.id);
-  return !stopped;
-}
-
 // working = an open turn AND the pane is live in the CURRENT tmux snapshot with a matching
 // incarnation (Rule A, §4.1). A pane reused under a new incarnation, or absent from the
 // snapshot, is never "working" — it resolves to idle.
@@ -1271,8 +1248,8 @@ function getCurrentProjectByPaneKey(db: Database.Database, live: LiveSnapshot): 
     .all(...keys) as { paneKey: string; project: string; registeredAt: string }[];
   const sessionByKey = new Map(sessionRows.map((r) => [r.paneKey, r]));
   // ponytail: a plain per-key loop, not a window function — bounded by the handful of live panes,
-  // same style as every other "latest row for this pane_key" query in this file (hasOpenTurn,
-  // lastCapsule, pendingQuestionFor).
+  // same style as every other "latest row for this pane_key" query in this file (lastCapsule,
+  // pendingQuestionFor).
   for (const key of keys) {
     const session = sessionByKey.get(key);
     const eventRow = db
@@ -1397,16 +1374,16 @@ export function getProjectPanes(
   });
 }
 
-// Most recent `limit` events for a project, newest first (§7.4 caps this at 20). Unlike every
+// Most recent 20 events for a project, newest first (§7.4 caps this at 20). Unlike every
 // query above, this one does NOT filter emitter — synthetic jaxos rows render in the timeline
 // once the project is a member on its own merits (§7.1b).
-export function getProjectTimeline(db: Database.Database, project: string, limit = 20): HubTimelineEvent[] {
+export function getProjectTimeline(db: Database.Database, project: string): HubTimelineEvent[] {
   const rows = db
     .prepare(
       `SELECT id, ts, type, pane, role, emitter, payload
-       FROM workflow_events WHERE project = ? AND type NOT IN (${HOOK_TELEMETRY_TYPES_SQL}) ORDER BY id DESC LIMIT ?`,
+       FROM workflow_events WHERE project = ? AND type NOT IN (${HOOK_TELEMETRY_TYPES_SQL}) ORDER BY id DESC LIMIT 20`,
     )
-    .all(project, limit) as {
+    .all(project) as {
     id: number;
     ts: string;
     type: string;
@@ -1479,8 +1456,6 @@ function lastActionFor(db: Database.Database, project: string, nowMs: number): {
      WHERE project = ? AND type = 'tool-used' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 1`,
   ).get(project, cutoff) as { ts: string; tool: string | null } | undefined;
   if (!row || !row.tool) return null;
-  const ageMs = nowMs - Date.parse(row.ts);
-  if (!Number.isFinite(ageMs) || ageMs > LAST_ACTION_WINDOW_MS) return null;
   return { tool: row.tool, ts: row.ts };
 }
 
@@ -1744,8 +1719,7 @@ export type LoopSummary = {
 
 // Auto-derived from the latest run-started row's ANCHOR BUILD (L1/L6, round 3 F4) --
 // never the latest row's own raw phase (a diff's longer suffix is never a useful anchor).
-// F4 (round 4): ports the CLI's own full anchor/fallback grouping (`cmd_loop`,
-// `_anchor_builds_for_prefix`/`_direct_phase_match`, `scripts/jaxflow_cli.py`) --
+// F4 (round 4): formerly the CLI's `jaxflow loop`; this is now the only implementation --
 // once a prefix is resolved, the WHOLE matching family is counted (every build whose own
 // normalized phase contains it -- a `--resume` attempt included -- and, with no anchor
 // build yet, every spec/plan row directly matching the seed's own phase), never just the
@@ -1763,11 +1737,10 @@ export function getLoopSummary(db: Database.Database, project: string): LoopSumm
       ? (builds.find((b) => b.runId === seed.builderRunId)
          ?? [...builds].reverse().find((b) => b.branch === seed.branch) ?? null)
       // F4 (round 5): a trailing spec/plan review dispatched AFTER a build already
-      // exists must still resolve to that build (same containment join as the CLI's
-      // `_anchor_builds_for_prefix`, `scripts/jaxflow_cli.py` -- a spec/plan's own
-      // normalized phase is naturally a substring of the real build's phase). Without
-      // this, seedAnchor stayed null and the no-build fallback below dropped the
-      // whole existing build/diff/merge family.
+      // exists must still resolve to that build (same containment join the former CLI's
+      // `jaxflow loop` used -- a spec/plan's own normalized phase is naturally a
+      // substring of the real build's phase). Without this, seedAnchor stayed null and
+      // the no-build fallback below dropped the whole existing build/diff/merge family.
       : [...builds].reverse().find((b) => normalizeLoopPhase(b.phase).includes(normalizeLoopPhase(seed.phase))) ?? null;
 
   let anchors: LoopRunRow[];
@@ -1810,9 +1783,9 @@ export function getLoopSummary(db: Database.Database, project: string): LoopSumm
     const merges = db.prepare(
       `SELECT ts, payload FROM workflow_events WHERE project = ? AND type = 'merge-approved' ORDER BY ts`,
     ).all(project) as { ts: string; payload: string | null }[];
-    // F4 (round 2, MEDIUM): windowed by TIMESTAMPS per branch, matching Python's
-    // `_wall_time_days` -- the window's end is a LATER build dispatched on the same
-    // branch (any build, not only an anchor), if any.
+    // F4 (round 2, MEDIUM): windowed by TIMESTAMPS per branch, matching the former
+    // CLI's `jaxflow loop` wall-time rule -- the window's end is a LATER build dispatched
+    // on the same branch (any build, not only an anchor), if any.
     // F5 (round 4): that later build must be the EARLIEST-ts one, found by explicit
     // min-reduce -- an array `.find()` only happens to return the earliest match when
     // the array is itself ts-ordered, which insertion order alone does not guarantee.
@@ -2019,7 +1992,7 @@ export function getHubData(
       pendingQuestion,
       freshnessCount,
       newestEventTs: newestRow.ts,
-      timeline: getProjectTimeline(db, project, 20),
+      timeline: getProjectTimeline(db, project),
       activeRun: activeRunFor(db, project, readChildLogTail),
       activeRuns: activeRunsFor(db, project),
       lastRun: lastRunFor(db, project, relToRepos),

@@ -165,17 +165,6 @@ export function closeTab(tabs: Tab[], activeIdx: number | null, idx: number): { 
   return { tabs: next, activeIdx: Math.min(a, next.length - 1) };
 }
 
-// A renamed dir changes its rel (and its descendants'), so "root:rel" keys no
-// longer match and the branch would collapse on refetch. Re-key self + descendants.
-// (Moved from FileTree.tsx so the page-owned expanded state can persist.)
-export function remapExpandedKeys(expanded: string[], root: Root, oldRel: string, newRel: string): string[] {
-  const oldKey = `${root}:${oldRel}`;
-  const prefix = `${oldKey}/`;
-  return expanded.map((k) =>
-    k === oldKey ? `${root}:${newRel}` : k.startsWith(prefix) ? `${root}:${newRel}/${k.slice(prefix.length)}` : k,
-  );
-}
-
 // Recents (§6 localStorage, §8 cold review F10): a sibling key to STORAGE_KEY, holding up to
 // RECENTS_CAP entries, most-recent-first; an already-present entry moves to the front instead of
 // duplicating. Same defensive-normalize style as normalizeState — junk/corrupt storage yields [].
