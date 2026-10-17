@@ -5,7 +5,7 @@ import { collectRetainedWorktrees, probeWorktreePorcelain, type WorktreeResult }
 import { getDb } from "../../../../server/db";
 import { getWorktreeLedgerRows } from "../../../../server/db/workflows";
 
-const OLDER_THAN_DAYS = 7; // mirrors jaxflow gc's own default (spec G3)
+const OLDER_THAN_DAYS = 7; // 7 days, the default the retired jaxflow gc used
 
 export type WorktreesRouteDeps = {
   getProjects: typeof getProjects;

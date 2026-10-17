@@ -5,7 +5,6 @@ import os
 import re
 import subprocess
 import urllib.error
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -73,20 +72,6 @@ def test_find_heading_matches_any_level_case_sensitively():
     assert jaxflow_common._find_heading(text, "Deep") is True
     assert jaxflow_common._find_heading(text, "right case") is False
     assert jaxflow_common._find_heading(text, "Nope") is False
-
-
-def test_iso8601_matches_stdlib_isoformat_seconds():
-    # `_iso8601` used to hand-splice a colon into strftime's %z; this proves
-    # `dt.isoformat(timespec="seconds")` gives byte-identical output for every
-    # aware datetime this codebase actually feeds it (UTC via `_fixed_now`, a
-    # negative offset, and one with microseconds -- both drop to whole seconds
-    # the same way).
-    for dt in (
-        _fixed_now(),
-        datetime(2026, 9, 6, 10, 0, 0, tzinfo=timezone(timedelta(hours=-3))),
-        datetime(2026, 1, 1, 0, 0, 0, 123456, tzinfo=timezone.utc),
-    ):
-        assert jaxflow_common._iso8601(dt) == dt.isoformat(timespec="seconds")
 
 
 # ---- caller detection ----

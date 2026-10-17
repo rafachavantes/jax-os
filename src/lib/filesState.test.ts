@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { closeTab, createEdit, disambiguateTabLabels, normalizeState, openPreview, parseRecentRepos, parseRecents, patchEdit, pinTab, pushRecent, pushRecentRepo, remapExpandedKeys, RECENT_REPOS_KEY, RECENTS_CAP, tabKey, type EditState, type RecentEntry, type Tab } from "./filesState";
+import { closeTab, createEdit, disambiguateTabLabels, normalizeState, openPreview, parseRecentRepos, parseRecents, patchEdit, pinTab, pushRecent, pushRecentRepo, RECENT_REPOS_KEY, RECENTS_CAP, tabKey, type EditState, type RecentEntry, type Tab } from "./filesState";
 
 const A: Tab = { root: "repos", rel: "a.md", pinned: true };
 const B: Tab = { root: "repos", rel: "dir/b.ts", pinned: false };
@@ -83,13 +83,6 @@ describe("closeTab", () => {
   });
   it("closing the last tab yields null", () => {
     expect(closeTab([A], 0, 0)).toEqual({ tabs: [], activeIdx: null });
-  });
-});
-
-describe("remapExpandedKeys", () => {
-  it("re-keys the renamed dir and its descendants only", () => {
-    expect(remapExpandedKeys(["repos:old", "repos:old/sub", "repos:other", "vault:old"], "repos", "old", "new"))
-      .toEqual(["repos:new", "repos:new/sub", "repos:other", "vault:old"]);
   });
 });
 

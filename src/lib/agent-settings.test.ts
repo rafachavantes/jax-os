@@ -12,7 +12,6 @@ import {
   CONNECTION_ADAPTERS,
   compactRouting,
   configuredModels,
-  credentialOutcomeActions,
   applyPendingOperations,
   decodeAgentSettings,
   draftIsValid,
@@ -22,15 +21,10 @@ import {
   visibleToolsTabs,
   type ToolsTab,
   parseEditorRevision,
-  percentileMatches,
-  pollingWouldOverwrite,
   QUANTIZATIONS,
   activationSaveEnabled,
   previewFingerprint,
-  previewIsCurrent,
-  previewProfiles,
   referencedProfiles,
-  routingPreviewText,
   saveIsStale,
   selectableConnections,
   settingsWriteKind,
@@ -185,12 +179,6 @@ describe("reference and draft derivations", () => {
     ).toBe(true);
   });
 
-  it("polling overwrites only a dirty draft whose baseline revision drifted", () => {
-    expect(pollingWouldOverwrite(false, "aa", "bb")).toBe(false);
-    expect(pollingWouldOverwrite(true, "aa", "aa")).toBe(false);
-    expect(pollingWouldOverwrite(true, "aa", "bb")).toBe(true);
-  });
-
   it("drops empty optional routing controls but keeps a zero price ceiling", () => {
     expect(compactRouting(null)).toBeNull();
     expect(
@@ -211,12 +199,6 @@ describe("reference and draft derivations", () => {
     expect(
       compactRouting({ sort: "price", allow_fallbacks: true, quantizations: ["fp8", "fp4"] }),
     ).toEqual({ sort: "price", allow_fallbacks: true, quantizations: ["fp8", "fp4"] });
-  });
-
-  it("a p50-only observation cannot pass a p90 goal", () => {
-    expect(percentileMatches({ p90: 40 }, { p50: 80, window: "30m" })).toBe(false);
-    expect(percentileMatches({ p90: 40 }, { p90: 50, window: "30m" })).toBe(true);
-    expect(percentileMatches({ p90: 40 }, null)).toBe(false);
   });
 });
 
@@ -320,19 +302,6 @@ describe("tools UI derivations", () => {
     expect(configuredModels(undefined)).toEqual([]);
   });
 
-  it("credential outcomes expose reconcile/retry-sync/status, never a blind retry", () => {
-    expect(credentialOutcomeActions("remote-uncertain", null)).toEqual(["reconcile", "status"]);
-    expect(credentialOutcomeActions("sync-pending", "sync-pending")).toEqual(["retry-sync", "status"]);
-    expect(credentialOutcomeActions("remote-saved", "sync-pending")).toEqual(["retry-sync", "status"]);
-    expect(credentialOutcomeActions("activation-pending", "activation-pending")).toEqual([
-      "reconcile",
-      "status",
-    ]);
-    expect(credentialOutcomeActions("done", "done")).toEqual([]);
-    expect(credentialOutcomeActions("not-applied", "audit-unavailable")).toEqual([]);
-    expect(credentialOutcomeActions("remote-uncertain", null)).not.toContain("retry");
-  });
-
   it("warns on leaving tools with a dirty draft, not on tab changes", () => {
     expect(shouldConfirmLeaveTools("/settings", "/files", true)).toBe(true);
     expect(shouldConfirmLeaveTools("/settings", "/settings", true)).toBe(false);
@@ -421,136 +390,6 @@ describe("model form contract", () => {
   });
 });
 
-describe("previewProfiles", () => {
-  const preview = {
-    affected: ["opencode.json"],
-    aliases: {
-      before: [{ profile: "default", connection: "xai", model: "grok-old", routing: null }],
-      after: [
-        { profile: "default", connection: "openrouter", model: "m/1", routing: { sort: "price", allow_fallbacks: true } },
-        { profile: "fallback", connection: "openrouter", model: "m/2", routing: null },
-      ],
-    },
-  };
-
-  it("projects per-profile before/after bindings and affected sources", () => {
-    const out = previewProfiles(preview);
-    expect(out).not.toBeNull();
-    expect(out?.affected).toEqual(["opencode.json"]);
-    expect(out?.rows).toEqual([
-      {
-        profile: "default",
-        before: { profile: "default", connection: "xai", model: "grok-old", effort: null, routing: null },
-        after: expect.objectContaining({
-          profile: "default", connection: "openrouter", model: "m/1", effort: null,
-          routing: { sort: "price", allow_fallbacks: true },
-        }),
-      },
-      { profile: "fallback", before: null, after: expect.objectContaining({ profile: "fallback", connection: "openrouter", model: "m/2", effort: null }) },
-    ]);
-  });
-
-  it("keeps an explicit template effort on preview rows", () => {
-    const out = previewProfiles({
-      affected: [],
-      aliases: {
-        before: [{ profile: "default", connection: "xai", model: "grok-old", effort: "xhigh", routing: null }],
-        after: [{ profile: "default", connection: "openrouter", model: "m/1", effort: "high", routing: { sort: "price" } }],
-      },
-    });
-    expect(out?.rows[0]).toEqual({
-      profile: "default",
-      before: { profile: "default", connection: "xai", model: "grok-old", effort: "xhigh", routing: null },
-      after: { profile: "default", connection: "openrouter", model: "m/1", effort: "high", routing: { sort: "price" } },
-    });
-  });
-
-  it("returns null for unrelated or malformed payloads", () => {
-    expect(previewProfiles({ ok: true })).toBeNull();
-    expect(previewProfiles(null)).toBeNull();
-    expect(previewProfiles("{not an object}")).toBeNull();
-  });
-});
-
-const ROUTING_LABELS = {
-  sort: "sort",
-  fallbacks: "fallbacks",
-  throughput: "throughput",
-  latency: "latency",
-  maxPrompt: "maxPrompt",
-  maxCompletion: "maxCompletion",
-  only: "only",
-  ignore: "ignore",
-};
-
-describe("routing preview text", () => {
-  const before = {
-    sort: "price", allow_fallbacks: true,
-    max_price: { prompt: 0, completion: 2 },
-    preferred_min_throughput: { p90: 100 }, preferred_max_latency: { p90: 2 },
-    only: ["novita"], ignore: ["tag-a"],
-  } as const;
-  const after = {
-    sort: "price", allow_fallbacks: false,
-    max_price: { prompt: 1, completion: 3 },
-    preferred_min_throughput: { p99: 200 }, preferred_max_latency: { p75: 1 },
-    only: ["deepinfra"], ignore: ["tag-b"],
-  } as const;
-
-  it("displays the real routing values, not presence markers", () => {
-    const ta = routingPreviewText(before, ROUTING_LABELS)!;
-    expect(ta).toContain("0");
-    expect(ta).toContain("2");
-    expect(ta).toContain("p90:100");
-    expect(ta).toContain("p90:2");
-    expect(ta).toContain("novita");
-    expect(ta).toContain("tag-a");
-    expect(ta).not.toContain("p99");
-    expect(ta).not.toContain("deepinfra");
-  });
-
-  it("each price number, percentile key/number and only/ignore list change the visible text", () => {
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, max_price: { prompt: 1, completion: 2 } }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, max_price: { prompt: 0, completion: 3 } }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, preferred_min_throughput: { p99: 100 } }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, preferred_min_throughput: { p90: 200 } }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, preferred_max_latency: { p75: 2 } }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, preferred_max_latency: { p90: 1 } }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, only: ["deepinfra"] }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, ignore: ["tag-b"] }, ROUTING_LABELS),
-    );
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(
-      routingPreviewText({ ...before, allow_fallbacks: false }, ROUTING_LABELS),
-    );
-  });
-
-  it("omitted routing is not a zero value and null routing has no text", () => {
-    expect(routingPreviewText(null, ROUTING_LABELS)).toBeNull();
-    expect(routingPreviewText({ sort: "price", allow_fallbacks: true }, ROUTING_LABELS)).not.toContain("maxPrompt");
-    expect(routingPreviewText({ sort: "price", allow_fallbacks: true }, ROUTING_LABELS)).not.toContain("only");
-    expect(routingPreviewText({ sort: "price", allow_fallbacks: true }, ROUTING_LABELS)).not.toContain("0");
-  });
-
-  it("independent before/after pairs differ while keeping shared model and effort text", () => {
-    expect(routingPreviewText(before, ROUTING_LABELS)).not.toBe(routingPreviewText(after, ROUTING_LABELS));
-  });
-});
-
 describe("current preview gate", () => {
   let draft: SettingsDraft;
   let rev: EditorRevision;
@@ -568,15 +407,6 @@ describe("current preview gate", () => {
     expect(previewFingerprint(draft, { ...rev, sources: { "opencode.json": "b".repeat(64), "opencode.jsonc": "absent" } })).not.toBe(fp);
   });
 
-  it("previewIsCurrent requires a stored fingerprint that matches the current draft and revision", () => {
-    const fp = previewFingerprint(draft, rev);
-    expect(previewIsCurrent(fp, draft, rev)).toBe(true);
-    expect(previewIsCurrent(null, draft, rev)).toBe(false);
-    expect(previewIsCurrent(fp, draft, null)).toBe(false);
-    const edited = { ...draft, builders: { ...draft.builders, fallback: { ...draft.builders.fallback, model: "other" } } };
-    expect(previewIsCurrent(fp, edited, rev)).toBe(false);
-    expect(previewIsCurrent(fp, draft, { ...rev, settings: "b".repeat(32) })).toBe(false);
-  });
 });
 
 describe("activation save gate", () => {

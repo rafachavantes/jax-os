@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { HelperRunner } from "./agent-settings";
 import {
   applyProviders,
-  eligibleSecretReadAllowed,
   parseProviderConnection,
   previewProviders,
   sanitizeConnections,
@@ -158,21 +157,5 @@ describe("parseProviderConnection", () => {
     ]) {
       expect(parseProviderConnection(value)).toBeNull();
     }
-  });
-});
-
-describe("eligibleSecretReadAllowed", () => {
-  it("respects an existing connection's real auth and safety controls", () => {
-    expect(eligibleSecretReadAllowed({ editable: true, auth: "api-key" }, "acme", null)).toBe(true);
-    expect(eligibleSecretReadAllowed({ editable: false, auth: "api-key" }, "acme", null)).toBe(false);
-    expect(eligibleSecretReadAllowed({ editable: true, auth: "oauth" }, "acme", null)).toBe(false);
-    expect(eligibleSecretReadAllowed({ editable: true, auth: "unknown" }, "acme", null)).toBe(false);
-  });
-
-  it("allows only a matching new draft when no connection exists", () => {
-    const draft = { id: "fresh", adapter: "xai" };
-    expect(eligibleSecretReadAllowed(undefined, "fresh", draft)).toBe(true);
-    expect(eligibleSecretReadAllowed(undefined, "other", draft)).toBe(false);
-    expect(eligibleSecretReadAllowed(undefined, "fresh", null)).toBe(false);
   });
 });

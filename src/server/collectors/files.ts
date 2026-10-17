@@ -391,9 +391,6 @@ export function createEntry(root: Root, relParentDir: string, basename: string, 
 export function uploadFile(root: Root, relParentDir: string, basename: string, bytes: Buffer): void {
   writeFileSync(resolveNew(root, relParentDir, basename), bytes, { flag: "wx" });
 }
-export function deleteEntry(root: Root, rel: string): void {
-  deleteEntryAt(resolveExisting(root, rel));
-}
 // relTo = "parentRel/basename": resolve source + dest PARENT (both in-allowlist).
 export function renameEntry(root: Root, relFrom: string, relTo: string): void {
   const slash = relTo.lastIndexOf("/");

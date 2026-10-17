@@ -151,20 +151,6 @@ def _call_classifier(prompt, api_key):
 
 # ---- pure functions (tested by test_workflow_poll.py) ----
 
-def parse_env_file(text):
-    """Minimal KEY=value parser: skips blank/comment lines, strips matching quotes."""
-    env = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        env[key] = value
-    return env
-
 def sign(body_bytes, secret):
     """sha256=<hex HMAC_SHA256(secret, body_bytes)> — same recipe as the ingress route."""
     return "sha256=" + hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
@@ -582,8 +568,8 @@ def _reap_run(row, *, db_path, run=None, now=None, allowlist_root=None):
     outcome = "failure" if role == "builder" else "no verdict"
     kind = started_payload.get("kind") or ("build" if role == "builder" else "diff")
     jaxflow._send_callback(
-        callback_manifest, run=run, kind=kind, outcome=outcome,
-        summary=payload["summary"], report_path=None, stage=stage, diagnostic=diagnostic,
+        callback_manifest, kind=kind, outcome=outcome,
+        report_path=None, stage=stage, diagnostic=diagnostic,
         contract_status="interrupted", ledger_pending=not delivered,
     )
     return True

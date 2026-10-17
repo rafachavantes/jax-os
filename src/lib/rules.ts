@@ -146,20 +146,3 @@ export function ruleOutline(source: string): RuleOutline {
   if (spans.length === 0) fullDocumentOnly = true;
   return { spans, fullDocumentOnly };
 }
-
-// Pure splice guarded by an exact equality check on the ORIGINAL bytes. The
-// client holds the full base document and its revision, so a mismatch here
-// means the buffer is stale, never that a different section should be guessed.
-export function replaceRuleSpan(source: string, span: RuleSpan, replacement: string): string {
-  if (
-    !Number.isInteger(span.start) ||
-    !Number.isInteger(span.end) ||
-    span.start < 0 ||
-    span.end < span.start ||
-    span.end > source.length ||
-    source.slice(span.start, span.end) !== span.original
-  ) {
-    throw new Error("stale rule span");
-  }
-  return source.slice(0, span.start) + replacement + source.slice(span.end);
-}

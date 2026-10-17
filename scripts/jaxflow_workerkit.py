@@ -447,13 +447,10 @@ def threat_model_line(mode):
     return _THREAT_MODEL_LINES.get(mode)
 
 
-def _send_callback(manifest, *, run, kind, outcome, summary, report_path, stage=None,
+def _send_callback(manifest, *, kind, outcome, report_path, stage=None,
                     diagnostic=None, contract_status=None, ledger_pending=False):
     """MOA-474 §12.1 line: `[JAXFLOW] <kind> <run_id> finished — <outcome>[ · <stage> —
     <diagnostic>][ [report <status>]] — <report_path | no report>[ · ledger pending][ (fallback: <agent> off)]`.
-    `summary` is accepted but no longer rendered on this line (§12.1 -- diagnostic
-    replaced it); kept as a parameter for call-site compatibility since several
-    callers still compute it for other uses (e.g. `manifest["worker_summary"]`).
     `stage`/`diagnostic` are omitted TOGETHER (the ` · <stage> — <diagnostic>` segment
     drops out whole) when `stage is None` -- the happy-path omission (§Builder
     decision table Part 2 row 8 / §Reviewer decision table row 3). `[report <status>]`
@@ -468,8 +465,7 @@ def _send_callback(manifest, *, run, kind, outcome, summary, report_path, stage=
     Written unconditionally whenever callbacks are enabled -- regardless of whether any
     hook is installed or watching -- gated only by the spec §5.1 path-safety check on
     `caller_session`/`run_id` (LOAD-BEARING for `_refuse_unvalidated_builder_run`, which
-    calls this with a `run_id` it never validated). `run` is accepted but unused in this
-    branch; kept for call-site/test compatibility. Silent no-op on `no_callback`."""
+    calls this with a `run_id` it never validated). Silent no-op on `no_callback`."""
     if manifest.get("no_callback"):
         return
     line = f"[JAXFLOW] {kind} {manifest['run_id']} finished — {outcome}"
@@ -670,8 +666,8 @@ def _install_worker_signal_handler(manifest, *, role, kind, outcome, run, post, 
                 _persist_resume_checkpoint(manifest, spool_repo, worktree, payload, run=run)
             delivered = _deliver_terminal_event(post, spool_repo, run_id, finished_event)
             _send_callback(
-                manifest, run=run, kind=kind, outcome=outcome,
-                summary=payload["summary"], report_path=None, stage=payload["stage"],
+                manifest, kind=kind, outcome=outcome,
+                report_path=None, stage=payload["stage"],
                 diagnostic=payload["diagnostic"], contract_status="interrupted",
                 ledger_pending=not delivered,
             )
@@ -792,7 +788,7 @@ def _finish_reviewer_worker(manifest, *, run, post, repo, paths, run_id, project
         # the one sanctioned addition (MOA-474 §12.1).
         jc._update_status_md(manifest, run=run, allowlist_root=allowlist_root)
     _send_callback(
-        manifest, run=run, kind=kind, outcome=payload.get("verdict", "no verdict"), summary=summary,
+        manifest, kind=kind, outcome=payload.get("verdict", "no verdict"),
         report_path=paths["report"], stage=payload.get("stage"), diagnostic=payload.get("diagnostic"),
         contract_status=contract_status, ledger_pending=not delivered,
     )
@@ -803,11 +799,9 @@ def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     """Every diff-reviewer-worker refusal that fires BEFORE the reviewer LLM ever launches
     (fixes Part 2 diff-review F1/F2) posts the same cancelled-payload shape
     `_refuse_builder_run` posts for its own pre-launch refusals, as this run's terminal
-    row. Unlike `_refuse_builder_run`, this never calls `_cleanup_worktree` -- a diff
+    row. Unlike     `_refuse_builder_run`, this never calls `_cleanup_worktree` -- a diff
     review never owns the worktree (the `build` that created it does), so there is
-    nothing here for this worker to undo. fixes S1: also sends the same `[JAXFLOW]`
-    callback line a launched-then-finished diff review would have sent -- `run` is still
-    passed through to `_send_callback`, which keeps it for call-site compatibility.
+    nothing here for this worker to undo.
     MOA-474 F1: `manifest_path` (the argv path this worker was invoked with) is the only
     trustworthy location for the `finished.json` spool -- the manifest body's own paths
     cannot be trusted, exactly like `_refuse_unvalidated_builder_run`."""
@@ -834,7 +828,7 @@ def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     manifest["worker_contract_status"] = "cancelled"
     manifest["worker_outcome"] = None
     _send_callback(
-        manifest, run=run, kind=manifest["kind"], outcome="cancelled", summary=bounded,
+        manifest, kind=manifest["kind"], outcome="cancelled",
         report_path=None, ledger_pending=not delivered,
     )
     return jc.REFUSED

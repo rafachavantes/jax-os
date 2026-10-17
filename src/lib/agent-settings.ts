@@ -530,14 +530,6 @@ export function isSettingsDraftDirty(baseline: SettingsDraft, draft: SettingsDra
   return JSON.stringify(baseline) !== JSON.stringify(draft);
 }
 
-export function pollingWouldOverwrite(
-  dirty: boolean,
-  baselineRevision: string,
-  serverRevision: string,
-): boolean {
-  return dirty && baselineRevision !== serverRevision;
-}
-
 export function compactRouting(routing: RoutingDraft | null): Routing | null {
   if (routing == null) return null;
   const out: Routing = { sort: "price", allow_fallbacks: routing.allow_fallbacks };
@@ -553,17 +545,6 @@ export function compactRouting(routing: RoutingDraft | null): Routing | null {
   if (routing.ignore && routing.ignore.length) out.ignore = routing.ignore;
   if (routing.quantizations && routing.quantizations.length) out.quantizations = routing.quantizations;
   return out;
-}
-
-export function percentileMatches(
-  goal: Percentile,
-  observation: (Percentile & { window?: string }) | null,
-): boolean {
-  if (!observation) return false;
-  const key = Object.keys(goal)[0] as PercentileKey | undefined;
-  if (!key) return false;
-  const observed = observation[key];
-  return typeof observed === "number" && Number.isFinite(observed);
 }
 
 export const MODEL_INPUT_KEYS = [
@@ -642,104 +623,6 @@ export function validateModelInput(value: unknown): value is ModelInput {
   return true;
 }
 
-export function modelInputPayload(model: {
-  id: string;
-  label?: string;
-  context?: number | null;
-  output?: number | null;
-  reasoning?: boolean | null;
-  toolCall?: boolean | null;
-  effort?: "none" | "reasoning" | "reasoning_effort";
-  efforts?: string[];
-}): ModelInput | null {
-  const out: ModelInput = { id: model.id };
-  if (model.label) out.label = model.label;
-  if (model.reasoning != null) out.reasoning = model.reasoning;
-  if (model.toolCall != null) out.tool_call = model.toolCall;
-  if (model.effort) out.effort_template = model.effort;
-  if (model.context != null && model.output != null) {
-    out.limit = { context: model.context, output: model.output };
-  } else if (model.context != null) {
-    out.context = model.context;
-  }
-  if (model.efforts && model.efforts.length) out.efforts = model.efforts;
-  return validateModelInput(out) ? out : null;
-}
-
-export type RoutingLabels = {
-  sort: string;
-  fallbacks: string;
-  throughput: string;
-  latency: string;
-  maxPrompt: string;
-  maxCompletion: string;
-  only: string;
-  ignore: string;
-};
-
-function percentileValue(p: unknown): string | null {
-  if (!p || typeof p !== "object") return null;
-  const rec = p as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (typeof rec[key] === "number") return `${key}:${String(rec[key])}`;
-  }
-  return null;
-}
-
-export function routingPreviewText(routing: unknown, labels: RoutingLabels): string | null {
-  if (!routing || typeof routing !== "object") return null;
-  const row = routing as Record<string, unknown>;
-  const sort = row.sort === "price" ? labels.sort : String(row.sort);
-  const parts = [
-    typeof row.allow_fallbacks === "boolean" ? `${sort} ${row.allow_fallbacks ? "+" : "-"}${labels.fallbacks}` : sort,
-  ];
-  const throughput = percentileValue(row.preferred_min_throughput);
-  const latency = percentileValue(row.preferred_max_latency);
-  if (throughput) parts.push(`${labels.throughput} ${throughput}`);
-  if (latency) parts.push(`${labels.latency} ${latency}`);
-  if (row.max_price && typeof row.max_price === "object") {
-    const mp = row.max_price as Record<string, unknown>;
-    if (typeof mp.prompt === "number") parts.push(`${labels.maxPrompt}=${String(mp.prompt)}`);
-    if (typeof mp.completion === "number") parts.push(`${labels.maxCompletion}=${String(mp.completion)}`);
-  }
-  if (Array.isArray(row.only) && row.only.length) parts.push(`${labels.only}=${(row.only as string[]).join(",")}`);
-  if (Array.isArray(row.ignore) && row.ignore.length) parts.push(`${labels.ignore}=${(row.ignore as string[]).join(",")}`);
-  return parts.join(" · ");
-}
-
-export type PreviewBindingRow = {
-  profile: ProfileName;
-  connection: string;
-  model: string;
-  effort: string | null;
-  routing: unknown;
-};
-export type ProfilePreviewRow = {
-  profile: ProfileName;
-  before: PreviewBindingRow | null;
-  after: PreviewBindingRow | null;
-};
-
-function isPreviewRow(value: unknown): value is PreviewBindingRow {
-  if (!isObj(value)) return false;
-  const row = value as Record<string, unknown>;
-  return (row.profile === "default" || row.profile === "fallback")
-    && typeof row.connection === "string"
-    && typeof row.model === "string"
-    && (row.effort === null || row.effort === undefined || typeof row.effort === "string");
-}
-
-function previewRow(value: unknown): PreviewBindingRow {
-  const row = value as PreviewBindingRow;
-  return {
-    profile: row.profile,
-    connection: row.connection,
-    model: row.model,
-    effort: typeof row.effort === "string" ? row.effort : null,
-    routing: row.routing ?? null,
-  };
-}
-
 export function previewFingerprint(draft: SettingsDraft, revision: EditorRevision | null): string | null {
   if (!revision) return null;
   const { reviewers, builders } = draft;
@@ -749,16 +632,6 @@ export function previewFingerprint(draft: SettingsDraft, revision: EditorRevisio
   } catch {
     return null;
   }
-}
-
-export function previewIsCurrent(
-  stored: string | null,
-  draft: SettingsDraft,
-  revision: EditorRevision | null,
-): boolean {
-  if (!stored || !revision) return false;
-  const current = previewFingerprint(draft, revision);
-  return current !== null && current === stored;
 }
 
 export type ActivationGate = {
@@ -801,32 +674,8 @@ export function draftIsValid(draft: SettingsDraft, connections: ConnectionChoice
   return true;
 }
 
-export function previewProfiles(value: unknown): { affected: string[]; rows: ProfilePreviewRow[] } | null {
-  if (!isObj(value)) return null;
-  const data = value as Record<string, unknown>;
-  const affected = Array.isArray(data.affected) ? data.affected.filter((x): x is string => typeof x === "string") : [];
-  const aliases = data.aliases;
-  if (!isObj(aliases)) return null;
-  const before = Array.isArray(aliases.before) ? aliases.before.filter(isPreviewRow) : [];
-  const after = Array.isArray(aliases.after) ? aliases.after.filter(isPreviewRow) : [];
-  const map = (rows: PreviewBindingRow[]): Partial<Record<ProfileName, PreviewBindingRow>> => {
-    const out: Partial<Record<ProfileName, PreviewBindingRow>> = {};
-    for (const row of rows) out[row.profile] = previewRow(row);
-    return out;
-  };
-  const beforeMap = map(before);
-  const afterMap = map(after);
-  const rows: ProfilePreviewRow[] = (["default", "fallback"] as const).map((name) => ({
-    profile: name,
-    before: beforeMap[name] ?? null,
-    after: afterMap[name] ?? null,
-  }));
-  return { affected, rows };
-}
-
 export const TOOLS_TABS = ["general", "agents", "providers", "rules", "inventory"] as const;
 export type ToolsTab = (typeof TOOLS_TABS)[number];
-export type CredentialOutcomeAction = "reconcile" | "retry-sync" | "status";
 export type SettingsWriteKind = "ok" | "activation-pending" | "applied-unrecorded" | "unconfirmed" | "refused";
 
 export const CLAUDE_REVIEWER_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -881,17 +730,6 @@ export function selectableConnections(rows: ConnectionChoice[]): ConnectionChoic
 
 export function configuredModels(c: ConnectionChoice | undefined): ModelChoice[] {
   return c ? c.models.filter((m) => m.compatible) : [];
-}
-
-export function credentialOutcomeActions(
-  stage: string | null,
-  _outcome: string | null,
-): CredentialOutcomeAction[] {
-  if (stage === "remote-uncertain") return ["reconcile", "status"];
-  if (stage === "sync-pending" || stage === "remote-saved") return ["retry-sync", "status"];
-  if (stage === "activation-pending") return ["reconcile", "status"];
-  if (stage === "submitted" || stage === "reserved") return ["status"];
-  return [];
 }
 
 export function shouldConfirmLeaveTools(pathname: string, href: string, dirty: boolean): boolean {

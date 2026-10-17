@@ -82,18 +82,6 @@ function pick<T extends string>(row: Record<string, unknown>, keys: readonly T[]
   return out;
 }
 
-// Decision for the pre-registration credential read: an existing connection's
-// real auth/safety controls always win, and only a genuinely new, valid draft
-// may read before it is registered.
-export function eligibleSecretReadAllowed(
-  connection: { editable: boolean; auth: string } | undefined,
-  providerId: string,
-  draft: ProviderConnectionDraft | null,
-): boolean {
-  if (connection) return connection.editable && connection.auth !== "oauth" && connection.auth !== "unknown";
-  return draft != null && draft.id === providerId;
-}
-
 export function sanitizeConnections(raw: unknown): ConnectionChoice[] {
   const list = Array.isArray(raw)
     ? raw

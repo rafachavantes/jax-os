@@ -335,13 +335,6 @@ def _do_remote(canonical, run, preset, dry_run, state, dir_name):
             _run_ok(run, ["gh", "repo", "edit", "--default-branch", "staging"], str(canonical), "gh repo edit", prefix="remote-failed")
         _record(state, "run", "gh repo edit --default-branch staging")
 
-def render_threat_model(template_text, mode):
-    """Substitutes AGENTS-template.md's hardcoded `mode: internal-single-user` line
-    (under `## Threat model`) with the operator's chosen mode. jax-init now asks
-    instead of silently stamping the default; AGENTS.md itself is still filled by the
-    jax-init skill's Step 4, not by this script."""
-    return template_text.replace("mode: internal-single-user", f"mode: {mode}", 1)
-
 def _emit(path, created, kept, ran, refused, head):
     print(json.dumps({
         "path": path,
