@@ -6,14 +6,9 @@ import { useTranslations } from "next-intl";
 import { fetchEnvelope } from "@/lib/api";
 import { isValidCredentialEnvName, type CredentialRef, type EditorRevision } from "@/lib/agent-settings";
 import { classifyWrite, postJson, useToolsDraft, writeKindText, type CredentialDialogRequest } from "./ToolsDraftProvider";
+import { BTN, FIELD, GHOST } from "./ui";
+import { ModalDialog } from "../ModalDialog";
 import css from "./tools.module.css";
-
-const FIELD =
-  "w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[13px] text-ink outline-none focus:border-line-strong disabled:opacity-60";
-const BTN =
-  "rounded-md bg-brand px-3 py-1.5 text-[12.5px] font-medium text-on-brand hover:bg-brand/90 disabled:opacity-60";
-const GHOST =
-  "rounded-md border border-line px-3 py-1.5 text-[12.5px] text-body-ink hover:bg-surface-2 disabled:opacity-60";
 
 type EnvStatus = "configured" | "missing" | "unknown";
 
@@ -34,7 +29,6 @@ export function ProviderCredentialDialog({
 }) {
   const t = useTranslations("tools");
   const qc = useQueryClient();
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const [kind, setKind] = useState<"native" | "env">(request.current?.kind === "env" ? "env" : "native");
   const [env, setEnv] = useState(request.current?.kind === "env" ? request.current.env : "");
   const [pending, setPending] = useState(false);
@@ -43,8 +37,6 @@ export function ProviderCredentialDialog({
   const attempted = useRef(false);
 
   useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
     const invoker = request.invoker;
     return () => {
       invoker?.focus?.();
@@ -115,14 +107,9 @@ export function ProviderCredentialDialog({
   const envValid = kind === "native" || isValidCredentialEnvName(env);
 
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={t("editCredential")}
+    <ModalDialog
       onClose={close}
-      onCancel={(e) => {
-        e.preventDefault();
-        close();
-      }}
+      aria-label={t("editCredential")}
       className={`${css.providerDialog} rounded-lg border border-line bg-surface`}
     >
       <form
@@ -178,6 +165,6 @@ export function ProviderCredentialDialog({
           </button>
         </div>
       </form>
-    </dialog>
+    </ModalDialog>
   );
 }
