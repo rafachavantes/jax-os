@@ -125,20 +125,8 @@ def _blocked_host(host):
 
 
 def _require_https_url(url):
-    if type(url) is not str or any(ord(ch) < 32 for ch in url):
-        raise Refusal("agent-settings-malformed")
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        raise Refusal("agent-settings-malformed") from None
-    if (
-        parts.scheme != "https"
-        or parts.username is not None
-        or parts.password is not None
-        or parts.query
-        or parts.fragment
-        or _blocked_host(parts.hostname)
-    ):
+    # `_dto_url` flags every unsafe shape (control chars, bad split, userinfo, non-https, query, fragment, blocked host)
+    if type(url) is not str or _dto_url({"options": {"baseURL": url}})[1]:
         raise Refusal("agent-settings-malformed")
 
 
@@ -191,13 +179,6 @@ def _default_pure_run(argv, cwd=None, env=None, **kw):
     if argv[0] == "opencode" and shutil.which("opencode", path=_env_table(env).get("PATH", os.defpath)) is None:
         argv = [str(Path.home() / ".opencode" / "bin" / "opencode"), *argv[1:]]
     return _pure_config_run(argv, cwd=cwd, env=env, **kw)
-
-
-def _invoke_run(run, argv, cwd, env):
-    try:
-        return run(argv, cwd=cwd, env=env)
-    except TypeError:
-        return run(argv, cwd=cwd)
 
 
 def _try_effective_config(run, env):
@@ -258,7 +239,7 @@ def _verbose_models(run, cid, env):
         return {}
     helper = run if run is not None else _default_pure_run
     try:
-        result = _invoke_run(helper, ["opencode", "models", cid, "--verbose", "--pure"], str(REPO), env)
+        result = helper(["opencode", "models", cid, "--verbose", "--pure"], cwd=str(REPO), env=env)
     except Refusal:
         return {}
     if getattr(result, "returncode", 1) != 0:
@@ -825,15 +806,11 @@ def _load_sources(paths):
     texts = {}
     values = {}
     for name in jset.SOURCE_FILES:
-        raw = _read_source_bytes(Path(paths[name]))
-        if raw is None:
+        text = _read_source_text(paths[name])
+        if text is None:
             texts[name] = None
             values[name] = None
             continue
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise Refusal("native-config-malformed") from exc
         parsed = edit_source(text, [], jsonc=name.endswith("jsonc"))
         texts[name] = text
         values[name] = parsed["value"]
@@ -976,14 +953,8 @@ def _bindings_from_intent(intent):
 
 
 def _refuse_referenced(settings, connection, model=None):
-    if settings is None:
-        return
-    for name in PROFILES:
-        row = settings["builders"][name]
-        if row["connection"] != connection:
-            continue
-        if model is None or row["model"] == model:
-            raise Refusal("agent-profile-conflict")
+    if _used_by(settings, connection, model):
+        raise Refusal("agent-profile-conflict")
 
 
 def _refuse_oauth(native_metadata, connection):
@@ -1267,11 +1238,7 @@ def _project(intent, paths, native_metadata, settings):
             extra = [alias for alias in aliases if alias not in whitelist]
             if extra:
                 edits.append({"path": ["provider", connection, "whitelist"], "value": whitelist + extra})
-        base = texts[target] if texts[target] is not None else "{}\n"
-        parsed = edit_source(base, edits, jsonc=target.endswith("jsonc"))
-        texts[target] = parsed["text"]
-        values[target] = parsed["value"]
-        affected.append(target)
+        affected += _edit_target(texts, values, target, edits)
     order = [name for name in jset.SOURCE_FILES if name in affected]
     return texts, order, {"before": before, "after": _bindings_from_intent(intent)}
 
@@ -1365,7 +1332,7 @@ def _effective_from_values(values):
     return base if base is not None else {}
 
 
-def publish_candidates(operation_id, paths, candidates, *, affected, expected_sources, expected_settings, settings_spec, run=None, env=None):
+def publish_candidates(operation_id, paths, candidates, *, affected, expected_sources, expected_settings, settings_spec):
     """Shared protected publication sequence (Task 4).
 
     The caller MUST already hold the configuration claim. `candidates` maps each
@@ -1492,17 +1459,13 @@ def apply(intent, expected, operation_id, paths, native_metadata=None, bindings=
                 bind_builders[profile_name] = {**row, "credential": intent["credential"]}
         if publish_settings:
             if intent.get("kind") == "save-settings":
-                settings_raw, revision, _source_tokens = _settings_document(intent, operation_id, candidates)
-            elif bind_builders is not None:
-                settings_raw, revision, _source_tokens = _settings_document({
-                    "reviewers": current["settings"]["reviewers"],
-                    "builders": bind_builders,
-                }, operation_id, candidates)
+                document = intent
             else:
-                settings_raw, revision, _source_tokens = _settings_document({
+                document = {
                     "reviewers": current["settings"]["reviewers"],
-                    "builders": current["settings"]["builders"],
-                }, operation_id, candidates)
+                    "builders": current["settings"]["builders"] if bind_builders is None else bind_builders,
+                }
+            settings_raw, revision, _source_tokens = _settings_document(document, operation_id, candidates)
             settings_spec = {"raw": settings_raw, "revision": revision}
         else:
             settings_spec = None
@@ -1514,12 +1477,10 @@ def apply(intent, expected, operation_id, paths, native_metadata=None, bindings=
             expected_sources=expected["sources"],
             expected_settings=expected["settings"],
             settings_spec=settings_spec,
-            run=run,
-            env=env,
         )
 
 
-def republish_settings(operation_id, paths, expected, *, run=None, env=None):
+def republish_settings(operation_id, paths, expected):
     """Settings-only republish for an inventory OpenCode reconciliation (Task 5):
     no native edits, a fresh published revision, and updated source hashes."""
     if type(operation_id) is not str or not jset.UUID_RE.fullmatch(operation_id):
@@ -1547,8 +1508,6 @@ def republish_settings(operation_id, paths, expected, *, run=None, env=None):
             expected_sources=expected["sources"],
             expected_settings=expected["settings"],
             settings_spec={"raw": settings_raw, "revision": revision},
-            run=run,
-            env=env,
         )
 
 
