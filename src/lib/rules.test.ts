@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compose, computeStatus, norm, replaceRuleSpan, ruleOutline, slotVisible, type RuleSpan } from "./rules";
+import { compose, computeStatus, norm, ruleOutline, slotVisible } from "./rules";
 
 describe("norm (§7 test 1)", () => {
   it("strips all trailing LF and appends exactly one", () => {
@@ -182,31 +182,6 @@ describe("ruleOutline (Task 1 — conservative H2 outline)", () => {
     // so both lines stay inside the A span
     expect(spans).toHaveLength(1);
     expect(spans[0].original).toBe(src);
-  });
-});
-
-describe("replaceRuleSpan (Task 1 — equality-checked splice)", () => {
-  it("preserves the exact prefix and suffix outside the span", () => {
-    const src = "pre\n\n## A\naaa\n\n## B\nbbb\n";
-    const span = ruleOutline(src).spans[0];
-    const replacement = span.original.replace("aaa", "aaa edited");
-    const out = replaceRuleSpan(src, span, replacement);
-    expect(out.slice(0, span.start)).toBe(src.slice(0, span.start));
-    expect(out.slice(span.start + replacement.length)).toBe(src.slice(span.end));
-    expect(out).toBe("pre\n\n## A\naaa edited\n\n## B\nbbb\n");
-  });
-
-  it("throws on a stale span whose original no longer matches", () => {
-    const stale: RuleSpan = { start: 0, end: 3, original: "xyz", label: "X" };
-    expect(() => replaceRuleSpan("abc", stale, "q")).toThrow("stale rule span");
-  });
-
-  it("throws on out-of-range or non-integer offsets", () => {
-    const src = "abc";
-    const base: RuleSpan = { start: 0, end: 3, original: "abc", label: "A" };
-    expect(() => replaceRuleSpan(src, { ...base, end: 4 }, "q")).toThrow("stale rule span");
-    expect(() => replaceRuleSpan(src, { ...base, start: 2, end: 1, original: "" }, "q")).toThrow("stale rule span");
-    expect(() => replaceRuleSpan(src, { ...base, start: 0.5 }, "q")).toThrow("stale rule span");
   });
 });
 

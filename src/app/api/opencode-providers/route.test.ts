@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type Database from "better-sqlite3";
-import { modelInputPayload, SETTINGS_CAP, type ModelChoice } from "../../../lib/agent-settings";
+import { SETTINGS_CAP, type ModelChoice } from "../../../lib/agent-settings";
 import { HelperRefusal, runSettingsHelper, type SpawnImpl } from "../../../server/collectors/agent-settings";
 import {
   applyProviders,
@@ -705,20 +705,18 @@ print(json.dumps(rows))`);
     expect(JSON.stringify(conn!.models)).not.toContain("jaxflow-builder-");
     expect(conn!.models.map((m) => m.id)).toEqual(expect.arrayContaining(["wire-reasoning-model"]));
 
-    const model = modelInputPayload({
+    const model = {
       id: "reasoning-cli",
       label: "Reasoning CLI",
-      context: 4096,
-      output: 512,
       reasoning: true,
-      toolCall: true,
-      effort: "reasoning",
+      tool_call: true,
+      effort_template: "reasoning",
+      limit: { context: 4096, output: 512 },
       efforts: ["high", "medium"],
-    });
-    expect(model).not.toBeNull();
+    };
     const saveModel = await handlePost(post({
       action: "save-model", expected: initial.data!.editor_revision, connection: CONN,
-      model: model!,
+      model,
       operation_id: OP,
     }), providerDeps());
     expect((await saveModel.json()).ok).toBe(true);

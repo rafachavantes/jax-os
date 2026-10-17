@@ -4,7 +4,6 @@ import type { EndpointRow, EndpointWindow } from "@/server/collectors/openrouter
 
 export type Match = "yes" | "no" | "unknown";
 export type EndpointEvaluation = { eligible: Match; goals: Match | "none" };
-export type ComparisonRequest = { connection: string; model: string };
 
 const KEYS: PercentileKey[] = ["p50", "p75", "p90", "p99"];
 
@@ -87,13 +86,6 @@ export function singlePercentileKey(goal: Percentile | undefined | null): Percen
   if (!goal) return null;
   const keys = KEYS.filter((key) => typeof goal[key] === "number");
   return keys.length === 1 ? keys[0] : null;
-}
-
-export function comparisonRequestMatches(
-  request: ComparisonRequest,
-  current: ComparisonRequest,
-): boolean {
-  return request.connection === current.connection && request.model === current.model;
 }
 
 export function canCompare(connection: ConnectionChoice | undefined, model: string): boolean {

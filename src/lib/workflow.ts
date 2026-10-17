@@ -258,7 +258,6 @@ export function parseIndexedReply(reply: string, shapes: WorkflowQuestionShape[]
   return { ok: true, answers: [...byNumber.values()].sort((a, b) => a.question_number - b.question_number) };
 }
 
-export const PROJECT_SLUG = /^[a-z0-9][a-z0-9-]*$/; // names tmux sessions (jax-<slug>-lead)
 export const TOKEN = /^[A-Za-z0-9._-]+$/; // run_id, phase
 export const TOOL_USE_ID = /^[A-Za-z0-9_-]+$/;
 export const TMUX_TARGET = /^[\x21-\x7e]+$/; // printable ASCII, no whitespace — exact pane target string
