@@ -114,6 +114,18 @@ def _read_text(path):
         raise Refusal("inventory-format-unsupported") from exc
 
 
+def _children(path, keep=None):
+    """Name-sorted children of `path` (optionally filtered by `keep`). Unreadable ->
+    inventory-permissions; more than OWNERSHIP_WALK_CAP entries -> inventory-too-large."""
+    try:
+        children = sorted((c for c in path.iterdir() if keep is None or keep(c)), key=lambda p: p.name)
+    except OSError:
+        raise Refusal("inventory-permissions") from None
+    if len(children) > OWNERSHIP_WALK_CAP:
+        raise Refusal("inventory-too-large")
+    return children
+
+
 def _strip_jsonc(text):
     out = []
     i, n = 0, len(text)
@@ -248,16 +260,9 @@ def _source_bytes(roots, executor):
 
 def _managed_disable_digest_from(executor, kind, registration, raw):
     """Digest a checked post-disable candidate (never the pre-disable bytes)."""
-    h = hashlib.sha256()
-    h.update(b"managed-disable-v1\x00")
-    h.update(executor.encode())
-    h.update(b"\x00")
-    h.update(kind.encode())
-    h.update(b"\x00")
-    h.update(registration.encode())
-    h.update(b"\x00")
-    h.update(raw if raw is not None else b"absent")
-    return h.hexdigest()
+    parts = [b"managed-disable-v1", executor.encode(), kind.encode(), registration.encode(),
+             raw if raw is not None else b"absent"]
+    return hashlib.sha256(b"\x00".join(parts)).hexdigest()
 
 
 def _managed_disable_digest(roots, executor, kind, registration):
@@ -320,12 +325,7 @@ def _scan_skill_dirs(executor, root, roots, overrides=None):
     items = []
     if not root.is_dir():
         return items
-    try:
-        children = sorted(root.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(children) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    children = _children(root)
     for child in children:
         if child.name.startswith("."):
             continue
@@ -399,33 +399,15 @@ def _claude_cache_index(roots):
     cache = Path(roots["claude_dir"]) / "plugins" / "cache"
     if not cache.is_dir():
         return index
-    try:
-        marketplaces = sorted(cache.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(marketplaces) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    marketplaces = _children(cache)
     for mp in marketplaces:
         if not mp.is_dir() or mp.name.startswith("."):
             continue
-        try:
-            plugins = sorted(mp.iterdir(), key=lambda p: p.name)
-        except OSError:
-            raise Refusal("inventory-permissions") from None
-        if len(plugins) > OWNERSHIP_WALK_CAP:
-            raise Refusal("inventory-too-large")
+        plugins = _children(mp)
         for plugin in plugins:
             if not plugin.is_dir() or plugin.name.startswith("."):
                 continue
-            try:
-                versions = sorted(
-                    (v for v in plugin.iterdir() if v.is_dir() and not v.name.startswith(".")),
-                    key=lambda p: p.name,
-                )
-            except OSError:
-                raise Refusal("inventory-permissions") from None
-            if len(versions) > OWNERSHIP_WALK_CAP:
-                raise Refusal("inventory-too-large")
+            versions = _children(plugin, lambda v: v.is_dir() and not v.name.startswith("."))
             index[f"{plugin.name}@{mp.name}"] = (plugin, _select_version_dir(versions))
     return index
 
@@ -450,12 +432,7 @@ def _scan_agent_dir(executor, root):
     items = []
     if not root.is_dir():
         return items
-    try:
-        children = sorted(root.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(children) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    children = _children(root)
     for child in children:
         if child.name.startswith(".") or not child.name.endswith(".md"):
             continue
@@ -703,12 +680,7 @@ def _scan_local_plugins(roots, source_path):
     root = Path(roots["opencode_dir"]) / "plugin"
     if not root.is_dir():
         return items
-    try:
-        children = sorted(root.iterdir(), key=lambda p: p.name)
-    except OSError:
-        raise Refusal("inventory-permissions") from None
-    if len(children) > OWNERSHIP_WALK_CAP:
-        raise Refusal("inventory-too-large")
+    children = _children(root)
     for child in children:
         if child.is_symlink() or not child.is_file() or child.suffix not in LOCAL_PLUGIN_SUFFIXES:
             continue
@@ -781,12 +753,7 @@ def _path_fingerprint(path):
         h.update(b"\x00")
         h.update(str(info.st_dev).encode("utf-8"))
         h.update(b"\x00")
-        try:
-            children = sorted(path.iterdir(), key=lambda p: p.name)
-        except OSError as exc:
-            raise Refusal("inventory-permissions") from exc
-        if len(children) > OWNERSHIP_WALK_CAP:
-            raise Refusal("inventory-too-large")
+        children = _children(path)
         for child in children:
             h.update(child.name.encode("utf-8"))
             h.update(b"\x00")
@@ -827,18 +794,9 @@ def _revision_with_source(roots, item, source_bytes):
         raw = source_bytes if source_bytes is not None else b"absent"
     else:
         raw = _path_fingerprint(path) if path else b"absent"
-    h = hashlib.sha256()
-    h.update(b"inventory-v2\x00")
-    h.update(item["executor"].encode())
-    h.update(b"\x00")
-    h.update(item["kind"].encode())
-    h.update(b"\x00")
-    h.update(item["registration"].encode())
-    h.update(b"\x00")
-    h.update(raw)
-    h.update(b"\x00")
-    h.update(source_bytes if source_bytes is not None else b"absent")
-    return h.hexdigest()
+    parts = [b"inventory-v2", item["executor"].encode(), item["kind"].encode(), item["registration"].encode(),
+             raw, source_bytes if source_bytes is not None else b"absent"]
+    return hashlib.sha256(b"\x00".join(parts)).hexdigest()
 
 
 def _revision_for(roots, item):
@@ -1303,19 +1261,7 @@ def _disable_restoration(roots, item):
             return {"selector": canonical, "prior": target.get("enabled"), "priorPresent": "enabled" in target}
         return None
     if executor == "opencode":
-        doc, _path, _sources = _opencode_doc(roots)
-        policy = _opencode_skill_policy(doc)
-        permission = doc.get("permission")
-        name = item["name"]
-        if type(policy) is str:
-            return {"container": "skill-scalar", "prior": policy}
-        if type(permission) is str:
-            return {"container": "root-scalar", "prior": permission}
-        if type(policy) is dict:
-            prior = policy.get(name)
-            position = list(policy).index(name) if name in policy else None
-            return {"selector": name, "prior": prior, "priorPresent": prior is not None, "position": position}
-        return {"selector": name, "prior": None, "priorPresent": False}
+        return _disable_restoration_from(_opencode_doc(roots)[0], item["name"])
     return None
 
 
