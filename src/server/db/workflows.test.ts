@@ -456,6 +456,19 @@ describe("claimAnswer", () => {
     expect(db.prepare("SELECT COUNT(*) AS c FROM mutations").get()).toEqual({ c: 1 });
     db.close();
   });
+
+  it("claimAnswer treats an unparseable or non-object stored question payload as not-pending", () => {
+    const db = openDb(":memory:");
+    for (const raw of ["{not json", "[1]", "5", "null"]) {
+      const q = insertEvent(db, question("t-corrupt"), NOW);
+      db.prepare("UPDATE workflow_events SET payload = ? WHERE id = ?").run(raw, q.id);
+      expect(claimAnswer(db, { question_event_id: q.id, reply: "0: 0" }, NOW)).toEqual({
+        ok: false, reason: "not-pending",
+      });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM workflow_answer_claims").get()).toEqual({ n: 0 });
+    }
+    db.close();
+  });
 });
 
 describe("claimAnswer — reads pane/tmux_incarnation off the question row, leadTarget deleted (D1)", () => {
@@ -1694,6 +1707,24 @@ describe("getProjectPanes (§4.1, Findings 4/5)", () => {
     expect(panesB[0].capsule).toMatchObject({ status: "needs_input" });
     expect(panesB[0].pendingQuestion).toMatchObject({ payload: { tool_use_id: "tu_b" } });
 
+    db.close();
+  });
+
+  it("pendingQuestionFor surfaces a question with a corrupt payload as an empty body", () => {
+    const db = openDb(":memory:");
+    setAfkOn(db);
+    const q = insertEvent(
+      db,
+      { run_id: null, project: "p1", role: "lead", type: "question", source: "deterministic",
+        emitter: "claude-pretool", pane: "%1", tmux_incarnation: "100:1",
+        payload: { tool_use_id: "tu_corrupt", questions: [{ question: "corrupt?", options: [{ label: "a" }] }] } },
+      new Date("2026-08-27T10:00:00Z"),
+    );
+    db.prepare("UPDATE workflow_events SET payload = ? WHERE id = ?").run("{not json", q.id);
+    const live: LiveSnapshot = { paneCommands: new Map(), paneIds: new Set(["%1"]), incarnation: "100:1" };
+    expect(getProjectPanes(db, "p1", live)[0].pendingQuestion).toEqual({
+      eventId: q.id, pane: "%1", tmuxIncarnation: "100:1", payload: {},
+    });
     db.close();
   });
 });

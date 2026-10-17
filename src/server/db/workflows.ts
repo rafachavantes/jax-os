@@ -429,13 +429,7 @@ export function claimAnswer(db: Database.Database, request: AnswerRequest, now =
       if (!row.pane || !row.tmux_incarnation) return { ok: false, reason: "invalid-target" };
       const ref: PaneRef = { pane: row.pane, tmuxIncarnation: row.tmux_incarnation };
       const key = paneKey(ref.pane, ref.tmuxIncarnation);
-      let payload: Record<string, unknown> = {};
-      try {
-        const v: unknown = row.payload ? JSON.parse(row.payload) : {};
-        if (v && typeof v === "object" && !Array.isArray(v)) payload = v as Record<string, unknown>;
-      } catch {
-        return { ok: false, reason: "not-pending" };
-      }
+      const payload = parseStoredPayload(row.payload); // corrupt/non-object -> {} -> no tool_use_id -> not-pending
       const tool_use_id = payload.tool_use_id;
       if (typeof tool_use_id !== "string" || !tool_use_id) return { ok: false, reason: "not-pending" };
       // Spec B §4.1 (migration 5): every per-pane guard keys on the generated pane_key column
@@ -1205,15 +1199,8 @@ function pendingQuestionFor(db: Database.Database, ref: PaneRef, project: string
     )
     .get(paneKey(ref.pane, ref.tmuxIncarnation), project) as { id: number; payload: string | null } | undefined;
   if (!row) return null;
-  let payload: Record<string, unknown> = {};
-  if (row.payload) {
-    try {
-      const v: unknown = JSON.parse(row.payload);
-      if (v && typeof v === "object" && !Array.isArray(v)) payload = v as Record<string, unknown>;
-    } catch {
-      // malformed payload — surface the question with an empty body rather than dropping it
-    }
-  }
+  // malformed payload degrades to {} — surface the question with an empty body rather than dropping it
+  const payload = parseStoredPayload(row.payload);
   return { eventId: row.id, pane: ref.pane, tmuxIncarnation: ref.tmuxIncarnation, payload };
 }
 
