@@ -50,7 +50,7 @@ import {
   pruneState, heartbeatFromRows,
   getHubMembership, getProjectPanes, getProjectTimeline, getHubData, lastRunFor,
   getLoopSummary, getWorktreeLedgerRows,
-  hasOpenTurn, isWorking, countFreshEvents, getCodexSessions,
+  isWorking, countFreshEvents, getCodexSessions,
   runtimeFromEmitter,
   type StalenessCandidate,
   type LiveSnapshot,
@@ -1353,73 +1353,7 @@ describe("pane identity across tmux incarnations (Spec B §4.1, test 21)", () =>
   });
 });
 
-describe("hasOpenTurn / isWorking (§4.1, tests 5/14/17)", () => {
-  it("turn-started newer than turn-stopped is an open turn", () => {
-    const db = openDb(":memory:");
-    const ref = { pane: "%1", tmuxIncarnation: "100:1" };
-    insertEvent(
-      db,
-      { run_id: null, project: "p1", role: "lead", type: "turn-started", source: "deterministic",
-        emitter: "claude-userprompt", payload: {}, pane: ref.pane, tmux_incarnation: ref.tmuxIncarnation },
-      new Date("2026-08-27T10:00:00Z"),
-    );
-    expect(hasOpenTurn(db, ref)).toBe(true);
-    db.close();
-  });
-
-  it("turn-stopped newer than turn-started is not an open turn", () => {
-    const db = openDb(":memory:");
-    const ref = { pane: "%1", tmuxIncarnation: "100:1" };
-    insertEvent(
-      db,
-      { run_id: null, project: "p1", role: "lead", type: "turn-started", source: "deterministic",
-        emitter: "claude-userprompt", payload: {}, pane: ref.pane, tmux_incarnation: ref.tmuxIncarnation },
-      new Date("2026-08-27T10:00:00Z"),
-    );
-    insertEvent(
-      db,
-      { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "deterministic",
-        emitter: "claude-stop", payload: { capsule_status: "done" }, pane: ref.pane, tmux_incarnation: ref.tmuxIncarnation },
-      new Date("2026-08-27T10:05:00Z"),
-    );
-    expect(hasOpenTurn(db, ref)).toBe(false);
-    db.close();
-  });
-
-  it("a pane with only turn-stopped has no open turn", () => {
-    const db = openDb(":memory:");
-    const ref = { pane: "%1", tmuxIncarnation: "100:1" };
-    insertEvent(
-      db,
-      { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "deterministic",
-        emitter: "claude-stop", payload: { capsule_status: "done" }, pane: ref.pane, tmux_incarnation: ref.tmuxIncarnation },
-      new Date("2026-08-27T10:00:00Z"),
-    );
-    expect(hasOpenTurn(db, ref)).toBe(false);
-    db.close();
-  });
-
-  it("turn-started and turn-stopped under DIFFERENT incarnations do not pair (test 14)", () => {
-    const db = openDb(":memory:");
-    const started = { pane: "%1", tmuxIncarnation: "100:1" };
-    const stopped = { pane: "%1", tmuxIncarnation: "200:1" }; // reissued pane id, new tmux server
-    insertEvent(
-      db,
-      { run_id: null, project: "p1", role: "lead", type: "turn-started", source: "deterministic",
-        emitter: "claude-userprompt", payload: {}, pane: started.pane, tmux_incarnation: started.tmuxIncarnation },
-      new Date("2026-08-27T10:00:00Z"),
-    );
-    insertEvent(
-      db,
-      { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "deterministic",
-        emitter: "claude-stop", payload: { capsule_status: "done" }, pane: stopped.pane, tmux_incarnation: stopped.tmuxIncarnation },
-      new Date("2026-08-27T10:05:00Z"),
-    );
-    expect(hasOpenTurn(db, started)).toBe(true); // still open under the OLD incarnation
-    expect(hasOpenTurn(db, stopped)).toBe(false); // the new incarnation never opened a turn
-    db.close();
-  });
-
+describe("isWorking (§4.1, tests 5/14/17)", () => {
   it("isWorking requires liveness — a dead pane with an open turn is idle, not working (test 17)", () => {
     const db = openDb(":memory:");
     const ref = { pane: "%1", tmuxIncarnation: "100:1" };
@@ -3444,7 +3378,6 @@ describe("MOA-469 F1 — a stored Codex row carrying a pane is never pane author
     insertEvent(db, paneCodex({ payload: { capsule_status: "done", capsule_rule: "tag" } }), new Date("2026-09-10T00:04:00.000Z"));
 
     const ref = { pane: "%1", tmuxIncarnation: INCARNATION };
-    expect(hasOpenTurn(db, ref)).toBe(true);          // the Claude turn stays open
     expect(hasPendingQuestion(db, ref)).toBe(true);   // the Claude question stays open
     const panes = getProjectPanes(db, "p1", live());
     expect(panes).toHaveLength(1);
@@ -3668,7 +3601,7 @@ describe("getLoopSummary", () => {
     const buildPayload = (phase: string, target: string) => ({ phase, runtime: "opencode-builder", kind: "build", target, caller: "claude", caller_session: "s", model: "m", effort: "e", session: "sess", repo: "/r", verify: "true" });
     const specPayload = (phase: string, target: string) => ({ phase, runtime: "claude", kind: "spec", target, caller: "claude", caller_session: "s", model: "m", effort: "e", session: "sess", repo: "/r" });
     // b1 then a resumed b2 share the SAME phase (a --resume attempt is its own build, L7);
-    // the CLI's own `_anchor_builds_for_prefix` counts both -- the old code hardcoded 1.
+    // the family count includes both -- the old code hardcoded 1.
     insertEvent(db, { project: "family", run_id: "s1", role: "reviewer", type: "run-started", source: "deterministic", emitter: "wrapper", payload: specPayload("moa510", "docs/spec.md") }, new Date("2026-09-01T00:00:00.000Z"));
     insertEvent(db, { project: "family", run_id: "b1", role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper", payload: buildPayload("moa510", "feat/z") }, new Date("2026-09-02T00:00:00.000Z"));
     insertEvent(db, { project: "family", run_id: "b2", role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper", payload: buildPayload("moa510", "feat/z") }, new Date("2026-09-03T00:00:00.000Z"));
@@ -4045,7 +3978,7 @@ describe("Phase 3 — lazy 30-day prune of hook telemetry on insert (spec §4.3,
     for (let i = 0; i < 25; i++) insertEvent(db, telemetry("tool-used", { tool: "Bash" }), new Date(T0.getTime() + i * 1000));
     insertEvent(db, { run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "deterministic",
       emitter: "claude-stop", payload: { capsule_status: "done" }, pane: "%1", tmux_incarnation: "100:1" }, new Date(T0.getTime() + 26_000));
-    const timeline = getProjectTimeline(db, "p1", 20);
+    const timeline = getProjectTimeline(db, "p1");
     expect(timeline.some((e) => e.type === "tool-used")).toBe(false);
     expect(timeline.some((e) => e.type === "turn-stopped")).toBe(true); // never crowded out by the 25 tool-used rows
     db.close();

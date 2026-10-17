@@ -29,19 +29,6 @@ export function parseLoadAlert(loadavg: string, cores: number): Alert | null {
   return Number.isFinite(load5) && load5 > cores ? { kind: "load", load5, cores } : null;
 }
 
-export function countZombies(psOut: string): number {
-  return psOut
-    .split(/\r?\n/)
-    .slice(1)
-    .filter((l) => l.trim().startsWith("Z")).length;
-}
-
-// ponytail: matches the English apt phrasing — verified this box runs an
-// English locale; revisit only if apt output ever localizes
-export function countUpgradable(aptOut: string): number {
-  return aptOut.split(/\r?\n/).filter((l) => l.includes("upgradable from")).length;
-}
-
 // spec §9: one `ps -eo pid,ppid,stat,etimes,comm` call; parent command resolved from
 // another row's pid in the SAME snapshot, never a second call. Round-3 F3: a missing
 // parent row yields `parentCommand: null`, never a placeholder.
@@ -65,7 +52,7 @@ export function parseZombieRows(psOut: string): ZombieRow[] {
 
 const PACKAGE_LINE_RE = /^([^/\s]+)\/(\S+)\s+(\S+)\s+\S+\s+\[upgradable from:\s*([^\]]+)\]/;
 
-// Parses `apt list --upgradable` (English locale, same convention as countUpgradable);
+// Parses `apt list --upgradable` (English locale only; revisit if apt output ever localizes);
 // a SUITE name (after "/") carrying "-security" marks it security-sourced. A line
 // missing the bracketed version pair is skipped, not crashed on.
 export function parsePackageRows(aptOut: string): PackageRow[] {
