@@ -17,7 +17,7 @@ from pathlib import Path
 import general_settings
 import jaxflow_run as jr
 import jaxflow_env as jenv
-from jax_init import Refusal, _contained, _is_secret_path, canonicalize_target
+from jax_init import Refusal, _contained, _is_secret_path, _iso8601, canonicalize_target
 from jaxflow_hook import UUID_RE
 
 
@@ -227,10 +227,6 @@ def _enabled_agents():
 
 def _reviewer_runtime_line(runtime, fallback):
     return f"reviewer_runtime: {runtime} (fallback: {fallback})" if fallback else ""
-
-
-def _iso8601(dt: datetime) -> str:
-    return dt.isoformat(timespec="seconds")
 
 
 def _branch_worktree_path(allowlist_root, project, branch, *, resolve=True):

@@ -51,23 +51,6 @@ def _integration_on_by_default(monkeypatch):
     monkeypatch.setattr(general_settings, "read_settings",
                         lambda: {"ok": True, "data": {"integrations": {"classifier": True}}})
 
-ENV_TEXT = """# comment line
-FOO=bar
-QUOTED="with spaces"
-SINGLE='also quoted'
-
-NOTIFICATION_WEBHOOK_SECRET=abc123
-"""
-
-def test_parse_env_file():
-    env = wp.parse_env_file(ENV_TEXT)
-    assert env["FOO"] == "bar"
-    assert env["QUOTED"] == "with spaces"
-    assert env["SINGLE"] == "also quoted"
-    assert env["NOTIFICATION_WEBHOOK_SECRET"] == "abc123"
-    assert "comment line" not in env  # comment line produced no key
-    assert len(env) == 4  # blank line skipped too
-
 def test_sign():
     body = b'{"event_id":1,"type":"test"}'
     secret = "s3cr3t"
@@ -216,8 +199,8 @@ def test_staleness_runs_when_the_forward_path_raises_an_unexpected_exception(mon
     # Finding 12: the two shape/path tests above are handled by _forward_pending's own inner
     # guards, so they pass even with main()'s outer backstop deleted. This one exercises the
     # backstop itself: an exception from a call NO inner guard wraps. Since MOA-498 the
-    # credential read in that path is jev_client.api_key (parse_env_file is no longer called
-    # by _forward_pending), so the throwing fake replaces that read instead.
+    # credential read in that path is jev_client.api_key, so the throwing fake replaces
+    # that read instead.
     def boom(_name):
         raise RuntimeError("unexpected forward failure")
 
