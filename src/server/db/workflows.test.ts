@@ -2944,6 +2944,22 @@ describe("MOA-464 — unfinished run hub projection", () => {
     db.close();
   });
 
+  it("lastRunFor bounds the stored run-started kind/runtime/target the same way activeRunsFor does", () => {
+    const db = openDb(":memory:");
+    start(db, { run_id: "spec-run" }, { kind: "spec", runtime: "claude", target: "docs/specs/x-spec.md" }, T_BUILD);
+    finish(db, { run_id: "spec-run" }, {}, T_DIFF);
+    expect(lastRunFor(db, "p1")).toMatchObject({ kind: "spec", runtime: "claude", target: "x-spec.md" });
+
+    start(db, { run_id: "ctrl-run" }, { kind: "build", runtime: "claude", target: "feat/a\u0007b" }, T_BUILD);
+    finish(db, { run_id: "ctrl-run" }, {}, T_DIFF);
+    expect(lastRunFor(db, "p1")).toMatchObject({ kind: "build", target: null });
+
+    start(db, { run_id: "bogus-run" }, { kind: "bogus", runtime: "bogus", target: "feat/x" }, T_BUILD);
+    finish(db, { run_id: "bogus-run" }, {}, T_DIFF);
+    expect(lastRunFor(db, "p1")).toMatchObject({ kind: null, runtime: null, target: null });
+    db.close();
+  });
+
   it("carries findings through only when the stored payload has a valid one", () => {
     const db = openDb(":memory:");
     start(db, { run_id: "r1", role: "reviewer" }, { kind: "diff", runtime: "codex", target: "feat/old" }, T_BUILD);
