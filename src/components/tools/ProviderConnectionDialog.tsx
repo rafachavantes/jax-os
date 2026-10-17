@@ -5,14 +5,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 import type { ConnectionChoice, EditorRevision } from "@/lib/agent-settings";
 import { classifyWrite, postJson, writeKindText } from "./ToolsDraftProvider";
+import { BTN, FIELD, GHOST } from "./ui";
+import { ModalDialog } from "../ModalDialog";
 import css from "./tools.module.css";
 
-const FIELD =
-  "w-full rounded-md border border-line bg-surface-2 px-2 py-1.5 text-[13px] text-ink outline-none focus:border-line-strong disabled:opacity-60";
-const BTN =
-  "rounded-md bg-brand px-3 py-1.5 text-[12.5px] font-medium text-on-brand hover:bg-brand/90 disabled:opacity-60";
-const GHOST =
-  "rounded-md border border-line px-3 py-1.5 text-[12.5px] text-body-ink hover:bg-surface-2 disabled:opacity-60";
 const ADAPTERS = ["xai", "openrouter", "openai-compatible"] as const;
 const CONNECTION_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
@@ -29,7 +25,6 @@ export function ProviderConnectionDialog({
 }) {
   const t = useTranslations("tools");
   const qc = useQueryClient();
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const editing = connection != null;
   const locked = editing && connection.editable === false;
   const [id, setId] = useState(connection?.id ?? "");
@@ -43,8 +38,6 @@ export function ProviderConnectionDialog({
   const gateRef = useRef(false);
 
   useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
     return () => {
       if (invoker?.isConnected) invoker.focus();
     };
@@ -94,14 +87,9 @@ export function ProviderConnectionDialog({
   }
 
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={editing ? t("editConnection") : t("addConnection")}
+    <ModalDialog
       onClose={close}
-      onCancel={(e) => {
-        e.preventDefault();
-        close();
-      }}
+      aria-label={editing ? t("editConnection") : t("addConnection")}
       className={`${css.providerDialog} rounded-lg border border-line bg-surface`}
     >
       <form
@@ -163,6 +151,6 @@ export function ProviderConnectionDialog({
           <button type="submit" disabled={busy || !expected} className={BTN}>{busy ? t("saving") : t("save")}</button>
         </div>
       </form>
-    </dialog>
+    </ModalDialog>
   );
 }
