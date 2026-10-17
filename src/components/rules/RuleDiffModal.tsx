@@ -1,16 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { diffLines } from "@/lib/rulesDiff";
+import { ModalDialog } from "../ModalDialog";
 import css from "./rules.module.css";
-
-// Shared pending-close guard for the rule dialogs: while a write is pending,
-// Escape stays inert exactly like the disabled buttons, so the settlement
-// reported to the section is never hidden by an early close.
-export function requestRuleClose(pending: boolean, close: () => void) {
-  if (!pending) close();
-}
 
 export function RuleDiffModal({
   appLabel,
@@ -38,15 +32,9 @@ export function RuleDiffModal({
   onClose: () => void;
 }) {
   const t = useTranslations("rules");
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const [applying, setApplying] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const lines = diffLines(disk, expected);
-
-  useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
-  }, []);
 
   async function handleApply() {
     if (applying || !confirmed || stale) return;
@@ -59,14 +47,10 @@ export function RuleDiffModal({
   }
 
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={appLabel}
+    <ModalDialog
+      pending={applying}
       onClose={onClose}
-      onCancel={(e) => {
-        e.preventDefault();
-        requestRuleClose(applying, onClose);
-      }}
+      aria-label={appLabel}
       className={css.diffDialog}
     >
       <div className={css.dialogBody}>
@@ -133,6 +117,6 @@ export function RuleDiffModal({
           </button>
         </div>
       </div>
-    </dialog>
+    </ModalDialog>
   );
 }

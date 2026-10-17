@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
+import { ModalDialog } from "../ModalDialog";
 import css from "./tools.module.css";
 
 // Settings-only recovery confirmation (F4): uses the preview-reconcile safe
@@ -23,23 +24,13 @@ export function InventoryReconcileDialog({
   onCancel: () => void;
 }) {
   const t = useTranslations("tools.inv");
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const [confirmed, setConfirmed] = useState(false);
 
-  useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg && typeof dlg.showModal === "function") dlg.showModal();
-  }, []);
-
   return (
-    <dialog
-      ref={dialogRef}
-      aria-label={t("reconcileTitle")}
+    <ModalDialog
+      pending={pending}
       onClose={onCancel}
-      onCancel={(e) => {
-        e.preventDefault();
-        if (!pending) onCancel();
-      }}
+      aria-label={t("reconcileTitle")}
       className={css.invDialog}
     >
       <div className={css.invDialogBody}>
@@ -75,6 +66,6 @@ export function InventoryReconcileDialog({
           </button>
         </div>
       </div>
-    </dialog>
+    </ModalDialog>
   );
 }
