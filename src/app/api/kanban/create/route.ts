@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createIssue, type IssueCreateInput } from "../../../../server/collectors/linear";
 import { readGeneralSettings } from "../../../../server/settings";
 import { runMutation } from "../../../../server/mutations";
-import { readJsonCapped, requireSameOrigin } from "../../../../server/api";
+import { readJsonObject } from "../../../../server/api";
 import { COMMENT_CAP, COMMENT_JSON_CAP, boundedString } from "../../../../server/inputLimits";
 
 export async function POST(req: Request) {
@@ -10,13 +10,9 @@ export async function POST(req: Request) {
   if (!(settings.ok && settings.data.integrations.linear)) {
     return NextResponse.json({ ok: false, error: "disabled" });
   }
-  const csrf = requireSameOrigin(req);
-  if (csrf) return csrf;
-  const bodyRead = await readJsonCapped(req, COMMENT_JSON_CAP);
-  if (!bodyRead.ok) return NextResponse.json({ ok: false, error: bodyRead.error });
-  const payload = bodyRead.value;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload))
-    return NextResponse.json({ ok: false, error: "invalid payload" });
+  const parsed = await readJsonObject(req, COMMENT_JSON_CAP);
+  if ("error" in parsed) return parsed.error;
+  const payload = parsed.payload;
   const { teamId, title, description, projectId, stateId, priority, assigneeId, labelIds } = payload as Record<string, unknown>;
   if (!boundedString(teamId, 256) || !boundedString(title, 255)) {
     return NextResponse.json({ ok: false, error: "invalid payload" });

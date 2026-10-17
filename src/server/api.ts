@@ -81,3 +81,20 @@ export async function readJsonCapped(
     return { ok: false, error: "invalid JSON" };
   }
 }
+
+// The shared preamble of the plain-object JSON POST routes, in one fixed order: origin check,
+// capped read, then "body is a plain object". Every failure is the same 200 {ok:false} envelope
+// the routes returned inline. Routes with other statuses or error texts keep their own preamble.
+export async function readJsonObject(
+  req: Request,
+  maxBytes: number,
+): Promise<{ error: NextResponse } | { payload: Record<string, unknown> }> {
+  const csrf = requireSameOrigin(req);
+  if (csrf) return { error: csrf };
+  const read = await readJsonCapped(req, maxBytes);
+  if (!read.ok) return { error: NextResponse.json({ ok: false, error: read.error }) };
+  const p = read.value;
+  if (!p || typeof p !== "object" || Array.isArray(p))
+    return { error: NextResponse.json({ ok: false, error: "invalid payload" }) };
+  return { payload: p as Record<string, unknown> };
+}

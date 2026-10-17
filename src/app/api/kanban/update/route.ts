@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { updateIssue, type IssuePatch } from "../../../../server/collectors/linear";
 import { readGeneralSettings } from "../../../../server/settings";
 import { runMutation } from "../../../../server/mutations";
-import { readJsonCapped, requireSameOrigin } from "../../../../server/api";
+import { readJsonObject } from "../../../../server/api";
 import { SMALL_JSON_CAP, COMMENT_CAP, boundedString } from "../../../../server/inputLimits";
 
 const FIELD_KIND: Record<string, string> = {
@@ -18,13 +18,9 @@ export async function POST(req: Request) {
   if (!(settings.ok && settings.data.integrations.linear)) {
     return NextResponse.json({ ok: false, error: "disabled" });
   }
-  const csrf = requireSameOrigin(req);
-  if (csrf) return csrf;
-  const body = await readJsonCapped(req, SMALL_JSON_CAP);
-  if (!body.ok) return NextResponse.json({ ok: false, error: body.error });
-  const payload = body.value;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload))
-    return NextResponse.json({ ok: false, error: "invalid payload" });
+  const parsed = await readJsonObject(req, SMALL_JSON_CAP);
+  if ("error" in parsed) return parsed.error;
+  const payload = parsed.payload;
   const { issueId, patch } = payload as { issueId?: unknown; patch?: unknown };
   if (!boundedString(issueId, 256) || patch === null || typeof patch !== "object" || Array.isArray(patch)) {
     return NextResponse.json({ ok: false, error: "invalid payload" });
