@@ -620,6 +620,41 @@ export type StalenessResult = {
   tmuxSourceOk: boolean;
 };
 
+// Pure staleness math shared by the tmux and codex halves of evaluateStaleness; only the
+// transport fields (pane/incarnation vs threadId) differ and are spread on by the caller.
+type StaleBody = { reason: "possibly-stuck" | "no-signal"; referenceEventId: number; payload: Record<string, unknown> };
+
+// Verdict on the newest turn-stopped row's capsule: "settled" = no alert and no no-signal
+// fallback (done/needs_input/blocked, or a waiting capsule still inside its deadline); a body =
+// possibly-stuck; null = capsule_status "unknown" (or anything else) falls through to no-signal.
+function capsuleStale(ts: { id: number; ts: string; payload: string }, now: number): StaleBody | "settled" | null {
+  const capsule = JSON.parse(ts.payload) as { capsule_status: string; capsule_minutes?: number };
+  if (capsule.capsule_status === "done" || capsule.capsule_status === "needs_input" || capsule.capsule_status === "blocked") {
+    return "settled"; // no synthetic alert, ever
+  }
+  if (capsule.capsule_status === "waiting" && typeof capsule.capsule_minutes === "number") {
+    const declaredAtMs = Date.parse(ts.ts);
+    const n = capsule.capsule_minutes;
+    const deadlineMs = declaredAtMs + (n * 60 + Math.max(120, n * 60 * 0.2)) * 1000;
+    if (!(now > deadlineMs)) return "settled"; // `!(>)`, not `<=`: a NaN deadline must settle, as the original `if (now > deadlineMs)` did
+    return {
+      reason: "possibly-stuck", referenceEventId: ts.id,
+      payload: { reason: "possibly-stuck", capsule_minutes: n, declared_at: ts.ts, overdue_by_s: Math.round((now - deadlineMs) / 1000), reference_event_id: ts.id },
+    };
+  }
+  return null;
+}
+
+// No-signal fallback: the newest agent-sourced row is older than 120 minutes.
+function quietStale(last: { id: number; ts: string }, now: number): StaleBody | null {
+  const quietForMs = now - Date.parse(last.ts);
+  if (!(quietForMs > 120 * 60 * 1000)) return null;
+  return {
+    reason: "no-signal", referenceEventId: last.id,
+    payload: { reason: "no-signal", since: last.ts, quiet_for_s: Math.round(quietForMs / 1000), reference_event_id: last.id },
+  };
+}
+
 export function evaluateStaleness(
   db: Database.Database, now: number, livePaneIds: Set<string>, liveIncarnation: string | null,
   codex: CodexSnapshot | null = null, tmuxSourceOk = true,
@@ -661,20 +696,10 @@ export function evaluateStaleness(
 
       const supersededByLaterStart = tst && (!ts || tst.id > ts.id);
       if (!supersededByLaterStart && ts) {
-        const capsule = JSON.parse(ts.payload) as { capsule_status: string; capsule_minutes?: number };
-        if (capsule.capsule_status === "done" || capsule.capsule_status === "needs_input" || capsule.capsule_status === "blocked") {
-          continue; // no synthetic alert, ever
-        }
-        if (capsule.capsule_status === "waiting" && typeof capsule.capsule_minutes === "number") {
-          const declaredAtMs = Date.parse(ts.ts);
-          const n = capsule.capsule_minutes;
-          const deadlineMs = declaredAtMs + (n * 60 + Math.max(120, n * 60 * 0.2)) * 1000;
-          if (now > deadlineMs) {
-            candidates.push({
-              transport: "tmux",
-              pane, tmuxIncarnation: liveIncarnation, project, role, reason: "possibly-stuck", referenceEventId: ts.id,
-              payload: { reason: "possibly-stuck", capsule_minutes: n, declared_at: ts.ts, overdue_by_s: Math.round((now - deadlineMs) / 1000), reference_event_id: ts.id },
-            });
+        const verdict = capsuleStale(ts, now);
+        if (verdict) {
+          if (verdict !== "settled") {
+            candidates.push({ transport: "tmux", pane, tmuxIncarnation: liveIncarnation, project, role, ...verdict });
           }
           continue;
         }
@@ -685,14 +710,8 @@ export function evaluateStaleness(
       const last = db.prepare(
         `SELECT id, ts FROM workflow_events WHERE pane_key = ? AND ${paneAgentFilter()} ORDER BY id DESC LIMIT 1`,
       ).get(key) as { id: number; ts: string };
-      const quietForMs = now - Date.parse(last.ts);
-      if (quietForMs > 120 * 60 * 1000) {
-        candidates.push({
-          transport: "tmux",
-          pane, tmuxIncarnation: liveIncarnation, project, role, reason: "no-signal", referenceEventId: last.id,
-          payload: { reason: "no-signal", since: last.ts, quiet_for_s: Math.round(quietForMs / 1000), reference_event_id: last.id },
-        });
-      }
+      const quiet = quietStale(last, now);
+      if (quiet) candidates.push({ transport: "tmux", pane, tmuxIncarnation: liveIncarnation, project, role, ...quiet });
     }
   }
 
@@ -721,18 +740,10 @@ export function evaluateStaleness(
       ).get(row.session) as { id: number } | undefined;
       const supersededByLaterStart = tst && (!ts || tst.id > ts.id);
       if (!supersededByLaterStart && ts) {
-        const capsule = JSON.parse(ts.payload) as { capsule_status: string; capsule_minutes?: number };
-        if (capsule.capsule_status === "done" || capsule.capsule_status === "needs_input" || capsule.capsule_status === "blocked") continue;
-        if (capsule.capsule_status === "waiting" && typeof capsule.capsule_minutes === "number") {
-          const declaredAtMs = Date.parse(ts.ts);
-          const n = capsule.capsule_minutes;
-          const deadlineMs = declaredAtMs + (n * 60 + Math.max(120, n * 60 * 0.2)) * 1000;
-          if (now > deadlineMs) {
-            candidates.push({
-              transport: "codex", threadId: row.session, project: row.project, role: row.role,
-              reason: "possibly-stuck", referenceEventId: ts.id,
-              payload: { reason: "possibly-stuck", capsule_minutes: n, declared_at: ts.ts, overdue_by_s: Math.round((now - deadlineMs) / 1000), reference_event_id: ts.id },
-            });
+        const verdict = capsuleStale(ts, now);
+        if (verdict) {
+          if (verdict !== "settled") {
+            candidates.push({ transport: "codex", threadId: row.session, project: row.project, role: row.role, ...verdict });
           }
           continue;
         }
@@ -742,14 +753,8 @@ export function evaluateStaleness(
          WHERE harness_session = ? AND emitter IN ('codex-stop','codex-permission','codex-userprompt')
          ORDER BY id DESC LIMIT 1`,
       ).get(row.session) as { id: number; ts: string };
-      const quietForMs = now - Date.parse(last.ts);
-      if (quietForMs > 120 * 60 * 1000) {
-        candidates.push({
-          transport: "codex", threadId: row.session, project: row.project, role: row.role,
-          reason: "no-signal", referenceEventId: last.id,
-          payload: { reason: "no-signal", since: last.ts, quiet_for_s: Math.round(quietForMs / 1000), reference_event_id: last.id },
-        });
-      }
+      const quiet = quietStale(last, now);
+      if (quiet) candidates.push({ transport: "codex", threadId: row.session, project: row.project, role: row.role, ...quiet });
     }
   }
   return { candidates, nullIncarnation, checked, codexSourceOk, tmuxSourceOk };
