@@ -594,7 +594,7 @@ def _post_event(event, *, url=jr.EVENTS_URL, opener=urllib.request.urlopen):
 def _latest_builder_attempt(con, project, repo, branch):
     """"Latest" is by event TIMESTAMP, `id` breaking an exact tie (F6, round 4) -- the
     same rule `worktrees.ts`'s `collectRetainedWorktrees` uses on the TypeScript side,
-    so GC and the dashboard's retained-worktree count never disagree on which attempt
+    so the dashboard's retained-worktree count never disagrees on which attempt
     is the latest for a backfilled or out-of-order write."""
     rows = con.execute(
         "SELECT run_id, payload FROM workflow_events "
@@ -1021,7 +1021,7 @@ def _git_read(run, repo, argv, *, shape=None):
 
 def _require_toplevel(run, cwd, *, strict=False):
     """The resolved git toplevel of `cwd`, or the toplevel refusal. Two forms,
-    both preserved from the inline copies. `strict=False` (dispatchers, gc): only a failed
+    both preserved from the inline copies. `strict=False` (dispatchers): only a failed
     `rev-parse` refuses and the stdout is taken as-is. `strict=True` (pr/merge verbs, round-5
     F8): the value becomes the repo root every later call is scoped to, so it must be a
     non-empty absolute path to a directory -- an empty or relative one would silently

@@ -44,8 +44,6 @@ from jaxflow_cli import (  # noqa: F401
     MISSION_BASE_URL,
     cmd_cancel,
     cmd_doctor,
-    cmd_gc,
-    cmd_loop,
     cmd_result,
     cmd_status,
     main,
