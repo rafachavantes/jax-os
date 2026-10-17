@@ -1,0 +1,236 @@
+@import "tailwindcss";
+@import "../styles/ds/colors.css";
+@import "../styles/ds/typography.css";
+@import "../styles/ds/spacing.css";
+@import "../styles/ds/effects.css";
+
+/* Tailwind theme mapped LIVE to DS vars — must stay `inline` so
+   [data-theme="light"] value swaps propagate into utilities. */
+@theme inline {
+  --color-base: var(--bg-base);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-inset: var(--surface-inset);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-line-subtle: var(--border-subtle);
+  --color-ink: var(--text-strong);
+  --color-body-ink: var(--body-ink);
+  --color-muted: var(--text-muted);
+  --color-on-brand: var(--text-on-brand);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-active: var(--brand-active);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-soft-border: var(--brand-soft-border);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-border: var(--accent-soft-border);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-focus-ring: var(--focus-ring);
+
+  /* next/font variables referenced directly (never var(--font-sans) — circular) */
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-orbitron), var(--font-geist-sans), sans-serif;
+
+  /* DS radii — static values, identical to spacing.css (harmless duplicate) */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+}
+
+:root {
+  /* Point DS font tokens at the self-hosted next/font families
+     (vendored typography.css names raw families the app doesn't load). */
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-orbitron), var(--font-geist-sans), sans-serif;
+
+  /* Mockup's body text color (see Global Constraints — NOT --text-body) */
+  --body-ink: #c9bcaf;
+}
+
+[data-theme="light"] {
+  --body-ink: #4c4038;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--body-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Visible focus for every keyboard-focusable control (U1) */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Native modal dialogs — backdrop for centered rule/issue dialogs */
+dialog::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+/* Respect reduced motion without hiding content (U1) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Shell animations (from the approved mockup) */
+@keyframes jax-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+/* Brand image pair (BrandImage.tsx): one variant visible, chosen by the server-rendered data-theme. */
+.brand-light { display: none; }
+[data-theme="light"] .brand-dark { display: none; }
+[data-theme="light"] .brand-light { display: inline; }
+@keyframes jax-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes jax-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* Themed scrollbars (from mockup) */
+.jax-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.jax-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+  border: 3px solid var(--bg-base);
+}
+.jax-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* Markdown prose (Linear descriptions/comments) — DS tokens only */
+.jax-prose h1, .jax-prose h2, .jax-prose h3 { color: var(--text-strong); font-weight: 700; margin: 0.8em 0 0.4em; }
+.jax-prose h1 { font-size: 1.25rem; } .jax-prose h2 { font-size: 1.1rem; } .jax-prose h3 { font-size: 1rem; }
+.jax-prose p { margin: 0.5em 0; }
+.jax-prose ul, .jax-prose ol { margin: 0.5em 0; padding-left: 1.25rem; }
+.jax-prose ul { list-style: disc; } .jax-prose ol { list-style: decimal; }
+.jax-prose pre { background: var(--surface-2); padding: 0.75rem; border-radius: 0.5rem; overflow-x: auto; margin: 0.6em 0; }
+.jax-prose table { border-collapse: collapse; } .jax-prose td, .jax-prose th { border: 1px solid var(--border); padding: 0.25rem 0.5rem; }
+
+/* Card border-state ring (spec §8, Decision 9). --a is an animatable custom property
+   driving a conic-gradient clipped to a ring via mask -- the "comet." A slower opacity
+   pulse on a second pseudo-element is the "breathe" glow. Both live on ::before/::after
+   so no card gets an extra DOM node; only `working` ever applies `.state-working`. */
+@property --a {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.tile-ring {
+  position: relative;
+}
+.tile-ring.state-working::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(from var(--a), var(--accent) 0deg, transparent 70deg, transparent 360deg);
+  /* round-1 F2: mask color is never painted (composites on alpha) — `black` is fully
+     opaque, not a raw hex, so Task 10's zero-new-raw-hex scan passes by construction. */
+  -webkit-mask: linear-gradient(black 0 0) content-box, linear-gradient(black 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: jax-comet 3.2s linear infinite;
+  pointer-events: none;
+}
+.tile-ring.state-working::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  animation: jax-breathe 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes jax-comet {
+  to { --a: 360deg; }
+}
+@keyframes jax-breathe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.85; }
+}
+.tile-ring.state-stuck::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 2px var(--warning-soft);
+  animation: jax-breathe 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+/* Decision 18: opacity-only, not jax-pulse (which also scales — wrong on a border overlay). */
+@keyframes jax-pulse-border {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.tile-ring.state-needs-you::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 2px var(--danger-soft);
+  animation: jax-pulse-border 1.1s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* Item 10 (round 3): the heartbeat sparkline's "draw in" stroke, working-state only.
+   pathLength="1" on the <path> (set in JSX) makes stroke-dasharray/-offset length-independent. */
+@keyframes jax-hb-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+.hb-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: jax-hb-draw 1.6s ease-out forwards;
+}
+
+/* §10 AC: reduced motion resolves the ring to a flat accent border, never a frozen
+   mid-rotation frame. A second @media block, same condition as globals.css:87 already
+   declares -- order between them doesn't matter (disjoint selectors). */
+@media (prefers-reduced-motion: reduce) {
+  .tile-ring.state-working::before {
+    animation: none;
+    background: var(--accent);
+  }
+  .tile-ring.state-working::after {
+    animation: none;
+    opacity: 0.6;
+  }
+  .tile-ring.state-stuck::after {
+    animation: none;
+    opacity: 0.6;
+  }
+  .tile-ring.state-needs-you::after {
+    animation: none;
+    opacity: 0.6;
+  }
+  .hb-draw {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}

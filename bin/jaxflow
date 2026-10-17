@@ -1,0 +1,7 @@
+#!/bin/sh
+# Clone-path-independent: resolves its OWN location (not the invoking PATH symlink's
+# target's parent alone — readlink -f follows the whole chain) to find scripts/jaxflow.py
+# relative to itself. No hardcoded /home/rafa/... anywhere (spec MOA-502 Decision 6).
+self=$(readlink -f "$0")
+root=$(dirname "$(dirname "$self")")
+exec python3 "$root/scripts/jaxflow.py" "$@"

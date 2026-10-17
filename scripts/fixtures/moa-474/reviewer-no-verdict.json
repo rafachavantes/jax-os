@@ -1,0 +1,47 @@
+{
+  "runStarted": {
+    "run_id": "eeeeffff0000",
+    "project": "demo",
+    "role": "reviewer",
+    "type": "run-started",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "runtime": "opencode-grok",
+      "kind": "diff",
+      "target": "feat/x",
+      "caller": "claude",
+      "caller_session": "01234567-89ab-4cde-8f01-23456789abcd",
+      "model": "xai/grok-4.6",
+      "effort": "n/a",
+      "session": "jax-demo-diff-eeeeffff0000",
+      "repo": "/home/rafa/repos/demo",
+      "builder_run_id": "aaaabbbbcccc"
+    }
+  },
+  "runFinished": {
+    "run_id": "eeeeffff0000",
+    "project": "demo",
+    "role": "reviewer",
+    "type": "run-finished",
+    "source": "deterministic",
+    "emitter": "wrapper",
+    "payload": {
+      "phase": "P1",
+      "exit_code": 0,
+      "contract_status": "missing",
+      "report_path": "/r.md",
+      "summary": "Report missing",
+      "stage": "report",
+      "diagnostic": "report missing"
+    }
+  },
+  "expected": {
+    "outcome": null,
+    "stage": "report",
+    "diagnostic": "report missing",
+    "contractStatus": "missing",
+    "headSha": null
+  }
+}

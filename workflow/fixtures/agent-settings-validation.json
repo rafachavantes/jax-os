@@ -1,0 +1,332 @@
+{
+  "cases": [
+    {
+      "name": "valid-v1-file",
+      "expect": null,
+      "kind": "file",
+      "path": "agent-settings-v1.json"
+    },
+    {
+      "name": "duplicate-schema-version",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "duplicate-nested-key",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"model\":\"opus\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "schema-version-float",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1.0,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "schema-version-scientific",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1e0,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "schema-version-true",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":true,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "schema-version-2",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":2,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "too-large",
+      "expect": "agent-settings-too-large",
+      "kind": "fill",
+      "byte": 120,
+      "count": 131073
+    },
+    {
+      "name": "invalid-utf8",
+      "expect": "agent-settings-malformed",
+      "kind": "hex",
+      "hex": "ff"
+    },
+    {
+      "name": "utf8-bom",
+      "expect": "agent-settings-malformed",
+      "kind": "hex",
+      "hex": "efbbbf7b22736368656d615f76657273696f6e223a312c227265766973696f6e223a223131313131313131313131313131313131313131313131313131313131313131222c22726576696577657273223a7b22636c61756465223a7b226d6f64656c223a22736f6e6e6574222c226566666f7274223a227868696768227d2c22636f646578223a7b226d6f64656c223a226770742d352e362d6c756e61222c226566666f7274223a227868696768227d7d2c226275696c64657273223a7b2264656661756c74223a7b22636f6e6e656374696f6e223a2266697874757265222c226d6f64656c223a22776972652d7265616c2d6d6f64656c222c226566666f7274223a2268696768222c2263726564656e7469616c223a7b226b696e64223a226e6174697665227d2c22726f7574696e67223a7b22736f7274223a227072696365222c22616c6c6f775f66616c6c6261636b73223a747275657d7d2c2266616c6c6261636b223a7b22636f6e6e656374696f6e223a2266697874757265222c226d6f64656c223a22776972652d7265616c2d6d6f64656c222c226566666f7274223a2268696768222c2263726564656e7469616c223a7b226b696e64223a226e6174697665227d2c22726f7574696e67223a7b22736f7274223a227072696365222c22616c6c6f775f66616c6c6261636b73223a66616c73657d7d7d2c22736f757263655f7265766973696f6e73223a7b226f70656e636f64652e6a736f6e223a22616273656e74222c226f70656e636f64652e6a736f6e63223a22616273656e74227d7d"
+    },
+    {
+      "name": "empty",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": ""
+    },
+    {
+      "name": "whitespace-only",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": " \n\t"
+    },
+    {
+      "name": "trailing-junk",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}0"
+    },
+    {
+      "name": "trailing-comma",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"},\n}"
+    },
+    {
+      "name": "jsonc-comment",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "//c\n{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "null-root",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "null"
+    },
+    {
+      "name": "array-root",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "[]"
+    },
+    {
+      "name": "nan-percentile",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"preferred_min_throughput\":{\"p90\":NaN}}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "infinity-price",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"max_price\":{\"prompt\":Infinity}}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "neg-infinity",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"max_price\":{\"prompt\":-Infinity}}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "deep-nested-arrays",
+      "expect": "agent-settings-malformed",
+      "kind": "repeat",
+      "hex": "5b",
+      "count": 60000,
+      "suffix_hex": "5d",
+      "suffix_count": 60000
+    },
+    {
+      "name": "unpaired-surrogate-model",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"ok-\\uD800\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "control-in-model",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"ok\\u0001\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "extra-root-key",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"},\"extra\":1}"
+    },
+    {
+      "name": "missing-revision",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "extra-reviewer",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"},\"gemini\":{\"model\":\"g\",\"effort\":\"high\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "missing-reviewer",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "extra-reviewer-field",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\",\"runtime\":\"codex\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "extra-profile-field",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true},\"alias\":\"x\"},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "unknown-claude-effort",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"minimal\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "empty-connection",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "empty-model",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "model-starts-dash",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"-dash\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "model-with-space",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"has space\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "native-extra-key",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\",\"env\":\"XAI_API_KEY\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "env-not-allowed",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"env\",\"env\":\"PATH\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "routing-sort-latency",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"latency\",\"allow_fallbacks\":false}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "routing-order-key",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"order\":[\"x\"]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "percentile-two-keys",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"preferred_min_throughput\":{\"p90\":1,\"p50\":2}}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "negative-price",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"max_price\":{\"prompt\":-1}}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "only-ignore-overlap",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"only\":[\"same\"],\"ignore\":[\"same\"]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "revision-not-hex",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"1111111111111111111111111111111G\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "source-token-invalid",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"abc\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "source-extra-key",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\",\"extra\":\"absent\"}}"
+    },
+    {
+      "name": "valid-env",
+      "expect": null,
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"env\",\"env\":\"JAX_PROVIDER_FIXTURE_API_KEY\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "valid-full-routing",
+      "expect": null,
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"preferred_min_throughput\":{\"p90\":40},\"preferred_max_latency\":{\"p90\":3},\"max_price\":{\"prompt\":0.2,\"completion\":0.8},\"only\":[\"fixture-primary\"],\"ignore\":[\"fixture-excluded\"]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "valid-null-effort-routing",
+      "expect": null,
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":null,\"credential\":{\"kind\":\"native\"},\"routing\":null},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "valid-zero-price-ceiling",
+      "expect": null,
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"max_price\":{\"prompt\":0,\"completion\":0}}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "valid-claude-max-effort",
+      "expect": null,
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"max\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "valid-quantizations-list",
+      "expect": null,
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"quantizations\":[\"fp8\",\"fp4\"]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "empty-quantizations",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"quantizations\":[]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "unknown-quantization-value",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"quantizations\":[\"q1\"]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "duplicate-quantization",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"quantizations\":[\"fp8\",\"fp8\"]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    },
+    {
+      "name": "non-string-quantization",
+      "expect": "agent-settings-malformed",
+      "kind": "utf8",
+      "text": "{\"schema_version\":1,\"revision\":\"11111111111111111111111111111111\",\"reviewers\":{\"claude\":{\"model\":\"sonnet\",\"effort\":\"xhigh\"},\"codex\":{\"model\":\"gpt-5.6-luna\",\"effort\":\"xhigh\"}},\"builders\":{\"default\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":true,\"quantizations\":[8]}},\"fallback\":{\"connection\":\"fixture\",\"model\":\"wire-real-model\",\"effort\":\"high\",\"credential\":{\"kind\":\"native\"},\"routing\":{\"sort\":\"price\",\"allow_fallbacks\":false}}},\"source_revisions\":{\"opencode.json\":\"absent\",\"opencode.jsonc\":\"absent\"}}"
+    }
+  ]
+}

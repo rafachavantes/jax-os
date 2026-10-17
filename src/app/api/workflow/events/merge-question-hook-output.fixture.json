@@ -1,0 +1,14 @@
+{
+  "plain": {
+    "project": "p1", "role": "lead", "pane": "%1", "type": "turn-stopped", "source": "deterministic", "emitter": "claude-stop",
+    "payload": {"capsule_status": "needs_input", "capsule_rule": "merge-question", "capsule_attempts": 0, "merge_ask": 1, "merge_branch": "feat/x", "merge_target": "main", "merge_head_sha": "0123456789abcdef0123456789abcdef01234567"}
+  },
+  "withDoneTag": {
+    "project": "p1", "role": "lead", "pane": "%1", "type": "turn-stopped", "source": "deterministic", "emitter": "claude-stop",
+    "payload": {"capsule_status": "needs_input", "capsule_rule": "merge-question", "capsule_attempts": 0, "merge_ask": 1, "merge_branch": "feat/x", "merge_target": "main", "merge_head_sha": "0123456789abcdef0123456789abcdef01234567"}
+  },
+  "withWaitingTag": {
+    "project": "p1", "role": "lead", "pane": "%1", "type": "turn-stopped", "source": "deterministic", "emitter": "claude-stop",
+    "payload": {"capsule_status": "needs_input", "capsule_rule": "merge-question", "capsule_attempts": 0, "merge_ask": 1, "merge_branch": "feat/x", "merge_target": "main", "merge_head_sha": "0123456789abcdef0123456789abcdef01234567"}
+  }
+}
