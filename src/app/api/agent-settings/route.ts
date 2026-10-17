@@ -19,6 +19,7 @@ import {
   snapshotAgentSettings,
 } from "../../../server/collectors/agent-settings";
 import { sanitizeConnections } from "../../../server/collectors/opencode-providers";
+import { isObj } from "../../../server/inputLimits";
 import { runMutation } from "../../../server/mutations";
 
 const REVISION_RE = /^[0-9a-f]{32}$/;
@@ -46,10 +47,6 @@ function reply(body: unknown) {
   const res = NextResponse.json(body);
   res.headers.set("Cache-Control", "no-store");
   return res;
-}
-
-function isObj(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function keysOk(obj: Record<string, unknown>, required: string[], optional: string[] = []): boolean {

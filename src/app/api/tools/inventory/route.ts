@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { readJsonCapped, requireSameOrigin } from "@/server/api";
 import { getDb } from "@/server/db";
+import { isObj } from "@/server/inputLimits";
 import {
   applyInventory,
   getInventoryData,
@@ -59,10 +60,6 @@ const systemDeps: InventoryRouteDeps = {
   reconcile: (expected, operationId) => reconcileInventory(systemInventoryDeps(), expected, operationId),
   revision: (itemId, executor) => inventoryRevision(systemInventoryDeps(), itemId, executor),
 };
-
-function isObj(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function keysOk(obj: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
   const allow = new Set([...required, ...optional]);

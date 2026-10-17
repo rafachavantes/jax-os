@@ -4,6 +4,7 @@ import {
   productionCompareComposition,
   type CompareComposition,
 } from "../../../../server/collectors/openrouter";
+import { isObj } from "../../../../server/inputLimits";
 
 const CONNECTION_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
@@ -25,10 +26,6 @@ function reply(body: unknown) {
   const res = NextResponse.json(body);
   res.headers.set("Cache-Control", "no-store");
   return res;
-}
-
-function isObj(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 async function handleGet(req: Request, deps: EndpointsRouteDeps = systemDeps) {

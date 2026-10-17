@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import { insertMutation } from "./db/mutations";
 import { jaxosHome } from "./env";
+import { isObj } from "./inputLimits";
 
 // Round 1 F1: thrown by writeGeneralSettings when the mutations audit store is
 // unavailable -- a named error, checked BEFORE any write to settings.json, never a
@@ -59,7 +60,6 @@ const BOOL_INTEGRATION_KEYS = ["linear", "ttyd", "webhook", "hermesTokens", "cla
 const INTEGRATION_KEYS = [...BOOL_INTEGRATION_KEYS, "agents", "subscriptions"] as const;
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 const isStrArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
 const closed = (o: Obj, allowed: readonly string[]) => Object.keys(o).every((k) => (allowed as readonly string[]).includes(k));
 
