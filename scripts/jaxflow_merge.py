@@ -408,16 +408,75 @@ def _github_repo_slug(run, repo):
 _GH_PR_VIEW_FIELDS = "number,url,state,headRefOid,headRefName,baseRefName,mergeable,mergeCommit"
 
 
-def _gh_pr_view(run, repo, repo_slug, number):
+def _gh_pr_view(run, repo, repo_slug, number, *, include_title=False):
     """gh pr view <n> --json ... parsed. Any transport/parse failure is github-unreachable
-    (decision 6: network failure means unknown, never 'PR absent')."""
-    result = run(["gh", "pr", "view", str(number), "--repo", repo_slug, "--json", _GH_PR_VIEW_FIELDS], cwd=repo)
+    (decision 6: network failure means unknown, never 'PR absent'). The identity read and
+    MERGED recovery never request `title`; only an OPEN feature delivery whose subject
+    comes from the PR title asks for it."""
+    fields = _GH_PR_VIEW_FIELDS + (",title" if include_title else "")
+    result = run(["gh", "pr", "view", str(number), "--repo", repo_slug, "--json", fields], cwd=repo)
     if result.returncode != 0:
         raise Refusal("github-unreachable")
     try:
         return json.loads(result.stdout)
     except (ValueError, TypeError):
         raise Refusal("github-unreachable")
+
+
+def _resolve_auto_method(run, repo, repo_slug):
+    """`Merge method: auto` resolves merge -> squash -> rebase from GitHub's own capability
+    flags. String variables are passed as separate `-f` arguments (never `-F`, which would
+    type-coerce `123`/`true` repository names), and the query itself is a static string."""
+    owner, name = repo_slug.split("/", 1)
+    query = ("query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) "
+             "{ mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } }")
+    result = run(["gh", "api", "graphql", "-f", f"query={query}",
+                  "-f", f"owner={owner}", "-f", f"name={name}"], cwd=repo)
+    if result.returncode != 0:
+        raise jc._refuse("merge-method-unavailable",
+                         f"hint: could not read merge capabilities: "
+                         f"{jr._bound((result.stderr or result.stdout).strip(), 200)}")
+    try:
+        data = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        raise jc._refuse("merge-method-unavailable",
+                         "hint: the merge capability response was not valid JSON")
+    if not isinstance(data, dict) or data.get("errors"):
+        raise jc._refuse("merge-method-unavailable",
+                         "hint: GitHub returned an error for the merge capability query")
+    repository = data.get("data", {}).get("repository") if isinstance(data.get("data"), dict) else None
+    if not isinstance(repository, dict):
+        raise jc._refuse("merge-method-unavailable",
+                         "hint: the merge capability response had no repository object")
+    flags = [repository.get("mergeCommitAllowed"), repository.get("squashMergeAllowed"),
+             repository.get("rebaseMergeAllowed")]
+    if not all(type(flag) is bool for flag in flags):
+        raise jc._refuse("merge-method-unavailable",
+                         "hint: the merge capability response is missing boolean method flags")
+    for method, allowed in zip(("merge", "squash", "rebase"), flags):
+        if allowed:
+            return method
+    raise jc._refuse("merge-method-unavailable",
+                     "hint: GitHub reports no merge method enabled (merge, squash, rebase)")
+
+
+def _pr_subject(method, subject_mode, phase, branch, title):
+    """The exact `--subject` value for `gh pr merge`, or None when the method takes none."""
+    if method == "rebase":
+        return None
+    if subject_mode == "pr-title" or (method == "squash" and subject_mode == "default"):
+        return title
+    if subject_mode == "phase":
+        return phase
+    return f"feat: {phase} (merge {branch})"
+
+
+def _trusted_pr_title(title):
+    if not _valid_commit_subject(title):
+        raise jc._refuse("merge-policy-invalid",
+                         "hint: the PR title is empty, multiline, has control characters, "
+                         "or contains Co-Authored-By text")
+    return title
 
 
 def _resolve_pr_number(run, repo, repo_slug, branch, base):
@@ -536,6 +595,7 @@ def _open_pr(repo, project, caller, branch, sha, target, title, *, body_file, ru
     reconciliation). Shared by `cmd_pr_open` and, in Part 2, `cmd_release`'s internal call
     (which supplies `release_snapshot_sha`; `pr open`'s own CLI never does — see Global
     Constraints)."""
+    _merge_conventions(repo)
     repo_slug = _github_repo_slug(run, repo)
     kind = "release" if branch.startswith("release/") else "feature"
 
@@ -927,7 +987,12 @@ def _validate_merge_inputs(args, *, run, repo):
     return phase, approved_target
 
 
-def _merge_resume_verify(args, *, run, repo, target, phase):
+def _local_merge_subject(phase, branch, mode):
+    prefix = "feat: " if mode == "default" else ""
+    return f"{prefix}{phase} (merge {branch})"
+
+
+def _merge_resume_verify(args, *, run, repo, target, subject):
     """Proves a RESUME is really the approved delivery: the target's merge commit carries
     exactly the subject jaxflow itself writes for this branch/phase (the WHOLE subject, not
     a substring: `--phase` is free text), and the source branch is either gone (exit 1 of
@@ -956,13 +1021,12 @@ def _merge_resume_verify(args, *, run, repo, target, phase):
     # `feat: Release (merge feat/x) (merge other)` -- a substring test would accept a
     # resume for feat/x and delete it. Equality against the subject jaxflow itself
     # writes cannot be forged from the phase title alone.
-    subject = jc._git_read(run, repo, ["git", "log", "-1", "--format=%s", merge_sha])
-    expected_subject = f"feat: {phase} (merge {args.branch})"
-    if subject != expected_subject:
+    actual_subject = jc._git_read(run, repo, ["git", "log", "-1", "--format=%s", merge_sha])
+    if actual_subject != subject:
         raise jc._refuse("sha-mismatch", f"hint: resume refused -- {target}'s merge commit {merge_sha} does "
                     f"not record {args.branch} "
-                    f"(subject: {jr._bound(subject or '<unreadable>', 120)}; "
-                    f"expected: {jr._bound(expected_subject, 120)})")
+                    f"(subject: {jr._bound(actual_subject or '<unreadable>', 120)}; "
+                    f"expected: {jr._bound(subject, 120)})")
 
     # "The branch is gone" and "the ref read failed" are different facts, and
     # `rev-parse --verify` returns 128 for both (round-5 F6). `show-ref --verify`
@@ -1033,7 +1097,7 @@ def _merge_prepare_target(args, *, run, repo, target):
     return target_tip
 
 
-def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, phase,
+def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, subject,
                               allowlist_root, target_tip):
     """Stage the merge (`--no-ff --no-commit`), fingerprint the index, reuse or run the
     checks, prove the checks did not change WHAT GETS DELIVERED, commit. Returns
@@ -1111,8 +1175,7 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, pha
     # A commit hook can refuse -- this very repository has one (`.githooks/commit-msg`).
     # An unchecked failure here would audit and push a merge that was never committed
     # (cold review F3).
-    committed = run(["git", "commit", "-m", f"feat: {phase} (merge {args.branch})"],
-                    cwd=repo)
+    committed = run(["git", "commit", "-m", subject], cwd=repo)
     if committed.returncode != 0:
         raise jc._refuse("merge-failed", f"hint: commit refused: "
                     f"{jr._bound((committed.stderr or committed.stdout).strip(), 200)}"
@@ -1269,16 +1332,21 @@ def _pr_await_mergeable(view, *, run, repo, repo_slug, number, sha, target, bran
     return view
 
 
-def _pr_merge_and_readback(args, *, run, repo, repo_slug, number, phase, target):
+def _pr_merge_and_readback(args, *, run, repo, repo_slug, number, target, method, subject):
     """`gh pr merge` pinned with `--match-head-commit`, then a FRESH `gh pr view` that must
     read back as MERGED at the approved head/base (cold review 24597072c8ac F1: exit 0 does
     not guarantee GitHub merged -- a merge queue or auto-merge can accept asynchronously;
     that shape gets its own `merge-not-completed` and nothing is recorded as merged).
+    Squash always gets an explicit empty body; rebase gets neither subject nor body.
     Returns `(view, merge_sha)`. Do not skip the post-merge read: it is what makes
     `merge-not-completed` possible."""
-    merged = run(["gh", "pr", "merge", str(number), "--repo", repo_slug, "--merge",
-                  "--match-head-commit", args.sha, "--subject",
-                  f"feat: {phase} (merge {args.branch})"], cwd=repo)
+    argv = ["gh", "pr", "merge", str(number), "--repo", repo_slug, f"--{method}",
+            "--match-head-commit", args.sha]
+    if subject is not None:
+        argv += ["--subject", subject]
+    if method == "squash":
+        argv += ["--body", ""]
+    merged = run(argv, cwd=repo)
     if merged.returncode != 0:
         stderr_text = merged.stderr or merged.stdout or ""
         code = "merge-queue-required" if "merge queue" in stderr_text.lower() else "github-merge-refused"
@@ -1333,6 +1401,8 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
     run --checks in their registered build worktree (decision 7); a release/* head has no
     such worktree, so this creates a detached temporary checkout of the approved sha and
     tears it down after, success or failure."""
+    method, subject_mode = _merge_conventions(repo)
+    is_release = args.branch.startswith("release/")
     repo_slug = _github_repo_slug(run, repo)
     # Ledger & card reconciliation: the recorded PR number if the hub has one for this branch,
     # otherwise a `gh pr list` fallback -- zero matches means no PR exists at all (pr-not-found,
@@ -1366,6 +1436,20 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
         if view["headRefOid"] != args.sha:
             raise jc._refuse("pr-head-moved", f"hint: PR #{number}'s head is {view['headRefOid'][:12]}, not the approved {args.sha[:12]}")
 
+        if is_release:
+            # Reserved promotion format: always --merge and the legacy generated subject,
+            # independent of the feature-delivery fields.
+            method, subject_mode = "merge", "default"
+        else:
+            if method == "auto":
+                method = _resolve_auto_method(run, repo, repo_slug)
+            if method == "rebase" and subject_mode != "default":
+                raise _policy_invalid(
+                    f"`auto` resolved to `rebase`, which cannot carry `Merge subject: {subject_mode}`")
+            if subject_mode == "phase" and not _valid_commit_subject(phase):
+                raise jc._refuse("phase-invalid", "hint: an explicit phase subject must be a "
+                            "single trimmed line with no control characters or Co-Authored-By text")
+
         checks_audit = _pr_run_checks(
             args, run=run, repo=repo, project=project, allowlist_root=allowlist_root)
 
@@ -1373,9 +1457,18 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
             view, run=run, repo=repo, repo_slug=repo_slug, number=number,
             sha=args.sha, target=target, branch=args.branch)
 
+        title = None
+        if method != "rebase" and (
+                subject_mode == "pr-title"
+                or (method == "squash" and subject_mode == "default")):
+            view = _gh_pr_view(run, repo, repo_slug, number, include_title=True)
+            _revalidate_pr_identity(view, number, args.sha, target, args.branch)
+            title = _trusted_pr_title(view.get("title"))
+        subject = _pr_subject(method, subject_mode, phase, args.branch, title)
+
         view, merge_sha = _pr_merge_and_readback(
-            args, run=run, repo=repo, repo_slug=repo_slug, number=number, phase=phase,
-            target=target)
+            args, run=run, repo=repo, repo_slug=repo_slug, number=number,
+            target=target, method=method, subject=subject)
 
     _post_merge_audit(
         post, env, project,
@@ -1451,6 +1544,12 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
         raise jc._refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} "
                     f"differs from policy target {jr._bound(target, 120)}")
 
+    _method, subject_mode = _merge_conventions(repo)
+    if subject_mode == "phase" and not _valid_commit_subject(phase):
+        raise jc._refuse("phase-invalid", "hint: an explicit phase subject must be a single "
+                    "trimmed line with no control characters or Co-Authored-By text")
+    subject = _local_merge_subject(phase, args.branch, subject_mode)
+
     worktree = jc._branch_worktree_path(allowlist_root, project, args.branch)
     with jresume.worktree_claim(repo, worktree):
         _refuse_nonterminal_builder(project, repo, args.branch)
@@ -1461,12 +1560,23 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
         # some unrelated merge is never mistaken for this delivery.
         probe = run(["git", "rev-parse", "--verify", f"{target}^2"], cwd=repo)
         resuming = probe.returncode == 0 and probe.stdout.strip() == args.sha
+        if not resuming and probe.returncode == 0:
+            # The target carries SOME delivery under this exact generated subject, but its
+            # second parent is another commit: not a resume, and never a second delivery.
+            tip_sha = jc._git_read(run, repo, ["git", "rev-parse", f"{target}^{{commit}}"],
+                                   shape=r"[0-9a-f]{40}")
+            tip_subject = (jc._git_read(run, repo, ["git", "log", "-1", "--format=%s", tip_sha])
+                           if tip_sha else None)
+            if tip_subject == subject:
+                raise jc._refuse("sha-mismatch", f"hint: {target}'s tip already carries "
+                            f"{subject!r} for a different source commit "
+                            f"({probe.stdout.strip()[:12]}, not {args.sha[:12]})")
 
         merge_sha = None
         branch_present = True
         if resuming:
             merge_sha, branch_present = _merge_resume_verify(
-                args, run=run, repo=repo, target=target, phase=phase)
+                args, run=run, repo=repo, target=target, subject=subject)
         else:
             target_tip = _merge_prepare_target(args, run=run, repo=repo, target=target)
 
@@ -1475,7 +1585,7 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
         if not resuming:
             merge_sha, checks_audit = _merge_stage_check_commit(
                 args, run=run, repo=repo, project=project, worktree=worktree, target=target,
-                phase=phase, allowlist_root=allowlist_root, target_tip=target_tip)
+                subject=subject, allowlist_root=allowlist_root, target_tip=target_tip)
 
         # One guard for BOTH paths (round-4 F5). `merge-approved` requires a full 40-hex sha
         # and the validator rejects anything else, so an unchecked probe would turn a durable
