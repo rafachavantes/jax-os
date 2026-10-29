@@ -149,9 +149,11 @@ whether `<path>/AGENTS.md` already exists (check now, before anything runs).
   `info/exclude` and never edits `.gitignore`; fresh setup keeps the normal `.gitignore`
   behavior.
 - Hook disposition: installed vs preserved, the exact path/configuration change, and
-  whether any approved Git operation will execute hooks. State that preserved company
-  hooks do NOT gain Jax `Co-Authored-By` trailer stripping; agents stay bound by the
-  no-attribution rule.
+  whether any approved Git operation will execute hooks. For a fresh target without Git
+  metadata, describe installation as conditional on the post-init revalidation and the
+  absence of template-supplied hooks; inherited routing, when already known, is reported
+  as preserved. State that preserved company hooks do NOT gain Jax `Co-Authored-By`
+  trailer stripping; agents stay bound by the no-attribution rule.
 - Bootstrap subject (no-commit repos only), exact refs created/pushed, and for a fresh
   `--remote` the resolved GitHub account/repo destination.
 - For adoption: the preserved origin and the fact that no commit, branch, `.gitignore`,
@@ -175,9 +177,11 @@ jax-init --path <path> --name "<name>" \
 
 `--hooks auto` (default) installs the Jax hook only when no existing hook setup would be
 displaced; otherwise it preserves and reports. `--hooks preserve` installs nothing and
-changes no routing. Adoption installs into Git's resolved default common-metadata hooks
-directory and never sets `core.hooksPath` or creates `.githooks/`; fresh setup keeps the
-usual `.githooks/commit-msg` + relative `core.hooksPath` when safe.
+changes no routing. Fresh and adopted repositories both install into Git's resolved
+default common-metadata hooks directory and never set `core.hooksPath` or create
+`.githooks/`. A fresh target without metadata makes `git init` the first write; inherited
+routing and the native destination are revalidated before the hook write, and any hook
+supplied by a Git template is preserved.
 
 Relay its JSON summary and stderr lines verbatim. A refusal (exit 2) stops the flow
 and shows the one-line reason -- no partial `AGENTS.md` write, no invented retry loop.

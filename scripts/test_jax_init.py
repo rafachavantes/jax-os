@@ -25,7 +25,7 @@ def _commit_file(root, name, content="x\n"):
     _git(root, "add", name)
     _git(root, "commit", "-m", f"add {name}")
 
-def _run_real(argv, cwd=None):
+def _test_env(**extra):
     env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "jax-init-test",
@@ -37,7 +37,17 @@ def _run_real(argv, cwd=None):
         "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
     }
-    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False, env=env)
+    env.update(extra)
+    return env
+
+def _run_real(argv, cwd=None):
+    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False, env=_test_env())
+
+def _run_env(extra):
+    env = _test_env(**extra)
+    def run(argv, cwd=None):
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False, env=env)
+    return run
 
 def _fixed_now():
     return datetime(2026, 9, 6, 10, 0, 0, tzinfo=timezone(timedelta(hours=-3)))
@@ -75,6 +85,8 @@ class FakeRun:
             return SimpleNamespace(returncode=0, stdout="acme\n", stderr="")
         if argv[:4] == ["git", "rev-parse", "--git-path", "hooks"]:
             return SimpleNamespace(returncode=0, stdout=str(Path(cwd) / ".git/hooks") + "\n", stderr="")
+        if argv[:3] == ["git", "rev-parse", "--git-common-dir"]:
+            return SimpleNamespace(returncode=0, stdout=str(Path(cwd) / ".git") + "\n", stderr="")
         if argv[:3] == ["git", "config", "--get"]:
             return SimpleNamespace(returncode=1, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -174,10 +186,12 @@ def test_fresh_bootstrap_creates_full_baseline(tmp_path, capsys):
         assert entry in gitignore.splitlines()
     hooks_path = subprocess.run(
         ["git", "config", "core.hooksPath"], cwd=target, capture_output=True, text=True
-    ).stdout.strip()
-    assert hooks_path == ".githooks"
-    assert (target / ".githooks" / "commit-msg").read_bytes() == ji.HOOK_SOURCE.read_bytes()
-    assert os.access(target / ".githooks" / "commit-msg", os.X_OK)
+    )
+    assert hooks_path.returncode != 0 and hooks_path.stdout.strip() == ""
+    native_hook = target / ".git" / "hooks" / "commit-msg"
+    assert native_hook.read_bytes() == ji.HOOK_SOURCE.read_bytes()
+    assert os.access(native_hook, os.X_OK)
+    assert not (target / ".githooks").exists()
     assert (target / ".local" / "handoff.md").read_text() == ""
     assert (target / "CLAUDE.md").read_text() == "@AGENTS.md\n"
     log = subprocess.run(["git", "log", "--oneline"], cwd=target, capture_output=True, text=True).stdout
@@ -195,8 +209,141 @@ def test_fresh_bootstrap_creates_full_baseline(tmp_path, capsys):
     for rel in ji.BASELINE_DIRS:
         assert (target / rel).is_dir()
     assert set(payload["created"]) >= {
-        ".gitignore", ".githooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md",
+        ".gitignore", ".git/hooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md",
     }
+
+def test_fresh_native_hook_is_shared_by_a_linked_worktree(tmp_path, capsys):
+    root = tmp_path / "repos"
+    target = root / "demo"
+    assert _main(_argv(target), run=_run_real, allowlist_root=root, now=_fixed_now) == ji.OK
+    capsys.readouterr()
+    native_hook = target / ".git" / "hooks" / "commit-msg"
+    assert native_hook.read_bytes() == ji.HOOK_SOURCE.read_bytes()
+    assert os.access(native_hook, os.X_OK)
+    assert not (target / ".githooks").exists()
+    worktree = root / "demo-linked"
+    _git(target, "worktree", "add", "-b", "feat/linked", str(worktree))
+    _git(worktree, "commit", "--allow-empty", "-m", "feat: linked work",
+         "-m", "Co-Authored-By: Someone <s@example.invalid>")
+    body = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=worktree,
+                          capture_output=True, text=True).stdout
+    assert "co-authored-by" not in body.lower()
+    assert not (worktree / ".githooks").exists()
+
+
+def test_fresh_unborn_git_metadata_installs_the_native_hook(tmp_path, capsys):
+    root = tmp_path / "repos"
+    target = root / "demo"
+    _init_repo(target)
+    out = _main(_argv(target), run=_run_real, allowlist_root=root, now=_fixed_now)
+    assert out == ji.OK
+    capsys.readouterr()
+    native_hook = target / ".git" / "hooks" / "commit-msg"
+    assert native_hook.read_bytes() == ji.HOOK_SOURCE.read_bytes()
+    assert os.access(native_hook, os.X_OK)
+    assert not (target / ".githooks").exists()
+    hooks_path = subprocess.run(["git", "config", "core.hooksPath"], cwd=target,
+                                capture_output=True, text=True)
+    assert hooks_path.returncode != 0
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=target,
+                         capture_output=True, text=True).stdout.strip()
+    assert log == "chore: bootstrap"
+
+
+def test_fresh_preserves_inherited_hook_routing_and_bootstrap_uses_it(tmp_path, capsys):
+    root = tmp_path / "repos"
+    hooks = tmp_path / "company-hooks"
+    hooks.mkdir()
+    marker = hooks / "ran"
+    (hooks / "commit-msg").write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+    (hooks / "commit-msg").chmod(0o755)
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[core]\n\thooksPath = {hooks}\n", encoding="utf-8")
+    target = root / "demo"
+    out = _main(_argv(target), run=_run_env({"GIT_CONFIG_GLOBAL": str(config)}),
+                allowlist_root=root, now=_fixed_now)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved (core.hooksPath" in item for item in payload["kept"])
+    assert not (target / ".githooks").exists()
+    assert not (target / ".git" / "hooks" / "commit-msg").exists()
+    assert marker.exists()
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=target,
+                         capture_output=True, text=True).stdout.strip()
+    assert log == "chore: bootstrap"
+
+
+def test_fresh_preserves_a_template_installed_commit_msg(tmp_path, capsys):
+    root = tmp_path / "repos"
+    template = tmp_path / "template"
+    template_hook = template / "hooks" / "commit-msg"
+    template_hook.parent.mkdir(parents=True)
+    marker = tmp_path / "template-ran"
+    template_hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+    template_hook.chmod(0o755)
+    target = root / "demo"
+    out = _main(_argv(target), run=_run_env({"GIT_TEMPLATE_DIR": str(template)}),
+                allowlist_root=root, now=_fixed_now)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved" in item for item in payload["kept"])
+    installed = target / ".git" / "hooks" / "commit-msg"
+    assert installed.read_bytes() == template_hook.read_bytes()
+    assert installed.read_bytes() != ji.HOOK_SOURCE.read_bytes()
+    assert not (target / ".githooks").exists()
+    assert marker.exists()
+
+
+def test_fresh_unsafe_post_init_hook_destination_refuses_before_baseline(tmp_path, capsys):
+    root = tmp_path / "repos"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "hooks").symlink_to(outside, target_is_directory=True)
+    target = root / "demo"
+    out = _main(_argv(target), run=_run_env({"GIT_TEMPLATE_DIR": str(template)}),
+                allowlist_root=root, now=_fixed_now)
+    payload = json.loads(capsys.readouterr().out)
+    assert out == ji.REFUSED
+    assert payload["refused"] == "path-outside-allowlist"
+    assert payload["head"] is None
+    assert (target / ".git").is_dir()
+    assert not (target / ".githooks").exists()
+    assert not (target / ".gitignore").exists()
+    assert not (target / ".local").exists()
+    assert not (target / ".jax-os").exists()
+    assert not (outside / "commit-msg").exists()
+    log = subprocess.run(["git", "log", "--oneline"], cwd=target,
+                         capture_output=True, text=True).stdout
+    assert log.strip() == ""
+
+
+def test_fresh_preserve_mode_installs_nothing(tmp_path, capsys):
+    root = tmp_path / "repos"
+    target = root / "demo"
+    out = _main(_argv(target) + ["--hooks", "preserve"], run=_run_real,
+                allowlist_root=root, now=_fixed_now)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved (--hooks preserve)" in item for item in payload["kept"])
+    assert not (target / ".git" / "hooks" / "commit-msg").exists()
+    assert not (target / ".githooks").exists()
+    assert subprocess.run(["git", "config", "core.hooksPath"], cwd=target,
+                          capture_output=True, text=True).returncode != 0
+
+
+def test_fresh_dry_run_labels_install_conditional_not_committed(tmp_path, capsys):
+    root = tmp_path / "repos"
+    target = root / "fresh"
+    out = _main(_argv(target, dry_run=True), run=FakeRun(), allowlist_root=root, now=_fixed_now)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("conditional on post-init validation" in item for item in payload["created"])
+    assert not any(".githooks" in item for item in payload["created"] + payload["ran"])
+    assert not any("core.hooksPath" in item for item in payload["ran"])
+    assert not target.exists()
+
 
 def test_adopting_existing_repo_and_second_run_is_create_only(tmp_path, capsys):
     root = tmp_path / "repos"
@@ -234,7 +381,7 @@ def test_adopting_existing_repo_and_second_run_is_create_only(tmp_path, capsys):
     _main(_argv(target2, name="Fresh"), run=_run_real, allowlist_root=root2, now=_fixed_now)
     capsys.readouterr()
     tree_a = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=target2, capture_output=True, text=True).stdout
-    baseline_files = [".gitignore", ".githooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md"]
+    baseline_files = [".gitignore", ".git/hooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md"]
     before = {rel: ((target2 / rel).read_bytes(), (target2 / rel).stat().st_mode) for rel in baseline_files}
     out2 = _main(_argv(target2, name="Fresh"), run=_run_real, allowlist_root=root2, now=_fixed_now)
     assert out2 == ji.OK
@@ -249,9 +396,10 @@ def test_adopting_existing_repo_and_second_run_is_create_only(tmp_path, capsys):
     assert payload3["created"] == []
     assert (target2 / ".git/info/exclude").read_bytes() == exclude_after_first
     assert set(payload2["kept"]) >= {
-        ".githooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md",
+        ".git/hooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md",
         *ji.BASELINE_DIRS,
     }
+    assert not (target2 / ".githooks").exists()
     tree_b = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=target2, capture_output=True, text=True).stdout
     assert tree_a == tree_b
     after = {rel: ((target2 / rel).read_bytes(), (target2 / rel).stat().st_mode) for rel in baseline_files}

@@ -429,39 +429,30 @@ def _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state, tar
     _record(state, "create", label)
     return True
 
-def _bootstrap_hooks(canonical, allowlist_root, dry_run, run, state, hooks_mode, adopted):
+def _bootstrap_hooks(canonical, allowlist_root, dry_run, run, state, hooks_mode):
     if hooks_mode == "preserve":
         state["kept"].append("hook: preserved (--hooks preserve)")
         return
-    if dry_run and not adopted and not (canonical / ".git").exists():
-        # A dry-run before `git init` has no metadata to inspect: report the fresh plan.
+    if dry_run and not (canonical / ".git").exists():
+        # A dry-run before `git init` has no metadata: inherited routing is all we can
+        # know. Installation stays conditional on the post-init revalidation.
         probe_dir = next(path for path in (canonical, *canonical.parents) if path.is_dir())
         configured = _git_config_value(run, probe_dir, "core.hooksPath")
         if configured is not None:
             state["kept"].append(f"hook: preserved (core.hooksPath {configured})")
             return
-        _record(state, "create", ".githooks/commit-msg")
-        _record(state, "run", "git config core.hooksPath .githooks")
+        _record(state, "create",
+                "hook: native commit-msg (conditional on post-init validation and no template-supplied hooks)")
         return
     action, label = _hook_plan(run, canonical, allowlist_root, hooks_mode)
-    if action == "preserve":
+    if action in ("preserve", "already"):
         state["kept"].append(label)
         return
-    if action == "already":
-        state["kept"].append(label)
-        return
-    if adopted:
-        hooks_dir = _git_metadata_path(
-            run, canonical, ["git", "rev-parse", "--git-path", "hooks"],
-            "git rev-parse --git-path hooks")
-        _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state,
-                                 hooks_dir / "commit-msg")
-        return
-    _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state, None)
-    if not dry_run:
-        _run_ok(run, ["git", "config", "core.hooksPath", ".githooks"], str(canonical),
-                "git config hooksPath")
-    _record(state, "run", "git config core.hooksPath .githooks")
+    hooks_dir = _git_metadata_path(
+        run, canonical, ["git", "rev-parse", "--git-path", "hooks"],
+        "git rev-parse --git-path hooks")
+    _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state,
+                             hooks_dir / "commit-msg")
 
 def _do_fresh_remote_account(run, canonical, dry_run, state):
     if not dry_run:
@@ -508,9 +499,9 @@ def _bootstrap_baseline(canonical, allowlist_root, name, stack, branch, env, now
                         state, run, *, hooks_mode="auto", adopted=False):
     if adopted:
         _bootstrap_adoption_excludes(canonical, allowlist_root, run, dry_run, state)
-    else:
+    _bootstrap_hooks(canonical, allowlist_root, dry_run, run, state, hooks_mode)
+    if not adopted:
         _bootstrap_gitignore(canonical, allowlist_root, stack, dry_run, state)
-    _bootstrap_hooks(canonical, allowlist_root, dry_run, run, state, hooks_mode, adopted)
     _bootstrap_dirs(canonical, allowlist_root, dry_run, state)
     _create_only(_resolve_dest(canonical, allowlist_root, ".local/handoff.md"), ".local/handoff.md", b"", state, dry_run)
     _create_only(_resolve_dest(canonical, allowlist_root, "CLAUDE.md"), "CLAUDE.md", b"@AGENTS.md\n", state, dry_run)
