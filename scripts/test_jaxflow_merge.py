@@ -4163,3 +4163,35 @@ def test_merge_local_phase_audit_failure_retry_resumes(tmp_path):
     assert rc == jaxflow_common.OK
     assert posted[0]["payload"]["checks"] == {"mode": "resumed"}
     assert posted[0]["payload"]["merge_sha"] == "c" * 40
+
+
+def test_custom_company_branch_reaches_build_pr_open_and_merge_unchanged(tmp_path, monkeypatch):
+    import jaxflow_build
+    branch = "DRA-2408-add-operator"
+    seen = {}
+
+    def fake_build(args, **kwargs):
+        seen["build"] = args.branch
+        return "runid"
+
+    def fake_pr_open(args, **kwargs):
+        seen["pr"] = (args.branch, args.target)
+        return {"url": "https://github.com/acme/x/pull/1"}
+
+    def fake_merge(args, **kwargs):
+        seen["merge"] = (args.branch, args.target)
+        return jaxflow_common.OK
+
+    monkeypatch.setattr(jaxflow_build, "dispatch_build", fake_build)
+    monkeypatch.setattr(jaxflow_merge, "cmd_pr_open", fake_pr_open)
+    monkeypatch.setattr(jaxflow_merge, "cmd_merge", fake_merge)
+    assert jaxflow_cli.main([
+        "build", "--plan", str(tmp_path / "plan.md"), "--phase", "P", "--branch", branch,
+        "--whitelist", "a.py", "--verify", "true"]) == jaxflow_common.OK
+    assert jaxflow_cli.main([
+        "pr", "open", branch, "--sha", "a" * 40, "--target", "main",
+        "--title", "x"]) == jaxflow_common.OK
+    assert jaxflow_cli.main([
+        "merge", branch, "--sha", "a" * 40, "--phase", "DRA-2408: x", "--checks", "true",
+        "--target", "main"]) == jaxflow_common.OK
+    assert seen == {"build": branch, "pr": (branch, "main"), "merge": (branch, "main")}
