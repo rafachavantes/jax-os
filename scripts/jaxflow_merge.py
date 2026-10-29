@@ -11,7 +11,7 @@ from pathlib import Path
 import general_settings
 import jaxflow_run as jr
 import jaxflow_resume as jresume
-from jax_init import ALLOWLIST_ROOT_DEFAULT, Refusal, _contained
+from jax_init import ALLOWLIST_ROOT_DEFAULT, Refusal, _GH_REMOTE_RE, _contained, _valid_commit_subject
 from jaxflow_hook import redact
 import jaxflow_common as jc
 import jaxflow_env as jenv
@@ -153,11 +153,21 @@ def _merge_checks_line(audit, checks_cmd):
 # "**Preset: `dual-branch-pr`** — GitLab Flow with PRs: ...").
 _PRESET_LINE_RE = re.compile(r"^\*\*Preset: `([a-z0-9]+(?:-[a-z0-9]+)*)`\*\*", re.M)
 
-# The first backtick-quoted token AFTER the literal phrase, so an earlier
-# "Base branch: `main`" in the same block is never mistaken for the delivery target.
-_DELIVERY_TARGET_RE = re.compile(r"Delivery target:[\s\S]*?`([a-z0-9][a-z0-9/_-]*)`")
+_MERGE_METHOD_VALUES = ("merge", "squash", "rebase", "auto")
+_MERGE_SUBJECT_VALUES = ("default", "pr-title", "phase")
 
-_PRODUCTION_TARGET_RE = re.compile(r"Production target:[\s\S]*?`([a-z0-9][a-z0-9/_-]*)`")
+# A directive line: canonical bullet key. The value must then be exactly one
+# backtick-enclosed token; anything else in the same line is a malformed directive,
+# never a reason to ignore it.
+_MERGE_DIRECTIVE_RE = re.compile(r"^[ \t]*[-*+][ \t]+Merge (method|subject):(.*)$")
+_MERGE_DIRECTIVE_VALUE_RE = re.compile(r"^[ \t]*`([A-Za-z][A-Za-z-]*)`[ \t]*$")
+
+# The first backtick-quoted token in the target's own sentence plus wrapped
+# continuation lines, stopping before the next sibling bullet or heading -- so an
+# earlier "Base branch: `main`" is never borrowed and a following
+# "- Merge method: `squash`" is never reinterpreted as the target.
+_TARGET_STOP_RE = re.compile(r"^[ \t]*(?:[-*+][ \t]+|#{1,6}[ \t]+|\*\*Preset:)", re.M)
+_TARGET_TOKEN_RE = re.compile(r"`([a-z0-9][a-z0-9/_-]*)`")
 
 # MOA-509: three sets decide behaviour. A call site asks "is this a PR preset", never "is this
 # <name>". `bubble-buildprint` is unchanged; `release` exists only for `dual-branch-pr`.
@@ -168,32 +178,153 @@ _PR_PRESETS = ("single-branch-pr", "dual-branch-pr")
 _RELEASE_PRESETS = ("dual-branch-pr",)
 
 
-def _preset_block(repo):
-    """AGENTS.md's Deploy policy: (preset_name, its own block text — from its heading to the
-    next preset heading, the next `##` heading, or EOF). `(None, None)` means zero preset
-    lines, the common case (most repos on this machine predate the preset system). Raises
-    `preset-unknown` for 2+ preset lines. Shared by `_resolve_delivery_target` and
-    `_resolve_production_target` so both parse the exact same block text the exact same way."""
+def _preset_block_details(repo):
+    """AGENTS.md's Deploy policy: `(preset_name, block_text, start, end, document_text)`.
+    The raw preset selection deliberately counts preset lines inside fences, comments and
+    blockquotes -- legacy behavior, preserved exactly; `start`/`end` are the selected raw
+    block's source span, used by the policy-directive reader. `(None, None, 0, 0, text)`
+    means zero preset lines. Raises `preset-unknown` for 2+ preset lines."""
     policy = repo / "AGENTS.md"
     try:
         text = policy.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return None, None
+        return None, None, 0, 0, ""
     except (OSError, UnicodeError) as exc:
         refusal = Refusal("preset-unknown")
         refusal.hint = f"hint: {policy} exists but could not be read: {jr._bound(str(exc), 200)}"
         raise refusal from exc
     presets = _PRESET_LINE_RE.findall(text)
     if not presets:
-        return None, None
+        return None, None, 0, 0, text
     if len(presets) > 1:
         raise Refusal("preset-unknown")
     name = presets[0]
     start = _PRESET_LINE_RE.search(text).start()
     tail = text[start + 1:]
     boundary = re.search(r"^\*\*Preset: |^## ", tail, re.M)
-    block = text[start:start + 1 + boundary.start()] if boundary else text[start:]
+    end = start + 1 + boundary.start() if boundary else len(text)
+    return name, text[start:end], start, end, text
+
+
+def _preset_block(repo):
+    """AGENTS.md's Deploy policy: (preset_name, its own block text — from its heading to the
+    next preset heading, the next `##` heading, or EOF). `(None, None)` means zero preset
+    lines, the common case (most repos on this machine predate the preset system). Raises
+    `preset-unknown` for 2+ preset lines. Shared by `_resolve_delivery_target` and
+    `_resolve_production_target` so both parse the exact same block text the exact same way."""
+    name, block, _start, _end, _text = _preset_block_details(repo)
     return name, block
+
+
+def _masked_policy_lines(text):
+    """Yields `(offset, line, active)` for every line of `text`. `active` is False inside
+    a fenced code block (``` or ~~~, closed only by the same marker), a blockquote (`>`),
+    or an HTML comment (including multi-line comments). Offsets stay original."""
+    fence = None
+    in_comment = False
+    offset = 0
+    for raw in text.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        stripped = line.strip()
+        active = True
+        if in_comment:
+            active = False
+            if "-->" in line:
+                in_comment = False
+        elif fence is not None:
+            active = False
+            if stripped.startswith(fence):
+                fence = None
+        elif stripped.startswith("```") or stripped.startswith("~~~"):
+            active = False
+            fence = stripped[:3]
+        elif stripped.startswith(">"):
+            active = False
+        else:
+            opened = line.find("<!--")
+            if opened >= 0 and "-->" not in line[opened + 4:]:
+                in_comment = True
+        yield offset, line, active
+        offset += len(raw)
+
+
+def _policy_directives(text):
+    """`(offset, key, remainder, raw_line)` for every ACTIVE `- Merge method:` /
+    `- Merge subject:` line in `text`. Fenced, blockquoted and commented examples are
+    data, never policy."""
+    found = []
+    for offset, line, active in _masked_policy_lines(text):
+        if not active:
+            continue
+        match = _MERGE_DIRECTIVE_RE.match(line)
+        if match:
+            found.append((offset, match.group(1), match.group(2), line))
+    return found
+
+
+def _policy_invalid(detail):
+    return jc._refuse("merge-policy-invalid", f"hint: {detail}")
+
+
+def _merge_conventions(repo):
+    """The two typed delivery fields from the SAME selected preset block used for
+    destinations: `(method, subject)`, defaulting to `("merge", "default")`. Any active
+    merge directive outside that block, a duplicate, an unknown/blank/unquoted value, or
+    an incompatible preset/method/subject combination refuses `merge-policy-invalid`
+    before any delivery mutation."""
+    name, _block, start, end, text = _preset_block_details(repo)
+    directives = _policy_directives(text)
+    for offset, key, _rest, _line in directives:
+        if name is None or not start <= offset < end:
+            raise _policy_invalid(
+                f"`Merge {key}` is outside the selected Deploy policy preset block; "
+                "move it inside the chosen preset block")
+    seen = set()
+    values = {}
+    for _offset, key, rest, _line in directives:
+        if key in seen:
+            raise _policy_invalid(f"duplicate `Merge {key}` line")
+        seen.add(key)
+        match = _MERGE_DIRECTIVE_VALUE_RE.match(rest)
+        if not match:
+            raise _policy_invalid(
+                f"`Merge {key}` must be exactly one backtick-quoted value")
+        values[key] = match.group(1)
+    method = values.get("method", "merge")
+    subject = values.get("subject", "default")
+    if method not in _MERGE_METHOD_VALUES:
+        raise _policy_invalid(
+            f"unknown `Merge method` value `{jr._bound(method, 40)}`; "
+            f"valid values: {', '.join(_MERGE_METHOD_VALUES)}")
+    if subject not in _MERGE_SUBJECT_VALUES:
+        raise _policy_invalid(
+            f"unknown `Merge subject` value `{jr._bound(subject, 40)}`; "
+            f"valid values: {', '.join(_MERGE_SUBJECT_VALUES)}")
+    if name in _LOCAL_PRESETS:
+        if "method" in values:
+            raise _policy_invalid("local-merge presets cannot configure `Merge method`")
+        if subject == "pr-title":
+            raise _policy_invalid("`Merge subject: pr-title` is invalid for local-merge presets")
+    elif name in _PR_PRESETS:
+        if method == "auto" and subject == "phase":
+            raise _policy_invalid("`auto` cannot be combined with `Merge subject: phase`")
+        if method == "rebase" and subject in ("pr-title", "phase"):
+            raise _policy_invalid(f"`rebase` cannot be combined with `Merge subject: {subject}`")
+    return method, subject
+
+
+def _directive_target(block, phrase):
+    """The first backtick-quoted target token in `phrase`'s own sentence and wrapped
+    continuation, stopping before the next sibling bullet/heading/preset line. `None`
+    means the directive is absent or malformed -- callers keep their existing refusals."""
+    position = block.find(phrase)
+    if position < 0:
+        return None
+    tail = block[position + len(phrase):]
+    stop = _TARGET_STOP_RE.search(tail)
+    span = tail[:stop.start()] if stop else tail
+    hit = _TARGET_TOKEN_RE.search(span)
+    return hit.group(1) if hit else None
 
 
 def _resolve_delivery_target(repo, *, run):
@@ -219,10 +350,10 @@ def _resolve_delivery_target(repo, *, run):
     if name not in _LOCAL_PRESETS + _PR_PRESETS:
         raise jc._refuse("preset-unknown", f"hint: unknown preset `{jr._bound(name, 40)}`; valid presets: "
                     + ", ".join(_LOCAL_PRESETS + _PR_PRESETS))
-    hit = _DELIVERY_TARGET_RE.search(block)
-    if not hit:
+    target = _directive_target(block, "Delivery target:")
+    if target is None:
         raise Refusal("preset-unknown")
-    return hit.group(1), False, name
+    return target, False, name
 
 
 def _resolve_production_target(repo):
@@ -234,10 +365,10 @@ def _resolve_production_target(repo):
     name, block = _preset_block(repo)
     if name not in _RELEASE_PRESETS:
         raise Refusal("production-target-unconfigured")
-    hit = _PRODUCTION_TARGET_RE.search(block)
-    if not hit:
+    target = _directive_target(block, "Production target:")
+    if target is None:
         raise Refusal("production-target-unconfigured")
-    return hit.group(1)
+    return target
 
 
 def _required_target_for_branch(repo, branch, *, run):

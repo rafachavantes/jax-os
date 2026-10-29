@@ -160,6 +160,179 @@ def test_preset_sets_partition_the_five_names():
     assert set(jaxflow_merge._RELEASE_PRESETS) == {"dual-branch-pr"}
 
 
+# ------------------------------------------------------------- project merge conventions
+
+@pytest.mark.parametrize("method,subject", [
+    ("merge", "default"), ("merge", "pr-title"), ("merge", "phase"),
+    ("squash", "default"), ("squash", "pr-title"), ("squash", "phase"),
+    ("rebase", "default"), ("auto", "default"), ("auto", "pr-title"),
+])
+def test_project_merge_conventions_parse(tmp_path, method, subject):
+    policy = (
+        "## Deploy policy\n\n**Preset: `single-branch-pr`**\n"
+        "- Delivery target: `main`\n"
+        f"- Merge method: `{method}`\n"
+        f"- Merge subject: `{subject}`\n"
+    )
+    (tmp_path / "AGENTS.md").write_text(policy, encoding="utf-8")
+    assert jaxflow_merge._merge_conventions(tmp_path) == (method, subject)
+
+
+def test_project_merge_conventions_omitted_fields_keep_defaults(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `single-branch-pr`** — a.\n\nDelivery target: `main`.\n")
+    assert jaxflow_merge._merge_conventions(repo) == ("merge", "default")
+
+
+def test_project_merge_conventions_local_phase_and_method_rules(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `single-branch`** — a.\n\nDelivery target: `main`.\n"
+                              "- Merge subject: `phase`\n")
+    assert jaxflow_merge._merge_conventions(repo) == ("merge", "phase")
+    repo = _agents(tmp_path, "**Preset: `single-branch`** — a.\n\nDelivery target: `main`.\n"
+                              "- Merge method: `merge`\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._merge_conventions(repo)
+    assert exc.value.code == "merge-policy-invalid"
+
+
+@pytest.mark.parametrize("block_extra", [
+    "- Merge method: `squash`\n- Merge method: `squash`\n",
+    "- Merge method: `squash`\n- Merge subject: `default`\n- Merge subject: `phase`\n",
+    "- Merge method: `squish`\n",
+    "- Merge subject: `whatever`\n",
+    "- Merge method: squash\n",
+    "- Merge method: ``\n",
+    "- Merge method:\n",
+])
+def test_project_merge_conventions_refuse_invalid_fields(tmp_path, block_extra):
+    repo = _agents(tmp_path, f"**Preset: `single-branch-pr`** — a.\n\n"
+                             f"Delivery target: `main`.\n{block_extra}")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._merge_conventions(repo)
+    assert exc.value.code == "merge-policy-invalid"
+    assert exc.value.hint.startswith("hint: ")
+
+
+def test_project_merge_conventions_accepts_pr_title_on_a_pr_preset(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `single-branch-pr`** — a.\n\n"
+                              "Delivery target: `main`.\n- Merge subject: `pr-title`\n")
+    assert jaxflow_merge._merge_conventions(repo) == ("merge", "pr-title")
+
+
+@pytest.mark.parametrize("method,subject", [
+    ("auto", "phase"), ("rebase", "pr-title"), ("rebase", "phase"),
+])
+def test_project_merge_conventions_refuse_incompatible_pr_combinations(
+        tmp_path, method, subject):
+    repo = _agents(tmp_path, f"**Preset: `single-branch-pr`** — a.\n\nDelivery target: `main`.\n"
+                            f"- Merge method: `{method}`\n- Merge subject: `{subject}`\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._merge_conventions(repo)
+    assert exc.value.code == "merge-policy-invalid"
+
+
+@pytest.mark.parametrize("agents_text", [
+    "**Preset: `single-branch`** — a.\n\nDelivery target: `main`.\n- Merge subject: `pr-title`\n",
+    "**Preset: `dual-branch`** — a.\n\nDelivery target: `staging`.\n- Merge subject: `pr-title`\n",
+])
+def test_project_merge_conventions_refuse_pr_title_local(tmp_path, agents_text):
+    repo = _agents(tmp_path, agents_text)
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._merge_conventions(repo)
+    assert exc.value.code == "merge-policy-invalid"
+
+
+def test_project_merge_conventions_refuse_directives_outside_the_block(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `single-branch-pr`** — a.\n\nDelivery target: `main`.\n"
+                              "\n## Project conventions\n\n- Merge method: `squash`\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._merge_conventions(repo)
+    assert exc.value.code == "merge-policy-invalid"
+    assert "outside" in exc.value.hint
+
+
+def test_project_merge_conventions_refuse_directives_without_a_preset(tmp_path):
+    repo = _agents(tmp_path, "# AGENTS.md\n\n- Merge subject: `phase`\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._merge_conventions(repo)
+    assert exc.value.code == "merge-policy-invalid"
+
+
+def test_project_merge_conventions_ignore_fenced_blockquoted_and_commented_examples(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `single-branch-pr`** — a.\n\nDelivery target: `main`.\n"
+                              "```\n- Merge method: `squash`\n```\n"
+                              "> - Merge method: `rebase`\n"
+                              "<!--\n- Merge method: `squash`\n-->\n"
+                              "- Merge subject: `phase`\n")
+    assert jaxflow_merge._merge_conventions(repo) == ("merge", "phase")
+
+
+def test_project_merge_conventions_commented_preset_keeps_raw_selection(tmp_path):
+    # The legacy raw selector counts preset lines inside comments; only the new
+    # directives are activity-filtered.
+    repo = _agents(tmp_path, "<!--\n**Preset: `dual-branch`** — a.\n\n"
+                              "Delivery target: `staging`.\n-->\n")
+    target, no_preset, preset = jaxflow_merge._resolve_delivery_target(
+        repo, run=lambda argv, cwd=None: _completed(1, ""))
+    assert (target, no_preset, preset) == ("staging", False, "dual-branch")
+    assert jaxflow_merge._merge_conventions(repo) == ("merge", "default")
+
+
+def test_project_merge_conventions_fenced_preset_keeps_raw_selection(tmp_path):
+    repo = _agents(tmp_path, "```\n**Preset: `single-branch`**\n\nDelivery target: `main`.\n```\n")
+    assert jaxflow_merge._resolve_delivery_target(
+        repo, run=lambda argv, cwd=None: _completed(1, "")) == ("main", False, "single-branch")
+    assert jaxflow_merge._merge_conventions(repo) == ("merge", "default")
+
+
+def test_project_merge_conventions_real_preset_plus_fenced_duplicate_still_refuses(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `single-branch`**\n\nDelivery target: `main`.\n"
+                              "```\n**Preset: `dual-branch`**\n```\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._merge_conventions(repo)
+    assert exc.value.code == "preset-unknown"
+
+
+def test_delivery_target_malformed_line_never_adopts_the_next_merge_method(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `single-branch-pr`**\n\n"
+                              "- Delivery target: main\n- Merge method: `squash`\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
+    assert exc.value.code == "preset-unknown"
+
+
+def test_delivery_target_malformed_line_production_boundary(tmp_path):
+    repo = _agents(tmp_path, "**Preset: `dual-branch-pr`**\n\nDelivery target: `staging`\n"
+                              "- Production target:\n- Merge method: `main`\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge._resolve_production_target(repo)
+    assert exc.value.code == "production-target-unconfigured"
+
+
+def test_delivery_and_production_targets_keep_wrapped_continuations(tmp_path):
+    repo = _agents(tmp_path, _TEMPLATE_DUAL_BRANCH_BLOCK.replace("staging", "trunk"))
+    assert jaxflow_merge._resolve_delivery_target(
+        repo, run=lambda argv, cwd=None: _completed(1, ""))[0] == "trunk"
+    repo = _agents(tmp_path, "**Preset: `dual-branch-pr`**\n\n"
+                              "- Base branch: `staging` (default). Delivery target: feature-branch PR against\n"
+                              "  `staging`; executor per `merge-contract.md`.\n"
+                              "- Production target: promotion branch against\n"
+                              "  `main`; owner gate.\n")
+    assert jaxflow_merge._resolve_production_target(repo) == "main"
+
+
+def test_shared_github_remote_regex_accepts_only_the_supported_forms():
+    for url, slug in (
+        ("git@github.com:acme/x.git", "acme/x"),
+        ("https://github.com/acme/x", "acme/x"),
+        ("https://github.com/acme/x.git/", "acme/x"),
+    ):
+        match = jaxflow_merge._GH_REMOTE_RE.search(url)
+        assert match and f"{match.group(1)}/{match.group(2)}" == slug
+    for url in ("git@gitlab.com:acme/x.git", "https://evilgithub.com/acme/x",
+                "https://github.com.evil/acme/x", "git@github.com:acme/x/tree"):
+        assert jaxflow_merge._GH_REMOTE_RE.search(url) is None
+
+
 # cold review e24e7fb33bc8 F1: the production target resolves for RELEASE presets only, so a stray
 # `Production target:` line in a non-release block must still refuse.
 _PRODUCTION_REFUSALS = [

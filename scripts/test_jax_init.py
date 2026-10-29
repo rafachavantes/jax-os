@@ -321,6 +321,19 @@ def test_secret_guard_is_case_insensitive():
     assert ji._is_secret_path("foo.PEM")
     assert ji._is_secret_path("id_RSA")
 
+def test_valid_commit_subject_accepts_company_and_default_subjects():
+    for subject in ("chore: bootstrap", "DRA-2408: add operator", "feat: x (merge feat/1)"):
+        assert ji._valid_commit_subject(subject)
+
+
+@pytest.mark.parametrize("subject", [
+    "", " ", " padded", "padded ", "two\nlines", "tab\there", "bell\x07",
+    "bom\ufeff", "Co-Authored-By: someone", "co-authored-by: someone", 42, None,
+])
+def test_valid_commit_subject_rejects_bad_subjects(subject):
+    assert not ji._valid_commit_subject(subject)
+
+
 def test_secret_guard_allows_public_env_templates():
     for name in (".env.example", "sub/.env.sample", ".ENV.Template"):
         assert not ji._is_secret_path(name)
