@@ -32,6 +32,10 @@ def _run_real(argv, cwd=None):
         "GIT_AUTHOR_EMAIL": "jax-init-test@example.invalid",
         "GIT_COMMITTER_NAME": "jax-init-test",
         "GIT_COMMITTER_EMAIL": "jax-init-test@example.invalid",
+        # Fixtures must never read the operator's user/system config or hooks.
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
     }
     return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False, env=env)
 
@@ -66,6 +70,12 @@ class FakeRun:
         if argv[:2] == ["git", "symbolic-ref"]:
             return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
         if argv[:3] == ["git", "rev-parse", "--verify"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        if argv[:4] == ["gh", "api", "user", "--jq"]:
+            return SimpleNamespace(returncode=0, stdout="acme\n", stderr="")
+        if argv[:4] == ["git", "rev-parse", "--git-path", "hooks"]:
+            return SimpleNamespace(returncode=0, stdout=str(Path(cwd) / ".git/hooks") + "\n", stderr="")
+        if argv[:3] == ["git", "config", "--get"]:
             return SimpleNamespace(returncode=1, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -201,17 +211,24 @@ def test_adopting_existing_repo_and_second_run_is_create_only(tmp_path, capsys):
     assert out == ji.OK
     payload = json.loads(capsys.readouterr().out)
     assert "CLAUDE.md" in payload["kept"]
-    # .gitignore already existed but was missing the base entries, so the
-    # merge rule reports it "created" (appended), never "kept" (§2.3).
-    assert ".gitignore" in payload["created"]
-    gitignore_bytes = (target / ".gitignore").read_bytes()
-    assert gitignore_bytes.startswith(pre_gitignore)
-    gitignore_lines = gitignore_bytes.decode("utf-8").splitlines()
-    for entry in [".local/", ".jax-os/", "AGENTS.md", "CLAUDE.md", ".env*"]:
-        assert entry in gitignore_lines
+    # Adoption never edits the tracked .gitignore; local artifacts go to info/exclude.
+    assert (target / ".gitignore").read_bytes() == pre_gitignore
+    exclude = subprocess.run(
+        ["git", "rev-parse", "--git-path", "info/exclude"], cwd=target,
+        capture_output=True, text=True).stdout.strip()
+    exclude_lines = (target / exclude).read_text(encoding="utf-8").splitlines()
+    for entry in ("/.local/", "/.jax-os/", "/AGENTS.md"):
+        assert entry in exclude_lines
+    assert "/CLAUDE.md" not in exclude_lines   # tracked, so not local-only
+    assert ".env*" not in exclude_lines
     assert (target / "CLAUDE.md").read_text() == "custom\n"
     log = subprocess.run(["git", "log", "--oneline"], cwd=target, capture_output=True, text=True).stdout
     assert log.strip().count("\n") == 0
+    assert not (target / ".githooks").exists()
+    _git(target, "add", "-A")
+    staged = subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=target,
+                            capture_output=True, text=True).stdout
+    assert staged == ""
     root2 = tmp_path / "repos2"
     target2 = root2 / "fresh"
     _main(_argv(target2, name="Fresh"), run=_run_real, allowlist_root=root2, now=_fixed_now)
@@ -222,9 +239,17 @@ def test_adopting_existing_repo_and_second_run_is_create_only(tmp_path, capsys):
     out2 = _main(_argv(target2, name="Fresh"), run=_run_real, allowlist_root=root2, now=_fixed_now)
     assert out2 == ji.OK
     payload2 = json.loads(capsys.readouterr().out)
-    assert payload2["created"] == []
+    # The second run is adoption-shaped (history exists): it adds the shared local
+    # exclusions once, then stabilizes.
+    assert payload2["created"] == [".git/info/exclude"]
+    exclude_after_first = (target2 / ".git/info/exclude").read_bytes()
+    out3 = _main(_argv(target2, name="Fresh"), run=_run_real, allowlist_root=root2, now=_fixed_now)
+    assert out3 == ji.OK
+    payload3 = json.loads(capsys.readouterr().out)
+    assert payload3["created"] == []
+    assert (target2 / ".git/info/exclude").read_bytes() == exclude_after_first
     assert set(payload2["kept"]) >= {
-        ".gitignore", ".githooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md",
+        ".githooks/commit-msg", ".local/handoff.md", "CLAUDE.md", ".jax-os/status.md",
         *ji.BASELINE_DIRS,
     }
     tree_b = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=target2, capture_output=True, text=True).stdout
@@ -439,6 +464,8 @@ class GhFakeRun:
             joined = " ".join(argv)
             if any(f in joined for f in self.fail):
                 return SimpleNamespace(returncode=1, stdout="", stderr="fail")
+            if argv[:4] == ["gh", "api", "user", "--jq"]:
+                return SimpleNamespace(returncode=0, stdout="acme\n", stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return _run_real(argv, cwd=cwd)
 
@@ -455,17 +482,20 @@ def test_remote_sequencing_pushes_staging_for_the_dual_pair(tmp_path, capsys, pr
     def first_index(prefix):
         return next(i for i, c in enumerate(joined) if c.startswith(prefix))
     i_auth = first_index("gh auth status")
+    i_account = first_index("gh api user")
     i_create = first_index("gh repo create")
     i_push_main = first_index("git push -u origin main")
     i_push_staging = first_index("git push -u origin staging")
     i_edit = first_index("gh repo edit")
     i_branch_staging = first_index("git branch staging")
-    # git branch staging is unconditional bootstrap-sequence step 5 (§2.4), created before any
-    # --remote/gh call is ever issued; gh auth is checked (§2.4 preflight) before gh repo create.
-    assert i_branch_staging < i_auth < i_create < i_push_main < i_push_staging < i_edit
+    # The resolved account is checked BEFORE any bootstrap write, and the create call names
+    # that exact account.
+    assert i_account < i_create < i_push_main < i_push_staging < i_edit
+    assert i_branch_staging < i_create
     exact_calls = [
         (i_auth, ["gh", "auth", "status"]),
-        (i_create, ["gh", "repo", "create", proj, "--private", "--source", canonical, "--remote", "origin"]),
+        (i_account, ["gh", "api", "user", "--jq", ".login"]),
+        (i_create, ["gh", "repo", "create", f"acme/{proj}", "--private", "--source", canonical, "--remote", "origin"]),
         (i_push_main, ["git", "push", "-u", "origin", "main"]),
         (i_push_staging, ["git", "push", "-u", "origin", "staging"]),
         (i_edit, ["gh", "repo", "edit", "--default-branch", "staging"]),
@@ -519,17 +549,22 @@ def test_an_old_preset_name_is_rejected_with_the_five_new_names(tmp_path, capsys
     for name in ("single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr", "bubble-buildprint"):
         assert name in err
 
-def test_remote_on_adopted_repo_requires_main_branch(tmp_path, capsys):
+def test_remote_on_adopted_history_without_origin_refuses_before_writes(tmp_path, capsys):
     root = tmp_path / "repos"
     adopted = root / "adopted"
     _init_repo(adopted, branch="feat/x")
     _commit_file(adopted, "README")
+    before = subprocess.run(["git", "status", "--porcelain"], cwd=adopted,
+                            capture_output=True, text=True).stdout
     fake = GhFakeRun()
     out = _main(_argv(adopted, preset="single-branch", remote=True), run=fake, allowlist_root=root, now=_fixed_now)
     payload = json.loads(capsys.readouterr().out)
     assert out == ji.REFUSED
-    assert payload["refused"] == "remote-failed: branch-not-main"
+    assert payload["refused"] == "remote-failed: origin-missing"
     assert not any(c[0] == "gh" for c in fake.calls)
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=adopted,
+                          capture_output=True, text=True).stdout == before
+    assert not (adopted / ".local").exists()
 
 
 def test_remote_refuses_github_integration_disabled_before_any_gh_or_push_call(tmp_path, monkeypatch, capsys):
@@ -607,3 +642,288 @@ def test_allowlist_root_default_falls_back_with_no_settings(tmp_path, monkeypatc
         assert ji.ALLOWLIST_ROOT_DEFAULT == Path.home() / "repos"
     finally:
         _restore_jax_init(saved)
+
+# ---- adoption: non-destructive invariants (Task 4) ----
+
+def _snapshot(repo):
+    git = lambda *args: subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                                       text=True, env=_run_real.__globals__.get("os").environ | {
+                                           "GIT_CONFIG_GLOBAL": os.devnull,
+                                           "GIT_CONFIG_SYSTEM": os.devnull,
+                                           "GIT_CONFIG_NOSYSTEM": "1",
+                                       }).stdout
+    return {
+        "head": git("rev-parse", "HEAD"),
+        "refs": git("for-each-ref", "--format=%(refname) %(objectname)"),
+        "index": git("ls-files", "--stage"),
+        "remotes": git("remote", "-v"),
+        "status": git("status", "--porcelain", "--untracked-files=no"),
+    }
+
+
+def test_adoption_keeps_tracked_gitignore_and_git_state(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, ".gitignore", "vendor/\n")
+    _git(repo, "remote", "add", "origin", "git@github.com:company/app.git")
+    before = _snapshot(repo)
+    before_ignore = (repo / ".gitignore").read_bytes()
+    assert _main(_argv(repo), run=_run_real, allowlist_root=root) == ji.OK
+    capsys.readouterr()
+    assert (repo / ".gitignore").read_bytes() == before_ignore
+    assert _snapshot(repo) == before
+    assert not (repo / ".githooks").exists()
+    _git(repo, "add", "-A")
+    assert subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=repo,
+                          capture_output=True, text=True).stdout == ""
+
+
+def test_adoption_never_creates_branches_or_a_commit(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo, branch="develop")
+    _commit_file(repo, "README")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                          capture_output=True, text=True).stdout
+    out = _main(_argv(repo, preset="dual-branch"), run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    capsys.readouterr()
+    branches = subprocess.run(["git", "branch", "--format=%(refname:short)"], cwd=repo,
+                              capture_output=True, text=True).stdout.split()
+    assert branches == ["develop"]
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                          capture_output=True, text=True).stdout == head
+    assert not (repo / ".gitignore").exists() or (repo / ".gitignore").read_text() == ""
+
+
+def test_adoption_preserves_existing_origin_even_with_remote_flag(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, ".gitignore", "vendor/\n")
+    _git(repo, "remote", "add", "origin", "git@github.com:company/app.git")
+    fake = GhFakeRun()
+    out = _main(_argv(repo, preset="single-branch-pr", remote=True), run=fake,
+                allowlist_root=root)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("origin: git@github.com:company/app.git" in item for item in payload["kept"])
+    assert not any(c[0] == "gh" for c in fake.calls)
+    origin = subprocess.run(["git", "remote", "get-url", "origin"], cwd=repo,
+                            capture_output=True, text=True).stdout.strip()
+    assert origin == "git@github.com:company/app.git"
+
+
+def test_adoption_pr_preset_requires_a_github_origin(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    _git(repo, "remote", "add", "origin", "git@gitlab.com:company/app.git")
+    before = _snapshot(repo)
+    out = _main(_argv(repo, preset="single-branch-pr"), run=_run_real, allowlist_root=root)
+    assert out == ji.REFUSED
+    assert json.loads(capsys.readouterr().out)["refused"] == "remote-failed: origin-not-github"
+    assert _snapshot(repo) == before
+    assert not (repo / ".local").exists()
+
+
+def test_adoption_pr_preset_without_an_origin_refuses_before_writes(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    before = _snapshot(repo)
+    out = _main(_argv(repo, preset="dual-branch-pr"), run=_run_real, allowlist_root=root)
+    assert out == ji.REFUSED
+    assert json.loads(capsys.readouterr().out)["refused"] == "remote-failed: origin-missing"
+    assert _snapshot(repo) == before
+    assert not (repo / ".local").exists()
+
+
+def test_adoption_ignore_negation_refuses_before_baseline_writes(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, ".gitignore", "vendor/\n!/.local/\n")
+    exclude = repo / ".git" / "info" / "exclude"
+    before = exclude.read_bytes()
+    out = _main(_argv(repo), run=_run_real, allowlist_root=root)
+    assert out == ji.REFUSED
+    assert json.loads(capsys.readouterr().out)["refused"].startswith("ignore-conflict:")
+    assert exclude.read_bytes() == before
+    assert not (repo / ".local").exists()
+
+
+def test_adoption_dry_run_is_inert(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    exclude = repo / ".git" / "info" / "exclude"
+    before = exclude.read_bytes()
+    out = _main(_argv(repo, dry_run=True), run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    capsys.readouterr()
+    assert exclude.read_bytes() == before
+    assert not (repo / ".local").exists()
+    assert not (repo / ".jax-os").exists()
+
+
+def test_adoption_artifact_collision_refuses_before_writes(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    (repo / ".local").write_text("not a dir\n", encoding="utf-8")
+    _git(repo, "add", ".local")
+    _git(repo, "commit", "-m", "collision")
+    before = _snapshot(repo)
+    out = _main(_argv(repo), run=_run_real, allowlist_root=root)
+    assert out == ji.REFUSED
+    assert json.loads(capsys.readouterr().out)["refused"]
+    assert _snapshot(repo) == before
+
+
+def test_adoption_installs_the_shared_hook_and_linked_worktrees_strip_trailers(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    assert _main(_argv(repo), run=_run_real, allowlist_root=root) == ji.OK
+    capsys.readouterr()
+    assert subprocess.run(["git", "config", "core.hooksPath"], cwd=repo,
+                          capture_output=True, text=True).returncode != 0
+    assert (repo / ".git" / "hooks" / "commit-msg").read_bytes() == ji.HOOK_SOURCE.read_bytes()
+    worktree = root / "company-linked"
+    _git(repo, "worktree", "add", "-b", "feat/linked", str(worktree))
+    _git(worktree, "commit", "--allow-empty", "-m", "feat: linked work",
+         "-m", "Co-Authored-By: Someone <s@example.invalid>")
+    body = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=worktree,
+                          capture_output=True, text=True).stdout
+    assert "co-authored-by" not in body.lower()
+
+
+def test_adoption_preserves_a_configured_hooks_path(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    _git(repo, "config", "core.hooksPath", ".company-hooks")
+    out = _main(_argv(repo), run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved" in item for item in payload["kept"])
+    assert not (repo / ".git" / "hooks" / "commit-msg").exists()
+    assert subprocess.run(["git", "config", "core.hooksPath"], cwd=repo,
+                          capture_output=True, text=True).stdout.strip() == ".company-hooks"
+
+
+def test_adoption_preserves_non_sample_default_hooks(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    custom = repo / ".git" / "hooks" / "pre-commit"
+    custom.write_text("#!/bin/sh\n", encoding="utf-8")
+    custom.chmod(0o755)
+    out = _main(_argv(repo), run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved" in item for item in payload["kept"])
+    assert not (repo / ".git" / "hooks" / "commit-msg").exists()
+
+
+def test_adoption_preserves_an_existing_githooks_directory(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    hooks = repo / ".githooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
+    out = _main(_argv(repo), run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved" in item for item in payload["kept"])
+    assert not (hooks / "commit-msg").exists()
+    assert subprocess.run(["git", "config", "core.hooksPath"], cwd=repo,
+                          capture_output=True, text=True).returncode != 0
+
+
+def test_adoption_hooks_preserve_installs_nothing(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    argv = _argv(repo) + ["--hooks", "preserve"]
+    out = _main(argv, run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved" in item for item in payload["kept"])
+    assert not (repo / ".git" / "hooks" / "commit-msg").exists()
+    assert not (repo / ".githooks").exists()
+
+
+def test_fresh_bootstrap_subject_is_passed_as_a_git_argument(tmp_path, capsys):
+    root = tmp_path / "repos"
+    target = root / "fresh"
+    argv = _argv(target) + ["--initial-commit-subject", "DRA-2408: bootstrap the app"]
+    out = _main(argv, run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    capsys.readouterr()
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=target,
+                         capture_output=True, text=True).stdout.strip()
+    assert log == "DRA-2408: bootstrap the app"
+
+
+@pytest.mark.parametrize("subject", ["", " padded", "two\nlines", "Co-Authored-By: x"])
+def test_fresh_bootstrap_subject_rejects_bad_values_before_writes(tmp_path, capsys, subject):
+    root = tmp_path / "repos"
+    target = root / "fresh"
+    argv = _argv(target, dry_run=True) + ["--initial-commit-subject", subject]
+    out = _main(argv, run=_run_real, allowlist_root=root)
+    assert out == ji.REFUSED
+    assert json.loads(capsys.readouterr().out)["refused"] == "invalid-commit-subject"
+    assert not target.exists()
+
+
+def test_adoption_root_scoped_excludes_do_not_hide_nested_company_docs(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    (repo / "services").mkdir()
+    (repo / "services" / "AGENTS.md").write_text("nested rules\n", encoding="utf-8")
+    _git(repo, "add", "services/AGENTS.md")
+    _git(repo, "commit", "-m", "nested docs")
+    assert _main(_argv(repo), run=_run_real, allowlist_root=root) == ji.OK
+    capsys.readouterr()
+    probe = subprocess.run(["git", "check-ignore", "-q", "services/AGENTS.md"], cwd=repo)
+    assert probe.returncode == 1
+
+
+def test_adoption_shared_excludes_cover_a_linked_worktree(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    assert _main(_argv(repo), run=_run_real, allowlist_root=root) == ji.OK
+    capsys.readouterr()
+    worktree = root / "company-linked"
+    _git(repo, "worktree", "add", "-b", "feat/linked", str(worktree))
+    for rel in (".local/scratch/probe", ".jax-os/status.md", "AGENTS.md"):
+        assert subprocess.run(["git", "check-ignore", "-q", rel], cwd=worktree).returncode == 0, rel
+
+
+def test_fresh_remote_pre_push_failure_stops_without_bypass(tmp_path, capsys):
+    root = tmp_path / "repos"
+    target = root / "proj"
+    fake = GhFakeRun()
+    fake.fail.add("git push")
+    out = _main(_argv(target, preset="single-branch-pr", remote=True), run=fake,
+                allowlist_root=root, now=_fixed_now)
+    assert out == ji.REFUSED
+    assert json.loads(capsys.readouterr().out)["refused"] == "remote-failed: git push main"
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=target,
+                         capture_output=True, text=True).stdout.strip()
+    assert log == "chore: bootstrap"
