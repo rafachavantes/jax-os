@@ -231,7 +231,7 @@ def _create_only(dest, label, data, state, dry_run):
 
 def _git_metadata_path(run, canonical, argv, step):
     """Resolve a path reported by git relative to `canonical` (the same cwd the command
-    ran in) and require it to stay inside the allowlist and the repo's own metadata."""
+    ran in). Callers apply their own containment checks to the result."""
     result = _run_ok(run, argv, str(canonical), step)
     raw = result.stdout.strip()
     if not raw:
@@ -288,7 +288,7 @@ def _git_config_value(run, canonical, key):
         return None
     return result.stdout.strip() or None
 
-def _prospective_ignores(run, canonical, common, exclude_text, planned):
+def _prospective_ignores(run, canonical, exclude_text, planned):
     """Use Git's own ignore evaluation in throwaway metadata: current info/exclude bytes
     plus the planned entries, the source's effective excludesFile/ignoreCase, and the
     target worktree. No source index/HEAD/ref or .local write happens."""
@@ -327,12 +327,12 @@ def _validate_adoption_paths(canonical, allowlist_root):
             raise Refusal(f"command-failed: {rel}")
 
 def _bootstrap_adoption_excludes(canonical, allowlist_root, run, dry_run, state):
-    common, exclude = _exclude_destination(run, canonical, allowlist_root)
+    _common, exclude = _exclude_destination(run, canonical, allowlist_root)
     current = _read_text_or_empty(exclude)
     entries = _adoption_ignore_entries(run, canonical)
     updated = _append_missing_entries(current, entries)
     planned_text = current if updated is None else updated
-    _prospective_ignores(run, canonical, common, planned_text, [
+    _prospective_ignores(run, canonical, planned_text, [
         ".local/scratch/init-probe", ".jax-os/status.md",
         *[entry.strip("/") for entry in entries if entry in ("/AGENTS.md", "/CLAUDE.md")],
     ])

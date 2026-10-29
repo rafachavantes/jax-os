@@ -704,6 +704,7 @@ def cmd_release(args, *, run=jr.run_command, post=jc._post_event, env=None, now=
     # ledger read, fetch or ref write. Production target is read after, at `_resolve_production_target`.
     if _resolve_delivery_target(repo, run=run)[2] not in _RELEASE_PRESETS:
         raise Refusal("preset-no-release")
+    _merge_conventions(repo)
     caller = jc.resolve_caller(env, args.from_caller)
     project = jc.slugify_project(repo.name)
     repo_slug = _github_repo_slug(run, repo)
