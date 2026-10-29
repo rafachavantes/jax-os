@@ -927,3 +927,33 @@ def test_fresh_remote_pre_push_failure_stops_without_bypass(tmp_path, capsys):
     log = subprocess.run(["git", "log", "--format=%s"], cwd=target,
                          capture_output=True, text=True).stdout.strip()
     assert log == "chore: bootstrap"
+
+
+def test_adoption_discovery_never_executes_hooks(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    marker = repo / "hook-ran"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\\ntouch {marker}\\n", encoding="utf-8")
+    hook.chmod(0o755)
+    out = _main(_argv(repo), run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    capsys.readouterr()
+    assert not marker.exists()
+
+
+def test_adoption_preserves_a_configured_missing_hook_path(tmp_path, capsys):
+    root = tmp_path / "repos"
+    repo = root / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    _git(repo, "config", "core.hooksPath", ".missing-hooks")
+    out = _main(_argv(repo), run=_run_real, allowlist_root=root)
+    assert out == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert any("hook: preserved" in item for item in payload["kept"])
+    assert not (repo / ".git" / "hooks" / "commit-msg").exists()
+    assert subprocess.run(["git", "config", "core.hooksPath"], cwd=repo,
+                          capture_output=True, text=True).stdout.strip() == ".missing-hooks"

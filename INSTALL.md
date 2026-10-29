@@ -156,6 +156,24 @@ matching starter file in the same directory. Nothing is written to
 `~/.config/opencode/AGENTS.md` until you review each slot in the tab and
 click Apply.
 
+### Project conventions amendment
+
+`jax-init` asks a project for its commit/PR/branch conventions and records them in that
+project's `AGENTS.md`. Defaults keep working unchanged. Before writing nondefault
+conventions, the skill checks for this exact amendment in the current tech lead's
+effective instructions and every enabled managed destination, normalizing only line
+endings and paragraph wrapping:
+
+```text
+Project conventions may override only commit subjects, PR titles, implementation branch naming, PR merge method, and generated delivery commit subject; omitted conventions retain Jax defaults and all other guarantees remain binding.
+```
+
+Apply it through `/settings` -> Jax Rules (canonical edit, or an exception slot for an
+enabled destination) and keep the existing default values. `INSTALL` and the skill's
+fixture/manual transcript checks exercise the dialogue, never the installer's real
+instruction files: nothing here edits `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
+`~/.config/opencode/AGENTS.md`, or the Jax Rules database automatically.
+
 ## systemd
 
 ```bash
