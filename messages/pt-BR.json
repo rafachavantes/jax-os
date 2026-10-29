@@ -61,7 +61,7 @@
     "projects": {
       "title": "Projetos ativos",
       "empty": "Nenhum projeto com plans/status.md ainda — adote a convenção de frontmatter para aparecer aqui.",
-      "skipped": "{count, plural, one {# repositório ignorado (status.md sem frontmatter válido)} other {# repositórios ignorados (status.md sem frontmatter válido)}}",
+      "skipped": "{count, plural, one {# repositório ignorado (status inválido/ilegível, descoberta ilegível ou nome ambíguo)} other {# repositórios ignorados (status inválido/ilegível, descoberta ilegível ou nomes ambíguos)}}",
       "issueCount": "{count, plural, one {# issue} other {# issues}}",
       "unavailable": "Fonte de projetos indisponível",
       "uncarded": "{count, plural, one {# projeto com atividade não aparece neste painel} other {# projetos com atividade não aparecem neste painel}}",

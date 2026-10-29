@@ -61,7 +61,7 @@
     "projects": {
       "title": "Active projects",
       "empty": "No projects with plans/status.md yet — adopt the frontmatter convention to show up here.",
-      "skipped": "{count, plural, one {# repo skipped (status.md without valid frontmatter)} other {# repos skipped (status.md without valid frontmatter)}}",
+      "skipped": "{count, plural, one {# repo skipped (invalid/unreadable status, unreadable discovery, or ambiguous name)} other {# repos skipped (invalid/unreadable status, unreadable discovery, or ambiguous names)}}",
       "issueCount": "{count, plural, one {# issue} other {# issues}}",
       "unavailable": "Projects source unavailable",
       "uncarded": "{count, plural, one {# project with activity is not on this board} other {# projects with activity are not on this board}}",
