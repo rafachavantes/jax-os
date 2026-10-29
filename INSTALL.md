@@ -174,6 +174,13 @@ fixture/manual transcript checks exercise the dialogue, never the installer's re
 instruction files: nothing here edits `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
 `~/.config/opencode/AGENTS.md`, or the Jax Rules database automatically.
 
+### Git commit hook
+
+`jax-init` installs its `commit-msg` hook in the repository's native Git metadata
+(shared by linked worktrees). It never creates `.githooks/` and never writes
+`core.hooksPath`; an existing hook route or a hook supplied by a Git template is
+preserved and reported instead.
+
 ## systemd
 
 ```bash
