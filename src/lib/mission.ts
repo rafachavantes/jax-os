@@ -158,6 +158,9 @@ export type MissionLastRun = {
 
 export type MissionCard = {
   dir: string;
+  // Repos-root-relative POSIX location for nested projects; direct children omit it. Used only
+  // by the Files artifact links — every identity/join stays `dir`.
+  path?: string;
   name: string;
   stage: ProjectStage;
   branch: string;
@@ -728,7 +731,8 @@ function buildModel(
     }
 
     return {
-      dir: project.dir, name: project.name, stage: project.stage, branch: project.branch,
+      dir: project.dir, ...(project.path ? { path: project.path } : {}),
+      name: project.name, stage: project.stage, branch: project.branch,
       builder: project.builder, flag: project.flag, gate: project.gate, legacyGateField: project.legacyGateField,
       now: project.now, residuals: project.residuals, updated: project.updated,
       headline, hubReady, lastEventAgo, freshnessCount, freshnessWarning, sessions, pendingQuestions, timeline, pr,
@@ -1296,6 +1300,12 @@ export function gateWaitingLine(card: Pick<MissionCard, "updated">, nowMs: numbe
 }
 
 // ---- Round 3, item 10: the heartbeat sparkline's SVG path (viewBox "0 0 200 26") ----------
+// Files links are repos-root relative: prepend the project's discovered location, falling back to
+// the basename identity for a direct child (which omits `path`).
+export function artifactRel(card: Pick<MissionCard, "dir" | "path">, rel: string): string {
+  return `${card.path ?? card.dir}/${rel}`;
+}
+
 export function heartbeatPath(minutes: number[]): string {
   const max = Math.max(1, ...minutes);
   const points = minutes.map((n, i) => {
