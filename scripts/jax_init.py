@@ -246,10 +246,13 @@ def _exclude_destination(run, canonical, allowlist_root):
         run, canonical, ["git", "rev-parse", "--git-common-dir"], "git rev-parse --git-common-dir")
     if not _contained(common, allowlist_root):
         raise Refusal("path-outside-allowlist")
+    expected = common / "info" / "exclude"
+    if expected.is_symlink() or expected.parent.is_symlink():
+        raise Refusal("path-outside-allowlist")
     exclude = _git_metadata_path(
         run, canonical, ["git", "rev-parse", "--git-path", "info/exclude"],
         "git rev-parse --git-path info/exclude")
-    if not (_contained(exclude, common) and _contained(exclude, allowlist_root)):
+    if exclude != expected or not (_contained(exclude, common) and _contained(exclude, allowlist_root)):
         raise Refusal("path-outside-allowlist")
     if not _contained(exclude.parent, common) or not _contained(exclude.parent, allowlist_root):
         raise Refusal("path-outside-allowlist")
@@ -338,6 +341,7 @@ def _bootstrap_adoption_excludes(canonical, allowlist_root, run, dry_run, state)
     ])
     if updated is not None and not dry_run:
         try:
+            exclude.parent.mkdir(exist_ok=True)
             with exclude.open("a", encoding="utf-8") as handle:
                 handle.write(updated[len(current):])
         except OSError:
@@ -366,12 +370,12 @@ def _non_sample_hooks(directory):
 def _hook_plan(run, canonical, allowlist_root, hooks_mode):
     """`("preserve"|"already"|"install", label)` for the commit-msg hook. Never executes a
     hook; a configured but missing/unreadable path is preserved, not replaced."""
+    if hooks_mode == "preserve":
+        return "preserve", "hook: preserved (--hooks preserve)"
     configured = _hook_configured(run, canonical)
     default_dir = _git_metadata_path(
         run, canonical, ["git", "rev-parse", "--git-path", "hooks"], "git rev-parse --git-path hooks")
     traditional = canonical / ".githooks"
-    if hooks_mode == "preserve":
-        return "preserve", "hook: preserved (--hooks preserve)"
     if configured is not None:
         target = configured / "commit-msg"
         try:
@@ -382,21 +386,21 @@ def _hook_plan(run, canonical, allowlist_root, hooks_mode):
         except OSError:
             return "preserve", f"hook: preserved (unreadable {configured})"
         return "preserve", f"hook: preserved (core.hooksPath {configured})"
-    for candidate in (default_dir / "commit-msg", traditional / "commit-msg"):
-        try:
-            if candidate.is_file() and candidate.read_bytes() == HOOK_SOURCE.read_bytes():
-                label = (str(candidate.relative_to(canonical))
-                         if candidate.is_relative_to(canonical) else "hook: already installed")
-                return "already", label
-        except OSError:
-            continue
+    candidate = default_dir / "commit-msg"
+    try:
+        if candidate.is_file() and candidate.read_bytes() == HOOK_SOURCE.read_bytes():
+            label = (str(candidate.relative_to(canonical))
+                     if candidate.is_relative_to(canonical) else "hook: already installed")
+            return "already", label
+    except OSError:
+        pass
     if _non_sample_hooks(default_dir):
         return "preserve", f"hook: preserved (existing hooks in {default_dir})"
     if _non_sample_hooks(traditional):
         return "preserve", "hook: preserved (existing .githooks hooks)"
     return "install", ""
 
-def _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state, target):
+def _commit_msg_destination(canonical, allowlist_root, run, target):
     if target is None:
         dest = _resolve_dest(canonical, allowlist_root, ".githooks/commit-msg")
     else:
@@ -408,6 +412,10 @@ def _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state, tar
             raise Refusal("path-outside-allowlist")
         if not (dest.parent == common / "hooks"):
             raise Refusal("path-outside-allowlist")
+    return dest
+
+def _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state, target):
+    dest = _commit_msg_destination(canonical, allowlist_root, run, target)
     if dest.exists():
         state["kept"].append(str(dest.relative_to(canonical)) if dest.is_relative_to(canonical) else "hook: already installed")
         return False
@@ -422,8 +430,16 @@ def _install_commit_msg_hook(canonical, allowlist_root, run, dry_run, state, tar
     return True
 
 def _bootstrap_hooks(canonical, allowlist_root, dry_run, run, state, hooks_mode, adopted):
-    if dry_run and not adopted:
+    if hooks_mode == "preserve":
+        state["kept"].append("hook: preserved (--hooks preserve)")
+        return
+    if dry_run and not adopted and not (canonical / ".git").exists():
         # A dry-run before `git init` has no metadata to inspect: report the fresh plan.
+        probe_dir = next(path for path in (canonical, *canonical.parents) if path.is_dir())
+        configured = _git_config_value(run, probe_dir, "core.hooksPath")
+        if configured is not None:
+            state["kept"].append(f"hook: preserved (core.hooksPath {configured})")
+            return
         _record(state, "create", ".githooks/commit-msg")
         _record(state, "run", "git config core.hooksPath .githooks")
         return
@@ -634,7 +650,12 @@ def main(argv=None, *, run=run_command, allowlist_root=ALLOWLIST_ROOT_DEFAULT, e
                 if not _GH_REMOTE_RE.match(origin):
                     raise Refusal("remote-failed: origin-not-github")
             _validate_adoption_paths(canonical, allowlist_root)
-            _hook_plan(run, canonical, allowlist_root, args.hooks)
+            hook_action, _label = _hook_plan(run, canonical, allowlist_root, args.hooks)
+            if hook_action == "install":
+                hooks_dir = _git_metadata_path(
+                    run, canonical, ["git", "rev-parse", "--git-path", "hooks"],
+                    "git rev-parse --git-path hooks")
+                _commit_msg_destination(canonical, allowlist_root, run, hooks_dir / "commit-msg")
         _setup_repo(canonical, case, run, args.dry_run, state)
         branch = "main" if repo_pending else _read_branch(run, canonical)
         if case == "C" and branch == "HEAD":

@@ -561,13 +561,13 @@ def _agents_policy_preflight(run, repo, base_sha):
         raise jc._refuse("agents-tracked-dirty",
                          "hint: AGENTS.md is tracked and has uncommitted changes; reconcile it "
                          "through the project's own workflow before dispatching a build")
-    try:
-        control_text = control.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise jc._refuse("agents-tracked-mismatch",
-                         f"hint: AGENTS.md could not be read: {jr._bound(str(exc), 160)}") from exc
-    committed = run(["git", "show", f"{base_sha}:AGENTS.md"], cwd=repo)
-    if committed.returncode != 0 or committed.stdout != control_text:
+    control_blob = jc._git_read(
+        run, repo, ["git", "hash-object", "--no-filters", "--", "AGENTS.md"],
+        shape=r"[0-9a-f]{40}")
+    committed_blob = jc._git_read(
+        run, repo, ["git", "rev-parse", "--verify", f"{base_sha}:AGENTS.md"],
+        shape=r"[0-9a-f]{40}")
+    if control_blob is None or committed_blob != control_blob:
         raise jc._refuse("agents-tracked-mismatch",
                          "hint: AGENTS.md differs from the selected base's committed policy; "
                          "reconcile it through the project's own workflow before dispatching a build")
@@ -582,11 +582,11 @@ def _copy_agents_md(repo, worktree, run):
     if not control_agents_md.is_file():
         return
     dest = worktree / "AGENTS.md"
-    if dest.exists():
+    if dest.exists() or dest.is_symlink():
         # The selected base brought its own tracked policy; it wins byte-for-byte.
-        if not dest.is_file():
+        if dest.is_symlink() or not dest.is_file() or not _control_agents_tracked(run, worktree):
             raise jc._refuse("agents-copy-collision",
-                             f"hint: {dest} exists and is not a file")
+                             f"hint: {dest} exists and is not a tracked regular file")
         return
     if not _contained(dest.resolve(), worktree.resolve()):
         raise Refusal("path-outside-allowlist")
@@ -595,11 +595,11 @@ def _copy_agents_md(repo, worktree, run):
         raise jc._refuse("agents-copy-not-ignored",
                          "hint: the local-only AGENTS.md copy would not be ignored in the "
                          "build worktree; add it to the shared exclude before dispatching")
-    text = control_agents_md.read_text(encoding="utf-8")
+    content = control_agents_md.read_bytes()
     try:
         fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
     except FileExistsError:
         raise jc._refuse("agents-copy-collision", f"hint: {dest} appeared during the build")
 

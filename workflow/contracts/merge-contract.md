@@ -124,8 +124,9 @@ The owner's approval is an authorization prerequisite only: their agreement to t
 merge question naming the branch and the destination (the tech lead pins the head SHA),
 and it cannot relax this contract. Authority:
 this contract → the project's `AGENTS.md` Deploy policy preset. A policy may narrow, and it
-may override ONLY the named points in `## Project conventions` (commit subjects, PR titles,
-implementation branch naming, PR merge method, generated delivery commit subject); omitted
+may override ONLY the named convention points: prose under `## Project conventions`
+(commit subjects, PR titles, implementation branch naming), and `Merge method` /
+`Merge subject` inside the selected Deploy policy preset block; omitted
 conventions keep the Jax default and every other guarantee stays binding. A conflict, or an
 incomplete approval, is a blocker to raise, never a gap to fill by invention. `--target`
 cannot override the preset destination.
