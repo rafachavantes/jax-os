@@ -27,4 +27,21 @@ describe("handleWorktreesGet", () => {
     const failedBody = await failedRes.json();
     expect(failedBody.data["demo"]).toEqual({ ok: false, error: "spawn failed" });
   });
+
+  test("probes a nested project at its discovered location while keeping the dir identity", async () => {
+    const probe = vi.fn(async () => ({ ok: true as const, stdout: "" }));
+    const getWorktreeLedgerRows = vi.fn(() => []);
+    const deps: WorktreesRouteDeps = {
+      getProjects: () => ({
+        projects: [{ dir: "nested", name: "Nested", path: "company/nested" } as never],
+        skipped: 0, reposRoot: "",
+      }),
+      probeWorktreePorcelain: probe, getWorktreeLedgerRows, getDb: () => ({} as never),
+      now: () => "2026-09-19T00:00:00Z",
+    };
+    const body = await (await handleWorktreesGet(deps)).json();
+    expect(probe).toHaveBeenCalledWith(join(REPOS_ROOT, "company/nested"));
+    expect(getWorktreeLedgerRows).toHaveBeenCalledWith(expect.anything(), "nested");
+    expect(Object.keys(body.data)).toEqual(["nested"]);
+  });
 });

@@ -62,4 +62,20 @@ describe("getActivity executor bounds", () => {
     });
     expect(getActivity([{ dir: "r" }], "/tmp/repos", exec)).toEqual([]);
   });
+
+  it("uses a nested project's location as git cwd but keeps the basename identity", () => {
+    const exec = vi.fn(() => `abc123${US}Rafa${US}feat: nested${US}1751800000\n`);
+    const commits = getActivity(
+      [{ dir: "agentic-org", path: "dragonflyic/agentic-org" }], "/tmp/repos", exec);
+    expect(exec).toHaveBeenCalledWith("git", [
+      "-C", "/tmp/repos/dragonflyic/agentic-org", "log", "-n", "5", "--format=%h%x1f%an%x1f%s%x1f%ct",
+    ], LOCAL_OPTS);
+    expect(commits[0].repo).toBe("agentic-org");
+  });
+
+  it("keeps a direct child rooted at reposRoot/dir", () => {
+    const exec = vi.fn(() => `abc123${US}Rafa${US}feat: direct${US}1751800000\n`);
+    getActivity([{ dir: "r" }], "/tmp/repos", exec);
+    expect(exec).toHaveBeenCalledWith("git", GIT_LOG, LOCAL_OPTS);
+  });
 });

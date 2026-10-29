@@ -36,6 +36,33 @@ describe("GET /api/mission/prs (§9 test 15 — gh failure isolation)", () => {
     expect(body.data["good-b"]).toEqual({ ok: true, prs: [], truncated: false });
   });
 
+  it("passes discovered locations to the collector and remaps result keys to basenames", async () => {
+    const getPrsForProjects = vi.fn(async (locations: string[], reposRoot: string) => {
+      const out: Record<string, { ok: true; prs: []; truncated: boolean }> = {};
+      for (const location of locations) {
+        out[location] = { ok: true, prs: [], truncated: false };
+        expect(reposRoot).toBeTruthy();
+      }
+      return out;
+    });
+    const deps: PrsRouteDeps = {
+      readGeneralSettings: () => githubEnabled,
+      getProjects: () =>
+        ({
+          projects: [
+            { dir: "good-a" },
+            { dir: "nested", path: "company/nested" },
+          ],
+          skipped: 0,
+        }) as unknown as ReturnType<PrsRouteDeps["getProjects"]>,
+      getPrsForProjects: getPrsForProjects as unknown as PrsRouteDeps["getPrsForProjects"],
+    };
+    const body = await (await handlePrsGet(deps)).json();
+    expect(getPrsForProjects).toHaveBeenCalledWith(["good-a", "company/nested"], expect.any(String));
+    expect(Object.keys(body.data).sort()).toEqual(["good-a", "nested"]);
+    expect(body.data["nested"]).toEqual({ ok: true, prs: [], truncated: false });
+  });
+
   it("refuses with a quiet empty map when github is disabled, never calls getPrsForProjects", async () => {
     const getPrsForProjects = vi.fn();
     const deps: PrsRouteDeps = {
