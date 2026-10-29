@@ -2390,6 +2390,20 @@ def test_agents_copy_preserves_crlf_bytes(tmp_path):
     assert (worktree / "AGENTS.md").read_bytes() == content
 
 
+def test_agents_policy_accepts_clean_tracked_crlf_checkout(tmp_path):
+    _allow_root, root, _plan = _policy_repo(tmp_path)
+    _git(root, "config", "core.autocrlf", "false")
+    (root / ".gitattributes").write_text("AGENTS.md text eol=crlf\n", encoding="utf-8")
+    _git(root, "add", ".gitattributes")
+    _git(root, "commit", "-m", "configure policy line endings")
+    (root / "AGENTS.md").unlink()
+    _git(root, "checkout", "--", "AGENTS.md")
+    assert (root / "AGENTS.md").read_bytes() == b"# company rules\r\n"
+    assert _run_real(["git", "status", "--porcelain"], root).stdout == ""
+    base = _run_real(["git", "rev-parse", "HEAD"], root).stdout.strip()
+    assert jaxflow_build._agents_policy_preflight(_run_real, root, base) == ("tracked", base)
+
+
 def test_build_refuses_tracked_agents_newline_mismatch_before_reservation(tmp_path, monkeypatch):
     allow_root, root, plan = _policy_repo(tmp_path)
     _git(root, "config", "core.autocrlf", "false")
