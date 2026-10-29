@@ -562,7 +562,7 @@ def _agents_policy_preflight(run, repo, base_sha):
                          "hint: AGENTS.md is tracked and has uncommitted changes; reconcile it "
                          "through the project's own workflow before dispatching a build")
     control_blob = jc._git_read(
-        run, repo, ["git", "hash-object", "--no-filters", "--", "AGENTS.md"],
+        run, repo, ["git", "hash-object", "--", "AGENTS.md"],
         shape=r"[0-9a-f]{40}")
     committed_blob = jc._git_read(
         run, repo, ["git", "rev-parse", "--verify", f"{base_sha}:AGENTS.md"],
