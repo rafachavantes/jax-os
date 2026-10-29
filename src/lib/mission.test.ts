@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerEventId, bucketOf, buildMission, buildTicker, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
+import { answerEventId, artifactRel, bucketOf, buildMission, buildTicker, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
 import { parseIndexedReply } from "./workflow";
 import type { Envelope } from "./api";
 import type { Project, ProjectScan } from "../server/collectors/projects";
@@ -34,6 +34,7 @@ const NOW_ISO = new Date(NOW).toISOString();
 function mkProject(overrides: Partial<Project> & { dir: string }): Project {
   return {
     dir: overrides.dir,
+    ...(overrides.path ? { path: overrides.path } : {}),
     name: overrides.name ?? overrides.dir,
     stage: overrides.stage ?? "build",
     gate: overrides.gate ?? null,
@@ -89,6 +90,28 @@ function mkHub(byProject: Record<string, HubProject>, historicalTruncated = fals
 function scanOf(projects: Project[]): Envelope<ProjectScan> {
   return { ok: true, data: { projects, skipped: 0, reposRoot: "" } };
 }
+
+describe("buildMission — nested project location (artifact links)", () => {
+  it("propagates Project.path to MissionCard and omits it for direct children", () => {
+    const scan = scanOf([
+      mkProject({ dir: "alpha" }),
+      mkProject({ dir: "nested", path: "company/nested" }),
+    ]);
+    const { model } = buildMission(scan, undefined, undefined, NOW);
+    const cards = Object.fromEntries(model.cards.map((c) => [c.dir, c]));
+    expect("path" in cards.alpha).toBe(false);
+    expect(cards.nested.path).toBe("company/nested");
+    expect(cards.nested.dir).toBe("nested");
+  });
+
+  it("builds Files artifact paths from path ?? dir", () => {
+    expect(artifactRel({ dir: "direct" }, ".local/reports/x.md")).toBe("direct/.local/reports/x.md");
+    expect(artifactRel({ dir: "nested", path: "company/nested" }, ".local/reports/x.md"))
+      .toBe("company/nested/.local/reports/x.md");
+    expect(artifactRel({ dir: "nested", path: "company/nested" }, ".local/docs/specs/x-spec.md"))
+      .toBe("company/nested/.local/docs/specs/x-spec.md");
+  });
+});
 
 describe("buildMission — sort and worst-pane resolution (spec §4.1, §2.7 — test 4)", () => {
   it("orders headline states needs-you > stuck > working > waiting > idle, and a project's panes resolve to the worst", () => {
