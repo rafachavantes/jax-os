@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import unicodedata
 from datetime import datetime
@@ -40,6 +41,11 @@ RESERVED_TOP_LEVEL = {".local", ".jax-os"}
 SECRET_SUFFIXES = (".pem", ".key")
 SECRET_NAME_PARTS = ("credentials", "secret")
 PUBLIC_ENV_TEMPLATES = (".env.example", ".env.sample", ".env.template")
+# anchored to the two supported remote forms exactly --
+# `git@github.com:owner/repo(.git)` or `https://github.com/owner/repo(.git)` -- so a
+# lookalike host (`evilgithub.com`, which contains "github.com" as a bare substring) can
+# never match. Shared with jaxflow_merge (which imports it back under `_GH_REMOTE_RE`).
+_GH_REMOTE_RE = re.compile(r"^(?:git@github\.com:|https://github\.com/)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 # Same mode keys as scripts/jaxflow.py's `_THREAT_MODEL_LINES` -- duplicated instead of
 # imported because jaxflow.py already imports from this module, and importing back
 # would create a cycle.
@@ -95,6 +101,20 @@ def classify_target(canonical, run):
 def _validate_name(name):
     if not name or "\n" in name or any(unicodedata.category(ch) == "Cc" for ch in name):
         raise Refusal("invalid-name")
+
+def _valid_commit_subject(text):
+    """True for a single-line, trimmed, UTF-8-encodable subject with no control
+    characters, BOM, or case-insensitive Co-Authored-By text. Shared by the bootstrap
+    commit, explicit phase subjects, and PR-title delivery."""
+    if not isinstance(text, str) or text != text.strip() or not text:
+        return False
+    try:
+        text.encode("utf-8")
+    except UnicodeError:
+        return False
+    if any(unicodedata.category(ch) == "Cc" for ch in text) or "\ufeff" in text:
+        return False
+    return "co-authored-by" not in text.lower()
 
 def _run_ok(run, argv, cwd, step, prefix="command-failed"):
     try:
