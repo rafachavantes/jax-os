@@ -1299,13 +1299,13 @@ export function gateWaitingLine(card: Pick<MissionCard, "updated">, nowMs: numbe
   return elapsed !== null ? { key: "gateWaitingLine", elapsed } : null;
 }
 
-// ---- Round 3, item 10: the heartbeat sparkline's SVG path (viewBox "0 0 200 26") ----------
 // Files links are repos-root relative: prepend the project's discovered location, falling back to
 // the basename identity for a direct child (which omits `path`).
 export function artifactRel(card: Pick<MissionCard, "dir" | "path">, rel: string): string {
   return `${card.path ?? card.dir}/${rel}`;
 }
 
+// ---- Round 3, item 10: the heartbeat sparkline's SVG path (viewBox "0 0 200 26") ----------
 export function heartbeatPath(minutes: number[]): string {
   const max = Math.max(1, ...minutes);
   const points = minutes.map((n, i) => {
