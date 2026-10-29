@@ -235,7 +235,7 @@ def _init_repo(root: Path):
     _git(root, "config", "user.email", "t@t.test")
     _git(root, "config", "user.name", "t")
     (root / "README").write_text("x\n", encoding="utf-8")
-    (root / ".gitignore").write_text(".local/\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".local/\nAGENTS.md\n", encoding="utf-8")
     _git(root, "add", "README", ".gitignore")
     _git(root, "commit", "-m", "init")
 
@@ -660,7 +660,7 @@ def _init_separate_git_dir_repo(root: Path, gitdir: Path):
     _git(root, "config", "user.email", "t@t.test")
     _git(root, "config", "user.name", "t")
     (root / "README").write_text("x\n", encoding="utf-8")
-    (root / ".gitignore").write_text(".local/\n", encoding="utf-8")
+    (root / ".gitignore").write_text(".local/\nAGENTS.md\n", encoding="utf-8")
     _git(root, "add", "README", ".gitignore")
     _git(root, "commit", "-m", "init")
 

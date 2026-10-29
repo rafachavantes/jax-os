@@ -2229,3 +2229,140 @@ def test_build_refuses_builder_on_default_branch_after_worktree_checkout(monkeyp
             raise AssertionError("builder-on-default-branch not raised")
         assert not (allow_root / "demo-main").exists()
         assert _run_real(["git", "rev-parse", "--verify", "main"], root).returncode != 0
+
+
+# ---------------------------------------------------- tracked project policy (Task 5)
+
+def _policy_repo(raw, agents="# company rules\n", *, tracked=True):
+    allow_root = Path(raw) / "repos"
+    root = allow_root / "company"
+    _init_repo(root)
+    if agents is not None:
+        (root / "AGENTS.md").write_text(agents, encoding="utf-8")
+        if tracked:
+            _git(root, "add", "-f", "AGENTS.md")
+            _git(root, "commit", "-m", "policy")
+    plan = root / ".local" / "docs" / "plans" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("# Plan\n\n### Task 1: t\n", encoding="utf-8")
+    return allow_root, root, plan
+
+
+def _dispatch(root, allow_root, plan, monkeypatch, **flags):
+    monkeypatch.chdir(root)
+    return jaxflow_build.dispatch_build(
+        _build_args(plan=str(plan), **flags), run=_run_with_tmux(FakeTmux(), real_cwd=root),
+        post=lambda event: {"ok": True},
+        env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
+        now=_fixed_now, allowlist_root=allow_root)
+
+
+def test_build_keeps_tracked_agents_committed_unchanged(monkeypatch):
+    with TemporaryDirectory() as raw:
+        allow_root, root, plan = _policy_repo(raw)
+        assert _dispatch(root, allow_root, plan, monkeypatch)
+        worktree = allow_root / "company-feat-demo"
+        assert (worktree / "AGENTS.md").read_text(encoding="utf-8") == "# company rules\n"
+        assert _run_real(["git", "status", "--porcelain"], worktree).stdout == ""
+
+
+def test_build_refuses_dirty_tracked_agents_before_reservation(monkeypatch):
+    with TemporaryDirectory() as raw:
+        allow_root, root, plan = _policy_repo(raw)
+        (root / "AGENTS.md").write_text("# edited locally\n", encoding="utf-8")
+        monkeypatch.chdir(root)
+        run_id, events, calls, mkdir_calls, exc = _probe_dispatch_build(
+            monkeypatch, root, allow_root, plan)
+        assert exc is not None and exc.code == "agents-tracked-dirty"
+        _assert_no_reservation(allow_root, calls, mkdir_calls, events)
+
+
+def test_build_refuses_tracked_agents_differing_from_the_selected_base(monkeypatch):
+    with TemporaryDirectory() as raw:
+        allow_root, root, plan = _policy_repo(raw)
+        first = _run_real(["git", "rev-parse", "HEAD"], root).stdout.strip()
+        (root / "AGENTS.md").write_text("# newer policy\n", encoding="utf-8")
+        _git(root, "commit", "-am", "update policy")
+        monkeypatch.chdir(root)
+        run_id, events, calls, mkdir_calls, exc = _probe_dispatch_build(
+            monkeypatch, root, allow_root, plan, base=first)
+        assert exc is not None and exc.code == "agents-tracked-mismatch"
+        _assert_no_reservation(allow_root, calls, mkdir_calls, events)
+
+
+def test_build_keeps_selected_base_policy_when_control_file_is_local_only(monkeypatch):
+    with TemporaryDirectory() as raw:
+        allow_root = Path(raw) / "repos"
+        root = allow_root / "company"
+        _init_repo(root)
+        (root / "AGENTS.md").write_text("# base policy\n", encoding="utf-8")
+        _git(root, "add", "-f", "AGENTS.md")
+        _git(root, "commit", "-m", "base policy")
+        base = _run_real(["git", "rev-parse", "HEAD"], root).stdout.strip()
+        _git(root, "rm", "--cached", "AGENTS.md")
+        _git(root, "commit", "-m", "drop tracked policy")
+        _git(root, "branch", "policy", base)
+        (root / "AGENTS.md").write_text("# local only\n", encoding="utf-8")
+        plan = root / ".local" / "docs" / "plans" / "plan.md"
+        plan.parent.mkdir(parents=True)
+        plan.write_text("# Plan\n\n### Task 1: t\n", encoding="utf-8")
+        assert _dispatch(root, allow_root, plan, monkeypatch, base="policy")
+        worktree = allow_root / "company-feat-demo"
+        assert (worktree / "AGENTS.md").read_text(encoding="utf-8") == "# base policy\n"
+        assert _run_real(["git", "status", "--porcelain"], worktree).stdout == ""
+
+
+def test_build_with_absent_agents_copies_nothing(monkeypatch):
+    with TemporaryDirectory() as raw:
+        allow_root, root, plan = _policy_repo(raw, agents=None)
+        assert _dispatch(root, allow_root, plan, monkeypatch)
+        assert not (allow_root / "company-feat-demo" / "AGENTS.md").exists()
+
+
+def test_build_refuses_a_local_only_agents_copy_that_would_not_be_ignored(monkeypatch):
+    with TemporaryDirectory() as raw:
+        allow_root, root, plan = _policy_repo(raw, tracked=False)
+        (root / ".gitignore").write_text(".local/\n", encoding="utf-8")
+        _git(root, "commit", "-am", "drop agents ignore")
+        with pytest.raises(ji.Refusal) as exc:
+            _dispatch(root, allow_root, plan, monkeypatch)
+        assert exc.value.code == "agents-copy-not-ignored"
+        assert not (allow_root / "company-feat-demo").exists()
+        assert _run_real(["git", "rev-parse", "--verify", "feat/demo"], root).returncode != 0
+
+
+def test_build_pins_one_base_sha_when_the_default_branch_moves_during_preflight(monkeypatch):
+    with TemporaryDirectory() as raw:
+        allow_root, root, plan = _policy_repo(raw)
+        monkeypatch.chdir(root)
+        pinned = _run_real(["git", "rev-parse", "HEAD"], root).stdout.strip()
+        state = {"moved": False, "resolutions": 0}
+
+        tmux_runner = _run_with_tmux(FakeTmux(), real_cwd=root)
+
+        def run(argv, cwd=None):
+            result = tmux_runner(argv, cwd)
+            if (argv[:3] == ["git", "rev-parse", "--verify"]
+                    and argv[3] == "main^{commit}"):
+                state["resolutions"] += 1
+                if not state["moved"]:
+                    subprocess.run(
+                        ["git", "commit", "--allow-empty", "-m", "moved"],
+                        cwd=cwd or root, capture_output=True, text=True, check=True,
+                        env={
+                            **os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.test",
+                            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.test",
+                        })
+                    state["moved"] = True
+            return result
+
+        run_id = jaxflow_build.dispatch_build(
+            _build_args(plan=str(plan)), run=run,
+            post=lambda event: {"ok": True},
+            env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"},
+            now=_fixed_now, allowlist_root=allow_root)
+        assert run_id
+        assert state["resolutions"] == 1, "the moving default branch must be resolved only once"
+        worktree = allow_root / "company-feat-demo"
+        assert _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip() == pinned
+        assert _run_real(["git", "rev-parse", "main"], root).stdout.strip() != pinned
