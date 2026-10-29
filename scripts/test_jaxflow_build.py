@@ -793,7 +793,7 @@ def test_build_default_branch_probe_failure_after_reservation_removes_empty_dir(
 
 def test_build_post_add_exception_cleans_up_worktree_branch_and_admin_entry(monkeypatch):
     # fixes Part 1 diff-review F1: an exception AFTER `git worktree add -b` succeeded
-    # (here, the AGENTS.md copy `read_text` call -- MOA-467 stopped copying the plan, and
+    # (here, the AGENTS.md copy `read_bytes` call -- MOA-467 stopped copying the plan, and
     # the AGENTS.md copy is the only control-repo file still read after the add) must undo
     # everything that call created -- the
     # worktree directory, the branch ref, and Git's own `.git/worktrees/<id>` admin entry
@@ -810,14 +810,14 @@ def test_build_post_add_exception_cleans_up_worktree_branch_and_admin_entry(monk
         fake = FakeTmux()
         agents_resolved = (root / "AGENTS.md").resolve()
 
-        real_read_text = Path.read_text
+        real_read_bytes = Path.read_bytes
 
-        def failing_read_text(self, *a, **kw):
+        def failing_read_bytes(self, *a, **kw):
             if self == agents_resolved:
                 raise OSError("disk exploded")
-            return real_read_text(self, *a, **kw)
+            return real_read_bytes(self, *a, **kw)
 
-        monkeypatch.setattr(Path, "read_text", failing_read_text)
+        monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
 
         try:
             jaxflow_build.dispatch_build(
@@ -2366,3 +2366,40 @@ def test_build_pins_one_base_sha_when_the_default_branch_moves_during_preflight(
         worktree = allow_root / "company-feat-demo"
         assert _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip() == pinned
         assert _run_real(["git", "rev-parse", "main"], root).stdout.strip() != pinned
+
+
+def test_agents_copy_refuses_an_existing_untracked_policy(tmp_path):
+    allow_root, source, _plan = _policy_repo(tmp_path, tracked=False)
+    worktree = allow_root / "copy-target"
+    _init_repo(worktree)
+    destination = worktree / "AGENTS.md"
+    destination.write_bytes(b"# unrelated local policy\n")
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_build._copy_agents_md(source, worktree, _run_real)
+    assert exc.value.code == "agents-copy-collision"
+    assert destination.read_bytes() == b"# unrelated local policy\n"
+
+
+def test_agents_copy_preserves_crlf_bytes(tmp_path):
+    allow_root, source, _plan = _policy_repo(tmp_path, tracked=False)
+    content = b"# company policy\r\nPreserve these bytes.\r\n"
+    (source / "AGENTS.md").write_bytes(content)
+    worktree = allow_root / "copy-target"
+    _init_repo(worktree)
+    jaxflow_build._copy_agents_md(source, worktree, _run_real)
+    assert (worktree / "AGENTS.md").read_bytes() == content
+
+
+def test_build_refuses_tracked_agents_newline_mismatch_before_reservation(tmp_path, monkeypatch):
+    allow_root, root, plan = _policy_repo(tmp_path)
+    _git(root, "config", "core.autocrlf", "false")
+    (root / "AGENTS.md").write_bytes(b"# company rules\r\n")
+    _git(root, "commit", "-am", "use CRLF")
+    base = _run_real(["git", "rev-parse", "HEAD"], root).stdout.strip()
+    (root / "AGENTS.md").write_bytes(b"# company rules\n")
+    _git(root, "commit", "-am", "use LF")
+    monkeypatch.chdir(root)
+    _run_id, events, calls, mkdir_calls, exc = _probe_dispatch_build(
+        monkeypatch, root, allow_root, plan, base=base)
+    assert exc is not None and exc.code == "agents-tracked-mismatch"
+    _assert_no_reservation(allow_root, calls, mkdir_calls, events)

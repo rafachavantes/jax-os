@@ -426,16 +426,13 @@ def test_dry_run_is_inert(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["head"] is None
     assert not target.exists()
-    # Every git subcommand jax_init.py issues outside an `if not dry_run:`
-    # guard is read-only (rg '\["git"' shows only rev-parse/symbolic-ref
-    # reachable unguarded); init/add/commit/branch/config/push/gh are all
-    # gated behind `if not dry_run:` in the source, so this allowlist is
-    # equivalent to asserting none of those ever fire.
+    # Dry-run may inspect inherited config, but must never change it.
     read_only_git_subcommands = {"rev-parse", "symbolic-ref"}
     assert fake.calls
     for call in fake.calls:
         assert call[0] == "git", call
-        assert call[1] in read_only_git_subcommands, call
+        assert (call[1] in read_only_git_subcommands
+                or call == ["git", "config", "--get", "core.hooksPath"]), call
     assert any(c.startswith("would-create") for c in payload["created"])
     assert any(c.startswith("would-run") for c in payload["ran"])
 
@@ -957,3 +954,97 @@ def test_adoption_preserves_a_configured_missing_hook_path(tmp_path, capsys):
     assert not (repo / ".git" / "hooks" / "commit-msg").exists()
     assert subprocess.run(["git", "config", "core.hooksPath"], cwd=repo,
                           capture_output=True, text=True).stdout.strip() == ".missing-hooks"
+
+
+@pytest.mark.parametrize("redirect", ["file", "directory"])
+def test_adoption_refuses_redirected_exclude_metadata(tmp_path, monkeypatch, redirect):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = tmp_path / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    metadata = repo / ".git"
+    config = metadata / "config"
+    before = config.read_bytes()
+    if redirect == "file":
+        exclude = metadata / "info" / "exclude"
+        exclude.unlink()
+        exclude.symlink_to(config)
+    else:
+        info = metadata / "info"
+        original = metadata / "original-info"
+        info.rename(original)
+        info.symlink_to(original, target_is_directory=True)
+    with pytest.raises(ji.Refusal, match="path-outside-allowlist"):
+        ji._exclude_destination(_run_real, repo, tmp_path)
+    assert config.read_bytes() == before
+    assert not (repo / ".local").exists()
+
+
+def test_dormant_jax_hook_is_preserved_not_reported_as_effective(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = tmp_path / "company"
+    _init_repo(repo)
+    hooks = repo / ".githooks"
+    hooks.mkdir()
+    (hooks / "commit-msg").write_bytes(ji.HOOK_SOURCE.read_bytes())
+    action, label = ji._hook_plan(_run_real, repo, tmp_path, "auto")
+    assert action == "preserve"
+    assert "existing .githooks" in label
+    assert not (repo / ".git" / "hooks" / "commit-msg").exists()
+    assert _run_real(["git", "config", "--get", "core.hooksPath"], cwd=repo).returncode == 1
+
+
+@pytest.mark.parametrize("has_metadata", [False, True])
+@pytest.mark.parametrize("mode", ["preserve", "auto"])
+def test_fresh_hook_preview_respects_preservation(tmp_path, monkeypatch, capsys, mode, has_metadata):
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text(
+        f"[core]\n\thooksPath = {tmp_path / 'company-hooks'}\n" if mode == "auto" else "",
+        encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    def run(argv, cwd=None):
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                              check=False, env=os.environ.copy())
+    repo = tmp_path / "fresh"
+    if has_metadata:
+        _init_repo(repo)
+    assert _main(_argv(repo, dry_run=True) + ["--hooks", mode], run=run,
+                 allowlist_root=tmp_path) == ji.OK
+    payload = json.loads(capsys.readouterr().out)
+    assert not any(".githooks" in item for item in payload["created"])
+    assert not any("core.hooksPath" in item for item in payload["ran"])
+    assert any("hook: preserved" in item for item in payload["kept"])
+    assert repo.exists() == has_metadata
+
+
+def test_adoption_validates_hook_destination_before_appending_excludes(tmp_path, capsys):
+    repo = tmp_path / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    metadata = repo / ".git"
+    hooks = metadata / "hooks"
+    hooks.rename(metadata / "original-hooks")
+    foreign = tmp_path / "foreign-hooks"
+    foreign.mkdir()
+    hooks.symlink_to(foreign, target_is_directory=True)
+    exclude = metadata / "info" / "exclude"
+    before = exclude.read_bytes()
+    assert _main(_argv(repo), run=_run_real, allowlist_root=tmp_path) == ji.REFUSED
+    assert json.loads(capsys.readouterr().out)["refused"] == "path-outside-allowlist"
+    assert exclude.read_bytes() == before
+    assert not (repo / ".local").exists()
+
+
+def test_adoption_creates_missing_local_exclude_directory(tmp_path, capsys):
+    repo = tmp_path / "company"
+    _init_repo(repo)
+    _commit_file(repo, "README")
+    info = repo / ".git" / "info"
+    (info / "exclude").unlink()
+    info.rmdir()
+    assert _main(_argv(repo), run=_run_real, allowlist_root=tmp_path) == ji.OK
+    capsys.readouterr()
+    assert "/.local/" in (info / "exclude").read_text(encoding="utf-8")
