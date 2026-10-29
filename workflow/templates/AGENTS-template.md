@@ -38,11 +38,32 @@ explicit merge approval.
 - `.jax-os/status.md` — Jax OS dashboard card (gitignored). Schema: see
   `workflow/contracts/status-report-contract.md` in jax-os.
 
+## Project conventions
+
+<!-- These fields only override the named Jax defaults. Omit one and the default applies;
+     every other guarantee stays binding. They are prose for the tech lead and builder,
+     not templates or regexes. -->
+
+- Commit convention: imperative subjects with `feat:`/`fix:`/`docs:` prefixes — e.g.
+  `feat: add checkout retry`.
+- PR title convention: `No additional rule` — e.g. `feat: add checkout retry`. Production
+  promotions keep the fixed `Release: <target> promotion <date>` format.
+- Implementation branch convention: `feat/<phase>` — e.g. `feat/checkout-retry`.
+
+A PR preset's chosen block may also set `Merge method` (`merge`, `squash`, `rebase`, or
+`auto`) and `Merge subject` (`default`, `pr-title`, or `phase`). A local preset may set only
+`Merge subject` (`default` or `phase`, never `Merge method`); `phase` appends ` (merge
+<branch>)` to the
+validated subject locally, while a PR delivery passes the exact phase text. `release/*`
+production promotions always keep the legacy `--merge` format and generated
+`feat: <phase> (merge release/...)` subject, regardless of these fields.
+
 ## Deploy policy  <!-- CHOOSE ONE PRESET, DELETE THE OTHERS -->
 
 **Preset: `single-branch`** — trunk-based development: only `main`, local merge and push.
 - Base branch: `main` (default). `main` is the only PERSISTENT branch.
-- Implementation runs use temporary `feat/<phase>` branches from the base.
+- Implementation runs use temporary branches following the Implementation branch
+  convention above (default `feat/<phase>`) from the base.
 - Delivery target: `main`, merged and pushed per `merge-contract.md` after the owner's merge
   approval.
 - Create `staging` when the project first ships to real users; then switch preset to
@@ -53,7 +74,10 @@ explicit merge approval.
 - Base branch: `main` (default). `main` is the only PERSISTENT branch.
 - Delivery target: `main` (feature-branch PR against `main`); executor and gate per
   `merge-contract.md`.
-- Implementation runs use temporary `feat/<phase>` branches from the base.
+- Merge method: `merge`
+- Merge subject: `default`
+- Implementation runs use temporary branches following the Implementation branch
+  convention above (default `feat/<phase>`) from the base.
 - Never commit directly to `main`.
 - Delivery per feature: `jaxflow pr open` right after a diff review passes, then the owner's merge
   approval, then `jaxflow merge` — merges on GitHub, no local merge, no manual `gh` command. No
@@ -72,7 +96,8 @@ explicit merge approval.
 **Preset: `dual-branch`** — environment branches: `staging` + `main`, local merge into `staging`.
 - Base branch: `staging` (default). Delivery target: `staging`, merged and pushed per
   `merge-contract.md` after the owner's merge approval.
-- Implementation runs use temporary `feat/<phase>` branches from the base.
+- Implementation runs use temporary branches following the Implementation branch
+  convention above (default `feat/<phase>`) from the base.
 - `staging → main` promotion only under a distinct, explicit promotion approval from the owner,
   executed by the tech lead — never implied by a phase merge approval.
 - Verification deployment target: none.
@@ -81,7 +106,10 @@ explicit merge approval.
 - Base branch: `staging` (default). Delivery target: feature-branch PR against
   `staging`; executor and gate per `merge-contract.md`.
 - Production target: `main`.
-- Implementation runs use temporary `feat/<phase>` branches from the base.
+- Merge method: `merge`
+- Merge subject: `default`
+- Implementation runs use temporary branches following the Implementation branch
+  convention above (default `feat/<phase>`) from the base.
 - Never commit directly to `staging` or `main`.
 - Delivery per feature: `jaxflow pr open` right after a diff review passes, then the owner's merge
   approval, then `jaxflow merge` — merges on GitHub, no local merge, no manual `gh` command.
@@ -104,7 +132,8 @@ explicit merge approval.
   workflow wrapper refuses non-git repos); private GitHub remote optional (backup). To
   move the base later, create the new branch from `main` first (policy migration, not
   bootstrap).
-- Implementation runs use temporary `feat/<phase>` branches from the base.
+- Implementation runs use temporary branches following the Implementation branch
+  convention above (default `feat/<phase>`) from the base.
 - Source of truth: local Bubble JSON exports managed by Buildprint.
 - Verification deployment target: `<Bubble DEV/TEST environment>` — a builder may deploy
   there ONLY under a handoff `verification: agent-deploy-verify: target=…; check=…` line

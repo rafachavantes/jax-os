@@ -3804,7 +3804,7 @@ def _convention_agents(preset="single-branch-pr", target="main", extra=""):
 
 def _run_convention_pr(tmp_path, monkeypatch, agents, *, target="main", title=None,
                        graphql=None, view_state="OPEN", merge_result=None,
-                       remote="git@github.com:acme/x.git"):
+                       remote="git@github.com:acme/x.git", args_kw=None):
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "jaxos.db"
     script, _ = _pr_merge_setup(tmp_path, db, target=target)
@@ -3840,8 +3840,9 @@ def _run_convention_pr(tmp_path, monkeypatch, agents, *, target="main", title=No
         m.setattr(jr, "DB_PATH", db)
         try:
             rc = jaxflow_merge.cmd_merge(
-                _MergeArgs(target=target), run=run, post=_ledger_post(db, events),
-                env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
+                _MergeArgs(target=target, **(args_kw or {})), run=run,
+                post=_ledger_post(db, events), env=_merge_env(), now=_fixed_now,
+                allowlist_root=tmp_path.parent)
         except ji.Refusal as exc:
             rc = exc
     return rc, calls, events
@@ -4087,3 +4088,78 @@ def test_merge_local_phase_with_a_different_second_parent_refuses(tmp_path):
             allowlist_root=tmp_path.parent)
     assert exc.value.code == "sha-mismatch"
     assert not any(c[:3] == ["gh", "pr", "merge"] for c in calls)
+
+
+@pytest.mark.parametrize("payload", [
+    {"data": {"repository": {"mergeCommitAllowed": False, "squashMergeAllowed": False,
+                              "rebaseMergeAllowed": False}}},
+    {"data": {}},
+    {"data": {"repository": {"mergeCommitAllowed": "yes", "squashMergeAllowed": True,
+                              "rebaseMergeAllowed": True}}},
+    {"errors": [{"message": "boom"}], "data": None},
+])
+def test_merge_pr_auto_refuses_unusable_capabilities(tmp_path, monkeypatch, payload):
+    rc, calls, _events = _run_convention_pr(
+        tmp_path, monkeypatch, _convention_agents(extra="- Merge method: `auto`\n"),
+        graphql=_completed(0, json.dumps(payload)))
+    assert isinstance(rc, ji.Refusal) and rc.code == "merge-method-unavailable"
+    assert not any(c[:3] == ["gh", "pr", "merge"] for c in calls)
+
+
+@pytest.mark.parametrize("title", ["Co-Authored-By: someone", "two\nlines", " padded", ""])
+def test_merge_pr_refuses_an_invalid_title_before_delivery(tmp_path, monkeypatch, title):
+    rc, calls, _events = _run_convention_pr(
+        tmp_path, monkeypatch, _convention_agents(extra="- Merge subject: `pr-title`\n"),
+        title=title)
+    assert isinstance(rc, ji.Refusal) and rc.code == "merge-policy-invalid"
+    assert not any(c[:3] == ["gh", "pr", "merge"] for c in calls)
+
+
+def test_merge_pr_phase_subject_rejects_attribution(tmp_path, monkeypatch):
+    rc, calls, _events = _run_convention_pr(
+        tmp_path, monkeypatch,
+        _convention_agents(extra="- Merge subject: `phase`\n"),
+        args_kw={"phase": "DRA-1: x\nCo-Authored-By: y"})
+    assert isinstance(rc, ji.Refusal) and rc.code == "phase-invalid"
+    assert not any(c[:3] == ["gh", "pr", "merge"] for c in calls)
+
+
+def test_merge_pr_explicit_disallowed_method_surfaces_github_refusal(tmp_path, monkeypatch):
+    rc, calls, _events = _run_convention_pr(
+        tmp_path, monkeypatch, _convention_agents(extra="- Merge method: `squash`\n"),
+        title="DRA-1: x",
+        merge_result=_completed(1, "", "Squash merging is disabled"))
+    assert isinstance(rc, ji.Refusal) and rc.code == "github-merge-refused"
+    assert not any(c[:3] == ["gh", "api", "graphql"] for c in calls)
+
+
+def test_merge_local_phase_audit_failure_retry_resumes(tmp_path):
+    sha = "a" * 40
+    (tmp_path / "AGENTS.md").write_text(
+        _local_policy_agents("- Merge subject: `phase`\n"), encoding="utf-8")
+
+    def boom(event):
+        raise RuntimeError("hub down")
+
+    fake_run, _calls = _switch_aware_runner(tmp_path, sha)
+    with pytest.raises(ji.Refusal):
+        jaxflow_merge.cmd_merge(
+            _MergeArgs(sha=sha, phase="DRA-2408: add operator"), run=fake_run,
+            post=boom, env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
+    posted = []
+    resume_run, _resume_calls = _merge_runner(tmp_path, agents=(tmp_path / "AGENTS.md").read_text(), script={
+        ("git", "rev-parse", "--show-toplevel"): _completed(0, f"{tmp_path}\n"),
+        ("git", "symbolic-ref"): _completed(0, "refs/remotes/origin/main\n"),
+        ("git", "rev-parse", "--verify", "main^2"): _completed(0, f"{sha}\n"),
+        ("git", "rev-parse", "main^{commit}"): _completed(0, "c" * 40 + "\n"),
+        ("git", "log", "-1", "--format=%s"): _completed(
+            0, "DRA-2408: add operator (merge feat/x)\n"),
+        ("git", "rev-parse", "--verify", "feat/x^{commit}"): _completed(0, f"{sha}\n"),
+        ("git", "remote", "get-url"): _completed(2, ""),
+    })
+    rc = jaxflow_merge.cmd_merge(
+        _MergeArgs(sha=sha, phase="DRA-2408: add operator"), run=resume_run,
+        post=posted.append, env=_merge_env(), now=_fixed_now, allowlist_root=tmp_path.parent)
+    assert rc == jaxflow_common.OK
+    assert posted[0]["payload"]["checks"] == {"mode": "resumed"}
+    assert posted[0]["payload"]["merge_sha"] == "c" * 40

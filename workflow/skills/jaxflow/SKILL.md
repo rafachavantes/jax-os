@@ -238,6 +238,14 @@ jaxflow build --plan .local/docs/plans/my-plan.md --phase my-phase --branch feat
 The worktree, and everything under it (including the builder's own `report.md`), lives until
 `jaxflow merge` removes it — `build` itself never cleans up a SUCCESSFUL run's worktree.
 
+Project instructions: when the control repo's `AGENTS.md` is tracked, the selected base's
+committed file is what the worktree uses — `build` never copies over it. Before reserving a
+worktree it refuses `agents-tracked-dirty` (uncommitted tracked AGENTS.md) or
+`agents-tracked-mismatch` (control file differs from the selected base), with directions to
+reconcile through the project's own workflow. A local-only AGENTS.md is copied only into an
+absent, untracked, effectively ignored destination; otherwise `agents-copy-collision` or
+`agents-copy-not-ignored` refuses before builder dispatch.
+
 ## Review a build's diff
 
 ```
@@ -322,7 +330,9 @@ jaxflow pr open <branch> --sha <full-40-sha> --target <base> --title "<text>" \
 ```
 
 Run right after a diff review passes — no separate approval from the owner to open one (opening delivers
-nothing but a Vercel-style preview; the merge question is the ONE gate). `--target` must equal
+nothing but a Vercel-style preview; the merge question is the ONE gate). Compose `--title`
+from the project's `PR title convention` in AGENTS.md (the tech lead does this; jaxflow
+does not format titles). `--target` must equal
 the Delivery target for a normal branch, or the Production target for a `release/*` branch
 (from `jaxflow release`) — anything else refuses `target-mismatch` before any mutation.
 Re-running it is safe: the same sha reuses the existing PR (prints its URL, no mutation); a
@@ -386,7 +396,9 @@ spec and plan, not the worktree. `jaxflow merge` removes the worktree afterwards
 It runs in the foreground and prints a pass/fail — there is no run id, no tmux session, and
 no `status`/`result` for a merge. It resolves the delivery target from the project's
 `AGENTS.md` Deploy policy, refuses `target-mismatch` if `--target` differs, runs the
-merge-contract sequence on the merged tree, posts the `merge-approved` audit event, pushes
+merge-contract sequence on the merged tree (a local preset's `Merge subject: phase` commits
+the exact validated `--phase` plus ` (merge <branch>)`, and its resume requires that whole
+subject plus the approved second parent), posts the `merge-approved` audit event, pushes
 when an `origin` remote exists, copies the build worktree's reports into the control repo,
 removes that worktree and its branch, and writes `status.md` with `stage: ship`.
 
@@ -422,7 +434,10 @@ empty, whitespace, leading dash, over 512 UTF-16 code units, unencodable, or rej
 target), `merge-failed`,
 `checks-failed`, `checks-dirtied-tree` (the checks modified a tracked file),
 `push-failed`, `preset-unknown` (two preset blocks, one that does not name a delivery
-target, or a name outside the five valid presets — the hint lists them), `hub-unreachable` (the audit POST failed after the commit), `hub-rejected: <status> <hub error>`
+target, or a name outside the five valid presets — the hint lists them), `merge-policy-invalid`
+(a malformed, duplicated, out-of-block, or preset-incompatible `Merge method`/`Merge subject`,
+or an attributed PR title/phase), `merge-method-unavailable` (an `auto` query without usable
+capability flags), `hub-unreachable` (the audit POST failed after the commit), `hub-rejected: <status> <hub error>`
 (the hub answered and refused; re-running will not fix it, read the error). A `<field>-too-long (n > cap)`
 refusal happens before any side effect; for `verify`/`build`, move long commands into a
 package.json script.
@@ -431,9 +446,19 @@ A PR preset (`single-branch-pr`, `dual-branch-pr`) takes a DIFFERENT path from h
 for `<branch>`/`--sha` (refuses `pr-not-found` if none exists and none is found on GitHub
 either), re-verifies its identity against the approval, runs the full checks on the pinned SHA, unless the reuse rule above applies
 (in the build worktree for a feature branch, in a temporary detached checkout for a
-`release/*` branch), then merges it on GitHub — never a local `git merge` at all. Refusals
+`release/*` branch), then merges it on GitHub — never a local `git merge` at all. The
+selected preset block's `Merge method` (`merge`/`squash`/`rebase`/`auto`, default `merge`)
+and `Merge subject` (`default`/`pr-title`/`phase`, default `default`) decide the exact
+`gh pr merge` argv: `auto` queries GitHub's capabilities once and prefers
+merge, then squash, then rebase; `pr-title` (and `default` with squash) passes the latest
+validated PR title verbatim, keeping any ` (#N)` suffix; squash always passes an explicit
+empty `--body`; rebase carries neither `--subject` nor `--body`; `phase` passes the exact
+validated `--phase` text. `release/*` promotions ignore both fields: always `--merge` with
+the legacy generated subject. Refusals
 specific to this path: `pr-not-found`, `pr-identity-mismatch`, `pr-head-moved`,
-`pr-closed`, `pr-ambiguous`, `github-merge-refused` (GitHub itself refused the merge — a
+`pr-closed`, `pr-ambiguous`, `merge-policy-invalid` (malformed/duplicate/out-of-block
+fields or an invalid title/phase attribution), `merge-method-unavailable` (auto could not
+read usable capability flags, or none is enabled), `github-merge-refused` (GitHub itself refused the merge — a
 required check missing, pending, or failing; its own message plus the informational
 `gh pr checks <n>` output are printed), `merge-queue-required`, `mergeability-unknown`.
 
