@@ -24,6 +24,12 @@ export async function handlePrsGet(deps: PrsRouteDeps = systemDeps) {
   }
   return collectorResponse<Record<string, PrResult>>(async () => {
     const { projects } = deps.getProjects();
-    return deps.getPrsForProjects(projects.map((p) => p.dir), REPOS_ROOT);
+    // The collector resolves a repository from its own path; nested projects therefore pass
+    // their discovered location and the returned keys are remapped to the basename identity.
+    const locations = projects.map((p) => p.path ?? p.dir);
+    const fetched = await deps.getPrsForProjects(locations, REPOS_ROOT);
+    const out: Record<string, PrResult> = Object.create(null);
+    projects.forEach((p, i) => { out[p.dir] = fetched[locations[i]]; });
+    return out;
   });
 }
