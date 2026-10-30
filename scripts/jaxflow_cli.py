@@ -887,11 +887,14 @@ def _add_merge_parser(sub):
                      "the destination (--target); there is no run_id and no status/result "
                      "for a merge. Local presets merge --no-ff here and push the target. A "
                      "PR preset (single-branch-pr, dual-branch-pr) merges the branch's GitHub PR instead (gh pr merge "
-                     "--merge --match-head-commit): the PR's head branch, head SHA and base "
+                     "with the project's `Merge method`/`Merge subject` conventions, default "
+                     "--merge and the generated subject, always pinned with "
+                     "--match-head-commit): the PR's head branch, head SHA and base "
                      "must match the approval, GitHub's own branch protection must allow the "
                      "merge, and --checks run on the approved SHA first, unless an up-to-date "
                      "diff review already proved the same command on this exact SHA "
-                     "(--recheck forces the run).",
+                     "(--recheck forces the run). --target is asserted against the project "
+                     "policy, and release/* promotions always keep the legacy --merge format.",
     )
     merge.add_argument(
         "branch",

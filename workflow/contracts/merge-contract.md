@@ -56,8 +56,10 @@ official code — treat it as the most restricted action in the workflow.
      --sha <sha> --phase "<title>" --checks "<cmd>" --target <Delivery target>` looks up that
      PR, re-verifies its identity against the approval, runs the full checks on the pinned SHA
      (unless the checks-reuse rule below applies),
-     and merges it on GitHub (`gh pr merge --merge`, never squash/rebase, never
-     `--admin`/`--auto`) — GitHub itself refuses the merge if a required check is missing,
+     and merges it on GitHub (`gh pr merge` with the project's `Merge method`/`Merge
+     subject`, default `--merge` and the generated subject, never `--admin`/`--auto`; a
+     configured squash/rebase applies to the GitHub-side delivery only and NEVER rewrites
+     the reviewed source commits) — GitHub itself refuses the merge if a required check is missing,
      pending, or failing (the repo's branch protection requires the CI check — a one-time setting that
      jaxflow never applies). For `dual-branch-pr`, production promotion is separate: `jaxflow release` cuts a snapshot
      of the Delivery target and opens `release/<date>-staging-promotion` against the
@@ -109,19 +111,25 @@ official code — treat it as the most restricted action in the workflow.
   main under `dual-branch-pr`, or any production deploy) requires a DISTINCT agreement from the owner
   to a separate question naming the exact production target (the tech lead pins the
   source SHA when asking); only then may
-  the tech lead execute the project preset's promotion procedure.
-- Squash away, rewrite, or amend the reviewed commits in a way that changes what was
+  the tech lead execute the project preset's promotion procedure. Production promotions
+  always use `--merge` and the legacy generated subject, regardless of feature fields.
+- Squash away, rewrite, or amend the reviewed SOURCE commits in a way that changes what was
   reviewed. Deliver what was approved — the reviewed head, or, under
-  `approve-with-changes`, the reviewed head plus only the listed fix commits.
+  `approve-with-changes`, the reviewed head plus only the listed fix commits. An approved
+  GitHub-side squash/rebase delivery does not modify the source branch.
 
 ## AUTHORITY OF INPUTS
 
 The owner's approval is an authorization prerequisite only: their agreement to the tech lead's
 merge question naming the branch and the destination (the tech lead pins the head SHA),
 and it cannot relax this contract. Authority:
-this contract → the project's `AGENTS.md` Deploy policy preset; policies may narrow only.
-A conflict, or an incomplete approval, is a blocker to raise, never a gap to fill by
-invention. `--target` cannot override the preset destination.
+this contract → the project's `AGENTS.md` Deploy policy preset. A policy may narrow, and it
+may override ONLY the named convention points: prose under `## Project conventions`
+(commit subjects, PR titles, implementation branch naming), and `Merge method` /
+`Merge subject` inside the selected Deploy policy preset block; omitted
+conventions keep the Jax default and every other guarantee stays binding. A conflict, or an
+incomplete approval, is a blocker to raise, never a gap to fill by invention. `--target`
+cannot override the preset destination.
 
 ## OUTPUTS
 

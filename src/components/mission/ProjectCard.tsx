@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Clock3, File, FolderGit2, GitBranch, GitPullRequest, Hourglass, MoreHorizontal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
-  answerEventId, composeIndexedReply, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix,
+  answerEventId, artifactRel, composeIndexedReply, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix,
   stuckLine, gateWaitingLine, heartbeatPath, worstFinding, worstPaneState,
   type MissionActiveRunSummary, type MissionCard, type MissionPendingQuestion, type MissionState,
 } from "@/lib/mission";
@@ -865,12 +865,12 @@ function LastRunLine({ card }: { card: MissionCard }) {
         </span>
       ) : null}
       {lastRun.reportRel ? (
-        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: `${card.dir}/${lastRun.reportRel}` }).toString()}`} className="font-semibold text-brand">
+        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: artifactRel(card, lastRun.reportRel) }).toString()}`} className="font-semibold text-brand">
           {t("expanded.openReport")}
         </a>
       ) : null}
       {lastRun.targetRel ? (
-        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: `${card.dir}/${lastRun.targetRel}` }).toString()}`} className="font-semibold text-brand">
+        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: artifactRel(card, lastRun.targetRel) }).toString()}`} className="font-semibold text-brand">
           {t("expanded.openDocument")}
         </a>
       ) : null}
