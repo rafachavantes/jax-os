@@ -80,14 +80,19 @@ export async function handleDispatchPost(req: Request, deps: DispatchRouteDeps =
   } catch {
     return NextResponse.json({ ok: false, error: "project scan unavailable" });
   }
-  // Spec §7.1 (round-3 F1): `project` is the card's directory name under ~/repos, validated
-  // against the CURRENT scan before any path is resolved or any other field is read.
-  if (!validBasename(project) || !scan.projects.some((p) => p.dir === project)) {
+  // Spec §7.1 (round-3 F1): `project` is the card's basename identity under ~/repos,
+  // validated against the CURRENT scan before any path is resolved or any other field is
+  // read. A duplicate identity is ambiguous: refuse instead of selecting an arbitrary one.
+  if (!validBasename(project)) {
+    return NextResponse.json({ ok: false, error: "unknown-project" });
+  }
+  const matches = scan.projects.filter((p) => p.dir === project);
+  if (matches.length !== 1) {
     return NextResponse.json({ ok: false, error: "unknown-project" });
   }
   let cwd: string;
   try {
-    cwd = deps.resolveWithin(REPOS_ROOT, project);
+    cwd = deps.resolveWithin(REPOS_ROOT, matches[0].path ?? matches[0].dir);
   } catch {
     return NextResponse.json({ ok: false, error: "outside allowlist" });
   }

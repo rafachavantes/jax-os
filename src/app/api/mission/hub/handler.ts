@@ -1,10 +1,10 @@
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { collectorResponse } from "../../../../server/api";
-import { getProjects } from "../../../../server/collectors/projects";
+import { getProjects, type ProjectScan } from "../../../../server/collectors/projects";
 import { collectCodexSnapshot, createCodexConnector, isCodexCliPresent, type CodexSnapshot } from "../../../../server/collectors/workflow-codex";
 import { listLivePanes } from "../../../../server/collectors/workflow-tmux";
 import { readChildLogTail } from "../../../../server/collectors/child-log";
-import { ROOTS, relativeWithin } from "../../../../server/collectors/files";
+import { relativeWithin } from "../../../../server/collectors/files";
 import { getDb } from "../../../../server/db";
 import { readGeneralSettings } from "../../../../server/settings";
 import { getHubData, type ChildLogTailReader, type HubEnvelopeData, type RelToRepos } from "../../../../server/db/workflows";
@@ -33,9 +33,26 @@ const systemDeps: HubRouteDeps = {
   codexEnabled: () => { const s = readGeneralSettings(); return s.ok && s.data.integrations.agents.codex; },
   getHubData,
   readChildLogTail,
-  // F2: PROJECT-root relative, not ROOTS.repos-relative (see the RelToRepos doc comment).
-  relToRepos: (project, abs) => relativeWithin(join(ROOTS.repos, project), abs),
 };
+
+// Per-request artifact resolver: the project root comes from THIS scan's discovered location, and
+// an identity that is missing or ambiguous gets no enrichment. Relative spec/plan targets are
+// normalized here (never against the process cwd); absolute report paths keep canonical containment
+// via relativeWithin. An injected resolver still wins, so tests/other callers stay explicit.
+function relToReposFromScan(scan: ProjectScan): RelToRepos {
+  const counts = new Map<string, number>();
+  for (const project of scan.projects) {
+    counts.set(project.dir, (counts.get(project.dir) ?? 0) + 1);
+  }
+  return (project, target) => {
+    if (!scan.reposRoot || counts.get(project) !== 1) return null;
+    const found = scan.projects.find((p) => p.dir === project);
+    if (!found) return null;
+    const projectRoot = join(scan.reposRoot, found.path ?? found.dir);
+    const absolute = isAbsolute(target) ? target : join(projectRoot, target);
+    return relativeWithin(projectRoot, absolute);
+  };
+}
 
 // mission/hub takes no request parameters: it reads the DB and calls listLivePanes() and the
 // Codex App Server collector once per request — the same subprocess cadence mission/agents runs
@@ -45,7 +62,9 @@ const systemDeps: HubRouteDeps = {
 // case stays a healthy empty snapshot (tmuxSourceOk true).
 export async function handleHubGet(deps: HubRouteDeps = systemDeps) {
   return collectorResponse<HubEnvelopeData>(async () => {
-    const { projects } = deps.getProjects();
+    const scan = deps.getProjects();
+    const { projects } = scan;
+    const relToRepos = deps.relToRepos ?? relToReposFromScan(scan);
     const statusMtimes: Record<string, string> = {};
     for (const p of projects) statusMtimes[p.dir] = p.statusMtime;
     let live: Awaited<ReturnType<typeof listLivePanes>>;
@@ -67,7 +86,7 @@ export async function handleHubGet(deps: HubRouteDeps = systemDeps) {
     }
     return deps.getHubData(
       deps.getDb(), live, statusMtimes, codex, Date.now(), tmuxSourceOk,
-      deps.readChildLogTail ?? null, deps.relToRepos ?? null, codexAbsent,
+      deps.readChildLogTail ?? null, relToRepos, codexAbsent,
     );
   });
 }

@@ -36,7 +36,7 @@ vi.mock("../settings", async (importOriginal) => {
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { openDb } from "./index";
 import { REPOS_ROOT } from "../collectors/projects";
 import { readGeneralSettings } from "../settings";
@@ -4256,29 +4256,32 @@ describe("Phase 3 — lastRunFor enrichment (spec §11, Decisions 17/18, cold re
     insertEvent(db, { run_id: "a1b2c3d4e5f6", project: "p1", role, type: "run-finished", source: "deterministic",
       emitter: "wrapper", payload: { exit_code: 0, contract_status: "ok", result: "success", ...p } }, new Date("2026-09-19T10:05:00.000Z"));
   }
+  // Pin the clock near the fixtures: three of these call getHubData directly, and p1 is only a
+  // historical member while its events sit inside the 30-day hub window.
+  const NOW7 = Date.parse("2026-09-19T10:06:00.000Z");
+  const live = { paneIds: new Set<string>(), incarnation: null, paneCommands: new Map() };
   // F2: PROJECT-root relative, mirroring relativeWithin(join(REPOS_ROOT, project), abs) — never a
-  // plain ROOTS.repos reduction. F3: this fake only ever sees an ABSOLUTE path — proof lastRunFor
-  // normalized the fixture's relative ".local/docs/specs/x-spec.md" target first.
-  const relToRepos = (project: string, abs: string): string | null => {
+  // plain ROOTS.repos reduction. The resolver now owns relative-OR-absolute normalization: a
+  // relative ".local/docs/specs/x-spec.md" arrives raw and is resolved against p1's own root here.
+  const relToRepos = (project: string, target: string): string | null => {
     const root = `${REPOS_ROOT}/${project}/`;
+    const abs = isAbsolute(target) ? target : join(REPOS_ROOT, project, target);
     return abs.startsWith(root) ? abs.slice(root.length) : null;
   };
   it("runtimeModel/profileName/reportRel/targetRel are each sourced from the payload they're actually validated on", () => {
     const db = openDb(":memory:");
     startedAndFinished(db, { kind: "spec", target: ".local/docs/specs/x-spec.md", requested_profile: "fallback" }, { report_path: join(REPOS_ROOT, "p1", ".local/docs/reports/x.md") });
-    const live = { paneIds: new Set<string>(), incarnation: null, paneCommands: new Map() };
-    const data = getHubData(db, live, {}, null, Date.now(), true, null, relToRepos);
+    const data = getHubData(db, live, {}, null, NOW7, true, null, relToRepos);
     expect(data.byProject.p1.lastRun?.runtimeModel).toBe("sonnet");
     expect(data.byProject.p1.lastRun?.profileName).toBe("fallback");
     expect(data.byProject.p1.lastRun?.reportRel).toBe(".local/docs/reports/x.md");
-    expect(data.byProject.p1.lastRun?.targetRel).toBe(".local/docs/specs/x-spec.md"); // F3: the relative fixture target, normalized against p1's own root before relToRepos ever ran
+    expect(data.byProject.p1.lastRun?.targetRel).toBe(".local/docs/specs/x-spec.md"); // the relative fixture target is resolved against p1's own root by the resolver
     db.close();
   });
   it("profileName is null for a reviewer row even with a requested_profile present; runtimeModel is never role-gated", () => {
     const db = openDb(":memory:");
     startedAndFinished(db, { kind: "diff", requested_profile: "fallback" }, {}, "reviewer");
-    const live = { paneIds: new Set<string>(), incarnation: null, paneCommands: new Map() };
-    const data = getHubData(db, live, {}, null, Date.now(), true);
+    const data = getHubData(db, live, {}, null, NOW7, true);
     expect(data.byProject.p1.lastRun?.profileName).toBeNull();
     expect(data.byProject.p1.lastRun?.runtimeModel).toBe("sonnet");
     db.close();
@@ -4286,10 +4289,21 @@ describe("Phase 3 — lastRunFor enrichment (spec §11, Decisions 17/18, cold re
   it("targetRel is attempted only for spec/plan kinds, never build/diff/merge, and both degrade to null with no relToRepos injected", () => {
     const db = openDb(":memory:");
     startedAndFinished(db, { kind: "build" }, {});
-    const live = { paneIds: new Set<string>(), incarnation: null, paneCommands: new Map() };
-    const data = getHubData(db, live, {}, null, Date.now(), true); // no relToRepos injected
+    const data = getHubData(db, live, {}, null, NOW7, true); // no relToRepos injected
     expect(data.byProject.p1.lastRun?.targetRel).toBeNull();
     expect(data.byProject.p1.lastRun?.reportRel).toBeNull();
+    db.close();
+  });
+  it("passes a relative spec/plan target through unchanged to the injected resolver", () => {
+    const db = openDb(":memory:");
+    startedAndFinished(db, { kind: "plan", target: ".local/docs/plans/x-plan.md" }, {});
+    const seen: [string, string][] = [];
+    const data = getHubData(db, live, {}, null, NOW7, true, null, (project, target) => {
+      seen.push([project, target]);
+      return null;
+    });
+    expect(seen).toContainEqual(["p1", ".local/docs/plans/x-plan.md"]);
+    expect(data.byProject.p1.lastRun?.targetRel).toBeNull();
     db.close();
   });
 });

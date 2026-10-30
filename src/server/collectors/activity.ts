@@ -47,7 +47,7 @@ function isLimitError(e: unknown): boolean {
 }
 
 export function getActivity(
-  projects?: { dir: string }[],
+  projects?: { dir: string; path?: string }[],
   reposRoot: string = REPOS_ROOT,
   exec: Utf8ExecSync = execFileSync as Utf8ExecSync,
 ): Commit[] {
@@ -56,7 +56,7 @@ export function getActivity(
     try {
       const out = exec(
         "git",
-        ["-C", join(reposRoot, p.dir), "log", "-n", "5", "--format=%h%x1f%an%x1f%s%x1f%ct"],
+        ["-C", join(reposRoot, p.path ?? p.dir), "log", "-n", "5", "--format=%h%x1f%an%x1f%s%x1f%ct"],
         LOCAL_OPTS,
       );
       return parseGitLog(p.dir, out);

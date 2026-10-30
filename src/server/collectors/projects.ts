@@ -1,5 +1,5 @@
-import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { reposRoot } from "../reposRoot";
 
 export type ProjectStage = "spec" | "build" | "review" | "test" | "ship";
@@ -9,6 +9,10 @@ export type ProjectGate = "awaiting-approval" | "blocked";
 
 export type Project = {
   dir: string;
+  // Repos-root-relative POSIX location of a nested project (`parent/child`), from actual
+  // directory names. Direct children omit it. Filesystem consumers use `path ?? dir`; every
+  // identity/response key stays `dir`.
+  path?: string;
   name: string;
   stage: ProjectStage;
   gate: ProjectGate | null;
@@ -229,11 +233,10 @@ export async function ownerProjectName(cwd: string, probe: GitProbe, signal?: Ab
   return owner ? basename(owner) || null : null;
 }
 
-function isLinkedWorktree(root: string, dir: string, fs: StatusFs = defaultStatusFs): boolean {
+function isLinkedWorktree(checkout: string, fs: StatusFs = defaultStatusFs): boolean {
   // readStatusBounded doubles as the `.git` file probe: a directory `.git` (normal
   // repo), a missing one, an unreadable one, or an oversized one all throw, and an
   // unprovable relationship must never suppress an independent repo's card.
-  const checkout = join(root, dir);
   let ref: string | null;
   try {
     ref = parseGitdirRef(readStatusBounded(join(checkout, ".git"), fs).text);
@@ -254,36 +257,155 @@ function isLinkedWorktree(root: string, dir: string, fs: StatusFs = defaultStatu
   return isLinkedWorktreeGitdir(gitdir, commondir);
 }
 
-// Untested fs glue — logic above is the tested surface.
+// Canonical containment for status reads: symlinks may point anywhere inside the
+// configured root, but never outside it.
+function containedInRoot(rootCanonical: string, candidate: string): boolean {
+  const rel = relative(rootCanonical, candidate);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+type StatusRead =
+  | { kind: "ok"; text: string; mtime: string }
+  | { kind: "missing" }
+  | { kind: "failed" };
+
+function readCandidateStatus(rootCanonical: string, checkout: string): StatusRead {
+  let canonical: string;
+  try {
+    canonical = realpathSync(join(checkout, ".jax-os", "status.md"));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? { kind: "missing" } : { kind: "failed" };
+  }
+  if (!containedInRoot(rootCanonical, canonical)) return { kind: "failed" };
+  try {
+    const read = readStatusBounded(canonical);
+    return { kind: "ok", text: read.text, mtime: read.mtime };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? { kind: "missing" } : { kind: "failed" };
+  }
+}
+
+// Collision ownership: any `.git` entry or any `.jax-os/status.md` entry (valid,
+// malformed or unreadable) reserves the basename. Unprovable metadata is "unknown" so a
+// matching valid identity fails closed rather than picking an arbitrary owner.
+type Ownership = "owner" | "none" | "unknown";
+
+function entryPresent(path: string): boolean | undefined {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? false : undefined;
+  }
+}
+
+function ownershipOf(checkout: string): Ownership {
+  const git = entryPresent(join(checkout, ".git"));
+  const status = entryPresent(join(checkout, ".jax-os", "status.md"));
+  if (git === true || status === true) return "owner";
+  if (git === false && status === false) return "none";
+  return "unknown";
+}
+
+type Candidate = { key: string; abs: string; dir: string; path?: string };
+
+// Bounded two-level scan. Untested fs glue — the parsing/ownership logic above is the
+// tested surface.
 export function getProjects(root: string = REPOS_ROOT): ProjectScan {
-  const projects: Project[] = [];
+  const rootCanonical = realpathSync(root);
+  const candidates: Candidate[] = [];
+  const counted = new Set<string>();
   let skipped = 0;
+  const markSkipped = (key: string) => {
+    if (counted.has(key)) return;
+    counted.add(key);
+    skipped++;
+  };
+
+  const depthOne: { dir: string; abs: string }[] = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
+    // Dirent reports symlinks as symlinks, so directory symlinks are never followed.
     if (!entry.isDirectory()) continue;
+    const abs = join(root, entry.name);
     // MOA-467 Task 4: a linked worktree is another directory's checkout — the CONTROL
-    // repo owns its project card. Filter BEFORE any status read, so a worktree's valid
-    // status never becomes a duplicate card and never counts as skipped; a positively
-    // identified worktree is excluded even when its control repo is outside the scan or
-    // has no valid status. Historical worktree status files may remain on disk.
-    if (isLinkedWorktree(root, entry.name)) continue;
-    const statusPath = join(root, entry.name, ".jax-os", "status.md");
-    let raw: string;
-    let statusMtime: string;
+    // repo owns its project card. Filter BEFORE any status read or descent, so a
+    // worktree's valid status never becomes a duplicate card and never counts as
+    // skipped; a positively identified worktree is excluded even when its control repo
+    // is outside the scan or has no valid status.
+    if (isLinkedWorktree(abs)) continue;
+    depthOne.push({ dir: entry.name, abs });
+    candidates.push({ key: entry.name, abs, dir: entry.name });
+  }
+
+  for (const parent of depthOne) {
+    let children;
     try {
-      const read = readStatusBounded(statusPath);
-      raw = read.text;
-      statusMtime = read.mtime;
+      children = readdirSync(parent.abs, { withFileTypes: true });
     } catch (e) {
-      // ENOENT/ENOTDIR = no status.md → not a pipeline project, not "skipped".
-      // Anything else (EACCES, over-cap…) is a real read failure → count it as skipped.
       const code = (e as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") skipped++;
+      // A vanished child is quiet; any other listing failure is local to this parent.
+      if (code !== "ENOENT" && code !== "ENOTDIR") markSkipped(parent.dir);
       continue;
     }
-    const project = parseStatusMd(entry.name, raw, statusMtime);
-    if (project) projects.push(project);
-    else skipped++; // has a status.md but no valid frontmatter → muted hint in UI
+    for (const entry of children) {
+      if (!entry.isDirectory()) continue;
+      const abs = join(parent.abs, entry.name);
+      if (isLinkedWorktree(abs)) continue;
+      const path = `${parent.dir}/${entry.name}`;
+      candidates.push({ key: path, abs, dir: entry.name, path });
+    }
   }
+
+  const cards: { key: string; project: Project }[] = [];
+  for (const candidate of candidates) {
+    const read = readCandidateStatus(rootCanonical, candidate.abs);
+    if (read.kind === "missing") continue; // no status: not a pipeline project, not skipped
+    if (read.kind === "failed") {
+      markSkipped(candidate.key);
+      continue;
+    }
+    const parsed = parseStatusMd(candidate.dir, read.text, read.mtime);
+    if (!parsed) {
+      markSkipped(candidate.key); // status present but no valid frontmatter
+      continue;
+    }
+    const project = candidate.path ? { ...parsed, path: candidate.path } : parsed;
+    cards.push({ key: candidate.key, project });
+  }
+
+  const owners = new Map<string, { count: number; uncertain: boolean }>();
+  for (const candidate of candidates) {
+    const ownership = ownershipOf(candidate.abs);
+    if (ownership === "none") continue;
+    const info = owners.get(candidate.dir) ?? { count: 0, uncertain: false };
+    if (ownership === "owner") info.count++;
+    else info.uncertain = true;
+    owners.set(candidate.dir, info);
+  }
+  const collided = new Set<string>();
+  for (const [name, info] of owners) {
+    if (info.count > 1 || info.uncertain) collided.add(name);
+  }
+
+  const projects: Project[] = [];
+  for (const card of cards) {
+    if (collided.has(card.project.dir)) {
+      markSkipped(card.key);
+      continue;
+    }
+    projects.push(card.project);
+  }
+  // A missing-status Git owner is quiet on its own; in a collision it is an omitted
+  // directory too. Idempotent, so a status failure or omitted card never double counts.
+  for (const candidate of candidates) {
+    if (!collided.has(candidate.dir)) continue;
+    const ownership = ownershipOf(candidate.abs);
+    if (ownership === "owner" || ownership === "unknown") markSkipped(candidate.key);
+  }
+
   // ponytail: lexicographic ISO sort — good enough while all repos share -03:00
   projects.sort((a, b) => b.updated.localeCompare(a.updated));
   return { projects, skipped, reposRoot: root };

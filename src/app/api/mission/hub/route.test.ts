@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb } from "../../../../server/db/index";
 import { insertEvent, getHubData } from "../../../../server/db/workflows";
 import { handleHubGet, type HubRouteDeps } from "./handler";
@@ -171,6 +174,100 @@ describe("GET /api/mission/hub (wiring)", () => {
     expect(body.data.codexSource).toBe("absent");
     expect(collectCodexSnapshot).not.toHaveBeenCalled();
     db.close();
+  });
+
+  describe("artifact enrichment resolves the project's discovered location", () => {
+    const baseDeps = (db: ReturnType<typeof openDb>, scan: unknown): HubRouteDeps => ({
+      getDb: () => db,
+      getProjects: () => scan as ReturnType<HubRouteDeps["getProjects"]>,
+      listLivePanes: async () => ({ paneIds: new Set(), incarnation: null, paneCommands: new Map() }),
+      collectCodexSnapshot: NO_CODEX, isCodexCliPresent: () => true, getHubData,
+    });
+    const runEvents = (db: ReturnType<typeof openDb>, project: string, target: string, reportPath: string) => {
+      insertEvent(db, { run_id: `run-${project}`, project, role: "builder", type: "run-started", source: "deterministic",
+        emitter: "wrapper", payload: { kind: "spec", target }, pane: null, tmux_incarnation: null }, new Date());
+      insertEvent(db, { run_id: `run-${project}`, project, role: "builder", type: "run-finished", source: "deterministic",
+        emitter: "wrapper", payload: { contract_status: "ok", result: "success", report_path: reportPath }, pane: null, tmux_incarnation: null }, new Date());
+    };
+
+    it("normalizes nested relative spec targets and keeps absolute reports contained", async () => {
+      const root = mkdtempSync(join(tmpdir(), "jax-hub-scan-"));
+      try {
+        const projectRoot = join(root, "company", "nested");
+        mkdirSync(join(projectRoot, ".local", "docs", "specs"), { recursive: true });
+        mkdirSync(join(projectRoot, ".local", "docs", "reports"), { recursive: true });
+        writeFileSync(join(projectRoot, ".local", "docs", "specs", "x-spec.md"), "spec\n");
+        writeFileSync(join(projectRoot, ".local", "docs", "reports", "x.md"), "report\n");
+        const db = openDb(":memory:");
+        runEvents(db, "nested", ".local/docs/specs/x-spec.md", join(projectRoot, ".local", "docs", "reports", "x.md"));
+        const scan = { projects: [{ dir: "nested", path: "company/nested", statusMtime: "2026-08-01T00:00:00.000Z" }], skipped: 0, reposRoot: root };
+        const body = await (await handleHubGet(baseDeps(db, scan))).json();
+        expect(body.data.byProject.nested.lastRun.targetRel).toBe(".local/docs/specs/x-spec.md");
+        expect(body.data.byProject.nested.lastRun.reportRel).toBe(".local/docs/reports/x.md");
+        db.close();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps a direct child rooted at reposRoot/dir", async () => {
+      const root = mkdtempSync(join(tmpdir(), "jax-hub-scan-"));
+      try {
+        const projectRoot = join(root, "direct");
+        mkdirSync(join(projectRoot, ".local", "docs", "specs"), { recursive: true });
+        writeFileSync(join(projectRoot, ".local", "docs", "specs", "x-spec.md"), "spec\n");
+        const db = openDb(":memory:");
+        runEvents(db, "direct", ".local/docs/specs/x-spec.md", "");
+        const scan = { projects: [{ dir: "direct", statusMtime: "2026-08-01T00:00:00.000Z" }], skipped: 0, reposRoot: root };
+        const body = await (await handleHubGet(baseDeps(db, scan))).json();
+        expect(body.data.byProject.direct.lastRun.targetRel).toBe(".local/docs/specs/x-spec.md");
+        expect(body.data.byProject.direct.lastRun.reportRel).toBeNull();
+        db.close();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("returns null enrichment for unknown or ambiguous identities", async () => {
+      const root = mkdtempSync(join(tmpdir(), "jax-hub-scan-"));
+      try {
+        const db = openDb(":memory:");
+        runEvents(db, "ghost", ".local/docs/specs/x-spec.md", "");
+        const unknown = await (await handleHubGet(baseDeps(db, { projects: [], skipped: 0, reposRoot: root }))).json();
+        expect(unknown.data.byProject.ghost.lastRun.targetRel).toBeNull();
+        db.close();
+
+        const ambiguousDb = openDb(":memory:");
+        runEvents(ambiguousDb, "dup", ".local/docs/specs/x-spec.md", "");
+        const ambiguousScan = {
+          projects: [{ dir: "dup", path: "one/dup" }, { dir: "dup", path: "two/dup" }],
+          skipped: 0, reposRoot: root,
+        };
+        const ambiguous = await (await handleHubGet(baseDeps(ambiguousDb, ambiguousScan))).json();
+        expect(ambiguous.data.byProject.dup.lastRun.targetRel).toBeNull();
+        ambiguousDb.close();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("drops relative and absolute targets that escape the discovered project root", async () => {
+      const root = mkdtempSync(join(tmpdir(), "jax-hub-scan-"));
+      try {
+        const projectRoot = join(root, "company", "evil");
+        mkdirSync(projectRoot, { recursive: true });
+        writeFileSync(join(root, "company", "outside.md"), "outside\n");
+        const db = openDb(":memory:");
+        runEvents(db, "evil", "../outside.md", join(root, "company", "outside.md"));
+        const scan = { projects: [{ dir: "evil", path: "company/evil" }], skipped: 0, reposRoot: root };
+        const body = await (await handleHubGet(baseDeps(db, scan))).json();
+        expect(body.data.byProject.evil.lastRun.targetRel).toBeNull();
+        expect(body.data.byProject.evil.lastRun.reportRel).toBeNull();
+        db.close();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("calls collectCodexSnapshot as today when the codex CLI is on PATH", async () => {

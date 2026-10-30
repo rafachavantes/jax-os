@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import {
@@ -429,6 +429,245 @@ describe("getProjects excludes linked worktrees (MOA-467 Task 4)", () => {
     expect(scan.skipped).toBe(0);
     expect(scan.projects).toHaveLength(1);
     expect(scan.projects[0].dir).toBe("odd");
+  });
+});
+
+// ---- nested discovery: two bounded levels, identity stays the basename ----
+
+function gitOwner(root: string, dir: string): void {
+  mkdirSync(join(root, dir), { recursive: true });
+  writeFileSync(join(root, dir, ".git"), "gitdir: not a real gitdir\n");
+}
+
+describe("nested project discovery", () => {
+  let root: string;
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("discovers direct and nested projects, omitting path on direct children", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "alpha", FULL);
+    writeStatus(root, "company/beta", "---\nstage: spec\n---\n");
+    const scan = getProjects(root);
+    expect(scan.skipped).toBe(0);
+    const byDir = Object.fromEntries(scan.projects.map((p) => [p.dir, p]));
+    expect(Object.keys(byDir).sort()).toEqual(["alpha", "beta"]);
+    expect("path" in byDir.alpha).toBe(false);
+    expect(byDir.beta).toMatchObject({ dir: "beta", path: "company/beta", stage: "spec" });
+    expect(byDir.beta.name).toBe("beta");
+  });
+
+  it("keeps a valid parent and its valid nested child together", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "parent", FULL);
+    writeStatus(root, "parent/child", "---\nstage: review\nproject: Child\n---\n");
+    const scan = getProjects(root);
+    expect(scan.skipped).toBe(0);
+    expect(scan.projects.map((p) => [p.dir, p.path, p.name])).toEqual([
+      ["parent", undefined, "APG Platform"],
+      ["child", "parent/child", "Child"],
+    ]);
+  });
+
+  it("never discovers a third level", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "a/valid", "---\nstage: spec\n---\n");
+    writeStatus(root, "a/b/c", FULL);
+    writeStatus(root, "a/node_modules/deep", FULL);
+    const scan = getProjects(root);
+    expect(scan.skipped).toBe(0);
+    expect(scan.projects.map((p) => p.path)).toEqual(["a/valid"]);
+  });
+
+  it("does not follow directory symlinks at either level", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    const outside = mkdtempSync(join(tmpdir(), "jax-outside-"));
+    try {
+      writeStatus(outside, "real", FULL);
+      symlinkSync(join(outside, "real"), join(root, "alias"), "dir");
+      mkdirSync(join(root, "group"));
+      symlinkSync(join(outside, "real"), join(root, "group", "alias"), "dir");
+      expect(getProjects(root)).toEqual({ projects: [], skipped: 0, reposRoot: root });
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a linked worktree and never descends into its subtree", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    const control = join(root, "demo");
+    initRepo(control);
+    addWorktree(root, control, "feat/w1", "demo-w1");
+    writeStatus(root, "demo", FULL);
+    writeStatus(root, "demo-w1", FULL);
+    writeStatus(root, "demo-w1/nested", FULL);
+    const scan = getProjects(root);
+    expect(scan.skipped).toBe(0);
+    expect(scan.projects.map((p) => p.dir)).toEqual(["demo"]);
+  });
+
+  it("omits both root/nested cards sharing a basename and counts both once", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "alpha", FULL);
+    writeStatus(root, "company/alpha", FULL);
+    const scan = getProjects(root);
+    expect(scan.projects).toEqual([]);
+    expect(scan.skipped).toBe(2);
+  });
+
+  it("omits both nested/nested cards sharing a basename", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "one/alpha", FULL);
+    writeStatus(root, "two/alpha", FULL);
+    writeStatus(root, "two/beta", "---\nstage: spec\n---\n");
+    const scan = getProjects(root);
+    expect(scan.projects.map((p) => p.path)).toEqual(["two/beta"]);
+    expect(scan.skipped).toBe(2);
+  });
+
+  it("lets a same-basename Git owner without status reserve the identity", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "alpha", FULL);
+    gitOwner(root, "company/alpha");
+    const scan = getProjects(root);
+    expect(scan.projects).toEqual([]);
+    expect(scan.skipped).toBe(2);
+  });
+
+  it("lets a malformed-status owner reserve the identity without contaminating the count", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "alpha", FULL);
+    writeStatus(root, "company/alpha", "not frontmatter\n");
+    const scan = getProjects(root);
+    expect(scan.projects).toEqual([]);
+    expect(scan.skipped).toBe(2);
+  });
+
+  it("fails closed when a same-basename owner's metadata is unreadable", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "alpha", FULL);
+    const locked = join(root, "locked", "alpha");
+    mkdirSync(locked, { recursive: true });
+    chmodSync(locked, 0o000);
+    try {
+      const scan = getProjects(root);
+      expect(scan.projects).toEqual([]);
+      expect(scan.skipped).toBe(2);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  it("does not let a grouping-only directory reserve its basename", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "alpha", FULL);
+    mkdirSync(join(root, "group", "alpha"), { recursive: true });
+    const scan = getProjects(root);
+    expect(scan.projects.map((p) => p.dir)).toEqual(["alpha"]);
+    expect(scan.skipped).toBe(0);
+  });
+
+  it("discovers ordinary dot and vendor directories at level two only", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "parent", FULL);
+    writeStatus(root, "parent/.hidden", "---\nstage: spec\n---\n");
+    writeStatus(root, "parent/node_modules", "---\nstage: test\n---\n");
+    const scan = getProjects(root);
+    expect(scan.skipped).toBe(0);
+    const byDir = Object.fromEntries(scan.projects.map((p) => [p.dir, p.path]));
+    expect(Object.keys(byDir).sort()).toEqual([".hidden", "node_modules", "parent"]);
+    expect(byDir.parent).toBeUndefined();
+    expect(byDir[".hidden"]).toBe("parent/.hidden");
+    expect(byDir.node_modules).toBe("parent/node_modules");
+  });
+
+  it("rejects a status file symlink escaping the root without reading it", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    const outside = mkdtempSync(join(tmpdir(), "jax-outside-"));
+    try {
+      writeStatus(outside, "real", FULL);
+      mkdirSync(join(root, "escape", ".jax-os"), { recursive: true });
+      symlinkSync(join(outside, "real", ".jax-os", "status.md"),
+                  join(root, "escape", ".jax-os", "status.md"));
+      const scan = getProjects(root);
+      expect(scan.projects).toEqual([]);
+      expect(scan.skipped).toBe(1);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a .jax-os directory symlink escaping the root", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    const outside = mkdtempSync(join(tmpdir(), "jax-outside-"));
+    try {
+      writeStatus(outside, "real", FULL);
+      mkdirSync(join(root, "escape"), { recursive: true });
+      symlinkSync(join(outside, "real", ".jax-os"), join(root, "escape", ".jax-os"), "dir");
+      const scan = getProjects(root);
+      expect(scan.projects).toEqual([]);
+      expect(scan.skipped).toBe(1);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("counts a nested oversized or malformed status once and keeps siblings", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "good/ok", FULL);
+    writeStatus(root, "good/big", exactCapStatus() + "y");
+    writeStatus(root, "good/bad", "not frontmatter\n");
+    mkdirSync(join(root, "good", "empty"), { recursive: true });
+    const scan = getProjects(root);
+    expect(scan.projects.map((p) => p.path)).toEqual(["good/ok"]);
+    expect(scan.skipped).toBe(2);
+  });
+
+  it("keeps readable siblings when one directory's listing and status are unreadable", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "alpha", FULL);
+    const blocked = join(root, "blocked");
+    mkdirSync(blocked);
+    chmodSync(blocked, 0o000);
+    try {
+      const scan = getProjects(root);
+      expect(scan.projects.map((p) => p.dir)).toEqual(["alpha"]);
+      expect(scan.skipped).toBe(1);
+    } finally {
+      chmodSync(blocked, 0o755);
+    }
+  });
+
+  it("propagates a root listing failure as a source error", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    expect(() => getProjects(join(root, "missing"))).toThrow();
+  });
+
+  it("leaves a noncolliding direct-only scan identical with no path property", () => {
+    root = mkdtempSync(join(tmpdir(), "jax-nested-"));
+    writeStatus(root, "solo", "---\nstage: build\nproject: Solo\nupdated: 2026-07-06T14:30:00-03:00\n---\n");
+    mkdirSync(join(root, "plain"));
+    const scan = getProjects(root);
+    expect(scan.skipped).toBe(0);
+    expect(scan.projects).toHaveLength(1);
+    expect(scan.projects[0]).toEqual({
+      dir: "solo",
+      name: "Solo",
+      stage: "build",
+      gate: null,
+      legacyGateField: false,
+      builder: "",
+      branch: "",
+      tmux: undefined,
+      flag: undefined,
+      archived: false,
+      updated: "2026-07-06T14:30:00-03:00",
+      now: "",
+      residuals: [],
+      statusMtime: expect.any(String),
+    });
+    expect("path" in scan.projects[0]).toBe(false);
   });
 });
 

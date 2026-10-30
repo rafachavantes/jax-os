@@ -1,11 +1,9 @@
 import type Database from "better-sqlite3";
-import { isAbsolute, join } from "node:path";
 import {
   CONTRACT_STATUSES, CONTROL_CHARS_RE, DEFAULT_FORWARD_TYPES, EVENT_MATRIX, HOOK_TELEMETRY_RETENTION_MS, HOOK_TELEMETRY_TYPES_SQL, LIMITS, RUN_KINDS, RUNTIMES, STAGES, paneKey, parseIndexedReply,
   type AnswerRequest, type CapsuleStatus, type ContractStatus, type Delivery, type EventType, type Role, type Stage,
   type WorkflowEventInput, type WorkflowEventRow, type WorkflowQuestionAnswer, type WorkflowQuestionShape,
 } from "../../lib/workflow";
-import { REPOS_ROOT } from "../collectors/projects";
 import { childLogPath, lastStreamTextLine } from "../collectors/child-log";
 import { redactSecrets } from "../collectors/redact";
 import { projectPayload } from "../collectors/workflow-events";
@@ -1405,11 +1403,13 @@ export function getProjectTimeline(db: Database.Database, project: string): HubT
 // module directly (AGENTS.md rule 2). Returns null on any failure or when no reader is injected.
 export type ChildLogTailReader = (path: string) => string | null;
 // Phase 3 (spec §11, round-1 plan review F2): the inverse-canonicalization read, injected the same
-// way. PROJECT-root relative (`/home/rafa/repos/<project>`, e.g. ".local/docs/reports/x.md", never
-// "jax-os/..."). Files URL grammar on main: `filesUrl.ts:14-20,31-44` pass `rel` through as-is;
+// way. The target may be relative (spec/plan) or absolute (report); the resolver owns normalization
+// against the project's DISCOVERED location and canonical containment, so this DB layer never joins
+// a filesystem root or imports files.ts. PROJECT-root relative result (e.g. ".local/docs/reports/x.md",
+// never "jax-os/..."). Files URL grammar on main: `filesUrl.ts:14-20,31-44` pass `rel` through as-is;
 // `files.ts:14,270` resolve `resolveWithin(ROOTS.repos, rel)` — so the Files page's own href is
-// `repos:<project>/<rel>`; Part 2's `LastRunLine` prepends `${project}/` once. Never imports files.ts.
-export type RelToRepos = (project: string, absolutePath: string) => string | null;
+// `repos:<project location>/<rel>`; ProjectCard's artifact links prepend the same location once.
+export type RelToRepos = (project: string, target: string) => string | null;
 
 // spec §6, Decision 5: pure zero-fill fold over one indexed query's rows — 60 one-minute buckets,
 // oldest first, current (possibly partial) minute last. `rows` keys are "YYYY-MM-DDTHH:MM" —
@@ -1648,11 +1648,12 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
   const rawReportPath = typeof p.report_path === "string" && p.report_path.length > 0 ? p.report_path : null;
   const reportRel = rawReportPath && relToRepos ? relToRepos(project, rawReportPath) : null;
   // F3: sp.target is a non-empty bounded string only, never required absolute (e.g. the fixture's
-  // own ".local/docs/specs/x-spec.md"). Normalize against the run's OWN project root FIRST — a
-  // relative target must never resolve against the process cwd — only THEN call relToRepos.
+  // own ".local/docs/specs/x-spec.md"). Pass the RAW target through: the injected resolver owns
+  // normalization against the project's discovered location, so a relative target never resolves
+  // against the process cwd and this DB layer never touches the filesystem.
   const rawTargetForRel = typeof sp.target === "string" && sp.target.length > 0 ? sp.target : null;
-  const absTargetForRel = rawTargetForRel === null ? null : isAbsolute(rawTargetForRel) ? rawTargetForRel : join(REPOS_ROOT, project, rawTargetForRel);
-  const targetRel = (kind === "spec" || kind === "plan") && absTargetForRel && relToRepos ? relToRepos(project, absTargetForRel) : null;
+  const targetRel = (kind === "spec" || kind === "plan") && rawTargetForRel && relToRepos
+    ? relToRepos(project, rawTargetForRel) : null;
 
   return { runId: row.run_id as string, role, kind, runtime, target, finishedAt, outcome, contractStatus, stage, diagnostic, headSha, findings, runtimeModel, profileName, reportRel, targetRel, verifyCommand, buildCommand };
 }

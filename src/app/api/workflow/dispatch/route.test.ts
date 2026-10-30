@@ -110,6 +110,43 @@ describe("POST /api/workflow/dispatch", () => {
     expect(rows()).toEqual([]);
   });
 
+  it("resolves a nested location, and refuses ambiguous/escaping/slash identities before spawn or audit", async () => {
+    const NESTED: Project = { ...P1, dir: "nested", name: "Nested", path: "company/nested" };
+    const nestedScan: ProjectScan = { projects: [NESTED], skipped: 0, reposRoot: REPOS_ROOT };
+    const nested = deps(ok("b7c8d9e0f1a2\n"), { getProjects: () => nestedScan });
+    const res = await handleDispatchPost(post({ ...REVIEW, project: "nested" }), nested.deps);
+    expect(await res.json()).toEqual({ ok: true, data: { run_id: "b7c8d9e0f1a2" } });
+    expect(nested.calls[0].opts.cwd).toBe(`${REPOS_ROOT}/company/nested`);
+    expect(JSON.parse(rows()[0].payload)).toMatchObject({ project: "nested", command: "review" });
+
+    const resolveWithin = vi.fn((base: string, rel: string) => `${base}/${rel}`);
+    const ambiguousScan: ProjectScan = {
+      projects: [{ ...P1, dir: "dup", path: "one/dup" }, { ...P1, dir: "dup", path: "two/dup" }],
+      skipped: 0, reposRoot: REPOS_ROOT,
+    };
+    const ambiguous = deps(ok("x"), { getProjects: () => ambiguousScan, resolveWithin });
+    expect(await (await handleDispatchPost(post({ ...REVIEW, project: "dup" }), ambiguous.deps)).json())
+      .toEqual({ ok: false, error: "unknown-project" });
+    expect(resolveWithin).not.toHaveBeenCalled();
+    expect(ambiguous.calls).toEqual([]);
+
+    const escaped = deps(ok("x"), {
+      getProjects: () => ({ projects: [{ ...P1, dir: "evil", path: "../evil" }], skipped: 0, reposRoot: REPOS_ROOT }),
+      resolveWithin: () => { throw new Error("outside allowlist"); },
+    });
+    expect(await (await handleDispatchPost(post({ ...REVIEW, project: "evil" }), escaped.deps)).json())
+      .toEqual({ ok: false, error: "outside allowlist" });
+    expect(escaped.calls).toEqual([]);
+
+    const slash = vi.fn((base: string, rel: string) => `${base}/${rel}`);
+    const slashDeps = deps(ok("x"), { getProjects: () => nestedScan, resolveWithin: slash });
+    expect(await (await handleDispatchPost(post({ ...REVIEW, project: "company/nested" }), slashDeps.deps)).json())
+      .toEqual({ ok: false, error: "unknown-project" });
+    expect(slash).not.toHaveBeenCalled();
+    expect(slashDeps.calls).toEqual([]);
+    expect(rows()).toHaveLength(1);
+  });
+
   it("refuses a project dir or a document outside the allowlist before any spawn", async () => {
     const escaped = deps(ok("x"), { resolveWithin: () => { throw new Error("outside allowlist"); } });
     expect(await (await handleDispatchPost(post(REVIEW), escaped.deps)).json()).toEqual({ ok: false, error: "outside allowlist" });

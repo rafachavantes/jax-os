@@ -30,7 +30,7 @@ export async function handleWorktreesGet(deps: WorktreesRouteDeps = systemDeps) 
     const now = deps.now();
     const out: Record<string, WorktreeResult> = {};
     for (const p of projects) {
-      const absPath = join(REPOS_ROOT, p.dir);
+      const absPath = join(REPOS_ROOT, p.path ?? p.dir);
       const probe = await deps.probeWorktreePorcelain(absPath);
       if (!probe.ok) {
         out[p.dir] = { ok: false, error: probe.error };

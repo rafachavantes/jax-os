@@ -528,20 +528,80 @@ def _reserve_build_worktree(args, *, run, repo, worktree, base_sha):
     return base_sha
 
 
-def _copy_agents_md(repo, worktree):
-    """Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one. It is
-    gitignored, so `git worktree add` never brings it along, and the handoff points the
-    builder at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too."""
-    # Copy the CONTROL repo's own AGENTS.md into the worktree root, when it has one
-    # (fixes cold review round 2 F2): AGENTS.md is gitignored (`.gitignore:10`), so
-    # `git worktree add` never brings it along, and Part 3's handoff points the builder
-    # at `worktree / "AGENTS.md"`. The copy stays gitignored in the worktree too --
-    # never `git add`ed.
+def _control_agents_tracked(run, repo):
+    return run(["git", "ls-files", "--error-unmatch", "--", "AGENTS.md"],
+               cwd=repo).returncode == 0
+
+
+def _base_sha_for_policy(run, repo, base_sha):
+    if base_sha is not None:
+        return base_sha
+    default_branch = jr._default_branch(repo, run)
+    probe = run(["git", "rev-parse", "--verify", f"{default_branch}^{{commit}}"], cwd=repo)
+    resolved = probe.stdout.strip()
+    if probe.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", resolved):
+        raise Refusal("base-invalid")
+    return resolved
+
+
+def _agents_policy_preflight(run, repo, base_sha):
+    """`(mode, base_sha)` where mode is `absent`, `local-only` or `tracked`. A tracked
+    control AGENTS.md must be clean and byte-identical to the selected base BEFORE the
+    worktree is reserved; the resolved base SHA is returned so reservation can never
+    re-read a moving branch."""
+    control = repo / "AGENTS.md"
+    if not control.exists():
+        return "absent", base_sha
+    if not _control_agents_tracked(run, repo):
+        return "local-only", base_sha
+    base_sha = _base_sha_for_policy(run, repo, base_sha)
+    status = run(["git", "status", "--porcelain", "--untracked-files=no", "--", "AGENTS.md"],
+                 cwd=repo)
+    if status.returncode != 0 or status.stdout.strip():
+        raise jc._refuse("agents-tracked-dirty",
+                         "hint: AGENTS.md is tracked and has uncommitted changes; reconcile it "
+                         "through the project's own workflow before dispatching a build")
+    control_blob = jc._git_read(
+        run, repo, ["git", "hash-object", "--", "AGENTS.md"],
+        shape=r"[0-9a-f]{40}")
+    committed_blob = jc._git_read(
+        run, repo, ["git", "rev-parse", "--verify", f"{base_sha}:AGENTS.md"],
+        shape=r"[0-9a-f]{40}")
+    if control_blob is None or committed_blob != control_blob:
+        raise jc._refuse("agents-tracked-mismatch",
+                         "hint: AGENTS.md differs from the selected base's committed policy; "
+                         "reconcile it through the project's own workflow before dispatching a build")
+    return "tracked", base_sha
+
+
+def _copy_agents_md(repo, worktree, run):
+    """Bring the CONTROL repo's local-only AGENTS.md into the worktree, bytes only, and only
+    when the destination is absent, untracked and effectively ignored. A tracked file the
+    selected base already placed there is never overwritten."""
     control_agents_md = repo / "AGENTS.md"
-    if control_agents_md.is_file():
-        (worktree / "AGENTS.md").write_text(
-            control_agents_md.read_text(encoding="utf-8"), encoding="utf-8",
-        )
+    if not control_agents_md.is_file():
+        return
+    dest = worktree / "AGENTS.md"
+    if dest.exists() or dest.is_symlink():
+        # The selected base brought its own tracked policy; it wins byte-for-byte.
+        if dest.is_symlink() or not dest.is_file() or not _control_agents_tracked(run, worktree):
+            raise jc._refuse("agents-copy-collision",
+                             f"hint: {dest} exists and is not a tracked regular file")
+        return
+    if not _contained(dest.resolve(), worktree.resolve()):
+        raise Refusal("path-outside-allowlist")
+    ignored = run(["git", "check-ignore", "-q", "AGENTS.md"], cwd=str(worktree))
+    if ignored.returncode != 0:
+        raise jc._refuse("agents-copy-not-ignored",
+                         "hint: the local-only AGENTS.md copy would not be ignored in the "
+                         "build worktree; add it to the shared exclude before dispatching")
+    content = control_agents_md.read_bytes()
+    try:
+        fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+    except FileExistsError:
+        raise jc._refuse("agents-copy-collision", f"hint: {dest} appeared during the build")
 
 
 def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
@@ -585,6 +645,9 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
     base_sha = _resolve_explicit_base(args, run, repo)
     whitelist = [p.strip() for p in args.whitelist.split(",") if p.strip()]
     worktree = jc._branch_worktree_path(allowlist_root, project, args.branch, resolve=False)
+    # Read-only policy identity preflight: refuses a dirty/mismatched tracked AGENTS.md
+    # BEFORE the reservation, and pins the exact base SHA when it had to resolve one.
+    agents_mode, base_sha = _agents_policy_preflight(run, repo, base_sha)
 
     base_sha = _reserve_build_worktree(args, run=run, repo=repo, worktree=worktree, base_sha=base_sha)
     # Past this point, `git worktree add` succeeded, so `worktree` is a registered Git
@@ -620,7 +683,8 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
         # gone). The AGENTS.md copy below stays the only control-repo file brought into
         # the worktree.
 
-        _copy_agents_md(repo, worktree)
+        if agents_mode != "tracked":
+            _copy_agents_md(repo, worktree, run)
         caller_pane = env.get("TMUX_PANE")
 
         manifest = _build_manifest_base(
