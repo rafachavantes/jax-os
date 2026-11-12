@@ -5,9 +5,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Clock3, File, FolderGit2, GitBranch, GitPullRequest, Hourglass, MoreHorizontal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
-  answerEventId, artifactRel, cancelAction, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix,
+  answerEventId, artifactRel, cancelAction, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
   stuckLine, gateWaitingLine, heartbeatPath, worstFinding, worstPaneState,
-  type MissionActiveRunSummary, type MissionCard, type MissionPendingQuestion, type MissionState,
+  type MissionActiveRunSummary, type MissionCard, type MissionCardPr, type MissionPendingQuestion, type MissionState,
 } from "@/lib/mission";
 import { postPrefsPatch } from "@/lib/prefsAction";
 import { useGeneralSettings } from "@/lib/settingsQuery";
@@ -375,7 +375,7 @@ export function dispatchValid(f: DispatchFields): boolean {
 const DISPATCH_OPTIONS = ["reviewSpec", "reviewPlan", "reviewDiff", "build"] as const;
 type DispatchOptionUi = (typeof DISPATCH_OPTIONS)[number];
 
-function DispatchForm({ card, busy, onAction }: { card: MissionCard; busy: boolean; onAction: (url: string, body: unknown) => void }) {
+export function DispatchForm({ card, busy, onAction }: { card: MissionCard; busy: boolean; onAction: (url: string, body: unknown) => void }) {
   const t = useTranslations("mission");
   const uid = useId();
   const [f, setF] = useState<DispatchFields>(EMPTY_DISPATCH);
@@ -549,6 +549,24 @@ function RuntimeAvatar({ builder }: { builder: string }) {
   return <span className={`flex h-4 w-4 flex-none items-center justify-center rounded-sm text-[9px] font-bold text-ink ${entry.cls}`}>{entry.letter}</span>;
 }
 
+// The PR + CI line, shared by the plain card footer and the group header (spec §7.1, §12).
+export function PrSummary({ pr, githubEnabled }: { pr: MissionCardPr; githubEnabled: boolean }) {
+  const t = useTranslations("mission");
+  if (!githubEnabled) return null;
+  if (pr.status === "ok" && pr.newest) {
+    return (
+      <span className="flex items-center gap-1.5">
+        <GitPullRequest className="h-3.5 w-3.5" />
+        PR #{pr.newest.number} · {t(`card.ci.${pr.newest.ci}`)}
+        {pr.count > 1 ? ` ${t(pr.truncated ? "prMoreTruncated" : "prMore", { count: pr.count - 1 })}` : ""}
+      </span>
+    );
+  }
+  if (pr.status === "loading" || pr.status === "unknown") return <span className="h-3.5 w-20 animate-pulse rounded bg-surface-2" />;
+  if (pr.status === "error") return <span className="text-warning">{t("prUnavailable")}</span>;
+  return null;
+}
+
 export function ProjectCard({ card, issues, expanded, onToggle }: { card: MissionCard; issues?: number; expanded: boolean; onToggle: () => void }) {
   const t = useTranslations("mission");
   const { data: settings } = useGeneralSettings();
@@ -556,6 +574,15 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
   // behavior — only an explicit ok:true with github off suppresses the PR section.
   const githubEnabled = settings?.ok === true ? settings.data.integrations.github : true;
   const styles = STATE_STYLES[card.headline];
+  const sessionScope = card.scope?.kind === "session" ? card.scope : null;
+  const unlinkedScope = card.scope?.kind === "unlinked";
+  const scoped = card.scope !== undefined;
+  const display = sessionScope ? sessionDisplay(sessionScope) : null;
+  const location = sessionScope
+    ? sessionScope.panes.length > 0
+      ? t("board.location", { session: sessionScope.tmuxSessions.join(", "), pane: sessionScope.panes.join(" ") })
+      : sessionScope.transport === "codex" ? t("codexSession") : null
+    : null;
   const startedMs = card.activeRun?.startedAt ? Date.parse(card.activeRun.startedAt) : NaN;
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -583,7 +610,7 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
   }
 
   return (
-    <div className={`relative flex min-w-0 w-full flex-col gap-2.5 rounded-lg border bg-surface px-5 py-[18px] ${BORDER_CLASS[card.headline]}`}>
+    <div className={`relative flex min-w-0 w-full flex-col gap-2.5 rounded-lg border bg-surface px-5 py-[18px] ${BORDER_CLASS[card.headline]}${unlinkedScope ? " border-dashed" : ""}`}>
       {/* header — clicking the expand toggle expands the card in place (§2.3), no navigation.
           F4 (diff review): the toggle is its own <button>, a sibling of the "···" menu's
           buttons — not their ancestor — so no interactive control ever nests inside another.
@@ -592,33 +619,70 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
           the "···" menu trigger + chevron, all inline. Row 2: stage word + pipeline dots +
           status pill, inline on one line (data-testid="card-stage-row") — no more dedicated
           row for the pill (round 1's `card-status-row`, dropped after visual review). */}
-      <div data-testid="card-header-row" className="flex min-w-0 items-center gap-3 text-left">
-        <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-          <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-brand-soft text-brand">
-            <FolderGit2 className="h-[18px] w-[18px]" />
-          </span>
-          <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">{card.name}</span>
-          {card.flag ? (
-            <span className="flex-none rounded-full border border-brand-soft-border bg-brand-soft px-[7px] py-0.5 text-[10px] font-bold uppercase tracking-[.06em] text-brand">
-              {card.flag}
+      {sessionScope ? (
+        <div data-testid="card-header-row" className="flex min-w-0 items-center gap-3 text-left">
+          <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+            <RuntimeAvatar builder={sessionScope.transport === "codex" ? "codex" : sessionScope.runtime} />
+            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">
+              {display!.kind === "name" ? (
+                <>
+                  {display!.text}
+                  {sessionScope.sessionId ? <span className="ml-1.5 font-mono text-[10.5px] font-normal text-muted" title={sessionScope.sessionId}>{sessionScope.sessionId.slice(0, 8)}</span> : null}
+                </>
+              ) : display!.kind === "short" ? (
+                <span className="font-mono" title={sessionScope.sessionId ?? undefined}>{display!.text}</span>
+              ) : t("board.newSession")}
             </span>
-          ) : null}
-        </button>
-        <PrefsButtons dir={card.dir} prefs={card.prefs} visibility={card.visibility} />
-        {expanded ? <ChevronDown className="h-4 w-4 flex-none text-muted" /> : <ChevronRight className="h-4 w-4 flex-none text-muted" />}
-      </div>
-      <div data-testid="card-stage-row" className="flex flex-wrap items-center gap-1.5">
-        <span className="rounded-full border border-line px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-muted">{t(`stages.${card.stage}`)}</span>
-        <div className="flex items-center gap-1.5" aria-hidden>
-          {PIPELINE_STAGES.map((s, i) => (
-            <span
-              key={s}
-              // round-2 F2: dedicated test marker — `bg-brand-soft` (the flag pill above) also matches a `/bg-brand/` substring regex.
-              data-active={i === stageDotIndex(card.stage) ? "true" : undefined}
-              className={`h-1.5 w-1.5 rounded-full ${i === stageDotIndex(card.stage) ? "bg-brand" : "bg-surface-3"}`}
-            />
-          ))}
+            {location ? <span className="flex-none truncate font-mono text-[11px] font-normal text-muted">{location}</span> : null}
+          </button>
+          {expanded ? <ChevronDown className="h-4 w-4 flex-none text-muted" /> : <ChevronRight className="h-4 w-4 flex-none text-muted" />}
         </div>
+      ) : unlinkedScope ? (
+        <div data-testid="card-header-row" className="flex min-w-0 items-center gap-3 text-left">
+          <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+            <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-dashed border-line text-muted">
+              <Hourglass className="h-[18px] w-[18px]" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[15px] font-semibold text-ink">{t("board.unlinkedTitle")}</span>
+              <span className="truncate text-[11px] text-muted">{t("board.unlinkedHint")}</span>
+            </span>
+          </button>
+          {expanded ? <ChevronDown className="h-4 w-4 flex-none text-muted" /> : <ChevronRight className="h-4 w-4 flex-none text-muted" />}
+        </div>
+      ) : (
+        <div data-testid="card-header-row" className="flex min-w-0 items-center gap-3 text-left">
+          <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+            <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-brand-soft text-brand">
+              <FolderGit2 className="h-[18px] w-[18px]" />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">{card.name}</span>
+            {card.flag ? (
+              <span className="flex-none rounded-full border border-brand-soft-border bg-brand-soft px-[7px] py-0.5 text-[10px] font-bold uppercase tracking-[.06em] text-brand">
+                {card.flag}
+              </span>
+            ) : null}
+          </button>
+          <PrefsButtons dir={card.dir} prefs={card.prefs} visibility={card.visibility} />
+          {expanded ? <ChevronDown className="h-4 w-4 flex-none text-muted" /> : <ChevronRight className="h-4 w-4 flex-none text-muted" />}
+        </div>
+      )}
+      <div data-testid="card-stage-row" className="flex flex-wrap items-center gap-1.5">
+        {!scoped || card.sessionStatus ? (
+          <>
+            <span className="rounded-full border border-line px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-muted">{t(`stages.${card.stage}`)}</span>
+            <div className="flex items-center gap-1.5" aria-hidden>
+              {PIPELINE_STAGES.map((s, i) => (
+                <span
+                  key={s}
+                  // round-2 F2: dedicated test marker — `bg-brand-soft` (the flag pill above) also matches a `/bg-brand/` substring regex.
+                  data-active={i === stageDotIndex(card.stage) ? "true" : undefined}
+                  className={`h-1.5 w-1.5 rounded-full ${i === stageDotIndex(card.stage) ? "bg-brand" : "bg-surface-3"}`}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
         {/* T1: the pill can be as narrow as its container demands (min-w-0/max-w-full) — a
             long "trabalhando · subagente ×1 · 0 min" line truncates inside it instead of
             overflowing the card; `flex-wrap` on the row above lets the whole pill drop to its
@@ -631,6 +695,15 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
             {pillSuffix.minutes !== null ? t("pill.elapsed", { minutes: pillSuffix.minutes }) : null}
           </span>
         </span>
+        {scoped && card.sessionStatus?.branch ? (
+          <span className="flex min-w-0 items-center gap-1 text-[11.5px] text-muted">
+            <GitBranch className="h-3.5 w-3.5 flex-none" aria-hidden />
+            <span className="truncate">{card.sessionStatus.branch}</span>
+          </span>
+        ) : null}
+        {scoped && card.sessionStatus?.now ? (
+          <span className="min-w-0 truncate text-[11.5px] italic text-body-ink">&ldquo;{card.sessionStatus.now}&rdquo;</span>
+        ) : null}
       </div>
 
       {/* MOA-486 round 2: no icon-column indent below the header — body rows use the card's
@@ -647,7 +720,7 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
         </div>
       ) : null}
 
-      {card.legacyGateField ? <span className="text-[11px] italic text-muted">{t("legacyGateHint")}</span> : null}
+      {card.legacyGateField && !scoped ? <span className="text-[11px] italic text-muted">{t("legacyGateHint")}</span> : null}
 
       {card.activeRun ? (
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
@@ -677,26 +750,21 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
         </div>
       ) : null}
       <div className="flex flex-col gap-1.5">
-        <SessionLines sessions={liveSessions(card.sessions)} activeRuns={card.activeRuns} builder={card.builder} />
-        <LastLine card={card} />
+        {!scoped ? (
+          <>
+            <SessionLines sessions={liveSessions(card.sessions)} activeRuns={card.activeRuns} builder={card.builder} />
+            <LastLine card={card} />
+          </>
+        ) : null}
+        {unlinkedScope ? (card.activeRuns ?? []).map((run) => <ActiveRunLine key={run.runId} run={run} />) : null}
       </div>
 
-      <div className="flex flex-wrap items-center gap-4 border-t border-line-subtle pt-[13px] text-xs text-muted">
+      {!scoped ? (<div className="flex flex-wrap items-center gap-4 border-t border-line-subtle pt-[13px] text-xs text-muted">
         {card.builder ? <span className="flex items-center gap-1"><RuntimeAvatar builder={card.builder} />{card.builder}</span> : null}
         {card.branch ? <span className="flex items-center gap-1"><GitBranch className="h-3.5 w-3.5" aria-hidden />{card.branch}</span> : null}
         {typeof issues === "number" ? <span>{t("projects.issueCount", { count: issues })}</span> : null}
-        {!githubEnabled ? null : card.pr.status === "ok" && card.pr.newest ? (
-          <span className="flex items-center gap-1.5">
-            <GitPullRequest className="h-3.5 w-3.5" />
-            PR #{card.pr.newest.number} · {t(`card.ci.${card.pr.newest.ci}`)}
-            {card.pr.count > 1 ? ` ${t(card.pr.truncated ? "prMoreTruncated" : "prMore", { count: card.pr.count - 1 })}` : ""}
-          </span>
-        ) : card.pr.status === "loading" || card.pr.status === "unknown" ? (
-          <span className="h-3.5 w-20 animate-pulse rounded bg-surface-2" />
-        ) : card.pr.status === "error" ? (
-          <span className="text-warning">{t("prUnavailable")}</span>
-        ) : null}
-      </div>
+        <PrSummary pr={card.pr} githubEnabled={githubEnabled} />
+      </div>) : null}
 
       <ActionRow card={card} action={action} busy={busy} answered={answered} expanded={expanded} onExpand={onToggle} onAction={runAction} />
       {actionError ? <p className="text-[11.5px] text-danger">{t("actions.actionFailed", { error: actionError })}</p> : null}
@@ -925,10 +993,13 @@ function ExpandedCard({
   card, action, busy, onAction,
 }: { card: MissionCard; action: PendingUiAction; busy: boolean; onAction: (url: string, body: unknown) => void }) {
   const t = useTranslations("mission");
+  const scoped = card.scope !== undefined;
+  const unlinked = card.scope?.kind === "unlinked";
 
   return (
     <div className="flex flex-col gap-4 border-t border-line-subtle pt-[15px]">
-      <LastRecord card={card} />
+      {!scoped ? <LastRecord card={card} /> : null}
+      {unlinked ? null : (
       <section className="flex flex-col gap-2">
         <h3 className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("expanded.sessions")}</h3>
         {!card.hubReady ? (
@@ -991,6 +1062,7 @@ function ExpandedCard({
           </>
         )}
       </section>
+      )}
 
       <section className="flex flex-col gap-2">
         <h3 className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("expanded.pendingQuestion")}</h3>
@@ -1029,11 +1101,11 @@ function ExpandedCard({
         )}
       </section>
 
-      {(card.headline === "idle" || card.headline === "stuck") ? <DispatchForm card={card} busy={busy} onAction={onAction} /> : null}
+      {!scoped && (card.headline === "idle" || card.headline === "stuck") ? <DispatchForm card={card} busy={busy} onAction={onAction} /> : null}
 
       <section className="flex flex-col gap-1.5">
         <h3 className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("expanded.timeline")}</h3>
-        {card.loopSummary && (card.loopSummary.buildCount > 0 || card.loopSummary.diffCount > 0 || card.loopSummary.specCount > 0 || card.loopSummary.planCount > 0) ? (
+        {!scoped && card.loopSummary && (card.loopSummary.buildCount > 0 || card.loopSummary.diffCount > 0 || card.loopSummary.specCount > 0 || card.loopSummary.planCount > 0) ? (
           <span className="text-[11px] text-muted">
             {t("expanded.loopSummary", { specCount: card.loopSummary.specCount, planCount: card.loopSummary.planCount,
               buildCount: card.loopSummary.buildCount, diffCount: card.loopSummary.diffCount, rounds: card.loopSummary.rounds })}
@@ -1060,19 +1132,21 @@ function ExpandedCard({
         )}
       </section>
 
-      <section className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-2">
-          <h3 className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("expanded.residuals")}</h3>
-          {card.residuals.length > 0 ? <span className="text-[11px] text-muted">{card.residuals.length}</span> : null}
-        </div>
-        {card.residuals.length === 0 ? (
-          <span className="text-[12.5px] text-muted">{t("expanded.noResiduals")}</span>
-        ) : (
-          <ul className="flex flex-col gap-1 text-[12.5px] text-body-ink">
-            {card.residuals.map((r, i) => <li key={i}>• {r}</li>)}
-          </ul>
-        )}
-      </section>
+      {!scoped ? (
+        <section className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <h3 className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("expanded.residuals")}</h3>
+            {card.residuals.length > 0 ? <span className="text-[11px] text-muted">{card.residuals.length}</span> : null}
+          </div>
+          {card.residuals.length === 0 ? (
+            <span className="text-[12.5px] text-muted">{t("expanded.noResiduals")}</span>
+          ) : (
+            <ul className="flex flex-col gap-1 text-[12.5px] text-body-ink">
+              {card.residuals.map((r, i) => <li key={i}>• {r}</li>)}
+            </ul>
+          )}
+        </section>
+      ) : null}
 
       {typeof card.retainedWorktrees === "number" && card.retainedWorktrees > 0 ? (
         <section className="flex flex-col gap-1.5">

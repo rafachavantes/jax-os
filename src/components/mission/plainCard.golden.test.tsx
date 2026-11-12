@@ -30,7 +30,7 @@ function baseCard(over: Partial<MissionCard> = {}): MissionCard {
 }
 
 const pane = (over: Partial<MissionPane> & { pane: string }): MissionPane => ({
-  pane: over.pane, tmuxIncarnation: "100:1000", session: "jax-os", role: "lead", live: true,
+  tmuxIncarnation: "100:1000", session: "jax-os", role: "lead", live: true,
   state: "idle", lastEventTs: null, pendingQuestion: null, capsuleStatus: null, capsuleMinutes: null,
   capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, subagentCount: 0,
   capsuleEventId: null, tmuxSession: "jax-os", ...over,
@@ -67,7 +67,7 @@ const fixtures: { name: string; card: MissionCard; expanded: boolean }[] = [
     expanded: true,
     card: baseCard({
       residuals: ["finish the docs", "rotate the token"], retainedWorktrees: 2,
-      loopSummary: { specCount: 1, planCount: 1, buildCount: 2, diffCount: 1, rounds: 2, wallDays: 1 },
+      loopSummary: { specCount: 1, planCount: 1, buildCount: 2, diffCount: 1, rounds: 2, approved: true, wallDays: 1 },
     }),
   },
 ];
@@ -82,6 +82,17 @@ describe("plain card golden markup (recorded on UNCHANGED code)", () => {
       await expect(html).toMatchFileSnapshot(`./__golden__/${f.name}.html`);
     });
   }
+
+  it("a plain card carrying a seat key renders identically", async () => {
+    for (const f of fixtures) {
+      const html = renderToStaticMarkup(createElement(ProjectCard, {
+        card: { ...f.card, key: "alpha#session:00000000-0000-0000-0000-000000000000" },
+        issues: 2, expanded: f.expanded, onToggle: () => {},
+      }));
+      expect(html).not.toContain("data-card-key");
+      await expect(html).toMatchFileSnapshot(`./__golden__/${f.name}.html`);
+    }
+  });
 
   it("inbox-gate: a gate row and a question row render byte-identically", async () => {
     const gateCard = baseCard({

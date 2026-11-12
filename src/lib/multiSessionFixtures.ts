@@ -120,6 +120,7 @@ export function missionOf(
     prs?: Record<string, PrResult>;
     codexSource?: "ok" | "failed" | "truncated" | "absent";
     hubOk?: boolean;
+    prefs?: Record<string, { pinned: boolean; hiddenAt: string | null }>;
   } = {},
 ): Mission {
   const projects = opts.projects ?? Object.keys(hp).map((dir) => mkProject({ dir }));
@@ -129,7 +130,7 @@ export function missionOf(
         ok: true,
         data: {
           byProject: hp, historicalTruncated: false, codexSource: opts.codexSource ?? "ok", tmuxSource: "ok",
-          prefs: {}, settings: { archiveAfterDays: 14 },
+          prefs: opts.prefs ?? {}, settings: { archiveAfterDays: 14 },
         },
       };
   const prs: Envelope<Record<string, PrResult>> | undefined = opts.prs ? { ok: true, data: opts.prs } : undefined;
