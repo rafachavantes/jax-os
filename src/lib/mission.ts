@@ -294,6 +294,17 @@ export function boardCardKeyFor(card: MissionCard, eventId: number | null | unde
   return owner ? cardKey(owner) : null;
 }
 
+// Inbox attention-row Respond target: boardCardKeyFor, but null when the holding pane/session's
+// capsule can no longer receive an answer (spec §8.3) — the card shows the reason instead.
+export function attentionRespondTarget(card: MissionCard, eventId: number | null | undefined): string | null {
+  const key = boardCardKeyFor(card, eventId);
+  if (key === null) return null;
+  const unanswerable = (card.group?.cards ?? [card]).some((c) => c.sessions.some((s) =>
+    s.transport === "tmux" ? s.panes.some((p) => p.capsuleEventId === eventId && p.capsuleAnswerable === false)
+      : s.capsuleEventId === eventId && s.capsuleAnswerable === false));
+  return unanswerable ? null : key;
+}
+
 export type InboxRow =
   | { kind: "gate"; dir: string; name: string; gate: "awaiting-approval" | "blocked"; updated: string }
   | { kind: "question"; dir: string; name: string; pane: string; eventId: number; question: string; answerable?: false }
@@ -401,6 +412,7 @@ export type MosaicPaneAction =
   | { kind: "options"; pendingQuestion: MissionPendingQuestion }
   | { kind: "unanswerable"; pendingQuestion: MissionPendingQuestion }
   | { kind: "respond" }
+  | { kind: "capsule-unanswerable" }
   | { kind: "open-pane"; capsuleEventId: number | null }
   | { kind: "none" };
 
@@ -414,7 +426,7 @@ export type MosaicPaneAction =
 // result (round-2 review F1) because that is the event the blocked-permission action targets —
 // Part 2's "abrir pane"/detail link needs it, and reading it straight off `pane` (never through
 // `pendingUiAction`) keeps this function pane-scoped by construction.
-export function mosaicPaneAction(pane: Pick<MissionPane, "pendingQuestion" | "capsuleStatus" | "capsuleEventId">): MosaicPaneAction {
+export function mosaicPaneAction(pane: Pick<MissionPane, "pendingQuestion" | "capsuleStatus" | "capsuleEventId" | "capsuleAnswerable">): MosaicPaneAction {
   const pq = pane.pendingQuestion;
   if (pq !== null) {
     // Asked by an earlier conversation in this pane: same reason, no controls (spec §8.3).
@@ -424,7 +436,7 @@ export function mosaicPaneAction(pane: Pick<MissionPane, "pendingQuestion" | "ca
       && typeof q0.question === "string" && q0.question.trim().length > 0;
     return singleSimple ? { kind: "options", pendingQuestion: pq } : { kind: "respond" };
   }
-  if (pane.capsuleStatus === "needs_input") return { kind: "respond" };
+  if (pane.capsuleStatus === "needs_input") return pane.capsuleAnswerable === false ? { kind: "capsule-unanswerable" } : { kind: "respond" };
   if (pane.capsuleStatus === "blocked") return { kind: "open-pane", capsuleEventId: pane.capsuleEventId };
   return { kind: "none" };
 }

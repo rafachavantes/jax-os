@@ -93,6 +93,7 @@ function MosaicActionArea({
       </button>
     );
   }
+  if (action.kind === "capsule-unanswerable") return <span data-testid="mosaic-capsule-unanswerable" className="text-[11px] text-danger">{t("actions.answerUnreachable")}</span>;
   if (action.kind === "open-pane") return <span className="text-[11px] text-muted">{t("inbox.blocked")}</span>;
   return null; // kind === "none"
 }

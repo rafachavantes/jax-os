@@ -126,6 +126,8 @@ export function MosaicCellDetail({ card, pane, session, lines, busy, onAction, o
                 ) : null}
                 {controlError ? <span className="text-[11px] text-danger">{controlError}</span> : null}
               </div>
+            ) : action.kind === "capsule-unanswerable" ? (
+              <span data-testid="mosaic-capsule-unanswerable" className="text-[12.5px] text-danger">{tMission("actions.answerUnreachable")}</span>
             ) : action.kind === "open-pane" ? (
               <span className="text-[12.5px] text-muted">{tMission("inbox.blocked")}</span>
             ) : null}

@@ -105,4 +105,45 @@ describe("stale-answer agreement across card, inbox and Mosaic (spec §8.3)", ()
     const posted = { event_id: live.eventId, reply: composeIndexedReply(live, [[1]]) };
     expect(posted).toEqual({ event_id: 78, reply: "1: 1" });
   });
+
+  describe("capsule without a structured question (review F1)", () => {
+    const capCard = (answerable: boolean): MissionCard => {
+      const p = pane({ pane: "%9", capsuleStatus: "needs_input", capsuleEventId: 5, capsuleAnswerable: answerable });
+      return { ...card, pendingQuestions: [], sessions: [{ transport: "tmux", session: "s1", panes: [p] }] };
+    };
+    const render = (answerable: boolean) => {
+      const c = capCard(answerable);
+      const pn = (c.sessions[0] as Extract<MissionCard["sessions"][number], { transport: "tmux" }>).panes[0];
+      return {
+        mosaic: renderToStaticMarkup(createElement(Mosaic, {
+          readiness: { kind: "ready" }, cards: [c], panesTail: null, busy: false,
+          onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
+        })),
+        detail: renderToStaticMarkup(createElement(MosaicCellDetail, {
+          card: c, pane: pn, session: "s1", lines: null, busy: false, onAction: () => {}, onClose: () => {},
+        })),
+        inbox: renderToStaticMarkup(createElement(InboxStrip, {
+          mission: { ...mission, model: { ...mission.model, cards: [c], inbox: [{ kind: "attention" as const, dir: "p", name: "p", status: "needs_input" as const, transport: "tmux" as const, pane: "%9", tmuxIncarnation: "1:1", capsuleEventId: 5 }] } },
+          onExpand: () => {},
+        })),
+      };
+    };
+
+    it("unanswerable: reason everywhere, no Respond, no reply input", () => {
+      const r = render(false);
+      expect(r.mosaic.split("actions.answerUnreachable").length - 1).toBe(2); // desktop + mobile lists
+      expect(r.mosaic).not.toContain("actions.respond");
+      expect(r.detail).toContain("actions.answerUnreachable");
+      expect(r.detail).not.toContain("actions.freeformPlaceholder");
+      expect(r.detail).not.toContain("actions.submit");
+      expect(r.inbox).not.toContain("actions.respond");
+    });
+
+    it("answerable: Respond stays on every surface", () => {
+      const r = render(true);
+      expect(r.mosaic).toContain("actions.respond");
+      expect(r.detail).toContain("actions.freeformPlaceholder");
+      expect(r.inbox).toContain("actions.respond");
+    });
+  });
 });

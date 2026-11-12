@@ -89,3 +89,19 @@ describe("unanswerable pane questions (multi-session cards spec §8.3)", () => {
     expect(selectSpotlightPane(mosaicGroups([cardWithStale]))).toBeNull();
   });
 });
+
+describe("unanswerable capsules (review F1)", () => {
+  const needs = (answerable: boolean) => pane({ capsuleStatus: "needs_input", capsuleEventId: 5, capsuleAnswerable: answerable });
+
+  it("a needs_input capsule that can no longer be answered is not a respond action", () => {
+    expect(mosaicPaneAction(needs(false)).kind).not.toBe("respond");
+    expect(mosaicPaneAction(needs(true)).kind).toBe("respond");
+  });
+
+  it("the spotlight skips it, but still picks the answerable one", () => {
+    const only = card({ sessions: [{ transport: "tmux", session: "s1", panes: [needs(false)] }] });
+    expect(selectSpotlightPane(mosaicGroups([only]))).toBeNull();
+    const both = card({ sessions: [{ transport: "tmux", session: "s1", panes: [{ ...needs(false), pane: "%1" }, { ...needs(true), pane: "%2" }] }] });
+    expect(selectSpotlightPane(mosaicGroups([both]))?.pane.pane).toBe("%2");
+  });
+});

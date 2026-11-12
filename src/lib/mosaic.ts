@@ -35,7 +35,8 @@ export function selectSpotlightPane(groups: MosaicGroup[]): MosaicSpotlight {
   for (const g of groups) {
     for (const p of g.panes) {
       // A question this pane can no longer answer is never the spotlight (spec §8.3).
-      if (mosaicPaneAction(p).kind === "unanswerable") continue;
+      const kind = mosaicPaneAction(p).kind;
+      if (kind === "unanswerable" || kind === "capsule-unanswerable") continue;
       const state = mosaicPaneState(p);
       if (state === "waiting-for-input" || state === "blocked-permission") return { dir: g.dir, pane: p };
     }

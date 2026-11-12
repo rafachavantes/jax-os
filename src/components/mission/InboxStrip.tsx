@@ -2,7 +2,7 @@
 
 import { AlertCircle, Flag, GitPullRequest, HelpCircle } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { answerEventId, boardCardKeyFor, cancelAction, cardKey, confirmCancel, postWorkflowAction, sessionDisplay, stripPresentation, stuckBoardCards, type InboxRow, type Mission, type MissionCard } from "@/lib/mission";
+import { answerEventId, attentionRespondTarget, boardCardKeyFor, cancelAction, cardKey, confirmCancel, postWorkflowAction, sessionDisplay, stripPresentation, stuckBoardCards, type InboxRow, type Mission, type MissionCard } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "./SourceWarning";
 import { actionEventId, bareCapsuleStatus, CancelDialog, pendingUiAction, PendingActionButtons } from "./ProjectCard";
@@ -153,7 +153,7 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
     // CARD, with nothing in the strip at all — this row is that same signal, at the same place
     // every other "waiting on you" item lives. MOA-469 §4 adds the native Codex variant: a native
     // session needing attention has no pane and therefore no tmux action.
-    const respondKey = card ? boardCardKeyFor(card, row.capsuleEventId) : null;
+    const respondKey = card ? attentionRespondTarget(card, row.capsuleEventId) : null;
     const respond = respondKey !== null ? (
       <button type="button" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink"
         onClick={() => expandAndScroll(respondKey, onExpand)}>
