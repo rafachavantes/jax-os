@@ -372,3 +372,150 @@ describe("scoped reads", () => {
     db.close();
   });
 });
+
+function seedTwoSessions(target: Db): void {
+  upsertSession(target, { project: P, session: "acme-lead", pane: "%1", role: "lead", tmux_incarnation: INC }, at(0));
+  upsertSession(target, { project: P, session: "acme-lead", pane: "%2", role: "lead", tmux_incarnation: INC }, at(0));
+  insertEvent(target, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+  insertEvent(target, claude(B, "%2", "turn-started", "claude-userprompt"), at(2));
+}
+const NO_CODEX: CodexSnapshot = { ok: false, ts: "", error: "codex runtime unavailable" };
+const codexThread = (threadId: string): CodexSnapshot => ({
+  ok: true, ts: new Date(NOW).toISOString(), truncated: false,
+  threads: [{ threadId, cwd: "/repos/acme", owner: P, source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+});
+
+describe("session seats", () => {
+  it("gives two agents in different panes of one tmux session one seat each", () => {
+    seedTwoSessions(db);
+    const split = hubOf(db).byProject[P].split!;
+    expect(split.seats.map((s) => s.sessionId)).toEqual([A, B]);
+    expect(split.seats.map((s) => s.panes)).toEqual([[{ pane: "%1", tmuxIncarnation: INC }], [{ pane: "%2", tmuxIncarnation: INC }]]);
+    db.close();
+  });
+
+  it("gives one session visible in two panes a single seat", () => {
+    seedTwoSessions(db);
+    insertEvent(db, claude(A, "%3", "tool-used", "claude-toolused", { tool: "Read" }), at(3));
+    const live = { ...LIVE, paneIds: new Set(["%1", "%2", "%3"]) };
+    const split = getHubData(db, live, {}, CODEX, NOW).byProject[P].split!;
+    expect(split.seats.map((s) => s.sessionId)).toEqual([A, B]);
+    expect(split.seats[0].panes.map((p) => p.pane).sort()).toEqual(["%1", "%3"]);
+    db.close();
+  });
+
+  it("keeps one seat when a Codex thread id equals a tmux seat's session; tmux supplies the location", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, { run_id: null, project: P, role: "lead", type: "turn-started", source: "deterministic",
+      emitter: "codex-userprompt", payload: {}, pane: null, tmux_incarnation: null, harness_session: A }, at(2));
+    const split = getHubData(db, LIVE, {}, codexThread(A), NOW).byProject[P].split!;
+    expect(split.seats).toHaveLength(1);
+    expect(split.seats[0]).toMatchObject({ sessionId: A, transport: "tmux" });
+    expect(split.seats[0].panes.length).toBeGreaterThan(0);
+    db.close();
+  });
+
+  it("mixes Claude tmux seats with Codex-only seats", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, codex("turn-started", "codex-userprompt"), at(2));
+    const split = hubOf(db).byProject[P].split!;
+    expect(split.seats.map((s) => [s.sessionId, s.transport])).toEqual([[A, "tmux"], [C, "codex"]]);
+    expect(split.seats[1].panes).toEqual([]);
+    db.close();
+  });
+
+  it("makes a live pane with no recorded session its own empty seat", () => {
+    upsertSession(db, { project: P, session: "acme-lead", pane: "%5", role: "lead", tmux_incarnation: INC }, at(0));
+    const split = hubOf(db).byProject[P].split!;
+    expect(split.seats).toHaveLength(1);
+    expect(split.seats[0]).toMatchObject({ sessionId: null, transport: "tmux", panes: [{ pane: "%5" }] });
+    expect(split.seats[0].activity.timeline).toEqual([]);
+    expect(split.seats[0].activity.activeRuns).toEqual([]);
+    db.close();
+  });
+
+  it("with the Codex source unavailable, a closed session's in-flight run lands on the unlinked card", () => {
+    insertEvent(db, claude(D, "%3", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, runStarted("run-d", "builder", "build", "claude", D, "feat/d"), at(2));
+    const liveEmpty: LiveSnapshot = { paneIds: new Set(), incarnation: INC, paneCommands: new Map() };
+    const split = getHubData(db, liveEmpty, {}, NO_CODEX, NOW).byProject[P].split!;
+    expect(split.seats).toEqual([]);
+    expect(split.unlinked.activeRuns.map((r) => r.runId)).toEqual(["run-d"]);
+    db.close();
+  });
+
+  it("with the Codex source unavailable, a session that is also a live tmux seat keeps its owned runs", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, runStarted("run-a", "builder", "build", "claude", A, "feat/a"), at(2));
+    const split = getHubData(db, LIVE, {}, NO_CODEX, NOW).byProject[P].split!;
+    expect(split.seats.map((s) => s.sessionId)).toEqual([A]);
+    expect(split.seats[0].activity.activeRuns.map((r) => r.runId)).toEqual(["run-a"]);
+    db.close();
+  });
+
+  it("never reorders or re-attributes seats when activity order changes", () => {
+    seedTwoSessions(db);
+    insertEvent(db, runStarted("run-a", "builder", "build", "claude", A, "feat/a"), at(3));
+    insertEvent(db, runStarted("run-b", "builder", "build", "claude", B, "feat/b"), at(4));
+    const before = hubOf(db).byProject[P].split!;
+    insertEvent(db, claude(B, "%2", "tool-used", "claude-toolused", { tool: "Edit" }), at(5));
+    insertEvent(db, claude(A, "%1", "tool-used", "claude-toolused", { tool: "Read" }), at(6));
+    const after = hubOf(db, NOW + 60_000).byProject[P].split!;
+    const shape = (split: NonNullable<typeof before>) => split.seats.map((s) => [s.sessionId, s.panes.map((p) => p.pane), s.activity.activeRuns.map((r) => r.runId)]);
+    expect(shape(after)).toEqual(shape(before));
+    expect(after.seats.map((s) => s.sessionId)).toEqual([A, B]);
+    db.close();
+  });
+
+  it("keeps a closed session's run unlinked and returns it to its seat when the session reopens", () => {
+    seedTwoSessions(db);
+    insertEvent(db, runStarted("run-b-build", "builder", "build", "claude", B, "feat/b"), at(3));
+    const openSplit = hubOf(db).byProject[P].split!;
+    expect(openSplit.seats.find((s) => s.sessionId === B)!.activity.activeRuns.map((r) => r.runId)).toEqual(["run-b-build"]);
+    expect(openSplit.unlinked.activeRuns).toEqual([]);
+
+    const withoutB: LiveSnapshot = { ...LIVE, paneIds: new Set(["%1"]) };
+    const closedSplit = getHubData(db, withoutB, {}, CODEX, NOW).byProject[P].split!;
+    expect(closedSplit.seats.map((s) => s.sessionId)).toEqual([A]);
+    expect(closedSplit.unlinked.activeRuns.map((r) => r.runId)).toEqual(["run-b-build"]);
+
+    const none: LiveSnapshot = { paneIds: new Set(), incarnation: INC, paneCommands: new Map() };
+    const noSeatSplit = getHubData(db, none, {}, CODEX, NOW).byProject[P].split!;
+    expect(noSeatSplit.seats).toEqual([]);
+    expect(noSeatSplit.unlinked.activeRuns.map((r) => r.runId)).toEqual(["run-b-build"]);
+
+    const reopened = hubOf(db).byProject[P].split!;
+    expect(reopened.seats.find((s) => s.sessionId === B)!.activity.activeRuns.map((r) => r.runId)).toEqual(["run-b-build"]);
+    expect(reopened.unlinked.activeRuns).toEqual([]);
+    db.close();
+  });
+
+  it("is present only when there are seats or in-flight unlinked runs", () => {
+    insertEvent(db, claude(D, "%3", "turn-stopped", "claude-stop", { capsule_status: "done" }), at(1));
+    expect(hubOf(db).byProject[P].split).toBeUndefined();
+    upsertSession(db, { project: P, session: "acme-lead", pane: "%5", role: "lead", tmux_incarnation: INC }, at(0));
+    expect(hubOf(db).byProject[P].split?.seats).toHaveLength(1);
+    db.close();
+  });
+
+  it("scopes each seat's runs, heartbeat, last action and newest timestamp, and unlinked keeps the rest", () => {
+    seedTwoSessions(db);
+    insertEvent(db, runStarted("run-a", "builder", "build", "claude", A, "feat/a"), at(3));
+    insertEvent(db, runStarted("run-b", "builder", "build", "claude", B, "feat/b"), at(4));
+    insertEvent(db, runStarted("run-d", "builder", "build", "claude", D, "feat/d"), at(5)); // D closed
+    insertEvent(db, runStarted("run-j", "builder", "build", "jaxos", "jaxos", "feat/j"), at(6));
+    insertEvent(db, claude(A, "%1", "tool-used", "claude-toolused", { tool: "Read" }), at(T0 ? 18 : 18));
+    insertEvent(db, claude(B, "%2", "tool-used", "claude-toolused", { tool: "Bash" }), at(15));
+    const split = getHubData(db, LIVE, {}, CODEX, NOW + 120_000).byProject[P].split!;
+    const seat = (id: string) => split.seats.find((s) => s.sessionId === id)!;
+    expect(seat(A).activity.activeRuns.map((r) => r.runId)).toEqual(["run-a"]);
+    expect(seat(B).activity.activeRuns.map((r) => r.runId)).toEqual(["run-b"]);
+    expect(split.unlinked.activeRuns.map((r) => r.runId).sort()).toEqual(["run-d", "run-j"]);
+    expect(seat(A).activity.lastAction?.tool).toBe("Read");
+    expect(seat(B).activity.lastAction?.tool).toBe("Bash");
+    expect(seat(A).activity.heartbeat.reduce((a, b) => a + b, 0)).toBe(3); // turn-started + run-started + tool-used
+    expect(seat(B).activity.heartbeat.reduce((a, b) => a + b, 0)).toBe(3);
+    expect(seat(A).activity.newestEventTs! > seat(B).activity.newestEventTs!).toBe(true);
+    db.close();
+  });
+});

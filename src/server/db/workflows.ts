@@ -1014,6 +1014,40 @@ export type HubLastRun = {
   buildCommand: string | null;
 };
 
+// Session cards (one card per open agent session). Everything a card shows about its own work —
+// activity, runs, last result — is selected by the recorded agent session id, never by recency or
+// by the pane that happens to be live: hook rows carry it as harness_session, and a jaxflow run
+// carries it as caller_session (normalized into the same column by insertEvent); a run-finished
+// row reaches its session through run_id.
+export type HubScopedActivity = {
+  timeline: HubTimelineEvent[];
+  activeRun: HubActiveRun | null;
+  activeRuns: HubActiveRunSummary[];
+  lastRun: HubLastRun | null;
+  heartbeat: number[];
+  lastAction: { tool: string; ts: string } | null;
+  newestEventTs: string | null;
+};
+
+// One open agent session of a project. `sessionId` is the agent session; null only for a live
+// Claude pane that has not recorded one yet (it still is an open session, but owns no runs).
+// `panes` are the live tmux panes hosting it (empty for a native Codex thread) — location only.
+export type HubSessionSeat = {
+  sessionId: string | null;
+  transport: "tmux" | "codex";
+  panes: PaneRef[];
+  activity: HubScopedActivity;
+};
+
+// Present whenever a project has an open session (or unlinked work still in flight). `unlinked`
+// holds every run whose session is not one of the open seats (dashboard dispatches, runs from a
+// session that has since closed, legacy runs with no caller session); it is never folded into a
+// session card.
+export type HubSessionSplit = {
+  seats: HubSessionSeat[];
+  unlinked: HubScopedActivity;
+};
+
 export type HubProject = {
   panes: HubPane[];
   codexSessions: HubCodexSession[];
@@ -1028,6 +1062,7 @@ export type HubProject = {
   loopSummary?: LoopSummary | null;
   heartbeat: number[];
   lastAction: { tool: string; ts: string } | null;
+  split?: HubSessionSplit;
 };
 
 export type HubEnvelopeData = {
@@ -2085,6 +2120,102 @@ export function getCodexSessions(
 }
 
 
+// A native Codex thread is open while the runtime snapshot has it loaded — the same rule the card
+// uses to show it at all (mission.ts codexSessionState: anything else reads "unknown" and is
+// dropped by liveSessions).
+function codexSessionOpen(s: HubCodexSession): boolean {
+  return s.sourceOk && s.status !== "notLoaded" && s.status !== "systemError" && s.status !== "unknown";
+}
+
+function paneOrder(a: HubPane, b: HubPane): number {
+  const num = (pane: string) => Number.parseInt(pane.replace(/^%/, ""), 10);
+  return (a.session ?? "").localeCompare(b.session ?? "")
+    || (num(a.pane) - num(b.pane) || a.pane.localeCompare(b.pane))
+    || a.tmuxIncarnation.localeCompare(b.tmuxIncarnation);
+}
+
+// One seat per OPEN agent session: live tmux panes grouped by the agent session they host (a live
+// pane with no recorded session is its own seat), then every loaded native Codex thread. The order
+// is a pure function of identity (tmux session name, pane id, thread id) — never of recency — so a
+// session becoming the most recently active one never reorders or re-attributes anything.
+export function sessionSeats(panes: HubPane[], codexSessions: HubCodexSession[]): Omit<HubSessionSeat, "activity">[] {
+  const seats: Omit<HubSessionSeat, "activity">[] = [];
+  const bySession = new Map<string, Omit<HubSessionSeat, "activity">>();
+  for (const p of [...panes].filter((p) => p.live).sort(paneOrder)) {
+    const ref: PaneRef = { pane: p.pane, tmuxIncarnation: p.tmuxIncarnation };
+    const id = p.harnessSession ?? null;
+    const existing = id !== null ? bySession.get(id) : undefined;
+    if (existing) {
+      existing.panes.push(ref);
+      continue;
+    }
+    const seat = { sessionId: id, transport: "tmux" as const, panes: [ref] };
+    if (id !== null) bySession.set(id, seat);
+    seats.push(seat);
+  }
+  const codexOpen = codexSessions.filter(codexSessionOpen).sort((a, b) => a.threadId.localeCompare(b.threadId));
+  for (const c of codexOpen) {
+    if (bySession.has(c.threadId)) continue;
+    const seat = { sessionId: c.threadId, transport: "codex" as const, panes: [] };
+    bySession.set(c.threadId, seat);
+    seats.push(seat);
+  }
+  return seats;
+}
+
+function scopedActivity(
+  db: Database.Database, project: string, scope: RunScope, now: number,
+  readChildLogTail: ChildLogTailReader | null, relToRepos: RelToRepos | null,
+): HubScopedActivity {
+  const own = scopedEventClause(project, scope, "e.");
+  const newest = db.prepare(
+    `SELECT MAX(e.ts) AS ts FROM workflow_events e WHERE e.project = ? AND e.emitter != 'jaxos'${own.sql}`,
+  ).get(project, ...own.params) as { ts: string | null };
+  return {
+    timeline: getProjectTimeline(db, project, scope),
+    activeRun: activeRunFor(db, project, readChildLogTail, scope),
+    activeRuns: activeRunsFor(db, project, scope),
+    lastRun: lastRunFor(db, project, relToRepos, scope),
+    heartbeat: heartbeatFor(db, project, now, scope),
+    lastAction: lastActionFor(db, project, now, scope),
+    newestEventTs: newest.ts,
+  };
+}
+
+function emptyActivity(now: number): HubScopedActivity {
+  return {
+    timeline: [], activeRun: null, activeRuns: [], lastRun: null,
+    heartbeat: heartbeatFromRows([], now), lastAction: null, newestEventTs: null,
+  };
+}
+
+// Session cards. With two or more open sessions the board always splits; with exactly one, only
+// when there is unlinked work — buildMission decides that, since retained worktrees come from their
+// own poll. With NO open session it is returned only while a run is still in flight
+// (`hasActiveRuns`): every run is then unlinked, and the board shows it on the unlinked-runs card
+// instead of an idle project card. No open session and nothing running: null — the project card,
+// exactly as before. A seat with no recorded session owns no activity or runs.
+export function getSessionSplit(
+  db: Database.Database, project: string, panes: HubPane[], codexSessions: HubCodexSession[], now: number,
+  readChildLogTail: ChildLogTailReader | null = null, relToRepos: RelToRepos | null = null, hasActiveRuns = false,
+): HubSessionSplit | null {
+  const seats = sessionSeats(panes, codexSessions);
+  if (seats.length === 0) {
+    if (!hasActiveRuns) return null;
+    return { seats: [], unlinked: scopedActivity(db, project, { kind: "unlinked", openSessions: [] }, now, readChildLogTail, relToRepos) };
+  }
+  const openSessions = seats.flatMap((seat) => (seat.sessionId !== null ? [seat.sessionId] : []));
+  return {
+    seats: seats.map((seat) => ({
+      ...seat,
+      activity: seat.sessionId !== null
+        ? scopedActivity(db, project, { kind: "session", session: seat.sessionId }, now, readChildLogTail, relToRepos)
+        : emptyActivity(now),
+    })),
+    unlinked: scopedActivity(db, project, { kind: "unlinked", openSessions }, now, readChildLogTail, relToRepos),
+  };
+}
+
 export function getHubData(
   db: Database.Database,
   live: LiveSnapshot,
@@ -2131,6 +2262,8 @@ export function getHubData(
       heartbeat: heartbeatFor(db, project, now),
       lastAction: lastActionFor(db, project, now),
     };
+    const split = getSessionSplit(db, project, panes, codexSessions, now, readChildLogTail, relToRepos, byProject[project].activeRuns.length > 0);
+    if (split) byProject[project].split = split;
   }
   // spec §10, round 3 F1: a STANDALONE scan, no membership filter — a pinned/hidden project with
   // zero workflow_events rows and no live pane still gets its row, independent of `byProject`.
