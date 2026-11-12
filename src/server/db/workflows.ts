@@ -1447,16 +1447,73 @@ function recordedSessionOf(db: Database.Database, eventId: number): string | nul
   return row?.harness_session ?? null;
 }
 
+// ---- Session cards: which runs/events a read covers ------------------------------------------
+// Absent scope = the whole project (the project card, unchanged). `session` = one agent session.
+// `unlinked` = every run whose agent session is not one of `openSessions` (or recorded none).
+export type RunScope = { kind: "session"; session: string } | { kind: "unlinked"; openSessions: string[] };
+
+// A run belongs to the agent session recorded on its LATEST run-started row (jaxflow's
+// caller_session, normalized into harness_session by insertEvent) — the same "latest start wins"
+// rule unfinishedRunStartedRows applies to duplicate starts. `sessionExpr` is that session for the
+// row being filtered; it must be parameter-free (it is repeated for the unlinked form).
+function runScopeClause(scope: RunScope | undefined, sessionExpr: string): { sql: string; params: string[] } {
+  if (!scope) return { sql: "", params: [] };
+  if (scope.kind === "session") return { sql: ` AND ${sessionExpr} = ?`, params: [scope.session] };
+  if (scope.openSessions.length === 0) return { sql: "", params: [] };
+  const marks = scope.openSessions.map(() => "?").join(", ");
+  return { sql: ` AND (${sessionExpr} IS NULL OR ${sessionExpr} NOT IN (${marks}))`, params: [...scope.openSessions] };
+}
+
+// run_ids owned by the scope (latest non-jaxos start per run_id).
+function ownedRunIdsSql(project: string, scope: RunScope): { sql: string; params: string[] } {
+  const clause = runScopeClause(scope, "s.harness_session");
+  return {
+    sql: `SELECT s.run_id FROM workflow_events s
+          WHERE s.project = ? AND s.type = 'run-started' AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL${clause.sql}
+            AND NOT EXISTS (
+              SELECT 1 FROM workflow_events n
+              WHERE n.project = s.project AND n.run_id = s.run_id AND n.type = 'run-started'
+                AND n.emitter != 'jaxos' AND n.id > s.id)`,
+    params: [project, ...clause.params],
+  };
+}
+
+// Events that belong to the scope, for the row aliased `alias`:
+// - session: rows the agent recorded under its own id (hook rows), every row of a run it owns
+//   (run-finished carries no session, only run_id), and Jax OS's own rows that point at one of
+//   its events (an answer's question_event_id, a staleness alert's reference_event_id). A row with
+//   a run_id belongs ONLY to its run's owner — its own harness_session never decides, or a
+//   superseded duplicate start would leak onto the wrong card. Rows with no such link — a
+//   merge/PR audit carries only a bare pane — are project history, never guessed onto a session.
+// - unlinked: every row of a run owned by no open session.
+function scopedEventClause(project: string, scope: RunScope | undefined, alias: string): { sql: string; params: string[] } {
+  if (!scope) return { sql: "", params: [] };
+  const runs = ownedRunIdsSql(project, scope);
+  if (scope.kind === "unlinked") {
+    return { sql: ` AND ${alias}run_id IS NOT NULL AND ${alias}run_id IN (${runs.sql})`, params: runs.params };
+  }
+  const sessionEvents = "SELECT id FROM workflow_events WHERE project = ? AND harness_session = ?";
+  return {
+    sql: ` AND ((${alias}harness_session = ? AND ${alias}run_id IS NULL)
+      OR (${alias}run_id IS NOT NULL AND ${alias}run_id IN (${runs.sql}))
+      OR (${alias}emitter = 'jaxos' AND ${alias}harness_session IS NULL AND (
+        json_extract(${alias}payload, '$.question_event_id') IN (${sessionEvents})
+        OR json_extract(${alias}payload, '$.reference_event_id') IN (${sessionEvents}))))`,
+    params: [scope.session, ...runs.params, project, scope.session, project, scope.session],
+  };
+}
+
 // Most recent 20 events for a project, newest first (§7.4 caps this at 20). Unlike every
 // query above, this one does NOT filter emitter — synthetic jaxos rows render in the timeline
 // once the project is a member on its own merits (§7.1b).
-export function getProjectTimeline(db: Database.Database, project: string): HubTimelineEvent[] {
+export function getProjectTimeline(db: Database.Database, project: string, scope?: RunScope): HubTimelineEvent[] {
+  const own = scopedEventClause(project, scope, "e.");
   const rows = db
     .prepare(
-      `SELECT id, ts, type, pane, role, emitter, payload
-       FROM workflow_events WHERE project = ? AND type NOT IN (${HOOK_TELEMETRY_TYPES_SQL}) ORDER BY id DESC LIMIT 20`,
+      `SELECT e.id, e.ts, e.type, e.pane, e.role, e.emitter, e.payload
+       FROM workflow_events e WHERE e.project = ? AND e.type NOT IN (${HOOK_TELEMETRY_TYPES_SQL})${own.sql} ORDER BY e.id DESC LIMIT 20`,
     )
-    .all(project) as {
+    .all(project, ...own.params) as {
     id: number;
     ts: string;
     type: string;
@@ -1507,14 +1564,15 @@ export function heartbeatFromRows(rows: { minute: string; n: number }[], nowMs: 
 // cold review F1: the oldest bucket heartbeatFromRows emits is i=59 (nowMs - 59min), not -60min —
 // align the SQL cutoff to that bucket's minute start, or an event in the dropped 60th-to-59th-minute
 // gap is queried here and then silently discarded by the fold.
-function heartbeatFor(db: Database.Database, project: string, nowMs: number): number[] {
+function heartbeatFor(db: Database.Database, project: string, nowMs: number, scope?: RunScope): number[] {
   const oldestBucketMinute = new Date(nowMs - 59 * 60_000).toISOString().slice(0, 16);
   const windowStart = `${oldestBucketMinute}:00.000Z`;
+  const own = scopedEventClause(project, scope, "e.");
   const rows = db.prepare(
-    `SELECT strftime('%Y-%m-%dT%H:%M', ts) AS minute, COUNT(*) AS n
-     FROM workflow_events WHERE project = ? AND ts >= ? AND emitter != 'jaxos'
+    `SELECT strftime('%Y-%m-%dT%H:%M', e.ts) AS minute, COUNT(*) AS n
+     FROM workflow_events e WHERE e.project = ? AND e.ts >= ? AND e.emitter != 'jaxos'${own.sql}
      GROUP BY minute`,
-  ).all(project, windowStart) as { minute: string; n: number }[];
+  ).all(project, windowStart, ...own.params) as { minute: string; n: number }[];
   return heartbeatFromRows(rows, nowMs);
 }
 
@@ -1522,14 +1580,15 @@ function heartbeatFor(db: Database.Database, project: string, nowMs: number): nu
 // (exactly 24h still counts — the boundary is inclusive: `ageMs > 24h` excludes, not `>=`).
 const LAST_ACTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-function lastActionFor(db: Database.Database, project: string, nowMs: number): { tool: string; ts: string } | null {
+function lastActionFor(db: Database.Database, project: string, nowMs: number, scope?: RunScope): { tool: string; ts: string } | null {
   // cold review F2: filter by the cutoff and order by ts before limiting, or a late-inserted older
   // row (higher id, older ts) hides a newer qualifying row that was inserted first.
   const cutoff = new Date(nowMs - LAST_ACTION_WINDOW_MS).toISOString();
+  const own = scopedEventClause(project, scope, "e.");
   const row = db.prepare(
-    `SELECT ts, json_extract(payload, '$.tool') AS tool FROM workflow_events
-     WHERE project = ? AND type = 'tool-used' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 1`,
-  ).get(project, cutoff) as { ts: string; tool: string | null } | undefined;
+    `SELECT e.ts AS ts, json_extract(e.payload, '$.tool') AS tool FROM workflow_events e
+     WHERE e.project = ? AND e.type = 'tool-used' AND e.ts >= ?${own.sql} ORDER BY e.ts DESC, e.id DESC LIMIT 1`,
+  ).get(project, cutoff, ...own.params) as { ts: string; tool: string | null } | undefined;
   if (!row || !row.tool) return null;
   return { tool: row.tool, ts: row.ts };
 }
@@ -1575,11 +1634,12 @@ function openSubagentCount(
 // Every unfinished run-started row for the project (same WHERE both activeRunFor and
 // activeRunsFor read): no run-finished row yet for that run_id, and no NEWER run-started row
 // for that same run_id (duplicate starts keep only the latest). Newest start id first.
-function unfinishedRunStartedRows(db: Database.Database, project: string): RawRow[] {
+function unfinishedRunStartedRows(db: Database.Database, project: string, scope?: RunScope): RawRow[] {
+  const own = runScopeClause(scope, "s.harness_session");
   return db.prepare(
     `SELECT s.* FROM workflow_events s
      WHERE s.project = ? AND s.type = 'run-started'
-       AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL
+       AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL${own.sql}
        AND NOT EXISTS (
          SELECT 1 FROM workflow_events f
          WHERE f.project = s.project AND f.run_id = s.run_id
@@ -1592,7 +1652,7 @@ function unfinishedRunStartedRows(db: Database.Database, project: string): RawRo
            AND newer.id > s.id
        )
      ORDER BY s.id DESC`,
-  ).all(project) as RawRow[];
+  ).all(project, ...own.params) as RawRow[];
 }
 
 // The kind/runtime/target/startedAt fields both activeRunFor and activeRunsFor project off a
@@ -1623,8 +1683,8 @@ function activeRunFields(row: WorkflowEventRow): {
   return { runId: row.run_id as string, startedAt, ...boundedRunFields(projectPayload("run-started", row.payload)) };
 }
 
-function activeRunFor(db: Database.Database, project: string, readChildLogTail: ChildLogTailReader | null = null): HubActiveRun | null {
-  const rows = unfinishedRunStartedRows(db, project);
+function activeRunFor(db: Database.Database, project: string, readChildLogTail: ChildLogTailReader | null = null, scope?: RunScope): HubActiveRun | null {
+  const rows = unfinishedRunStartedRows(db, project, scope);
   if (rows.length === 0) return null;
   const row = rowOf(rows[0]);
   const fields = activeRunFields(row);
@@ -1645,8 +1705,8 @@ function activeRunFor(db: Database.Database, project: string, readChildLogTail: 
 // Every in-flight run as its own line (MOA session-list), not just the newest — the Sessions
 // card needs to show several parallel headless runs (e.g. concurrent Codex reviews) at once.
 // Same rows as activeRunFor (unfinished, latest start per run_id), no LIMIT, no child-log read.
-export function activeRunsFor(db: Database.Database, project: string): HubActiveRunSummary[] {
-  return unfinishedRunStartedRows(db, project).map((raw) => {
+export function activeRunsFor(db: Database.Database, project: string, scope?: RunScope): HubActiveRunSummary[] {
+  return unfinishedRunStartedRows(db, project, scope).map((raw) => {
     const row = rowOf(raw);
     return { ...activeRunFields(row), role: row.role };
   });
@@ -1656,17 +1716,31 @@ export function activeRunsFor(db: Database.Database, project: string): HubActive
 // project with no LATER run-started row — hidden the moment a newer run starts, even before
 // that new run has its own run-finished row (D4). Joined against the matching run-started
 // row (same run_id) for kind/runtime/target, the same trimming activeRunFor already applies.
-export function lastRunFor(db: Database.Database, project: string, relToRepos: RelToRepos | null = null): HubLastRun | null {
+export function lastRunFor(db: Database.Database, project: string, relToRepos: RelToRepos | null = null, scope?: RunScope): HubLastRun | null {
+  // Scoped (session cards): the finished run must belong to the scope, and only a LATER start in
+  // the same scope hides it — another session starting a run never clears this session's result.
+  // "Start" is that run's LATEST non-jaxos start (the same owner rule ownedRunIdsSql uses), so a
+  // superseded duplicate start never hides anything. The unscoped hide rule is unchanged.
+  const finishedOwn = runScopeClause(scope, `(SELECT st.harness_session FROM workflow_events st
+    WHERE st.project = f.project AND st.run_id = f.run_id AND st.type = 'run-started' AND st.emitter != 'jaxos'
+    ORDER BY st.id DESC LIMIT 1)`);
+  const laterOwn = runScopeClause(scope, "s.harness_session");
+  const latestStartOnly = scope
+    ? ` AND NOT EXISTS (
+         SELECT 1 FROM workflow_events n
+         WHERE n.project = s.project AND n.run_id = s.run_id AND n.type = 'run-started'
+           AND n.emitter != 'jaxos' AND n.id > s.id)`
+    : "";
   const rows = db.prepare(
     `SELECT f.* FROM workflow_events f
-     WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL
+     WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL${finishedOwn.sql}
        AND NOT EXISTS (
          SELECT 1 FROM workflow_events s
          WHERE s.project = f.project AND s.type = 'run-started' AND s.emitter != 'jaxos'
-           AND s.id > f.id
+           AND s.id > f.id${laterOwn.sql}${latestStartOnly}
        )
      ORDER BY f.id DESC LIMIT 1`,
-  ).all(project) as RawRow[];
+  ).all(project, ...finishedOwn.params, ...laterOwn.params) as RawRow[];
   if (rows.length === 0) return null;
   const row = rowOf(rows[0]);
   const p = projectPayload("run-finished", row.payload);

@@ -28,10 +28,10 @@ vi.mock("../settings", async (importOriginal) => {
 
 import { openDb } from "./index";
 import {
-  getHubData, insertEvent, questionOwnsPane, setAfk, setForwardTypes, upsertSession,
-  type HubEnvelopeData, type HubPane, type LiveSnapshot,
+  activeRunsFor, getHubData, getProjectTimeline, insertEvent, lastRunFor, questionOwnsPane, setAfk, setForwardTypes, upsertSession,
+  type HubEnvelopeData, type HubPane, type LiveSnapshot, type RunScope,
 } from "./workflows";
-import { FORWARDABLE_EVENT_TYPES, type WorkflowEventInput } from "../../lib/workflow";
+import { FORWARDABLE_EVENT_TYPES, HOOK_TELEMETRY_TYPES, type WorkflowEventInput } from "../../lib/workflow";
 import type { CodexSnapshot } from "../collectors/workflow-codex";
 
 const P = "acme";
@@ -247,6 +247,128 @@ describe("pane session fields", () => {
     insertEvent(db, codex("subagent-started", "codex-userprompt", { agent_id: "c2" }), at(3));
     const session = hubOf(db).byProject[P].codexSessions.find((s) => s.threadId === C)!;
     expect(session.subagentCount).toBe(2);
+    db.close();
+  });
+});
+
+describe("scoped reads", () => {
+  const session = (id: string): RunScope => ({ kind: "session", session: id });
+  const unlinked = (...openSessions: string[]): RunScope => ({ kind: "unlinked", openSessions });
+
+  it("applies the 20-row limit per session and keeps telemetry out of every scope", () => {
+    for (let i = 0; i < 25; i++) insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(i));
+    for (let i = 0; i < 3; i++) insertEvent(db, claude(B, "%2", "turn-started", "claude-userprompt"), at(30 + i));
+    for (const [s, pane] of [[A, "%1"], [B, "%2"]] as const) {
+      insertEvent(db, claude(s, pane, "tool-used", "claude-toolused", { tool: "Bash" }), at(40));
+      insertEvent(db, claude(s, pane, "subagent-started", "claude-toolused", { agent_id: `x-${s}` }), at(41));
+      insertEvent(db, claude(s, pane, "subagent-stopped", "claude-toolused", { agent_id: `x-${s}` }), at(42));
+    }
+    expect(getProjectTimeline(db, P, session(A))).toHaveLength(20);
+    expect(getProjectTimeline(db, P, session(B))).toHaveLength(3);
+    for (const rows of [getProjectTimeline(db, P, session(A)), getProjectTimeline(db, P, session(B)), getProjectTimeline(db, P)]) {
+      expect(rows.some((e) => (HOOK_TELEMETRY_TYPES as readonly string[]).includes(e.type))).toBe(false);
+    }
+    expect(getProjectTimeline(db, P)).toHaveLength(20);
+    db.close();
+  });
+
+  it("puts each row on exactly its owner's scope (runs, jaxos references, unlinked audits)", () => {
+    setAfkOn(db);
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    const qa = insertEvent(db, ask(A, "%1"), at(2));
+    insertEvent(db, runStarted("run-a", "builder", "build", "claude", A, "feat/a"), at(3));
+    insertEvent(db, runFinished("run-a", "builder", { result: "success", exit_code: 0, report_path: "/r/a.md", summary: "ok" }), at(4));
+    const bEvent = insertEvent(db, claude(B, "%2", "turn-started", "claude-userprompt"), at(5));
+    insertEvent(db, {
+      run_id: null, project: P, role: "lead", type: "question-answered", source: "deterministic", emitter: "jaxos",
+      payload: { question_event_id: qa.id, ok: true },
+    }, at(6));
+    insertEvent(db, {
+      run_id: null, project: P, role: "lead", type: "attention-needed", source: "deterministic", emitter: "jaxos",
+      payload: { reason: "no-signal", reference_event_id: bEvent.id }, pane: "%2", tmux_incarnation: INC,
+    }, at(7));
+    insertEvent(db, {
+      run_id: null, project: P, role: "builder", type: "merge-approved", source: "deterministic", emitter: "wrapper",
+      payload: { branch: "feat/a", target: "main", merge_sha: "a".repeat(40), approved_by: "owner" }, pane: "%1", tmux_incarnation: INC,
+    }, at(8));
+
+    const aTypes = getProjectTimeline(db, P, session(A)).map((e) => e.type);
+    expect(aTypes).toEqual(expect.arrayContaining(["turn-started", "question", "run-started", "run-finished", "question-answered"]));
+    expect(aTypes).not.toContain("attention-needed");
+    const bTypes = getProjectTimeline(db, P, session(B)).map((e) => e.type);
+    expect(bTypes).toContain("attention-needed");
+    expect(bTypes).not.toContain("run-finished");
+    expect(bTypes).not.toContain("question-answered");
+    expect(getProjectTimeline(db, P, unlinked(A, B))).toEqual([]);
+    expect(getProjectTimeline(db, P).some((e) => e.type === "merge-approved")).toBe(true);
+    db.close();
+  });
+
+  it("moves every row of a duplicate run to the latest start's owner", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, claude(B, "%2", "turn-started", "claude-userprompt"), at(2));
+    insertEvent(db, runStarted("run-r", "builder", "build", "claude", A, "feat/r"), at(3));
+    insertEvent(db, runStarted("run-r", "builder", "build", "claude", B, "feat/r"), at(4));
+    expect(activeRunsFor(db, P, session(B)).map((r) => r.runId)).toEqual(["run-r"]);
+    expect(activeRunsFor(db, P, session(A))).toEqual([]);
+    expect(getProjectTimeline(db, P, session(A)).map((e) => e.type)).toEqual(["turn-started"]);
+    expect(getProjectTimeline(db, P, session(B)).map((e) => e.type).sort()).toEqual(["run-started", "run-started", "turn-started"]);
+
+    insertEvent(db, runFinished("run-r", "builder", { result: "success", exit_code: 0, report_path: "/r/r.md", summary: "ok" }), at(5));
+    expect(getProjectTimeline(db, P, session(B)).map((e) => e.type).sort()).toEqual(["run-finished", "run-started", "run-started", "turn-started"]);
+    expect(getProjectTimeline(db, P, session(A)).map((e) => e.type)).toEqual(["turn-started"]);
+    expect(activeRunsFor(db, P, session(B))).toEqual([]);
+    db.close();
+  });
+
+  it("an owner-less run-started belongs to no session and to both unlinked forms", () => {
+    insertEvent(db, {
+      run_id: "run-u", project: P, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+      payload: { phase: "P1", runtime: "opencode-builder", kind: "build", target: "feat/u", caller: "claude" },
+    }, at(1));
+    expect(getProjectTimeline(db, P, session(A))).toEqual([]);
+    expect(getProjectTimeline(db, P, session(B))).toEqual([]);
+    expect(activeRunsFor(db, P, unlinked(A, B)).map((r) => r.runId)).toEqual(["run-u"]);
+    expect(activeRunsFor(db, P, unlinked()).map((r) => r.runId)).toEqual(["run-u"]);
+    expect(getProjectTimeline(db, P, unlinked(A, B)).map((e) => e.type)).toEqual(["run-started"]);
+    db.close();
+  });
+
+  it("a dashboard-dispatched run is unlinked while 'jaxos' is not an open seat", () => {
+    insertEvent(db, runStarted("run-j", "builder", "build", "jaxos", "jaxos", "feat/j"), at(1));
+    expect(activeRunsFor(db, P, unlinked(A, B)).map((r) => r.runId)).toEqual(["run-j"]);
+    expect(activeRunsFor(db, P, unlinked(A, B, "jaxos"))).toEqual([]);
+    expect(activeRunsFor(db, P, session("jaxos")).map((r) => r.runId)).toEqual(["run-j"]);
+    db.close();
+  });
+
+  it("a closed owner's run moves between unlinked and its own scope as seats change", () => {
+    insertEvent(db, runStarted("run-d", "builder", "build", "claude", D, "feat/d"), at(1));
+    expect(activeRunsFor(db, P, unlinked(A)).map((r) => r.runId)).toEqual(["run-d"]);
+    expect(activeRunsFor(db, P, unlinked(A, D))).toEqual([]);
+    expect(activeRunsFor(db, P, session(D)).map((r) => r.runId)).toEqual(["run-d"]);
+    db.close();
+  });
+
+  it("scopes lastRunFor so another session's start never hides this session's result", () => {
+    insertEvent(db, runStarted("r1", "builder", "build", "claude", A, "feat/1"), at(1));
+    insertEvent(db, runFinished("r1", "builder", { result: "success", exit_code: 0, report_path: "/r/1.md", summary: "ok" }), at(2));
+    insertEvent(db, runStarted("r2", "builder", "build", "claude", B, "feat/2"), at(3));
+    expect(lastRunFor(db, P)).toBeNull();
+    expect(lastRunFor(db, P, null, session(A))?.runId).toBe("r1");
+    insertEvent(db, runStarted("r3", "builder", "build", "claude", A, "feat/3"), at(4));
+    expect(lastRunFor(db, P, null, session(A))).toBeNull();
+    db.close();
+  });
+
+  it("a reassigned start belongs to its latest owner and never hides another session's result", () => {
+    insertEvent(db, runStarted("r1", "builder", "build", "claude", A, "feat/1"), at(1));
+    insertEvent(db, runFinished("r1", "builder", { result: "success", exit_code: 0, report_path: "/r/1.md", summary: "ok" }), at(2));
+    insertEvent(db, runStarted("r2", "builder", "build", "claude", A, "feat/2"), at(3));
+    insertEvent(db, runStarted("r2", "builder", "build", "claude", B, "feat/2"), at(4));
+    expect(lastRunFor(db, P, null, session(A))?.runId).toBe("r1");
+    expect(lastRunFor(db, P, null, session(B))).toBeNull();
+    expect(lastRunFor(db, P)).toBeNull();
     db.close();
   });
 });
