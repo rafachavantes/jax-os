@@ -424,6 +424,15 @@ describe("session seats", () => {
     db.close();
   });
 
+  it("never makes a seat from a pane that now belongs to another project", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt", {}, "proj-a"), at(1));
+    insertEvent(db, claude(B, "%1", "turn-started", "claude-userprompt", {}, "proj-b"), at(2));
+    const hub = hubOf(db);
+    expect(hub.byProject["proj-a"].split).toBeUndefined();
+    expect(hub.byProject["proj-b"].split?.seats.map((s) => s.sessionId)).toEqual([B]);
+    db.close();
+  });
+
   it("makes a live pane with no recorded session its own empty seat", () => {
     upsertSession(db, { project: P, session: "acme-lead", pane: "%5", role: "lead", tmux_incarnation: INC }, at(0));
     const split = hubOf(db).byProject[P].split!;

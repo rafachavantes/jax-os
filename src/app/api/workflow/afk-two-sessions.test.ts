@@ -51,13 +51,15 @@ vi.mock("../../../server/collectors/session-names", async (importOriginal) => {
 
 import { openDb } from "../../../server/db";
 import {
-  claimAnswer, claimFreeformAnswer, failAnswerFinalization, finishAnswer, getAfkEnabled, getForwardTypes, getHubData,
+  claimAnswer, claimFreeformAnswer, failAnswerFinalization, finishAnswer, getAfkEnabled, getForwardTypes, getHubData, listPending,
   setAfk as setAfkFlag, setForwardTypes, type HubEnvelopeData,
 } from "../../../server/db/workflows";
+import { toForwardBody } from "../../../server/collectors/workflow-events";
 import { injectAnswers } from "../../../server/collectors/workflow-tmux";
 import { signBody } from "../../../server/collectors/workflow-webhook";
 import { readSessionNames } from "../../../server/collectors/session-names";
 import { POST as postEventRoute, GET as pollEventsRoute } from "./events/route";
+import { POST as ackPost } from "./events/ack/route";
 import { handleAfkPost } from "./afk/handler";
 import { handleAnswerPost } from "./answer/handler";
 import { handleHubGet } from "../mission/hub/handler";
@@ -166,6 +168,12 @@ async function pollHub(livePanes: string[]): Promise<HubEnvelopeData> {
 }
 
 const rowOf = (id: number) => testDb.prepare("SELECT * FROM workflow_events WHERE id = ?").get(id) as Record<string, unknown>;
+const eventCount = () => (testDb.prepare("SELECT COUNT(*) AS n FROM workflow_events").get() as { n: number }).n;
+async function ack(ids: number[]) {
+  const out = await (await ackPost(json("http://localhost/api/workflow/events/ack", { ids }))).json();
+  expect(out.ok).toBe(true);
+  return out.data as { acked: number };
+}
 
 // A Claude registry entry: `~/.claude/sessions/<pid>.json`.
 function seedRegistry(home: string, sessionId: string, name: string): void {
@@ -283,5 +291,154 @@ describe("session names in notification text", () => {
     expect(rowB.forwarded_at).toEqual(expect.any(String));
     expect([sent[0].body.event_id, sent[1].body.event_id]).toEqual([qa.id, qb.id]);
     expect(await pollPending()).toEqual([]);
+  });
+});
+
+describe("AFK on, two sessions in one project", () => {
+  it("gives each session's question its own notification and answer destination", async () => {
+    const qa = await post(ask(A, "%1", "tu_a", "Ship feat/a behind a flag?"));
+    const qb = await post(ask(B, "%2", "tu_b", "Drop the legacy endpoint?"));
+    expect([[qa.delivery, qa.forwarded], [qb.delivery, qb.forwarded]]).toEqual([["delivered", true], ["delivered", true]]);
+    expect(sent).toHaveLength(2);
+    const [na, nb] = sent;
+    expect(na.body).toMatchObject({ event_id: qa.id, project: P, type: "question" });
+    expect(nb.body).toMatchObject({ event_id: qb.id, project: P, type: "question" });
+    expect(String(na.body.message)).toContain(`Workflow event #${qa.id}`);
+    expect(String(na.body.message)).toContain("Ship feat/a behind a flag?");
+    expect(String(na.body.message)).not.toContain("Drop the legacy endpoint?");
+    for (const n of sent) expect(n.signature).toBe(signBody(n.raw, "afk-test-secret"));
+    expect(rowOf(qa.id)).toMatchObject({ pane: "%1", tmux_incarnation: INC, harness_session: A, delivery: "delivered" });
+    expect(rowOf(qb.id)).toMatchObject({ pane: "%2", tmux_incarnation: INC, harness_session: B, delivery: "delivered" });
+    expect(await pollPending()).toEqual([]);
+  });
+
+  it("answering one question types only into its own pane; the other stays pending and unchanged", async () => {
+    const qa = await post(ask(A, "%1", "tu_a", "Ship feat/a behind a flag?"));
+    const qb = await post(ask(B, "%2", "tu_b", "Drop the legacy endpoint?"));
+    const before = rowOf(qb.id);
+    expect(await answer(qa.id, "1: 1")).toMatchObject({ ok: true, data: { question_event_id: qa.id } });
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.every((k) => k[0] === "send-keys" && k[2] === "%1")).toBe(true);
+    expect(rowOf(qb.id)).toEqual(before);
+    expect(sent).toHaveLength(2); // the answer itself notifies nobody
+    const hub = await pollHub(["%1", "%2"]);
+    const panes = Object.fromEntries(hub.byProject[P].panes.map((p) => [p.pane, p]));
+    expect(panes["%1"].pendingQuestion).toBeNull();
+    expect(panes["%2"].pendingQuestion?.eventId).toBe(qb.id);
+    expect(panes["%2"].questionAnswerable).toBe(true);
+    keys = [];
+    expect(await answer(qb.id, "1: 2")).toMatchObject({ ok: true });
+    expect(keys.every((k) => k[2] === "%2")).toBe(true);
+  });
+
+  it("a partial ack delivers only the acked event; the other keeps its identity", async () => {
+    forwardFailures = 2;
+    const qa = await post(ask(A, "%1", "tu_a", "A?"));
+    const qb = await post(ask(B, "%2", "tu_b", "B?"));
+    expect([qa.delivery, qb.delivery]).toEqual(["pending", "pending"]);
+    expect(rowOf(qa.id).forwarded_at).toBeNull();
+    const beforeB = rowOf(qb.id);
+    expect(await ack([qa.id])).toEqual({ acked: 1 });
+    expect(await pollPending()).toEqual([expect.objectContaining({ event_id: qb.id })]);
+    expect(rowOf(qa.id)).toMatchObject({ delivery: "delivered" });
+    expect(rowOf(qa.id).forwarded_at).toEqual(expect.any(String));
+    expect(rowOf(qb.id)).toMatchObject({ delivery: "pending" });
+    expect(rowOf(qb.id).forwarded_at).toBe(beforeB.forwarded_at);
+    expect((await pollPending()).map((p) => p.event_id)).toEqual([qb.id]);
+  });
+
+  it("once B's conversation is replaced, its old question can no longer reach the pane", async () => {
+    const qb = await post(ask(B, "%2", "tu_b", "Drop the legacy endpoint?"));
+    await post(hook(B2, "%2", "turn-started", "claude-userprompt")); // /clear or a restarted agent in %2
+    expect(await answer(qb.id, "1: 1")).toEqual({ ok: false, error: "invalid-target" });
+    expect(keys).toEqual([]);
+    expect(testDb.prepare("SELECT COUNT(*) AS n FROM workflow_answer_claims").get()).toEqual({ n: 0 });
+    const hub = await pollHub(["%1", "%2"]);
+    expect(hub.byProject[P].panes.find((p) => p.pane === "%2")?.questionAnswerable).toBe(false);
+    expect(sent).toHaveLength(1); // the question's own notification; the new turn-start sent nothing
+  });
+
+  it("once B's pane is closed, its old question can't be delivered anywhere", async () => {
+    const qb = await post(ask(B, "%2", "tu_b", "Drop the legacy endpoint?"));
+    expect(await answer(qb.id, "1: 1", ["%1"])).toEqual({ ok: false, error: "pane target is not live" });
+    expect(keys).toEqual([]);
+  });
+
+  it("polling the hub and the events list many times creates no notifications or rows", async () => {
+    const qa = await post(ask(A, "%1", "tu_a", "Ship feat/a behind a flag?"));
+    await post(ask(B, "%2", "tu_b", "Drop the legacy endpoint?"));
+    const events = eventCount();
+    const before = rowOf(qa.id);
+    for (let i = 0; i < 5; i++) {
+      expect((await pollHub(["%1", "%2"])).byProject[P].panes.filter((p) => p.pendingQuestion)).toHaveLength(2);
+      expect(await pollPending()).toEqual([]);
+      await pollEventsRoute(new Request("http://localhost/api/workflow/events?pending=1"));
+    }
+    expect(sent).toHaveLength(2);
+    expect(eventCount()).toBe(events);
+    expect(rowOf(qa.id)).toMatchObject({ delivery: before.delivery, forwarded_at: before.forwarded_at });
+  });
+
+  it("a failed push stays pending and the fallback poll carries the same message and event", async () => {
+    forwardFailures = 1;
+    const qa = await post(ask(A, "%1", "tu_a", "Ship feat/a behind a flag?"));
+    expect(qa.delivery).toBe("pending");
+    const pending = await pollPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].event_id).toBe(qa.id);
+    const expected = toForwardBody(listPending(testDb, 50).find((r) => r.id === qa.id)!);
+    expect(pending[0].message).toBe(expected.message);
+    await ack([qa.id]);
+    expect(rowOf(qa.id)).toMatchObject({ delivery: "delivered", forwarded_at: expect.any(String) });
+    expect(await pollPending()).toEqual([]);
+    expect(eventCount()).toBe(3); // two turn-starts + the one question, no duplicate
+  });
+
+  it("AFK off keeps questions local, and turning it back on replays nothing", async () => {
+    expect(await setAfk({ enabled: false })).toMatchObject({ enabled: false });
+    const qa = await post(ask(A, "%1", "tu_a", "Ship feat/a behind a flag?"));
+    const qb = await post(ask(B, "%2", "tu_b", "Drop the legacy endpoint?"));
+    expect([qa.delivery, qb.delivery]).toEqual(["local", "local"]);
+    expect([qa.forwarded, qb.forwarded]).toEqual([false, false]);
+    expect(sent).toEqual([]);
+    expect(await pollPending()).toEqual([]);
+    await setAfk({ enabled: true });
+    expect(await pollPending()).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+
+  it("AFK on still only sends opted-in types: a turn stop stays local", async () => {
+    const stop = await post(hook(A, "%1", "turn-stopped", "claude-stop", { capsule_status: "done", capsule_rule: "tag" }));
+    expect(stop.delivery).toBe("local");
+    expect(sent).toEqual([]);
+  });
+
+  it("keeps a closed session's runs on the unlinked card until nothing is in flight", async () => {
+    await post(runStarted(RUN1, B));
+    await post(runStarted(RUN2, B));
+    // B's pane closes while both builds keep going; A is still open.
+    let hub = await pollHub(["%1"]);
+    let split = hub.byProject[P].split!;
+    expect(split.seats.map((s) => s.sessionId)).toEqual([A]);
+    expect(split.unlinked.activeRuns.map((r) => r.runId).sort()).toEqual([RUN1, RUN2]);
+    expect(split.seats[0].activity.activeRuns).toEqual([]);
+    // Default forward types: a finished run stays local — no notification.
+    expect((await post(runFinished(RUN1))).delivery).toBe("local");
+    expect(sent).toEqual([]);
+    // The owner opts in to run results: the next one is sent exactly once.
+    await setAfk({ forwardTypes: ["question", "attention-needed", "mission-finished", "run-finished"] });
+    const done = await post(runFinished(RUN2));
+    expect(done).toMatchObject({ delivery: "delivered", forwarded: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toMatchObject({ event_id: done.id, type: "run-finished", run_id: RUN2, project: P });
+    // A run result is not a question: an "answer" to it is refused, and no input goes anywhere.
+    expect(await answer(done.id, "1: 1")).toEqual({ ok: false, error: "not-answerable" });
+    expect(keys).toEqual([]);
+    // Nothing in flight any more: the extra card is gone.
+    hub = await pollHub(["%1"]);
+    split = hub.byProject[P].split!;
+    expect(split.unlinked.activeRuns).toEqual([]);
+    expect(await pollPending()).toEqual([]);
+    expect(sent).toHaveLength(1);
   });
 });
