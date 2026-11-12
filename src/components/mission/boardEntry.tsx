@@ -33,11 +33,13 @@ export function renderBoardEntry(entry: BoardEntry, { expandedDir, onToggleExpan
       className="flex min-w-0 w-full grow basis-full flex-col gap-3.5 rounded-lg border border-line bg-surface px-5 py-[18px]">
       <GroupHeader project={project} expanded={expandedDir === sectionKey} expandedKey={expandedDir}
         issues={counts?.[project.name.toLowerCase()]} onToggle={() => onToggleExpand(sectionKey)} />
-      <div className="grid gap-3 sm:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-        {cards.map((c) => {
+      <div className="grid gap-3 sm:grid-cols-2">
+        {cards.map((c, i) => {
           const key = cardKey(c);
+          // Two cards per row; the expanded card and an odd last card take the whole row.
+          const fullRow = key === expandedDir || (i === cards.length - 1 && cards.length % 2 === 1);
           return <ProjectCard key={key} card={c} expanded={key === expandedDir} onToggle={() => onToggleExpand(key)}
-            rootAttrs={{ "data-card-key": key, className: key === expandedDir ? "sm:col-span-full" : "" }} />;
+            rootAttrs={{ "data-card-key": key, className: fullRow ? "sm:col-span-full" : "" }} />;
         })}
       </div>
       <GroupFooter project={project} />

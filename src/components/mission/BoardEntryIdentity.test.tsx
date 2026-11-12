@@ -80,3 +80,24 @@ describe("renderBoardEntry keeps a session card's React identity across plain an
     expect(html).toContain("basis-full sm:basis-[45%] lg:basis-[30%]");
   });
 });
+
+describe("group grid: two cards per row, an odd last card takes the whole row", () => {
+  const C = seat("C");
+  const layout = (cards: MissionCard[]) => {
+    const grid = kids(renderBoardEntry({ ...group, cards } as BoardEntry, opts) as El)[1] as ReactElement<{ className: string; children?: ReactNode }>;
+    const spans = (kids(grid as El) as ReactElement<{ rootAttrs: { className: string } }>[]).map((c) => c.props.rootAttrs.className);
+    return { grid: grid.props.className, spans };
+  };
+
+  it("uses two columns", () => {
+    expect(layout([A, B]).grid).toContain("sm:grid-cols-2");
+  });
+
+  it("two cards share one row", () => {
+    expect(layout([A, B]).spans).toEqual(["", ""]);
+  });
+
+  it("the third card stretches across its row", () => {
+    expect(layout([A, B, C]).spans).toEqual(["", "", "sm:col-span-full"]);
+  });
+});
