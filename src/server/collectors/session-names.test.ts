@@ -106,6 +106,16 @@ describe("readSessionNames", () => {
     expect(names.has("TXT")).toBe(false);
   });
 
+  it("also reads the registries of claude-switch accounts (sessions run with their CLAUDE_CONFIG_DIR)", () => {
+    const dir = join(home, ".claude-switch", "accounts", "work", "sessions");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "42.json"), JSON.stringify({ sessionId: "W1", name: "jev-recipes" }));
+    writeFileSync(join(dir, "42.abc.key"), JSON.stringify({ sessionId: "WKEY", name: "secret" }));
+    const names = readSessionNames(home);
+    expect(names.get("W1")).toBe("jev-recipes");
+    expect(names.has("WKEY")).toBe(false);
+  });
+
   it("missing HOME registries produce an empty map, never an error", () => {
     expect(readSessionNames(join(home, "empty"))).toEqual(new Map());
   });
