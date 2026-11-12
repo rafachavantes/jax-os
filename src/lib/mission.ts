@@ -7,7 +7,7 @@
 
 import type { Envelope } from "./api";
 import type { Project, ProjectGate, ProjectScan, ProjectStage } from "../server/collectors/projects";
-import type { Capsule, HubActiveRun, HubActiveRunSummary, HubCodexSession, HubEnvelopeData, HubLastRun, HubPane, HubProject, HubSessionSeat, HubSessionStatus, HubTimelineEvent, LoopSummary, PaneRuntime, PendingQuestion } from "../server/db/workflows";
+import type { Capsule, HubActiveRun, HubActiveRunSummary, HubCodexSession, HubEnvelopeData, HubLastRun, HubPane, HubProject, HubScopedActivity, HubSessionSeat, HubSessionSplit, HubSessionStatus, HubTimelineEvent, LoopSummary, PaneRuntime, PendingQuestion } from "../server/db/workflows";
 import type { CiState, Pr, PrResult } from "../server/collectors/github";
 import type { Commit } from "../server/collectors/activity";
 import type { WorktreeResult } from "../server/collectors/worktrees";
@@ -515,6 +515,170 @@ function toMissionPendingQuestion(pq: PendingQuestion): MissionPendingQuestion {
   return { pane: pq.pane, eventId: pq.eventId, questions: parseQuestions(pq.payload) };
 }
 
+// A pane's pending question carries the hub's answerability flag (computed with the answer
+// route's own ownership check): `answerable:false` means an earlier conversation in this pane
+// asked it, so every surface shows the reason and no answer control.
+function paneQuestion(p: HubPane): MissionPendingQuestion | null {
+  if (!p.pendingQuestion) return null;
+  const pq = toMissionPendingQuestion(p.pendingQuestion);
+  return p.questionAnswerable === false ? { ...pq, answerable: false } : pq;
+}
+
+// One MissionPane per HubPane. Null `session`/`role` fall back to the pane id as the DISPLAY label
+// and "adhoc" as the neutral role, rather than dropping the pane for a transient gap.
+function toMissionPane(p: HubPane, nowMs: number): MissionPane {
+  return {
+    pane: p.pane, tmuxIncarnation: p.tmuxIncarnation, session: p.session ?? p.pane, role: p.role ?? "adhoc",
+    state: paneState(p, nowMs), lastEventTs: p.lastEventTs, pendingQuestion: paneQuestion(p),
+    subagentCount: p.subagentCount,
+    capsuleEventId: p.capsule?.eventId ?? null,
+    capsuleStatus: capsuleStatusOf(p.capsule),
+    capsuleMinutes: p.capsule?.minutes ?? null,
+    capsuleDeclaredAt: p.capsule?.declaredAt ?? null,
+    capsuleMergeAsk: p.capsule?.mergeAsk ?? null,
+    capsuleMergeBranch: p.capsule?.mergeBranch, capsuleMergeTarget: p.capsule?.mergeTarget,
+    capsuleQuestion: p.capsule?.question ?? null,
+    capsuleAnswerable: p.capsule?.answerable ?? true,
+    runtime: p.runtime, live: p.live, tmuxSession: p.session,
+  };
+}
+
+// tmux panes grouped by tmux session name, in pane order. A session-less pane groups by
+// `paneKey` (tuple-safe), never the bare pane id, so two incarnations of the same `%1` never
+// collapse into one synthetic bucket; the display label stays the bare pane id/session name.
+function groupTmuxPanes(panes: HubPane[], nowMs: number): MissionSession[] {
+  const order: string[] = [];
+  const byKey = new Map<string, MissionPane[]>();
+  for (const p of panes) {
+    const key = p.session ?? paneKey(p.pane, p.tmuxIncarnation);
+    if (!byKey.has(key)) order.push(key);
+    const list = byKey.get(key) ?? [];
+    list.push(toMissionPane(p, nowMs));
+    byKey.set(key, list);
+  }
+  return order.map((key) => {
+    const groupPanes = byKey.get(key)!;
+    return { transport: "tmux" as const, session: groupPanes[0].session, panes: groupPanes };
+  });
+}
+
+function toMissionCodexSession(s: HubCodexSession, nowMs: number): Extract<MissionSession, { transport: "codex" }> {
+  return {
+    transport: "codex", threadId: s.threadId, state: codexSessionState(s, nowMs), lastEventTs: s.lastEventTs, subagentCount: s.subagentCount,
+    capsuleEventId: s.capsule?.eventId ?? null,
+    capsuleStatus: capsuleStatusOf(s.capsule), capsuleMinutes: s.capsule?.minutes ?? null, capsuleDeclaredAt: s.capsule?.declaredAt ?? null,
+    capsuleMergeAsk: s.capsule?.mergeAsk ?? null, capsuleQuestion: s.capsule?.question ?? null,
+    capsuleMergeBranch: s.capsule?.mergeBranch, capsuleMergeTarget: s.capsule?.mergeTarget,
+    capsuleAnswerable: s.capsule?.answerable ?? true,
+  };
+}
+
+function scopedTimeline(activity: HubScopedActivity): MissionTimelineEntry[] {
+  return activity.timeline.map((e) => ({ ts: e.ts, type: e.type, pane: e.pane, role: e.role, capsuleStatus: timelineCapsuleStatus(e), ...timelineRunFinishedFields(e) }));
+}
+
+// ---- Session cards (spec §5, §6, §7) --------------------------------------------------------
+
+// A pane's capsule/question stays on a session card only when the row behind it was recorded by
+// that same session (or recorded none — the pane is then the only link there is). One left on
+// the pane by a previous occupant is not this session's: it is dropped from the card (the inbox,
+// which is project-based, still lists it).
+function paneForSeat(p: HubPane, sessionId: string | null): HubPane {
+  const foreign = (recorded: string | null | undefined) => recorded != null && recorded !== sessionId;
+  return {
+    ...p,
+    capsule: foreign(p.capsuleSession) ? null : p.capsule,
+    pendingQuestion: foreign(p.questionSession) ? null : p.pendingQuestion,
+  };
+}
+
+// Worktrees retained by an open session's runs, or by nobody. null when the session list is
+// absent; a count of 0 is not a footer.
+function retainedCount(sessions: { session: string | null; count: number }[] | undefined, match: (session: string | null) => boolean): number | null {
+  if (!sessions) return null;
+  const n = sessions.filter((r) => match(r.session)).reduce((sum, r) => sum + r.count, 0);
+  return n > 0 ? n : null;
+}
+
+function isGrouped(split: HubSessionSplit | undefined): boolean {
+  return split !== undefined && (split.seats.length >= 2 || split.unlinked.activeRuns.length >= 1);
+}
+
+function buildSeatCard(
+  project: MissionCard, hp: HubProject, seat: HubSessionSeat,
+  worktreeSessions: { session: string | null; count: number }[] | undefined, nowMs: number,
+): MissionCard {
+  const seatPaneKeys = new Set(seat.panes.map((r) => paneKey(r.pane, r.tmuxIncarnation)));
+  const panes = hp.panes.filter((p) => seatPaneKeys.has(paneKey(p.pane, p.tmuxIncarnation))).map((p) => paneForSeat(p, seat.sessionId));
+  const codex = seat.transport === "codex" ? hp.codexSessions.filter((c) => c.threadId === seat.sessionId) : [];
+  const activity = seat.activity;
+  // The session's own state — the project gate is the project's, not this session's. A session
+  // whose agent is idle while one of its own runs is in flight is waiting on that run.
+  const own = headlineFor(null, panes, codex, nowMs);
+  const headline: MissionState = own === "idle" && activity.activeRuns.length > 0 ? "waiting" : own;
+  const status = sessionStatusOf(activity.status);
+  const runtime: PaneRuntime = seat.transport === "codex" ? "codex" : (panes.find((p) => p.runtime !== "unknown")?.runtime ?? "unknown");
+  return {
+    ...project,
+    key: seatKey(project.dir, seat),
+    scope: {
+      kind: "session", sessionId: seat.sessionId, transport: seat.transport, runtime, name: seat.name,
+      tmuxSessions: [...new Set(panes.flatMap((p) => (p.session ? [p.session] : [])))],
+      panes: panes.map((p) => p.pane),
+    },
+    sessionStatus: status,
+    group: undefined,
+    gate: null, legacyGateField: false, builder: "", now: "", residuals: [], loopSummary: null,
+    branch: status?.branch ?? "", stage: status?.stage ?? project.stage,
+    headline,
+    sessions: [...groupTmuxPanes(panes, nowMs), ...codex.map((c) => toMissionCodexSession(c, nowMs))],
+    pendingQuestions: panes.flatMap((p) => (p.live && p.pendingQuestion ? [paneQuestion(p)!] : [])),
+    lastEventAgo: activity.newestEventTs,
+    timeline: scopedTimeline(activity),
+    activeRun: toMissionActiveRun(activity.activeRun),
+    activeRuns: activity.activeRuns.map(toMissionActiveRunSummary),
+    lastRun: toMissionLastRun(activity.lastRun),
+    heartbeat: activity.heartbeat,
+    lastAction: activity.lastAction,
+    retainedWorktrees: retainedCount(worktreeSessions, (s) => s !== null && s === seat.sessionId),
+  };
+}
+
+function buildUnlinkedCard(project: MissionCard, unlinked: HubScopedActivity): MissionCard {
+  return {
+    ...project,
+    key: unlinkedKey(project.dir),
+    scope: { kind: "unlinked" },
+    // Headless runs with nobody driving them: a run in flight IS the work.
+    headline: "working",
+    sessions: [], pendingQuestions: [],
+    gate: null, legacyGateField: false,
+    lastEventAgo: unlinked.newestEventTs,
+    timeline: scopedTimeline(unlinked),
+    activeRun: toMissionActiveRun(unlinked.activeRun),
+    activeRuns: unlinked.activeRuns.map(toMissionActiveRunSummary),
+    lastRun: toMissionLastRun(unlinked.lastRun),
+    heartbeat: unlinked.heartbeat,
+    lastAction: unlinked.lastAction,
+    retainedWorktrees: null,
+  };
+}
+
+function buildGroup(
+  project: MissionCard, hp: HubProject, seats: HubSessionSeat[], unlinked: HubScopedActivity,
+  worktreeSessions: { session: string | null; count: number }[] | undefined, unownedLastRun: HubLastRun | null, nowMs: number,
+): MissionGroup {
+  const openIds = new Set(seats.flatMap((seat) => (seat.sessionId !== null ? [seat.sessionId] : [])));
+  const cards = seats.map((seat) => buildSeatCard(project, hp, seat, worktreeSessions, nowMs));
+  if (unlinked.activeRuns.length >= 1) cards.push(buildUnlinkedCard(project, unlinked));
+  const retainedWorktrees = retainedCount(worktreeSessions, (s) => s === null || !openIds.has(s));
+  const lastRun = toMissionLastRun(unownedLastRun);
+  return {
+    cards,
+    footer: retainedWorktrees !== null || lastRun !== null ? { retainedWorktrees, unownedLastRun: lastRun } : null,
+  };
+}
+
 // Shared by toMissionActiveRun (the single newest-run summary) and toMissionActiveRunSummary
 // (one line per in-flight run) — the same kind -> stage/description/targetKind projection either
 // way, so the two can never drift.
@@ -696,65 +860,27 @@ function buildModel(
 
     const headline: MissionState = hubReady ? headlineFor(project.gate, panes, codexSessions, nowMs) : "unknown";
 
-    const sessionOrder: string[] = [];
-    const sessionsByName = new Map<string, MissionPane[]>();
     const pendingQuestions: MissionPendingQuestion[] = [];
     for (const p of panes) {
-      const pendingQuestion = p.pendingQuestion ? toMissionPendingQuestion(p.pendingQuestion) : null;
       // MOA-469 live correction: actionable inbox/question rows come only from a LIVE pane — a dead
       // pane's stale capsule/question stays on its session display row below, never on the inbox.
       if (p.live) {
+        const pendingQuestion = paneQuestion(p);
         if (pendingQuestion) {
           pendingQuestions.push(pendingQuestion);
         } else if (p.capsule?.status === "blocked" || p.capsule?.status === "needs_input") {
           attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: p.capsule.status, transport: "tmux", pane: p.pane, tmuxIncarnation: p.tmuxIncarnation });
         }
       }
-      // `session`/`role` are null when workflow_sessions has no row yet for this pane — fall back
-      // to the pane id as its DISPLAY label and "adhoc" as the neutral role, rather than dropping
-      // the pane or widening MissionPane's types for a transient gap. Finding 2 (branch review):
-      // the GROUPING key used to be the same bare pane id, which collapsed two incarnations of the
-      // same pane (e.g. two `%1` rows with different `tmuxIncarnation`, both session-less) into one
-      // synthetic session bucket. `paneKey` (tuple-safe, `src/lib/workflow.ts`) keeps them apart
-      // internally; the display label stays the bare pane id/session name either way.
-      const displaySession = p.session ?? p.pane;
-      const groupKey = p.session ?? paneKey(p.pane, p.tmuxIncarnation);
-      const mp: MissionPane = {
-        pane: p.pane, tmuxIncarnation: p.tmuxIncarnation, session: displaySession, role: p.role ?? "adhoc",
-        state: paneState(p, nowMs), lastEventTs: p.lastEventTs, pendingQuestion,
-        subagentCount: p.subagentCount,
-        capsuleEventId: p.capsule?.eventId ?? null,
-        capsuleStatus: capsuleStatusOf(p.capsule),
-        capsuleMinutes: p.capsule?.minutes ?? null,
-        capsuleDeclaredAt: p.capsule?.declaredAt ?? null,
-        capsuleMergeAsk: p.capsule?.mergeAsk ?? null,
-        capsuleMergeBranch: p.capsule?.mergeBranch, capsuleMergeTarget: p.capsule?.mergeTarget,
-        capsuleQuestion: p.capsule?.question ?? null,
-        capsuleAnswerable: p.capsule?.answerable ?? true,
-        runtime: p.runtime,
-        live: p.live,
-        tmuxSession: p.session,
-      };
-      if (!sessionsByName.has(groupKey)) sessionOrder.push(groupKey);
-      const list = sessionsByName.get(groupKey) ?? [];
-      list.push(mp);
-      sessionsByName.set(groupKey, list);
     }
     const sessions: MissionSession[] = [
-      ...sessionOrder.map((key) => {
-        const groupPanes = sessionsByName.get(key)!;
-        return { transport: "tmux" as const, session: groupPanes[0].session, panes: groupPanes };
-      }),
+      ...groupTmuxPanes(panes, nowMs),
       ...codexSessions.map((s) => {
-        const state = codexSessionState(s, nowMs);
-        if (state === "needs-you") {
+        const session = toMissionCodexSession(s, nowMs);
+        if (session.state === "needs-you") {
           attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: "needs_input", transport: "codex", threadId: s.threadId });
         }
-        return { transport: "codex" as const, threadId: s.threadId, state, lastEventTs: s.lastEventTs, subagentCount: s.subagentCount, capsuleEventId: s.capsule?.eventId ?? null,
-          capsuleStatus: capsuleStatusOf(s.capsule), capsuleMinutes: s.capsule?.minutes ?? null, capsuleDeclaredAt: s.capsule?.declaredAt ?? null,
-          capsuleMergeAsk: s.capsule?.mergeAsk ?? null, capsuleQuestion: s.capsule?.question ?? null,
-          capsuleMergeBranch: s.capsule?.mergeBranch, capsuleMergeTarget: s.capsule?.mergeTarget,
-          capsuleAnswerable: s.capsule?.answerable ?? true };
+        return session;
       }),
     ];
 
@@ -829,7 +955,7 @@ function buildModel(
       retainedWorktrees = wr && wr.ok && wr.count > 0 ? wr.count : null;
     }
 
-    return {
+    const card: MissionCard = {
       dir: project.dir, ...(project.path ? { path: project.path } : {}),
       name: project.name, stage: project.stage, branch: project.branch,
       builder: project.builder, flag: project.flag, gate: project.gate, legacyGateField: project.legacyGateField,
@@ -843,10 +969,25 @@ function buildModel(
       codexUntracked: hubReady ? (hp?.codexUntracked ?? false) : false,
       heartbeat, lastAction, prefs, visibility,
     };
+    // Session cards (spec §5): two or more open seats always group; one seat groups only with
+    // unlinked work in flight; zero seats group only while an unlinked run is still running.
+    // Otherwise the project card above is the board card — keyed by its one seat when it has
+    // exactly one, so 1→2→1 keeps the expansion state.
+    const split = hubReady ? hp?.split : undefined;
+    if (split && isGrouped(split)) {
+      const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;
+      card.group = buildGroup(card, hp!, split.seats, split.unlinked, wr && wr.ok ? wr.sessions : undefined, split.unownedLastRun, nowMs);
+    } else if (split && split.seats.length === 1) {
+      card.key = seatKey(project.dir, split.seats[0]);
+      if (card.headline === "idle" && split.seats[0].activity.activeRuns.length > 0) card.headline = "waiting";
+    }
+    return card;
   });
 
+  // A grouped project ranks by its most urgent board card, never by its own (status.md) headline.
+  const sortRank = (c: MissionCard) => (c.group ? Math.max(...c.group.cards.map((x) => STATE_RANK[x.headline])) : STATE_RANK[c.headline]);
   cards.sort((a, b) => {
-    const rankDiff = STATE_RANK[b.headline] - STATE_RANK[a.headline];
+    const rankDiff = sortRank(b) - sortRank(a);
     if (rankDiff !== 0) return rankDiff;
     const tsDiff = sortEpochMs(a) - sortEpochMs(b); // ascending = oldest first
     if (tsDiff !== 0) return tsDiff;
