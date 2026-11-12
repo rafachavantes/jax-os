@@ -296,9 +296,9 @@ export function boardCardKeyFor(card: MissionCard, eventId: number | null | unde
 
 export type InboxRow =
   | { kind: "gate"; dir: string; name: string; gate: "awaiting-approval" | "blocked"; updated: string }
-  | { kind: "question"; dir: string; name: string; pane: string; eventId: number; question: string }
-  | { kind: "attention"; dir: string; name: string; status: "blocked" | "needs_input"; transport: "tmux"; pane: string; tmuxIncarnation: string }
-  | { kind: "attention"; dir: string; name: string; status: "needs_input"; transport: "codex"; threadId: string }
+  | { kind: "question"; dir: string; name: string; pane: string; eventId: number; question: string; answerable?: false }
+  | { kind: "attention"; dir: string; name: string; status: "blocked" | "needs_input"; transport: "tmux"; pane: string; tmuxIncarnation: string; capsuleEventId: number | null }
+  | { kind: "attention"; dir: string; name: string; status: "needs_input"; transport: "codex"; threadId: string; capsuleEventId: number | null }
   | { kind: "pr"; dir: string; name: string; number: number; url: string; ci: CiState };
 
 export type MissionModel = {
@@ -869,7 +869,7 @@ function buildModel(
         if (pendingQuestion) {
           pendingQuestions.push(pendingQuestion);
         } else if (p.capsule?.status === "blocked" || p.capsule?.status === "needs_input") {
-          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: p.capsule.status, transport: "tmux", pane: p.pane, tmuxIncarnation: p.tmuxIncarnation });
+          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: p.capsule.status, transport: "tmux", pane: p.pane, tmuxIncarnation: p.tmuxIncarnation, capsuleEventId: p.capsule?.eventId ?? null });
         }
       }
     }
@@ -878,7 +878,7 @@ function buildModel(
       ...codexSessions.map((s) => {
         const session = toMissionCodexSession(s, nowMs);
         if (session.state === "needs-you") {
-          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: "needs_input", transport: "codex", threadId: s.threadId });
+          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: "needs_input", transport: "codex", threadId: s.threadId, capsuleEventId: session.capsuleEventId });
         }
         return session;
       }),
@@ -1011,11 +1011,13 @@ function buildModel(
   const visibleAttentionRows = attentionRows.filter((r) => inboxDirs.has(r.dir));
 
   const gateRows: InboxRow[] = inboxCards
-    .filter((c) => c.gate !== null && c.headline === "needs-you") // same rule as headlineFor: a working or waiting tech lead owes nothing yet
+    // Same rule as headlineFor: a working or waiting tech lead owes nothing yet. A grouped
+    // project emits no gate row — the session's own merge question covers it (spec §8.4).
+    .filter((c) => c.gate !== null && c.headline === "needs-you" && c.group === undefined)
     .map((c) => ({ kind: "gate" as const, dir: c.dir, name: c.name, gate: c.gate as "awaiting-approval" | "blocked", updated: c.updated }));
 
   const questionRows: InboxRow[] = inboxCards.flatMap((c) =>
-    c.pendingQuestions.map((q) => ({ kind: "question" as const, dir: c.dir, name: c.name, pane: q.pane, eventId: q.eventId, question: q.questions[0]?.question ?? "" })),
+    c.pendingQuestions.map((q) => ({ kind: "question" as const, dir: c.dir, name: c.name, pane: q.pane, eventId: q.eventId, question: q.questions[0]?.question ?? "", ...(q.answerable === false ? { answerable: false as const } : {}) })),
   );
 
   const mergeReady: { dir: string; name: string; pr: Pr }[] = [];
@@ -1132,6 +1134,12 @@ export function buildMission(
   if (degraded.length > 0) return { readiness: { kind: "degraded", degraded }, model };
 
   return { readiness: { kind: "ready" }, model };
+}
+
+// The inbox stuck rail lists board cards (session and unlinked cards included), never projects —
+// each row's Cancel targets that card's own run (spec §10, §12).
+export function stuckBoardCards(model: MissionModel): MissionCard[] {
+  return boardCards(model.cards).filter((c) => c.headline === "stuck");
 }
 
 export type StripTitle = { kind: "empty" } | { kind: "count"; count: number } | { kind: "unknown" };

@@ -9,7 +9,7 @@ import { navItemFor } from "@/lib/nav";
 import type { SidebarMode } from "@/lib/nav";
 import { useMission } from "@/lib/useMission";
 import { useTokensApi } from "@/lib/useTokensApi";
-import { buildMission, summarizeBuckets } from "@/lib/mission";
+import { boardCards, buildMission, summarizeBuckets } from "@/lib/mission";
 import type { MissionBucket, MissionReadiness, SourceName } from "@/lib/mission";
 import type { ProjectScan } from "@/server/collectors/projects";
 import type { HubEnvelopeData } from "@/server/db/workflows";
@@ -113,7 +113,7 @@ export function Topbar({
 
   const mission = buildMission(projects.data, hub.data, undefined, Date.now());
   const liveCount = liveSourceCount(projects.data?.ok, hub.data?.ok, mission.model.tmuxSource, mission.model.codexSource);
-  const summary = summarizeBuckets(pillReadinessOf(projects.data, hub.data), mission.model.cards);
+  const summary = summarizeBuckets(pillReadinessOf(projects.data, hub.data), boardCards(mission.model.cards));
 
   return (
     <header className="flex h-[66px] flex-none items-center gap-4 border-b border-line bg-surface px-4 md:px-6">

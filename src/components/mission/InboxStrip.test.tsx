@@ -49,7 +49,7 @@ describe("InboxStrip — transport-aware attention rows (MOA-469 §4)", () => {
   it("a native Codex attention row is visible and has no tmux action", () => {
     const html = renderToStaticMarkup(createElement(InboxStrip, {
       mission: missionOf([
-        { kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: "0191f0aa-1234-7000-8000-000000000001" },
+        { kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: "0191f0aa-1234-7000-8000-000000000001", capsuleEventId: null },
       ]),
       onExpand: () => {},
     }));
@@ -62,7 +62,7 @@ describe("InboxStrip — transport-aware attention rows (MOA-469 §4)", () => {
   it("a Claude pane attention row retains its tmux action", () => {
     const html = renderToStaticMarkup(createElement(InboxStrip, {
       mission: missionOf([
-        { kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "1:1" },
+        { kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "1:1", capsuleEventId: null },
       ]),
       onExpand: () => {},
     }));
@@ -134,7 +134,7 @@ describe("InboxStrip — question row actions (spec §6, Decision 9)", () => {
   });
   it("a bare-capsule (hasQuestionText false) question row renders no button — attention rows never had one, unchanged", () => {
     const html = renderToStaticMarkup(createElement(InboxStrip, {
-      mission: missionOf([{ kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "1:1" }]),
+      mission: missionOf([{ kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "1:1", capsuleEventId: null }]),
       onExpand: () => {},
     }));
     expect(html).not.toContain("actions.respond");

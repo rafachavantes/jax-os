@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMission } from "@/lib/useMission";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import { fetchEnvelope } from "@/lib/api";
-import { buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
+import { boardCards, buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
 import type { MissionBucket } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
@@ -60,7 +60,7 @@ export default function MissionPage() {
   // harness returns a projects-shaped envelope for every source — a non-iterable value must
   // degrade to an empty ticker, never crash the page (hard rule 3).
   const ticker = buildTicker(mission.model.cards, Array.isArray(activity.data?.data) ? activity.data.data : [], prs.data?.ok ? prs.data.data : {}, nowMs);
-  const summary = summarizeBuckets(mission.readiness, mission.model.cards);
+  const summary = summarizeBuckets(mission.readiness, boardCards(mission.model.cards));
   // F3: worktrees is deliberately OUT of this array (spec §7 quiet-failure exception,
   // decision C2) -- every other source here still raises the page-level warning.
   const staleSource = [projects, hub, prs, activity, counts].find((q) => q.isError);

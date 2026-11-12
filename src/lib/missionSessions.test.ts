@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  boardCardKeyFor, boardCards, boardEntries, bucketOf, cardKey, sessionDisplay, type MissionCard,
+  boardCardKeyFor, boardCards, boardEntries, bucketOf, buildTicker, cardKey, sessionDisplay, stuckBoardCards, type MissionCard,
 } from "./mission";
 import {
   missionOf, mkActivity, mkHubProject, mkPane, mkProject, mkSeat, mkSplit, runSummary, NOW, U,
@@ -395,5 +395,84 @@ describe("unlinked card", () => {
     const unlinked = cardOf(m, "p#unlinked");
     expect(unlinked.activeRuns).toHaveLength(2);
     expect(unlinked.activeRun?.runId).toBe("r9");
+  });
+});
+
+describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
+  it("a grouped project emits no gate row; the identical plain project keeps it", () => {
+    const blocked = { status: "blocked" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 3, mergeAsk: null, question: null };
+    const grouped = missionOf({
+      p: mkHubProject({
+        panes: [pane("%1", { capsule: blocked }), pane("%2", { harnessSession: B })],
+        split: mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")] }),
+      }),
+    }, { projects: [mkProject({ dir: "p", gate: "awaiting-approval" })] });
+    expect(grouped.model.inbox.some((r) => r.kind === "gate")).toBe(false);
+
+    const plain = missionOf({
+      p: mkHubProject({ panes: [pane("%1", { capsule: blocked })] }),
+    }, { projects: [mkProject({ dir: "p", gate: "awaiting-approval" })] });
+    expect(plain.model.inbox.some((r) => r.kind === "gate")).toBe(true);
+  });
+
+  it("one question row per event, answerability copied", () => {
+    const q11 = { eventId: 11, pane: "%1", tmuxIncarnation: "1:1", payload: { questions: [{ question: "a?", options: [{ label: "x" }] }] } };
+    const q12 = { eventId: 12, pane: "%2", tmuxIncarnation: "1:1", payload: { questions: [{ question: "b?", options: [{ label: "y" }] }] } };
+    const m = missionOf({
+      p1: mkHubProject({ panes: [pane("%1", { pendingQuestion: q11 })] }),
+      p2: mkHubProject({ panes: [pane("%2", { pendingQuestion: q12, questionAnswerable: false })] }),
+    });
+    const rows = m.model.inbox.filter((r) => r.kind === "question");
+    expect(rows.map((r) => (r.kind === "question" ? r.eventId : 0))).toEqual([11, 12]);
+    expect(rows[1]).toMatchObject({ answerable: false });
+  });
+
+  it("attention rows carry the capsule event id in both transports, null when absent", () => {
+    const tmuxCapsule = { status: "needs_input" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 31, mergeAsk: null, question: null };
+    const codexCapsule = { status: "needs_input" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 41, mergeAsk: null, question: null };
+    const m = missionOf({
+      t: mkHubProject({ panes: [pane("%1", { capsule: tmuxCapsule })] }),
+      c: mkHubProject({ codexSessions: [{ threadId: U("c"), status: "idle", activeFlags: [], sourceOk: true, working: false, attention: true, pendingAttention: false, runInFlight: false, capsule: codexCapsule, lastEventTs: null, subagentCount: 0 }] }),
+      n: mkHubProject({ codexSessions: [{ threadId: U("n"), status: "idle", activeFlags: [], sourceOk: true, working: false, attention: false, pendingAttention: true, runInFlight: false, capsule: null, lastEventTs: null, subagentCount: 0 }] }),
+    });
+    const rows = m.model.inbox.filter((r) => r.kind === "attention");
+    expect(rows).toContainEqual(expect.objectContaining({ transport: "tmux", capsuleEventId: 31 }));
+    expect(rows).toContainEqual(expect.objectContaining({ transport: "codex", threadId: U("c"), capsuleEventId: 41 }));
+    expect(rows).toContainEqual(expect.objectContaining({ transport: "codex", threadId: U("n"), capsuleEventId: null }));
+  });
+
+  it("the stuck rail lists session cards, not project cards", () => {
+    const stuckCapsule = { status: "waiting" as const, minutes: 1, declaredAt: new Date(NOW - 60 * 60_000).toISOString(), eventId: 1, mergeAsk: null, question: null };
+    const grouped = missionOf({
+      g: mkHubProject({
+        panes: [pane("%1", { capsule: stuckCapsule }), pane("%2", { harnessSession: B })],
+        split: mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")] }),
+      }),
+    });
+    expect(stuckBoardCards(grouped.model).map(cardKey)).toEqual([`g#session:${A}`]);
+
+    const plain = missionOf({ p: mkHubProject({ panes: [pane("%1", { capsule: stuckCapsule })] }) });
+    expect(stuckBoardCards(plain.model).map(cardKey)).toEqual(["p"]);
+  });
+
+  it("the ticker keeps project-card events once, not per session card", () => {
+    const events = [
+      { id: 1, ts: "2026-11-12T11:00:00.000Z", type: "question", pane: "%1", role: "lead", emitter: "claude", payload: null },
+      { id: 2, ts: "2026-11-12T11:01:00.000Z", type: "turn-stopped", pane: "%2", role: "lead", emitter: "claude", payload: null },
+    ];
+    const m = missionOf({
+      p: mkHubProject({
+        panes: [pane("%1"), pane("%2", { harnessSession: B })],
+        timeline: events,
+        split: mkSplit({
+          seats: [
+            seat(A, "%1", { activity: mkActivity({ timeline: [events[0]] }) }),
+            seat(B, "%2", { activity: mkActivity({ timeline: [events[1]] }) }),
+          ],
+        }),
+      }),
+    });
+    const ticker = buildTicker(m.model.cards, [], {}, NOW);
+    expect(ticker.filter((i) => i.source === "event")).toHaveLength(2);
   });
 });

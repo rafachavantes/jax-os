@@ -420,7 +420,7 @@ describe("buildMission — a resolved blocked/needs_input capsule produces an in
       scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
     );
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000" });
+    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 });
     expect(model.inboxTotalCount).toBe(1);
     expect(readiness).toEqual({ kind: "ready" }); // a needs-you card is never swallowed by the empty predicate
   });
@@ -432,7 +432,7 @@ describe("buildMission — a resolved blocked/needs_input capsule produces an in
     const { model } = buildMission(
       scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
     );
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "needs_input", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000" });
+    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "needs_input", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 });
   });
 
   it("a pane with a pending question does NOT also get a duplicate attention row — the question row already covers it", () => {
@@ -850,7 +850,7 @@ describe("buildMission — native Codex sessions (MOA-469 §4)", () => {
     const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "active", activeFlags: ["waitingOnUserInput"], attention: true })] }) });
     const { model } = buildMission(scan, hub, { ok: true, data: { p1: { ok: true, prs: [], truncated: false } } }, NOW);
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId });
+    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: null });
   });
 
   it("a Codex source failure warning never hides a genuinely working Claude pane", () => {
@@ -975,7 +975,7 @@ describe("buildMission — MOA-469 live corrections: dead panes and unavailable 
     }) });
     const { model } = buildMission(scan, hub, RESOLVED, NOW);
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%2", tmuxIncarnation: "100:1000" });
+    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%2", tmuxIncarnation: "100:1000", capsuleEventId: 1 });
     expect(model.inbox.filter((r) => r.kind === "attention")).toHaveLength(1);
     expect(model.cards[0].pendingQuestions).toHaveLength(0);
   });
@@ -996,7 +996,7 @@ describe("buildMission — MOA-469 live corrections: dead panes and unavailable 
     const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "idle", pendingAttention: true })] }) });
     const { model } = buildMission(scan, hub, RESOLVED, NOW);
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId });
+    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: null });
   });
 });
 
