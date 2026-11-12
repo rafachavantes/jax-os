@@ -411,14 +411,22 @@ export function claimAnswer(db: Database.Database, request: AnswerRequest, now =
   try {
     return db.transaction((): ClaimAnswerResult => {
       const row = db.prepare(
-        "SELECT id, ts, project, role, payload, pane, tmux_incarnation FROM workflow_events WHERE id = ? AND type = 'question'",
+        "SELECT id, ts, project, role, payload, pane, tmux_incarnation, harness_session FROM workflow_events WHERE id = ? AND type = 'question'",
       ).get(request.question_event_id) as {
         id: number; ts: string; project: string; role: Role; payload: string | null;
-        pane: string | null; tmux_incarnation: string | null;
+        pane: string | null; tmux_incarnation: string | null; harness_session: string | null;
       } | undefined;
       if (!row) return { ok: false, reason: "not-pending" };
       if (!row.pane || !row.tmux_incarnation) return { ok: false, reason: "invalid-target" };
       const ref: PaneRef = { pane: row.pane, tmuxIncarnation: row.tmux_incarnation };
+      // A structured answer is TYPED into the question's pane. Once a different conversation owns
+      // that exact pane — in this project or any other (a /clear, a restarted agent, the pane
+      // moving to another repo) — the keys would land in the wrong conversation. Refused here,
+      // before any claim or input; the same rule marks the question unanswerable on the dashboard.
+      // The tmux incarnation is still checked at injection (assertLivePane).
+      if (!questionOwnsPane(db, { id: row.id, project: row.project, ref, harnessSession: row.harness_session })) {
+        return { ok: false, reason: "invalid-target" };
+      }
       const key = paneKey(ref.pane, ref.tmuxIncarnation);
       const payload = parseStoredPayload(row.payload); // corrupt/non-object -> {} -> no tool_use_id -> not-pending
       const tool_use_id = payload.tool_use_id;
@@ -1233,36 +1241,59 @@ function getCurrentProjectByPaneKey(db: Database.Database, live: LiveSnapshot): 
   const map = new Map<string, string>();
   if (live.incarnation === null || live.paneIds.size === 0) return map;
   const incarnation = live.incarnation; // narrow once outside the closures below
-  // A dynamic pane_key IN (...) list, one bound param per live pane — there is no `pane`
-  // column reference here at all, only the generated pane_key column (spec §4.1).
-  const keys = [...live.paneIds].map((pane) => paneKey(pane, incarnation));
-  const placeholders = keys.map(() => "?").join(",");
-  const sessionRows = db
-    .prepare(`SELECT pane_key AS paneKey, project, registered_at AS registeredAt FROM workflow_sessions WHERE pane_key IN (${placeholders})`)
-    .all(...keys) as { paneKey: string; project: string; registeredAt: string }[];
-  const sessionByKey = new Map(sessionRows.map((r) => [r.paneKey, r]));
   // ponytail: a plain per-key loop, not a window function — bounded by the handful of live panes,
   // same style as every other "latest row for this pane_key" query in this file (lastCapsule,
   // pendingQuestionFor).
-  for (const key of keys) {
-    const session = sessionByKey.get(key);
-    const eventRow = db
-      .prepare(
-        `SELECT project, ts FROM workflow_events
-         WHERE pane_key = ? AND ${paneAgentFilter()}
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(key) as { project: string; ts: string } | undefined;
-    if (session && eventRow) {
-      // ISO-8601 timestamps (both from now.toISOString()) sort correctly under string comparison.
-      map.set(key, eventRow.ts > session.registeredAt ? eventRow.project : session.project);
-    } else if (session) {
-      map.set(key, session.project);
-    } else if (eventRow) {
-      map.set(key, eventRow.project);
-    }
+  for (const pane of live.paneIds) {
+    const key = paneKey(pane, incarnation);
+    const project = currentProjectOfPaneKey(db, key);
+    if (project !== null) map.set(key, project);
   }
   return map;
+}
+
+// The reconciled current project of ONE pane_key (spec §8.1 condition 3) — the same rule the hub
+// uses to decide which project a pane is live for. Session registration and the latest agent event
+// are both best-effort: whichever is newer wins, and the session row wins the tie / no-event case.
+function currentProjectOfPaneKey(db: Database.Database, key: string): string | null {
+  const session = db
+    .prepare("SELECT project, registered_at AS registeredAt FROM workflow_sessions WHERE pane_key = ?")
+    .get(key) as { project: string; registeredAt: string } | undefined;
+  const eventRow = db
+    .prepare(
+      `SELECT project, ts FROM workflow_events
+       WHERE pane_key = ? AND ${paneAgentFilter()}
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(key) as { project: string; ts: string } | undefined;
+  // ISO-8601 timestamps (both from now.toISOString()) sort correctly under string comparison.
+  if (session && eventRow) return eventRow.ts > session.registeredAt ? eventRow.project : session.project;
+  return session?.project ?? eventRow?.project ?? null;
+}
+
+// Whether the conversation that asked a pane question still owns that exact pane (pane + tmux
+// incarnation, i.e. pane_key) — across EVERY project, since the same pane can move to another
+// repo and start a new conversation there (spec §8.1). Owned only when:
+//  - the newest agent row on the pane_key, in any project, was recorded by the asking session
+//    (a newer row from another session, or one that recorded none, means the pane has moved on —
+//    fail closed: unprovable is not owned), and
+//  - the pane's current project is still the question's project (a later re-registration to
+//    another project makes that project current; spec condition 2 is implied by this).
+// A question that recorded no session (rows older than session tracking) keeps the previous
+// behaviour: answerable. Used by BOTH claimAnswer and the hub's answerability flag.
+export function questionOwnsPane(
+  db: Database.Database,
+  q: { id: number; project: string; ref: PaneRef; harnessSession: string | null },
+): boolean {
+  if (q.harnessSession === null) return true;
+  const key = paneKey(q.ref.pane, q.ref.tmuxIncarnation);
+  const newest = db.prepare(
+    `SELECT harness_session FROM workflow_events
+     WHERE pane_key = ? AND ${paneAgentFilter()}
+     ORDER BY id DESC LIMIT 1`,
+  ).get(key) as { harness_session: string | null } | undefined;
+  if (!newest || newest.harness_session !== q.harnessSession) return false;
+  return currentProjectOfPaneKey(db, key) === q.project;
 }
 
 // Membership (§7.1b): every project with a live pane, OR an agent-sourced event in the last 30
