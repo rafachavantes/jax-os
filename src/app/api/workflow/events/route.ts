@@ -1,12 +1,26 @@
 import { NextResponse } from "next/server";
+import { homedir } from "node:os";
 import { LIMITS } from "../../../../lib/workflow";
 import { collectorResponse, readJsonCapped, requireSameOrigin } from "../../../../server/api";
 import { parseIngress, toForwardBody } from "../../../../server/collectors/workflow-events";
+import { readSessionNames } from "../../../../server/collectors/session-names";
 import { forwardNotification, notificationTargetFromEnv } from "../../../../server/collectors/workflow-webhook";
 import { getDb } from "../../../../server/db";
 import { insertEvent, listPending, markDelivered, RUN_ALREADY_FINISHED } from "../../../../server/db/workflows";
 
 export const dynamic = "force-dynamic";
+
+// Session cards (spec §9): the display name of the row's agent session, resolved once per request
+// and only when a row actually carries one (a run-finished row never reads the registry). Names
+// are enrichment — a missing registry is silence, never an error.
+function sessionNameResolver(): (row: { harness_session?: string | null }) => string | null {
+  let names: ReadonlyMap<string, string> | null = null;
+  return (row) => {
+    if (!row.harness_session) return null;
+    names ??= readSessionNames(homedir());
+    return names.get(row.harness_session) ?? null;
+  };
+}
 
 // Hermes fallback poll (spec §4.2, cursorless): the server-side pending filter
 // IS the cursor. Rows are forward-shaped so push and poll carry identical bodies.
@@ -18,7 +32,8 @@ export async function GET(req: Request) {
   const n = Number(u.searchParams.get("limit"));
   const limit = Number.isInteger(n) && n > 0 ? Math.min(n, LIMITS.pollLimitMax) : 50;
   const viewer = process.env.TTYD_RO_URL;
-  return collectorResponse(() => listPending(getDb(), limit).map((r) => toForwardBody(r, viewer)));
+  const nameOf = sessionNameResolver();
+  return collectorResponse(() => listPending(getDb(), limit).map((r) => toForwardBody(r, viewer, nameOf(r))));
 }
 
 // Ingress (wrapper + hooks). Insert first; then at most ONE bounded forward.
@@ -56,8 +71,9 @@ export async function POST(req: Request) {
   if (!target) return NextResponse.json({ ok: true, forwarded: false, data }); // no webhook configured → poll fallback
 
   let forwardBody: string;
+  const nameOf = sessionNameResolver();
   try {
-    forwardBody = JSON.stringify(toForwardBody(row, process.env.TTYD_RO_URL));
+    forwardBody = JSON.stringify(toForwardBody(row, process.env.TTYD_RO_URL, nameOf(row)));
   } catch {
     // persisted but unforwardable — leave it pending for the poll, never 5xx
     return NextResponse.json({ ok: true, forwarded: false, data });
