@@ -2,11 +2,12 @@
 
 import { useTranslations } from "next-intl";
 import { useState } from "react";
+import { flushSync } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useMission } from "@/lib/useMission";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import { fetchEnvelope } from "@/lib/api";
-import { boardCards, buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
+import { boardCards, boardShowsKey, buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
 import type { MissionBucket } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
@@ -91,7 +92,11 @@ export default function MissionPage() {
       <MissionBlock />
 
       <AnswerDraftsProvider>
-        <InboxStrip mission={mission} onExpand={setExpandedDir} />
+        <InboxStrip mission={mission} onExpand={(key) => {
+          // Respond on a card the filter hides: drop the filter synchronously so the scroll finds it.
+          if (filter !== null && !boardShowsKey(mission.model.cards, filter, key)) flushSync(() => { setFilter(null); setExpandedDir(key); });
+          else setExpandedDir(key);
+        }} />
 
         <ProjectsColumn
           mission={mission} reposRoot={mission.model.reposRoot} counts={countsByName} filter={filter}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  boardCardKeyFor, boardCards, boardEntries, bucketOf, buildTicker, cardKey, sessionDisplay, stuckBoardCards, type MissionCard,
+  boardCardKeyFor, boardCards, boardEntries, boardShowsKey, bucketOf, buildTicker, cardKey, sessionDisplay, stuckBoardCards, type MissionCard,
 } from "./mission";
 import {
   missionOf, mkActivity, mkHubProject, mkPane, mkProject, mkSeat, mkSplit, runSummary, NOW, U,
@@ -120,6 +120,10 @@ describe("seat order and transitions", () => {
     expect(cardOf(oneModel, "p#unlinked").activeRun?.runId).toBe("rB");
     const workKeys = boardEntries(oneModel.model.cards, "working").flatMap((e) => (e.kind === "group" ? e.cards : [e.card])).map(cardKey);
     expect(workKeys).toContain("p#unlinked");
+    // Respond: a card the active filter hides is not on screen, so the page drops the filter first.
+    expect(boardShowsKey(oneModel.model.cards, "working", "p#unlinked")).toBe(true);
+    expect(boardShowsKey(oneModel.model.cards, "working", `p#session:${A}`)).toBe(false);
+    expect(boardShowsKey(oneModel.model.cards, null, `p#session:${A}`)).toBe(true);
 
     const zero = mkSplit({
       seats: [],
