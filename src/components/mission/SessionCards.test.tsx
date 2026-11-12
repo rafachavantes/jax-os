@@ -445,3 +445,55 @@ describe("group frame render (spec §7.1–§7.3, §13)", () => {
     expect(stuck).toContain("empty");
   });
 });
+
+describe("display names and remaining consumers (Task 9)", () => {
+  it("a hub name reaches the card; an unnamed seat falls back to the short id", () => {
+    const panes = [mkPane({ pane: "%1", tmuxIncarnation: "1:1", harnessSession: A }), mkPane({ pane: "%2", tmuxIncarnation: "1:1", harnessSession: B })];
+    const split = mkSplit({
+      seats: [
+        mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }], name: "multi-sessao" }),
+        mkSeat({ sessionId: B, panes: [{ pane: "%2", tmuxIncarnation: "1:1" }], name: null }),
+      ],
+    });
+    const m = missionOf({ Alpha: mkHubProject({ panes, split }) });
+    expect(cardKey(m.model.cards[0].group!.cards[0])).toBe(`Alpha#session:${A}`);
+    expect(m.model.cards[0].group!.cards[0].scope).toMatchObject({ name: "multi-sessao" });
+    const html = renderColumn(m);
+    expect(segment(html, `Alpha#session:${A}`)).toContain("multi-sessao");
+    expect(segment(html, `Alpha#session:${B}`)).toContain(B.slice(0, 8));
+  });
+
+  it("a Codex thread name renders as data, never as a translation key", () => {
+    const thread = FU("c");
+    const codexSeat = mkSeat({ sessionId: thread, transport: "codex", name: "Correção AFK" });
+    const m = missionOf({
+      Alpha: mkHubProject({
+        panes: [mkPane({ pane: "%1", tmuxIncarnation: "1:1", harnessSession: A })],
+        codexSessions: [{ threadId: thread, status: "idle", activeFlags: [], sourceOk: true, working: false, attention: false, pendingAttention: false, runInFlight: false, capsule: null, lastEventTs: null, subagentCount: 0 }],
+        split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] }), codexSeat] }),
+      }),
+    });
+    const codexCard = m.model.cards[0].group!.cards.find((c) => c.scope?.kind === "session" && c.scope.sessionId === thread)!;
+    expect(codexCard.scope).toMatchObject({ name: "Correção AFK", transport: "codex", runtime: "codex" });
+    expect(segment(renderColumn(m), `Alpha#session:${thread}`)).toContain("Correção AFK");
+  });
+
+  it("a failed Codex source keeps its warning above a group", () => {
+    const panes = [mkPane({ pane: "%1", tmuxIncarnation: "1:1", harnessSession: A }), mkPane({ pane: "%2", tmuxIncarnation: "1:1", harnessSession: B })];
+    const split = mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] }), mkSeat({ sessionId: B, panes: [{ pane: "%2", tmuxIncarnation: "1:1" }] })] });
+    const html = renderColumn(missionOf({ Alpha: mkHubProject({ panes, split }) }, { codexSource: "failed" }));
+    expect(html).toContain("codexUnavailable");
+    expect(html).toContain('data-testid="group-header"');
+  });
+
+  it("retained worktrees of an open session show on its expanded card; the rest stays in the footer", () => {
+    const panes = [mkPane({ pane: "%1", tmuxIncarnation: "1:1", harnessSession: A }), mkPane({ pane: "%2", tmuxIncarnation: "1:1", harnessSession: B })];
+    const split = mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] }), mkSeat({ sessionId: B, panes: [{ pane: "%2", tmuxIncarnation: "1:1" }] })] });
+    const m = missionOf({ Alpha: mkHubProject({ panes, split }) }, {
+      worktrees: { Alpha: { ok: true, count: 2, oldestAgeDays: 2, sessions: [{ session: A, count: 1 }, { session: "closed", count: 1 }] } },
+    });
+    const html = renderColumn(m, `Alpha#session:${A}`);
+    expect(segment(html, `Alpha#session:${A}`)).toContain("expanded.retainedWorktrees");
+    expect(html).toContain("board.footerWorktrees");
+  });
+});
