@@ -914,6 +914,21 @@ export type HubPane = {
   lastEventTs: string;
   subagentCount: number;
   runtime: PaneRuntime;
+  // Session cards: the agent session (Claude `session_id`, stored as harness_session) this pane
+  // currently hosts for THIS project — the newest agent row on the pane_key that recorded one. null
+  // when nothing on the pane has recorded a session yet (a registration-only pane). The tmux
+  // session/pane above is only WHERE the agent runs; this is WHO it is. Optional so fixtures that
+  // predate session cards need no change.
+  harnessSession?: string | null;
+  // The recorded agent session of the rows behind `capsule` and `pendingQuestion` (null when the
+  // row recorded none). A session card keeps a capsule/question only when it was raised by the
+  // session the card is for — never one left behind on the pane by a previous session.
+  capsuleSession?: string | null;
+  questionSession?: string | null;
+  // Whether `pendingQuestion` can still be answered: false once another conversation owns this
+  // exact pane (any project). Computed with the answer route's own check (questionOwnsPane).
+  // Absent when there is no pending question (and on fixtures predating it).
+  questionAnswerable?: boolean;
 };
 
 // A native Codex session row (MOA-469 §2) — NEVER a fabricated pane or incarnation. Membership is
@@ -1383,6 +1398,10 @@ export function getProjectPanes(
       .prepare("SELECT session, role FROM workflow_sessions WHERE pane_key = ?")
       .get(paneKey(ref.pane, ref.tmuxIncarnation)) as { session: string; role: "lead" | "adhoc" } | undefined;
     const isCurrentProject = currentProjectByPaneKey.get(paneKey(ref.pane, ref.tmuxIncarnation)) === project;
+    const capsule = lastCapsule(db, ref, project, isCurrentProject, isAlive);
+    const pendingQuestion = pendingQuestionFor(db, ref, project);
+    const harnessSession = paneHarnessSession(db, ref, project);
+    const key = paneKey(ref.pane, ref.tmuxIncarnation);
     return {
       pane: ref.pane,
       tmuxIncarnation: ref.tmuxIncarnation,
@@ -1390,13 +1409,42 @@ export function getProjectPanes(
       role: sessionRow?.role ?? null,
       live: isCurrentProject,
       working: isCurrentProject && isWorking(db, ref, live),
-      capsule: lastCapsule(db, ref, project, isCurrentProject, isAlive),
-      pendingQuestion: pendingQuestionFor(db, ref, project),
+      capsule,
+      pendingQuestion,
       runtime: runtimeFromEmitter(row.emitter),
-      subagentCount: openSubagentCount(db, project, { paneKey: paneKey(ref.pane, ref.tmuxIncarnation) }, nowMs),
+      // Only the conversation the pane hosts NOW: a new conversation in the same pane (a /clear or
+      // a restarted agent) must not inherit the previous one's unmatched subagent starts. A pane
+      // with no recorded session keeps the pane-wide count (nothing to separate by).
+      subagentCount: openSubagentCount(db, project, harnessSession ? { paneKey: key, harnessSession } : { paneKey: key }, nowMs),
       lastEventTs: row.lastEventTs,
+      harnessSession,
+      capsuleSession: capsule ? recordedSessionOf(db, capsule.eventId) : null,
+      questionSession: pendingQuestion ? recordedSessionOf(db, pendingQuestion.eventId) : null,
+      // The answer route's own rule (claimAnswer -> questionOwnsPane), so the dashboard never offers
+      // an answer the server would refuse.
+      ...(pendingQuestion ? {
+        questionAnswerable: questionOwnsPane(db, { id: pendingQuestion.eventId, project, ref, harnessSession: recordedSessionOf(db, pendingQuestion.eventId) }),
+      } : {}),
     };
   });
+}
+
+// The agent session a pane currently hosts for `project`: the newest agent row on this exact
+// pane_key (tuple-safe across tmux restarts) that recorded one. Project-scoped like every other
+// pane read here — a pane that moved to another project keeps this project's last session.
+function paneHarnessSession(db: Database.Database, ref: PaneRef, project: string): string | null {
+  const row = db.prepare(
+    `SELECT harness_session FROM workflow_events
+     WHERE pane_key = ? AND project = ? AND harness_session IS NOT NULL AND ${paneAgentFilter()}
+     ORDER BY id DESC LIMIT 1`,
+  ).get(paneKey(ref.pane, ref.tmuxIncarnation), project) as { harness_session: string } | undefined;
+  return row?.harness_session ?? null;
+}
+
+function recordedSessionOf(db: Database.Database, eventId: number): string | null {
+  const row = db.prepare("SELECT harness_session FROM workflow_events WHERE id = ?").get(eventId) as
+    { harness_session: string | null } | undefined;
+  return row?.harness_session ?? null;
 }
 
 // Most recent 20 events for a project, newest first (§7.4 caps this at 20). Unlike every
@@ -1495,22 +1543,27 @@ const SUBAGENT_ORPHAN_MS = 30 * 60_000;
 function openSubagentCount(
   db: Database.Database,
   project: string,
-  identity: { paneKey: string } | { harnessSession: string },
+  // Claude: the pane_key, narrowed to the pane's CURRENT agent session when one is recorded.
+  // Codex: the thread (harness_session) alone.
+  identity: { paneKey: string; harnessSession?: string } | { harnessSession: string },
   nowMs: number,
 ): number {
-  const scopeCol = "paneKey" in identity ? "pane_key" : "harness_session";
-  const scopeVal = "paneKey" in identity ? identity.paneKey : identity.harnessSession;
+  const scope: { sql: string; params: string[] } = "paneKey" in identity
+    ? identity.harnessSession
+      ? { sql: "pane_key = ? AND harness_session = ?", params: [identity.paneKey, identity.harnessSession] }
+      : { sql: "pane_key = ?", params: [identity.paneKey] }
+    : { sql: "harness_session = ?", params: [identity.harnessSession] };
   const starts = db.prepare(
     `SELECT id, ts, json_extract(payload, '$.agent_id') AS agentId FROM workflow_events
-     WHERE project = ? AND ${scopeCol} = ? AND type = 'subagent-started'`,
-  ).all(project, scopeVal) as { id: number; ts: string; agentId: string | null }[];
+     WHERE project = ? AND ${scope.sql} AND type = 'subagent-started'`,
+  ).all(project, ...scope.params) as { id: number; ts: string; agentId: string | null }[];
   let count = 0;
   for (const s of starts) {
     if (!s.agentId) continue;
     const stopped = db.prepare(
-      `SELECT 1 FROM workflow_events WHERE project = ? AND ${scopeCol} = ? AND type = 'subagent-stopped'
+      `SELECT 1 FROM workflow_events WHERE project = ? AND ${scope.sql} AND type = 'subagent-stopped'
        AND json_extract(payload, '$.agent_id') = ? AND id > ? LIMIT 1`,
-    ).get(project, scopeVal, s.agentId, s.id);
+    ).get(project, ...scope.params, s.agentId, s.id);
     if (stopped) continue;
     const ageMs = nowMs - Date.parse(s.ts);
     if (Number.isFinite(ageMs) && ageMs > SUBAGENT_ORPHAN_MS) continue; // strictly over 30 min: orphan
