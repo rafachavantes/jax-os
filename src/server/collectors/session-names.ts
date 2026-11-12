@@ -52,21 +52,32 @@ export function parseCodexSessionIndex(text: string): Map<string, string> {
 export function readSessionNames(homeDir: string): Map<string, string> {
   const names = new Map<string, string>();
 
-  // Claude: one small JSON file per running session. Only regular files ending in ".json" are
-  // read — never .key files (they hold credentials), symlinks or directories.
+  // Claude: one small JSON file per running session, under ~/.claude and under each claude-switch
+  // account (sessions started with that account's CLAUDE_CONFIG_DIR). Only regular files ending in
+  // ".json" are read — never .key files (they hold credentials), symlinks or directories.
+  const claudeDirs = [join(homeDir, ".claude", "sessions")];
   try {
-    const dir = join(homeDir, ".claude", "sessions");
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      try {
-        const record = parseClaudeSessionRecord(readFileSync(join(dir, entry.name), "utf8"));
-        if (record) names.set(record.sessionId, record.name);
-      } catch {
-        // One unreadable file never hides the rest.
-      }
+    const accounts = join(homeDir, ".claude-switch", "accounts");
+    for (const a of readdirSync(accounts, { withFileTypes: true })) {
+      if (a.isDirectory()) claudeDirs.push(join(accounts, a.name, "sessions"));
     }
   } catch {
-    // No registry (no Claude session ever ran here): no names, no warning.
+    // No claude-switch: only the default registry.
+  }
+  for (const dir of claudeDirs) {
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        try {
+          const record = parseClaudeSessionRecord(readFileSync(join(dir, entry.name), "utf8"));
+          if (record) names.set(record.sessionId, record.name);
+        } catch {
+          // One unreadable file never hides the rest.
+        }
+      }
+    } catch {
+      // No registry (no Claude session ever ran here): no names, no warning.
+    }
   }
 
   // Codex: independent source — its failure never suppresses the Claude names above.
