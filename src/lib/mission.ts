@@ -7,7 +7,7 @@
 
 import type { Envelope } from "./api";
 import type { Project, ProjectGate, ProjectScan, ProjectStage } from "../server/collectors/projects";
-import type { Capsule, HubActiveRun, HubActiveRunSummary, HubCodexSession, HubEnvelopeData, HubLastRun, HubPane, HubProject, HubTimelineEvent, LoopSummary, PaneRuntime, PendingQuestion } from "../server/db/workflows";
+import type { Capsule, HubActiveRun, HubActiveRunSummary, HubCodexSession, HubEnvelopeData, HubLastRun, HubPane, HubProject, HubSessionSeat, HubSessionStatus, HubTimelineEvent, LoopSummary, PaneRuntime, PendingQuestion } from "../server/db/workflows";
 import type { CiState, Pr, PrResult } from "../server/collectors/github";
 import type { Commit } from "../server/collectors/activity";
 import type { WorktreeResult } from "../server/collectors/worktrees";
@@ -22,7 +22,7 @@ export type MissionQuestion = {
   options: { label: string; description?: string }[];
 };
 
-export type MissionPendingQuestion = { pane: string; eventId: number; questions: MissionQuestion[] };
+export type MissionPendingQuestion = { pane: string; eventId: number; questions: MissionQuestion[]; answerable?: false };
 
 export type MissionPane = {
   pane: string;
@@ -193,7 +193,106 @@ export type MissionCard = {
   lastAction: { tool: string; ts: string } | null;
   prefs: { pinned: boolean; hiddenAt: string | null };
   visibility: "visible" | "hidden" | "autoHidden" | "archived";
+  // Board identity for a card that is not a plain project card (`cardKey`); `dir` stays the
+  // project join key. Absent means the card is its project's plain card.
+  key?: string;
+  scope?: MissionCardScope;
+  sessionStatus?: MissionSessionStatus | null;
+  // On a project card only: the cards rendered in its place under one group frame.
+  group?: MissionGroup;
 };
+
+// One open agent session's card identity (spec §4 "Card key"): the agent conversation id
+// (`sessionId` null only for a live pane that recorded none yet), where it runs, and its display
+// name. `unlinked` is the extra card for runs no open session owns.
+export type MissionCardScope =
+  | { kind: "session"; sessionId: string | null; transport: "tmux" | "codex"; runtime: PaneRuntime; name: string | null; tmuxSessions: string[]; panes: string[] }
+  | { kind: "unlinked" };
+
+// The session card's own stage/branch/Now, from its owned runs — never status.md (spec §7.5).
+export type MissionSessionStatus = { stage: ProjectStage; branch: string | null; now: string | null };
+
+export type MissionGroupFooter = { retainedWorktrees: number | null; unownedLastRun: MissionLastRun | null };
+
+// The project header's payload: the session/unlinked cards shown in its place, plus the one-line
+// footer. Present only when the project is rendered as a group (spec §5).
+export type MissionGroup = { cards: MissionCard[]; footer: MissionGroupFooter | null };
+
+// ---- Board identity helpers (spec §4, §5, §12) ---------------------------------------------
+
+export function cardKey(card: Pick<MissionCard, "dir" | "key">): string {
+  return card.key ?? card.dir;
+}
+
+export function projectSectionKey(dir: string): string {
+  return `${dir}#project`;
+}
+
+export function unlinkedKey(dir: string): string {
+  return `${dir}#unlinked`;
+}
+
+export function seatKey(dir: string, seat: Pick<HubSessionSeat, "sessionId" | "panes">): string {
+  if (seat.sessionId !== null) return `${dir}#session:${seat.sessionId}`;
+  const first = seat.panes[0];
+  return `${dir}#pane:${first ? paneKey(first.pane, first.tmuxIncarnation) : "unknown"}`;
+}
+
+// The cards actually on screen: every project card, or the cards it groups. Pills, the filter,
+// the stuck rail and the Mosaic count THIS list; project-scoped consumers keep `cards`.
+export function boardCards(cards: MissionCard[]): MissionCard[] {
+  return cards.flatMap((c) => c.group?.cards ?? [c]);
+}
+
+export type BoardEntry =
+  | { kind: "plain"; card: MissionCard }
+  | { kind: "group"; project: MissionCard; cards: MissionCard[] };
+
+// The visible board, filter applied per card (spec §12): a group shows only its matching cards
+// and is omitted when none match; a plain card is kept iff it matches. `null` = no filter.
+export function boardEntries(cards: MissionCard[], filter: MissionBucket | null): BoardEntry[] {
+  const entries: BoardEntry[] = [];
+  for (const card of cards) {
+    if (card.visibility !== "visible") continue;
+    if (card.group) {
+      const matching = card.group.cards.filter((c) => filter === null || bucketOf(c.headline) === filter);
+      if (matching.length > 0) entries.push({ kind: "group", project: card, cards: matching });
+    } else if (filter === null || bucketOf(card.headline) === filter) {
+      entries.push({ kind: "plain", card });
+    }
+  }
+  return entries;
+}
+
+const STAGE_BY_KIND: Record<"spec" | "plan" | "build" | "diff" | "merge", ProjectStage> = {
+  spec: "spec", plan: "spec", build: "build", diff: "review", merge: "ship",
+};
+const BRANCH_KINDS = new Set(["build", "diff", "merge"]);
+
+export function sessionStatusOf(s: HubSessionStatus | null | undefined): MissionSessionStatus | null {
+  if (!s || s.latestKind === null) return null;
+  const branch = BRANCH_KINDS.has(s.latestKind) ? s.latestTarget : null;
+  const now = typeof s.lastSummary === "string" && s.lastSummary.trim().length > 0 ? s.lastSummary : null;
+  return { stage: STAGE_BY_KIND[s.latestKind], branch, now };
+}
+
+export function sessionDisplay(scope: Extract<MissionCardScope, { kind: "session" }>): { kind: "name" | "short" | "new"; text: string | null } {
+  const name = scope.name?.trim();
+  if (name) return { kind: "name", text: name };
+  if (scope.sessionId) return { kind: "short", text: scope.sessionId.slice(0, 8) };
+  return { kind: "new", text: null };
+}
+
+// The board card that carries an inbox row's pending question or capsule event. null when no card
+// holds it (e.g. a question asked by a conversation its pane no longer hosts): the inbox then has
+// no Respond rather than opening an unrelated card.
+export function boardCardKeyFor(card: MissionCard, eventId: number | null | undefined): string | null {
+  if (eventId === null || eventId === undefined) return null;
+  const holds = (c: MissionCard) => c.pendingQuestions.some((q) => q.eventId === eventId)
+    || c.sessions.some((s) => (s.transport === "tmux" ? s.panes.some((p) => p.capsuleEventId === eventId) : s.capsuleEventId === eventId));
+  const owner = (card.group?.cards ?? [card]).find(holds);
+  return owner ? cardKey(owner) : null;
+}
 
 export type InboxRow =
   | { kind: "gate"; dir: string; name: string; gate: "awaiting-approval" | "blocked"; updated: string }
