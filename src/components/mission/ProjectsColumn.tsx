@@ -2,9 +2,9 @@
 
 import { useTranslations } from "next-intl";
 import { useState } from "react";
-import { boardEntries, cardKey, projectSectionKey, type Mission, type MissionBucket, type MissionCard } from "@/lib/mission";
+import { boardEntries, type Mission, type MissionBucket, type MissionCard } from "@/lib/mission";
 import { PrefsButtons, ProjectCard } from "./ProjectCard";
-import { GroupFrame } from "./GroupFrame";
+import { renderBoardEntry } from "./boardEntry";
 import { SourceWarning } from "./SourceWarning";
 
 type Props = {
@@ -142,36 +142,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
       // (30% basis + gaps), and a partial row's cards grow to fill the line (2 cards = half each,
       // 1 = full). Tablet 2 per row, phone 1. The expanded card takes a 2-of-3 basis.
       <div className="flex flex-wrap gap-4">
-        {entries.map((entry) => {
-          if (entry.kind === "plain") {
-            const key = cardKey(entry.card);
-            return (
-              <div key={key} data-card-dir={entry.card.dir} data-card-key={key} className={`min-w-0 grow basis-full sm:basis-[45%] ${key === expandedDir ? "lg:basis-[63%]" : "lg:basis-[30%]"}`}>
-                <ProjectCard card={entry.card} issues={counts?.[entry.card.name.toLowerCase()]} expanded={key === expandedDir} onToggle={() => onToggleExpand(key)} />
-              </div>
-            );
-          }
-          const sectionKey = projectSectionKey(entry.project.dir);
-          return (
-            <div key={entry.project.dir} className="min-w-0 grow basis-full">
-              <GroupFrame
-                project={entry.project} cards={entry.cards} expanded={expandedDir === sectionKey} expandedKey={expandedDir}
-                issues={counts?.[entry.project.name.toLowerCase()]} onToggle={() => onToggleExpand(sectionKey)}
-              >
-                <div className="grid gap-3 sm:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-                  {entry.cards.map((c) => {
-                    const key = cardKey(c);
-                    return (
-                      <div key={key} data-card-key={key} className={key === expandedDir ? "min-w-0 sm:col-span-full" : "min-w-0"}>
-                        <ProjectCard card={c} expanded={key === expandedDir} onToggle={() => onToggleExpand(key)} />
-                      </div>
-                    );
-                  })}
-                </div>
-              </GroupFrame>
-            </div>
-          );
-        })}
+        {entries.map((entry) => renderBoardEntry(entry, { expandedDir, onToggleExpand, counts }))}
       </div>
     ) : (
       // ponytail: reuses the same "empty" copy as the zero-projects case above rather

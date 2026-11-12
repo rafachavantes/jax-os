@@ -2,7 +2,7 @@
 
 import { FolderGit2 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { postWorkflowAction, projectSectionKey, type MissionCard, type MissionGroupFooter, type MissionLastRun } from "@/lib/mission";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -13,13 +13,13 @@ export function footerSegments(footer: MissionGroupFooter): { worktrees: number 
   return { worktrees: footer.retainedWorktrees, lastRun: footer.unownedLastRun };
 }
 
-// One project header + its session cards + one-line footer (spec §7.1–§7.3). The project stays
-// the unit for prefs, PR/CI, issues and Dispatch; session cards never repeat those.
-export function GroupFrame({
-  project, cards, expanded, expandedKey, issues, onToggle, children,
+// The project header (+ its expandable project section), spec §7.1–§7.2. Rendered into the
+// board entry's header slot; the project stays the unit for prefs, PR/CI, issues and Dispatch.
+export function GroupHeader({
+  project, expanded, expandedKey, issues, onToggle,
 }: {
-  project: MissionCard; cards: MissionCard[]; expanded: boolean; expandedKey: string | null;
-  issues?: number; onToggle: () => void; children?: ReactNode;
+  project: MissionCard; expanded: boolean; expandedKey: string | null;
+  issues?: number; onToggle: () => void;
 }) {
   const t = useTranslations("mission");
   const { data: settings } = useGeneralSettings();
@@ -29,7 +29,6 @@ export function GroupFrame({
   const [error, setError] = useState<string | null>(null);
   const sectionKey = projectSectionKey(project.dir);
   const sectionOpen = expanded || expandedKey === sectionKey;
-  const footer = group.footer ? footerSegments(group.footer) : null;
   const sessionCount = group.cards.filter((c) => c.scope?.kind === "session").length;
   const loop = project.loopSummary;
   const hasLoop = loop !== null && loop !== undefined && (loop.buildCount > 0 || loop.diffCount > 0 || loop.specCount > 0 || loop.planCount > 0);
@@ -43,7 +42,7 @@ export function GroupFrame({
   }
 
   return (
-    <section data-card-key={sectionKey} data-card-dir={project.dir} className="flex min-w-0 w-full flex-col gap-3.5 rounded-lg border border-line bg-surface px-5 py-[18px]">
+    <>
       <div data-testid="group-header" className="flex min-w-0 flex-wrap items-center gap-3 text-left">
         <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md bg-brand-soft text-brand">
           <FolderGit2 className="h-[18px] w-[18px]" />
@@ -95,9 +94,16 @@ export function GroupFrame({
           {error ? <span className="text-[11.5px] text-danger">{t("actions.actionFailed", { error })}</span> : null}
         </div>
       ) : null}
+    </>
+  );
+}
 
-      {children}
-
+// The one-line footer (spec §7.3), rendered into the board entry's footer slot.
+export function GroupFooter({ project }: { project: MissionCard }) {
+  const t = useTranslations("mission");
+  const footer = project.group?.footer ? footerSegments(project.group.footer) : null;
+  return (
+    <>
       {footer && (footer.worktrees !== null || footer.lastRun !== null) ? (
         <div data-testid="group-footer" className="flex flex-wrap items-center gap-x-2 border-t border-line-subtle pt-2 text-[11px] text-muted">
           <span>{t("board.footerNoSession")}</span>
@@ -111,6 +117,6 @@ export function GroupFrame({
           ) : null}
         </div>
       ) : null}
-    </section>
+    </>
   );
 }

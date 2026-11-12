@@ -16,9 +16,9 @@ vi.mock("./ProjectCard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./ProjectCard")>();
   return {
     ...actual,
-    ProjectCard: ({ card, expanded, onToggle }: { card: { dir: string; headline: string; codexSource: string }; expanded: boolean; onToggle: () => void }) => {
+    ProjectCard: ({ card, expanded, onToggle, rootAttrs }: { card: { dir: string; headline: string; codexSource: string }; expanded: boolean; onToggle: () => void; rootAttrs?: { "data-card-key": string } }) => {
       onToggle(); // called during render so the test's OWN onToggleExpand closure records which dir it fired for — proves each card's onToggle is wired to ITS OWN dir, not a shared/misrouted one
-      return createElement("div", { "data-card": card.dir, "data-headline": card.headline, "data-expanded": String(expanded) }, `card-${card.dir}`);
+      return createElement("div", { "data-card-key": rootAttrs?.["data-card-key"], "data-card": card.dir, "data-headline": card.headline, "data-expanded": String(expanded) }, `card-${card.dir}`);
     },
   };
 });

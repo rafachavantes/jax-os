@@ -567,7 +567,9 @@ export function PrSummary({ pr, githubEnabled }: { pr: MissionCardPr; githubEnab
   return null;
 }
 
-export function ProjectCard({ card, issues, expanded, onToggle }: { card: MissionCard; issues?: number; expanded: boolean; onToggle: () => void }) {
+// `rootAttrs`: group mode stamps the card's own data-card-key / grid span here, because the card
+// is a direct child of the board entry's cards container (no wrapper element of its own).
+export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { card: MissionCard; issues?: number; expanded: boolean; onToggle: () => void; rootAttrs?: { "data-card-key": string; className: string } }) {
   const t = useTranslations("mission");
   const { data: settings } = useGeneralSettings();
   // F1/F3 (diff review e52d9e6dc555): loading/error settings keep the pre-fetch assumed-enabled
@@ -610,7 +612,7 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
   }
 
   return (
-    <div className={`relative flex min-w-0 w-full flex-col gap-2.5 rounded-lg border bg-surface px-5 py-[18px] ${BORDER_CLASS[card.headline]}${unlinkedScope ? " border-dashed" : ""}`}>
+    <div data-card-key={rootAttrs?.["data-card-key"]} className={`relative flex min-w-0 w-full flex-col gap-2.5 rounded-lg border bg-surface px-5 py-[18px] ${BORDER_CLASS[card.headline]}${unlinkedScope ? " border-dashed" : ""}${rootAttrs ? ` ${rootAttrs.className}` : ""}`}>
       {/* header — clicking the expand toggle expands the card in place (§2.3), no navigation.
           F4 (diff review): the toggle is its own <button>, a sibling of the "···" menu's
           buttons — not their ancestor — so no interactive control ever nests inside another.
