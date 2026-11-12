@@ -411,14 +411,22 @@ export function claimAnswer(db: Database.Database, request: AnswerRequest, now =
   try {
     return db.transaction((): ClaimAnswerResult => {
       const row = db.prepare(
-        "SELECT id, ts, project, role, payload, pane, tmux_incarnation FROM workflow_events WHERE id = ? AND type = 'question'",
+        "SELECT id, ts, project, role, payload, pane, tmux_incarnation, harness_session FROM workflow_events WHERE id = ? AND type = 'question'",
       ).get(request.question_event_id) as {
         id: number; ts: string; project: string; role: Role; payload: string | null;
-        pane: string | null; tmux_incarnation: string | null;
+        pane: string | null; tmux_incarnation: string | null; harness_session: string | null;
       } | undefined;
       if (!row) return { ok: false, reason: "not-pending" };
       if (!row.pane || !row.tmux_incarnation) return { ok: false, reason: "invalid-target" };
       const ref: PaneRef = { pane: row.pane, tmuxIncarnation: row.tmux_incarnation };
+      // A structured answer is TYPED into the question's pane. Once a different conversation owns
+      // that exact pane — in this project or any other (a /clear, a restarted agent, the pane
+      // moving to another repo) — the keys would land in the wrong conversation. Refused here,
+      // before any claim or input; the same rule marks the question unanswerable on the dashboard.
+      // The tmux incarnation is still checked at injection (assertLivePane).
+      if (!questionOwnsPane(db, { id: row.id, project: row.project, ref, harnessSession: row.harness_session })) {
+        return { ok: false, reason: "invalid-target" };
+      }
       const key = paneKey(ref.pane, ref.tmuxIncarnation);
       const payload = parseStoredPayload(row.payload); // corrupt/non-object -> {} -> no tool_use_id -> not-pending
       const tool_use_id = payload.tool_use_id;
@@ -906,6 +914,21 @@ export type HubPane = {
   lastEventTs: string;
   subagentCount: number;
   runtime: PaneRuntime;
+  // Session cards: the agent session (Claude `session_id`, stored as harness_session) this pane
+  // currently hosts for THIS project — the newest agent row on the pane_key that recorded one. null
+  // when nothing on the pane has recorded a session yet (a registration-only pane). The tmux
+  // session/pane above is only WHERE the agent runs; this is WHO it is. Optional so fixtures that
+  // predate session cards need no change.
+  harnessSession?: string | null;
+  // The recorded agent session of the rows behind `capsule` and `pendingQuestion` (null when the
+  // row recorded none). A session card keeps a capsule/question only when it was raised by the
+  // session the card is for — never one left behind on the pane by a previous session.
+  capsuleSession?: string | null;
+  questionSession?: string | null;
+  // Whether `pendingQuestion` can still be answered: false once another conversation owns this
+  // exact pane (any project). Computed with the answer route's own check (questionOwnsPane).
+  // Absent when there is no pending question (and on fixtures predating it).
+  questionAnswerable?: boolean;
 };
 
 // A native Codex session row (MOA-469 §2) — NEVER a fabricated pane or incarnation. Membership is
@@ -991,6 +1014,56 @@ export type HubLastRun = {
   buildCommand: string | null;
 };
 
+// The session card's stage/branch/Now inputs (spec §7.5): the newest owned run drives the first
+// two, the newest FINISHED owned run's summary is Now — whatever its outcome (a cancelled run's
+// summary says what happened). Not a status.md read: a session's own runs, never the last writer.
+export type HubSessionStatus = {
+  latestKind: (typeof RUN_KINDS)[number] | null;
+  latestTarget: string | null;
+  lastSummary: string | null;
+};
+
+// Session cards (one card per open agent session). Everything a card shows about its own work —
+// activity, runs, last result — is selected by the recorded agent session id, never by recency or
+// by the pane that happens to be live: hook rows carry it as harness_session, and a jaxflow run
+// carries it as caller_session (normalized into the same column by insertEvent); a run-finished
+// row reaches its session through run_id.
+export type HubScopedActivity = {
+  timeline: HubTimelineEvent[];
+  activeRun: HubActiveRun | null;
+  activeRuns: HubActiveRunSummary[];
+  lastRun: HubLastRun | null;
+  heartbeat: number[];
+  lastAction: { tool: string; ts: string } | null;
+  newestEventTs: string | null;
+  // Session scopes only (null for unlinked, an unidentified seat, or a session owning no runs).
+  status: HubSessionStatus | null;
+};
+
+// One open agent session of a project. `sessionId` is the agent session; null only for a live
+// Claude pane that has not recorded one yet (it still is an open session, but owns no runs).
+// `panes` are the live tmux panes hosting it (empty for a native Codex thread) — location only.
+export type HubSessionSeat = {
+  sessionId: string | null;
+  transport: "tmux" | "codex";
+  panes: PaneRef[];
+  // Display name from the runtime registry (spec §9); null when the source has none.
+  name: string | null;
+  activity: HubScopedActivity;
+};
+
+// Present whenever a project has an open session (or unlinked work still in flight). `unlinked`
+// holds every run whose session is not one of the open seats (dashboard dispatches, runs from a
+// session that has since closed, legacy runs with no caller session); it is never folded into a
+// session card.
+export type HubSessionSplit = {
+  seats: HubSessionSeat[];
+  unlinked: HubScopedActivity;
+  // The project's last finished run when its owner is not an open seat (spec §6, group footer):
+  // project-wide today's hide rule, never the scoped one.
+  unownedLastRun: HubLastRun | null;
+};
+
 export type HubProject = {
   panes: HubPane[];
   codexSessions: HubCodexSession[];
@@ -1005,6 +1078,7 @@ export type HubProject = {
   loopSummary?: LoopSummary | null;
   heartbeat: number[];
   lastAction: { tool: string; ts: string } | null;
+  split?: HubSessionSplit;
 };
 
 export type HubEnvelopeData = {
@@ -1233,36 +1307,59 @@ function getCurrentProjectByPaneKey(db: Database.Database, live: LiveSnapshot): 
   const map = new Map<string, string>();
   if (live.incarnation === null || live.paneIds.size === 0) return map;
   const incarnation = live.incarnation; // narrow once outside the closures below
-  // A dynamic pane_key IN (...) list, one bound param per live pane — there is no `pane`
-  // column reference here at all, only the generated pane_key column (spec §4.1).
-  const keys = [...live.paneIds].map((pane) => paneKey(pane, incarnation));
-  const placeholders = keys.map(() => "?").join(",");
-  const sessionRows = db
-    .prepare(`SELECT pane_key AS paneKey, project, registered_at AS registeredAt FROM workflow_sessions WHERE pane_key IN (${placeholders})`)
-    .all(...keys) as { paneKey: string; project: string; registeredAt: string }[];
-  const sessionByKey = new Map(sessionRows.map((r) => [r.paneKey, r]));
   // ponytail: a plain per-key loop, not a window function — bounded by the handful of live panes,
   // same style as every other "latest row for this pane_key" query in this file (lastCapsule,
   // pendingQuestionFor).
-  for (const key of keys) {
-    const session = sessionByKey.get(key);
-    const eventRow = db
-      .prepare(
-        `SELECT project, ts FROM workflow_events
-         WHERE pane_key = ? AND ${paneAgentFilter()}
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(key) as { project: string; ts: string } | undefined;
-    if (session && eventRow) {
-      // ISO-8601 timestamps (both from now.toISOString()) sort correctly under string comparison.
-      map.set(key, eventRow.ts > session.registeredAt ? eventRow.project : session.project);
-    } else if (session) {
-      map.set(key, session.project);
-    } else if (eventRow) {
-      map.set(key, eventRow.project);
-    }
+  for (const pane of live.paneIds) {
+    const key = paneKey(pane, incarnation);
+    const project = currentProjectOfPaneKey(db, key);
+    if (project !== null) map.set(key, project);
   }
   return map;
+}
+
+// The reconciled current project of ONE pane_key (spec §8.1 condition 3) — the same rule the hub
+// uses to decide which project a pane is live for. Session registration and the latest agent event
+// are both best-effort: whichever is newer wins, and the session row wins the tie / no-event case.
+function currentProjectOfPaneKey(db: Database.Database, key: string): string | null {
+  const session = db
+    .prepare("SELECT project, registered_at AS registeredAt FROM workflow_sessions WHERE pane_key = ?")
+    .get(key) as { project: string; registeredAt: string } | undefined;
+  const eventRow = db
+    .prepare(
+      `SELECT project, ts FROM workflow_events
+       WHERE pane_key = ? AND ${paneAgentFilter()}
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(key) as { project: string; ts: string } | undefined;
+  // ISO-8601 timestamps (both from now.toISOString()) sort correctly under string comparison.
+  if (session && eventRow) return eventRow.ts > session.registeredAt ? eventRow.project : session.project;
+  return session?.project ?? eventRow?.project ?? null;
+}
+
+// Whether the conversation that asked a pane question still owns that exact pane (pane + tmux
+// incarnation, i.e. pane_key) — across EVERY project, since the same pane can move to another
+// repo and start a new conversation there (spec §8.1). Owned only when:
+//  - the newest agent row on the pane_key, in any project, was recorded by the asking session
+//    (a newer row from another session, or one that recorded none, means the pane has moved on —
+//    fail closed: unprovable is not owned), and
+//  - the pane's current project is still the question's project (a later re-registration to
+//    another project makes that project current; spec condition 2 is implied by this).
+// A question that recorded no session (rows older than session tracking) keeps the previous
+// behaviour: answerable. Used by BOTH claimAnswer and the hub's answerability flag.
+export function questionOwnsPane(
+  db: Database.Database,
+  q: { id: number; project: string; ref: PaneRef; harnessSession: string | null },
+): boolean {
+  if (q.harnessSession === null) return true;
+  const key = paneKey(q.ref.pane, q.ref.tmuxIncarnation);
+  const newest = db.prepare(
+    `SELECT harness_session FROM workflow_events
+     WHERE pane_key = ? AND ${paneAgentFilter()}
+     ORDER BY id DESC LIMIT 1`,
+  ).get(key) as { harness_session: string | null } | undefined;
+  if (!newest || newest.harness_session !== q.harnessSession) return false;
+  return currentProjectOfPaneKey(db, key) === q.project;
 }
 
 // Membership (§7.1b): every project with a live pane, OR an agent-sourced event in the last 30
@@ -1352,6 +1449,10 @@ export function getProjectPanes(
       .prepare("SELECT session, role FROM workflow_sessions WHERE pane_key = ?")
       .get(paneKey(ref.pane, ref.tmuxIncarnation)) as { session: string; role: "lead" | "adhoc" } | undefined;
     const isCurrentProject = currentProjectByPaneKey.get(paneKey(ref.pane, ref.tmuxIncarnation)) === project;
+    const capsule = lastCapsule(db, ref, project, isCurrentProject, isAlive);
+    const pendingQuestion = pendingQuestionFor(db, ref, project);
+    const harnessSession = paneHarnessSession(db, ref, project);
+    const key = paneKey(ref.pane, ref.tmuxIncarnation);
     return {
       pane: ref.pane,
       tmuxIncarnation: ref.tmuxIncarnation,
@@ -1359,25 +1460,109 @@ export function getProjectPanes(
       role: sessionRow?.role ?? null,
       live: isCurrentProject,
       working: isCurrentProject && isWorking(db, ref, live),
-      capsule: lastCapsule(db, ref, project, isCurrentProject, isAlive),
-      pendingQuestion: pendingQuestionFor(db, ref, project),
+      capsule,
+      pendingQuestion,
       runtime: runtimeFromEmitter(row.emitter),
-      subagentCount: openSubagentCount(db, project, { paneKey: paneKey(ref.pane, ref.tmuxIncarnation) }, nowMs),
+      // Only the conversation the pane hosts NOW: a new conversation in the same pane (a /clear or
+      // a restarted agent) must not inherit the previous one's unmatched subagent starts. A pane
+      // with no recorded session keeps the pane-wide count (nothing to separate by).
+      subagentCount: openSubagentCount(db, project, harnessSession ? { paneKey: key, harnessSession } : { paneKey: key }, nowMs),
       lastEventTs: row.lastEventTs,
+      harnessSession,
+      capsuleSession: capsule ? recordedSessionOf(db, capsule.eventId) : null,
+      questionSession: pendingQuestion ? recordedSessionOf(db, pendingQuestion.eventId) : null,
+      // The answer route's own rule (claimAnswer -> questionOwnsPane), so the dashboard never offers
+      // an answer the server would refuse.
+      ...(pendingQuestion ? {
+        questionAnswerable: questionOwnsPane(db, { id: pendingQuestion.eventId, project, ref, harnessSession: recordedSessionOf(db, pendingQuestion.eventId) }),
+      } : {}),
     };
   });
+}
+
+// The agent session a pane currently hosts for `project`: the newest agent row on this exact
+// pane_key (tuple-safe across tmux restarts) that recorded one. Project-scoped like every other
+// pane read here — a pane that moved to another project keeps this project's last session.
+function paneHarnessSession(db: Database.Database, ref: PaneRef, project: string): string | null {
+  const row = db.prepare(
+    `SELECT harness_session FROM workflow_events
+     WHERE pane_key = ? AND project = ? AND harness_session IS NOT NULL AND ${paneAgentFilter()}
+     ORDER BY id DESC LIMIT 1`,
+  ).get(paneKey(ref.pane, ref.tmuxIncarnation), project) as { harness_session: string } | undefined;
+  return row?.harness_session ?? null;
+}
+
+function recordedSessionOf(db: Database.Database, eventId: number): string | null {
+  const row = db.prepare("SELECT harness_session FROM workflow_events WHERE id = ?").get(eventId) as
+    { harness_session: string | null } | undefined;
+  return row?.harness_session ?? null;
+}
+
+// ---- Session cards: which runs/events a read covers ------------------------------------------
+// Absent scope = the whole project (the project card, unchanged). `session` = one agent session.
+// `unlinked` = every run whose agent session is not one of `openSessions` (or recorded none).
+export type RunScope = { kind: "session"; session: string } | { kind: "unlinked"; openSessions: string[] };
+
+// A run belongs to the agent session recorded on its LATEST run-started row (jaxflow's
+// caller_session, normalized into harness_session by insertEvent) — the same "latest start wins"
+// rule unfinishedRunStartedRows applies to duplicate starts. `sessionExpr` is that session for the
+// row being filtered; it must be parameter-free (it is repeated for the unlinked form).
+function runScopeClause(scope: RunScope | undefined, sessionExpr: string): { sql: string; params: string[] } {
+  if (!scope) return { sql: "", params: [] };
+  if (scope.kind === "session") return { sql: ` AND ${sessionExpr} = ?`, params: [scope.session] };
+  if (scope.openSessions.length === 0) return { sql: "", params: [] };
+  const marks = scope.openSessions.map(() => "?").join(", ");
+  return { sql: ` AND (${sessionExpr} IS NULL OR ${sessionExpr} NOT IN (${marks}))`, params: [...scope.openSessions] };
+}
+
+// run_ids owned by the scope (latest non-jaxos start per run_id).
+function ownedRunIdsSql(project: string, scope: RunScope): { sql: string; params: string[] } {
+  const clause = runScopeClause(scope, "harness_session");
+  // One grouped pass: with MAX(id), SQLite's bare harness_session is the latest start's session.
+  return {
+    sql: `SELECT run_id FROM (SELECT run_id, harness_session, MAX(id) FROM workflow_events
+            WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL
+            GROUP BY run_id) WHERE 1=1${clause.sql}`,
+    params: [project, ...clause.params],
+  };
+}
+
+// Events that belong to the scope, for the row aliased `alias`:
+// - session: rows the agent recorded under its own id (hook rows), every row of a run it owns
+//   (run-finished carries no session, only run_id), and Jax OS's own rows that point at one of
+//   its events (an answer's question_event_id, a staleness alert's reference_event_id). A row with
+//   a run_id belongs ONLY to its run's owner — its own harness_session never decides, or a
+//   superseded duplicate start would leak onto the wrong card. Rows with no such link — a
+//   merge/PR audit carries only a bare pane — are project history, never guessed onto a session.
+// - unlinked: every row of a run owned by no open session.
+function scopedEventClause(project: string, scope: RunScope | undefined, alias: string): { sql: string; params: string[] } {
+  if (!scope) return { sql: "", params: [] };
+  const runs = ownedRunIdsSql(project, scope);
+  if (scope.kind === "unlinked") {
+    return { sql: ` AND ${alias}run_id IS NOT NULL AND ${alias}run_id IN (${runs.sql})`, params: runs.params };
+  }
+  const sessionEvents = "SELECT id FROM workflow_events WHERE project = ? AND harness_session = ?";
+  return {
+    sql: ` AND ((${alias}harness_session = ? AND ${alias}run_id IS NULL)
+      OR (${alias}run_id IS NOT NULL AND ${alias}run_id IN (${runs.sql}))
+      OR (${alias}emitter = 'jaxos' AND ${alias}harness_session IS NULL AND (
+        json_extract(${alias}payload, '$.question_event_id') IN (${sessionEvents})
+        OR json_extract(${alias}payload, '$.reference_event_id') IN (${sessionEvents}))))`,
+    params: [scope.session, ...runs.params, project, scope.session, project, scope.session],
+  };
 }
 
 // Most recent 20 events for a project, newest first (§7.4 caps this at 20). Unlike every
 // query above, this one does NOT filter emitter — synthetic jaxos rows render in the timeline
 // once the project is a member on its own merits (§7.1b).
-export function getProjectTimeline(db: Database.Database, project: string): HubTimelineEvent[] {
+export function getProjectTimeline(db: Database.Database, project: string, scope?: RunScope): HubTimelineEvent[] {
+  const own = scopedEventClause(project, scope, "e.");
   const rows = db
     .prepare(
-      `SELECT id, ts, type, pane, role, emitter, payload
-       FROM workflow_events WHERE project = ? AND type NOT IN (${HOOK_TELEMETRY_TYPES_SQL}) ORDER BY id DESC LIMIT 20`,
+      `SELECT e.id, e.ts, e.type, e.pane, e.role, e.emitter, e.payload
+       FROM workflow_events e WHERE e.project = ? AND e.type NOT IN (${HOOK_TELEMETRY_TYPES_SQL})${own.sql} ORDER BY e.id DESC LIMIT 20`,
     )
-    .all(project) as {
+    .all(project, ...own.params) as {
     id: number;
     ts: string;
     type: string;
@@ -1428,14 +1613,15 @@ export function heartbeatFromRows(rows: { minute: string; n: number }[], nowMs: 
 // cold review F1: the oldest bucket heartbeatFromRows emits is i=59 (nowMs - 59min), not -60min —
 // align the SQL cutoff to that bucket's minute start, or an event in the dropped 60th-to-59th-minute
 // gap is queried here and then silently discarded by the fold.
-function heartbeatFor(db: Database.Database, project: string, nowMs: number): number[] {
+function heartbeatFor(db: Database.Database, project: string, nowMs: number, scope?: RunScope): number[] {
   const oldestBucketMinute = new Date(nowMs - 59 * 60_000).toISOString().slice(0, 16);
   const windowStart = `${oldestBucketMinute}:00.000Z`;
+  const own = scopedEventClause(project, scope, "e.");
   const rows = db.prepare(
-    `SELECT strftime('%Y-%m-%dT%H:%M', ts) AS minute, COUNT(*) AS n
-     FROM workflow_events WHERE project = ? AND ts >= ? AND emitter != 'jaxos'
+    `SELECT strftime('%Y-%m-%dT%H:%M', e.ts) AS minute, COUNT(*) AS n
+     FROM workflow_events e WHERE e.project = ? AND e.ts >= ? AND e.emitter != 'jaxos'${own.sql}
      GROUP BY minute`,
-  ).all(project, windowStart) as { minute: string; n: number }[];
+  ).all(project, windowStart, ...own.params) as { minute: string; n: number }[];
   return heartbeatFromRows(rows, nowMs);
 }
 
@@ -1443,14 +1629,15 @@ function heartbeatFor(db: Database.Database, project: string, nowMs: number): nu
 // (exactly 24h still counts — the boundary is inclusive: `ageMs > 24h` excludes, not `>=`).
 const LAST_ACTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-function lastActionFor(db: Database.Database, project: string, nowMs: number): { tool: string; ts: string } | null {
+function lastActionFor(db: Database.Database, project: string, nowMs: number, scope?: RunScope): { tool: string; ts: string } | null {
   // cold review F2: filter by the cutoff and order by ts before limiting, or a late-inserted older
   // row (higher id, older ts) hides a newer qualifying row that was inserted first.
   const cutoff = new Date(nowMs - LAST_ACTION_WINDOW_MS).toISOString();
+  const own = scopedEventClause(project, scope, "e.");
   const row = db.prepare(
-    `SELECT ts, json_extract(payload, '$.tool') AS tool FROM workflow_events
-     WHERE project = ? AND type = 'tool-used' AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 1`,
-  ).get(project, cutoff) as { ts: string; tool: string | null } | undefined;
+    `SELECT e.ts AS ts, json_extract(e.payload, '$.tool') AS tool FROM workflow_events e
+     WHERE e.project = ? AND e.type = 'tool-used' AND e.ts >= ?${own.sql} ORDER BY e.ts DESC, e.id DESC LIMIT 1`,
+  ).get(project, cutoff, ...own.params) as { ts: string; tool: string | null } | undefined;
   if (!row || !row.tool) return null;
   return { tool: row.tool, ts: row.ts };
 }
@@ -1464,22 +1651,27 @@ const SUBAGENT_ORPHAN_MS = 30 * 60_000;
 function openSubagentCount(
   db: Database.Database,
   project: string,
-  identity: { paneKey: string } | { harnessSession: string },
+  // Claude: the pane_key, narrowed to the pane's CURRENT agent session when one is recorded.
+  // Codex: the thread (harness_session) alone.
+  identity: { paneKey: string; harnessSession?: string } | { harnessSession: string },
   nowMs: number,
 ): number {
-  const scopeCol = "paneKey" in identity ? "pane_key" : "harness_session";
-  const scopeVal = "paneKey" in identity ? identity.paneKey : identity.harnessSession;
+  const scope: { sql: string; params: string[] } = "paneKey" in identity
+    ? identity.harnessSession
+      ? { sql: "pane_key = ? AND harness_session = ?", params: [identity.paneKey, identity.harnessSession] }
+      : { sql: "pane_key = ?", params: [identity.paneKey] }
+    : { sql: "harness_session = ?", params: [identity.harnessSession] };
   const starts = db.prepare(
     `SELECT id, ts, json_extract(payload, '$.agent_id') AS agentId FROM workflow_events
-     WHERE project = ? AND ${scopeCol} = ? AND type = 'subagent-started'`,
-  ).all(project, scopeVal) as { id: number; ts: string; agentId: string | null }[];
+     WHERE project = ? AND ${scope.sql} AND type = 'subagent-started'`,
+  ).all(project, ...scope.params) as { id: number; ts: string; agentId: string | null }[];
   let count = 0;
   for (const s of starts) {
     if (!s.agentId) continue;
     const stopped = db.prepare(
-      `SELECT 1 FROM workflow_events WHERE project = ? AND ${scopeCol} = ? AND type = 'subagent-stopped'
+      `SELECT 1 FROM workflow_events WHERE project = ? AND ${scope.sql} AND type = 'subagent-stopped'
        AND json_extract(payload, '$.agent_id') = ? AND id > ? LIMIT 1`,
-    ).get(project, scopeVal, s.agentId, s.id);
+    ).get(project, ...scope.params, s.agentId, s.id);
     if (stopped) continue;
     const ageMs = nowMs - Date.parse(s.ts);
     if (Number.isFinite(ageMs) && ageMs > SUBAGENT_ORPHAN_MS) continue; // strictly over 30 min: orphan
@@ -1491,24 +1683,16 @@ function openSubagentCount(
 // Every unfinished run-started row for the project (same WHERE both activeRunFor and
 // activeRunsFor read): no run-finished row yet for that run_id, and no NEWER run-started row
 // for that same run_id (duplicate starts keep only the latest). Newest start id first.
-function unfinishedRunStartedRows(db: Database.Database, project: string): RawRow[] {
+function unfinishedRunStartedRows(db: Database.Database, project: string, scope?: RunScope): RawRow[] {
+  const own = runScopeClause(scope, "s.harness_session");
   return db.prepare(
     `SELECT s.* FROM workflow_events s
-     WHERE s.project = ? AND s.type = 'run-started'
-       AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM workflow_events f
-         WHERE f.project = s.project AND f.run_id = s.run_id
-           AND f.type = 'run-finished'
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM workflow_events newer
-         WHERE newer.project = s.project AND newer.run_id = s.run_id
-           AND newer.type = 'run-started' AND newer.emitter != 'jaxos'
-           AND newer.id > s.id
-       )
+     WHERE s.id IN (SELECT MAX(id) FROM workflow_events
+         WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL GROUP BY run_id)
+       AND s.run_id NOT IN (SELECT run_id FROM workflow_events
+         WHERE project = ? AND type = 'run-finished' AND run_id IS NOT NULL)${own.sql}
      ORDER BY s.id DESC`,
-  ).all(project) as RawRow[];
+  ).all(project, project, ...own.params) as RawRow[];
 }
 
 // The kind/runtime/target/startedAt fields both activeRunFor and activeRunsFor project off a
@@ -1539,8 +1723,8 @@ function activeRunFields(row: WorkflowEventRow): {
   return { runId: row.run_id as string, startedAt, ...boundedRunFields(projectPayload("run-started", row.payload)) };
 }
 
-function activeRunFor(db: Database.Database, project: string, readChildLogTail: ChildLogTailReader | null = null): HubActiveRun | null {
-  const rows = unfinishedRunStartedRows(db, project);
+function activeRunFor(db: Database.Database, project: string, readChildLogTail: ChildLogTailReader | null = null, scope?: RunScope): HubActiveRun | null {
+  const rows = unfinishedRunStartedRows(db, project, scope);
   if (rows.length === 0) return null;
   const row = rowOf(rows[0]);
   const fields = activeRunFields(row);
@@ -1561,8 +1745,8 @@ function activeRunFor(db: Database.Database, project: string, readChildLogTail: 
 // Every in-flight run as its own line (MOA session-list), not just the newest — the Sessions
 // card needs to show several parallel headless runs (e.g. concurrent Codex reviews) at once.
 // Same rows as activeRunFor (unfinished, latest start per run_id), no LIMIT, no child-log read.
-export function activeRunsFor(db: Database.Database, project: string): HubActiveRunSummary[] {
-  return unfinishedRunStartedRows(db, project).map((raw) => {
+export function activeRunsFor(db: Database.Database, project: string, scope?: RunScope): HubActiveRunSummary[] {
+  return unfinishedRunStartedRows(db, project, scope).map((raw) => {
     const row = rowOf(raw);
     return { ...activeRunFields(row), role: row.role };
   });
@@ -1572,17 +1756,34 @@ export function activeRunsFor(db: Database.Database, project: string): HubActive
 // project with no LATER run-started row — hidden the moment a newer run starts, even before
 // that new run has its own run-finished row (D4). Joined against the matching run-started
 // row (same run_id) for kind/runtime/target, the same trimming activeRunFor already applies.
-export function lastRunFor(db: Database.Database, project: string, relToRepos: RelToRepos | null = null): HubLastRun | null {
-  const rows = db.prepare(
-    `SELECT f.* FROM workflow_events f
-     WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM workflow_events s
-         WHERE s.project = f.project AND s.type = 'run-started' AND s.emitter != 'jaxos'
-           AND s.id > f.id
-       )
-     ORDER BY f.id DESC LIMIT 1`,
-  ).all(project) as RawRow[];
+export function lastRunFor(db: Database.Database, project: string, relToRepos: RelToRepos | null = null, scope?: RunScope): HubLastRun | null {
+  // Scoped (session cards): the finished run must belong to the scope, and only a LATER start in
+  // the same scope hides it — another session starting a run never clears this session's result.
+  // "Start" is that run's LATEST non-jaxos start (the same owner rule ownedRunIdsSql uses), so a
+  // superseded duplicate start never hides anything. The unscoped hide rule is unchanged.
+  const sql = scope
+    ? (() => {
+        const fo = runScopeClause(scope, "ls.harness_session");
+        const lo = runScopeClause(scope, "harness_session");
+        return {
+          text: `WITH ls AS MATERIALIZED (SELECT run_id, harness_session, MAX(id) AS id FROM workflow_events
+                   WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL GROUP BY run_id)
+                 SELECT f.* FROM workflow_events f LEFT JOIN ls ON ls.run_id = f.run_id
+                 WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL${fo.sql}
+                   AND f.id > (SELECT COALESCE(MAX(id), 0) FROM ls WHERE 1=1${lo.sql})
+                 ORDER BY f.id DESC LIMIT 1`,
+          params: [project, project, ...fo.params, ...lo.params],
+        };
+      })()
+    : {
+        text: `SELECT f.* FROM workflow_events f
+               WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL
+                 AND f.id > (SELECT COALESCE(MAX(id), 0) FROM workflow_events
+                   WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos')
+               ORDER BY f.id DESC LIMIT 1`,
+        params: [project, project],
+      };
+  const rows = db.prepare(sql.text).all(...sql.params) as RawRow[];
   if (rows.length === 0) return null;
   const row = rowOf(rows[0]);
   const p = projectPayload("run-finished", row.payload);
@@ -1656,6 +1857,17 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
     ? relToRepos(project, rawTargetForRel) : null;
 
   return { runId: row.run_id as string, role, kind, runtime, target, finishedAt, outcome, contractStatus, stage, diagnostic, headSha, findings, runtimeModel, profileName, reportRel, targetRel, verifyCommand, buildCommand };
+}
+
+// Session cards: the recorded agent session of every builder run of the project (latest start
+// per run_id, the same ownership rule as RunScope), for attributing retained worktrees.
+export function getBuildRunSessions(db: Database.Database, project: string): { runId: string; session: string | null }[] {
+  return db.prepare(
+    `SELECT s.run_id AS runId, s.harness_session AS session FROM workflow_events s
+     WHERE s.id IN (SELECT MAX(id) FROM workflow_events
+         WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL GROUP BY run_id)
+       AND s.role = 'builder'`,
+  ).all(project) as { runId: string; session: string | null }[];
 }
 
 export function getWorktreeLedgerRows(db: Database.Database, project: string): LedgerRow[] {
@@ -1927,6 +2139,154 @@ export function getCodexSessions(
 }
 
 
+// A native Codex thread is open while the runtime snapshot has it loaded — the same rule the card
+// uses to show it at all (mission.ts codexSessionState: anything else reads "unknown" and is
+// dropped by liveSessions).
+function codexSessionOpen(s: HubCodexSession): boolean {
+  return s.sourceOk && s.status !== "notLoaded" && s.status !== "systemError" && s.status !== "unknown";
+}
+
+function paneOrder(a: HubPane, b: HubPane): number {
+  const num = (pane: string) => Number.parseInt(pane.replace(/^%/, ""), 10);
+  return (a.session ?? "").localeCompare(b.session ?? "")
+    || (num(a.pane) - num(b.pane) || a.pane.localeCompare(b.pane))
+    || a.tmuxIncarnation.localeCompare(b.tmuxIncarnation);
+}
+
+// One seat per OPEN agent session: live tmux panes grouped by the agent session they host (a live
+// pane with no recorded session is its own seat), then every loaded native Codex thread. The order
+// is a pure function of identity (tmux session name, pane id, thread id) — never of recency — so a
+// session becoming the most recently active one never reorders or re-attributes anything.
+export function sessionSeats(panes: HubPane[], codexSessions: HubCodexSession[]): Omit<HubSessionSeat, "activity" | "name">[] {
+  const seats: Omit<HubSessionSeat, "activity" | "name">[] = [];
+  const bySession = new Map<string, Omit<HubSessionSeat, "activity" | "name">>();
+  for (const p of [...panes].filter((p) => p.live).sort(paneOrder)) {
+    const ref: PaneRef = { pane: p.pane, tmuxIncarnation: p.tmuxIncarnation };
+    const id = p.harnessSession ?? null;
+    const existing = id !== null ? bySession.get(id) : undefined;
+    if (existing) {
+      existing.panes.push(ref);
+      continue;
+    }
+    const seat = { sessionId: id, transport: "tmux" as const, panes: [ref] };
+    if (id !== null) bySession.set(id, seat);
+    seats.push(seat);
+  }
+  const codexOpen = codexSessions.filter(codexSessionOpen).sort((a, b) => a.threadId.localeCompare(b.threadId));
+  for (const c of codexOpen) {
+    if (bySession.has(c.threadId)) continue;
+    const seat = { sessionId: c.threadId, transport: "codex" as const, panes: [] };
+    bySession.set(c.threadId, seat);
+    seats.push(seat);
+  }
+  return seats;
+}
+
+function scopedActivity(
+  db: Database.Database, project: string, scope: RunScope, now: number,
+  readChildLogTail: ChildLogTailReader | null, relToRepos: RelToRepos | null,
+): HubScopedActivity {
+  const own = scopedEventClause(project, scope, "e.");
+  const newest = db.prepare(
+    `SELECT MAX(e.ts) AS ts FROM workflow_events e WHERE e.project = ? AND e.emitter != 'jaxos'${own.sql}`,
+  ).get(project, ...own.params) as { ts: string | null };
+  return {
+    timeline: getProjectTimeline(db, project, scope),
+    activeRun: activeRunFor(db, project, readChildLogTail, scope),
+    activeRuns: activeRunsFor(db, project, scope),
+    lastRun: lastRunFor(db, project, relToRepos, scope),
+    heartbeat: heartbeatFor(db, project, now, scope),
+    lastAction: lastActionFor(db, project, now, scope),
+    newestEventTs: newest.ts,
+    status: scope.kind === "session" ? sessionStatus(db, project, scope.session) : null,
+  };
+}
+
+function emptyActivity(now: number): HubScopedActivity {
+  return {
+    timeline: [], activeRun: null, activeRuns: [], lastRun: null,
+    heartbeat: heartbeatFromRows([], now), lastAction: null, newestEventTs: null, status: null,
+  };
+}
+
+// The session card's stage/branch/Now inputs — two small queries over the same owned-run set every
+// scoped read uses, so a superseded duplicate start or another session's run never leaks in.
+function sessionStatus(db: Database.Database, project: string, session: string): HubSessionStatus | null {
+  const owned = ownedRunIdsSql(project, { kind: "session", session });
+  const newestRun = db.prepare(
+    `SELECT payload FROM workflow_events
+     WHERE project = ? AND type = 'run-started' AND run_id IN (${owned.sql})
+     ORDER BY id DESC LIMIT 1`,
+  ).get(project, ...owned.params) as { payload: string | null } | undefined;
+  if (!newestRun) return null; // a session that owns no runs has no stage/branch/Now to show
+  const fields = boundedRunFields(projectPayload("run-started", parseStoredPayload(newestRun.payload)));
+  const finished = db.prepare(
+    `SELECT payload FROM workflow_events
+     WHERE project = ? AND type = 'run-finished' AND run_id IN (${owned.sql})
+     ORDER BY id DESC LIMIT 1`,
+  ).get(project, ...owned.params) as { payload: string | null } | undefined;
+  let lastSummary: string | null = null;
+  if (finished) {
+    const summary = parseStoredPayload(finished.payload).summary;
+    if (typeof summary === "string" && summary.length > 0) {
+      lastSummary = [...summary].slice(0, LIMITS.summary).join("");
+    }
+  }
+  return { latestKind: fields.kind, latestTarget: fields.target, lastSummary };
+}
+
+// The project's last finished run when no open session owns it (closed session, dashboard
+// dispatch, legacy owner-less run) — the group footer's "last run" line.
+function unownedLastRunFor(
+  db: Database.Database, project: string, relToRepos: RelToRepos | null, openSessions: string[],
+): HubLastRun | null {
+  const last = lastRunFor(db, project, relToRepos);
+  if (!last) return null;
+  const owner = db.prepare(
+    `SELECT harness_session FROM workflow_events
+     WHERE project = ? AND run_id = ? AND type = 'run-started' AND emitter != 'jaxos'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(project, last.runId) as { harness_session: string | null } | undefined;
+  const session = owner?.harness_session ?? null;
+  return session === null || !openSessions.includes(session) ? last : null;
+}
+
+// Session cards. With two or more open sessions the board always splits; with exactly one, only
+// when there is unlinked work — buildMission decides that, since retained worktrees come from their
+// own poll. With NO open session it is returned only while a run is still in flight
+// (`hasActiveRuns`): every run is then unlinked, and the board shows it on the unlinked-runs card
+// instead of an idle project card. No open session and nothing running: null — the project card,
+// exactly as before. A seat with no recorded session owns no activity or runs.
+export function getSessionSplit(
+  db: Database.Database, project: string, panes: HubPane[], codexSessions: HubCodexSession[], now: number,
+  readChildLogTail: ChildLogTailReader | null = null, relToRepos: RelToRepos | null = null, hasActiveRuns = false,
+  sessionNames: ReadonlyMap<string, string> | null = null,
+): HubSessionSplit | null {
+  const seats = sessionSeats(panes, codexSessions).map((seat) => ({
+    ...seat,
+    name: seat.sessionId ? sessionNames?.get(seat.sessionId) ?? null : null,
+  }));
+  if (seats.length === 0) {
+    if (!hasActiveRuns) return null;
+    return {
+      seats: [],
+      unlinked: scopedActivity(db, project, { kind: "unlinked", openSessions: [] }, now, readChildLogTail, relToRepos),
+      unownedLastRun: unownedLastRunFor(db, project, relToRepos, []),
+    };
+  }
+  const openSessions = seats.flatMap((seat) => (seat.sessionId !== null ? [seat.sessionId] : []));
+  return {
+    seats: seats.map((seat) => ({
+      ...seat,
+      activity: seat.sessionId !== null
+        ? scopedActivity(db, project, { kind: "session", session: seat.sessionId }, now, readChildLogTail, relToRepos)
+        : emptyActivity(now),
+    })),
+    unlinked: scopedActivity(db, project, { kind: "unlinked", openSessions }, now, readChildLogTail, relToRepos),
+    unownedLastRun: unownedLastRunFor(db, project, relToRepos, openSessions),
+  };
+}
+
 export function getHubData(
   db: Database.Database,
   live: LiveSnapshot,
@@ -1937,6 +2297,7 @@ export function getHubData(
   readChildLogTail: ChildLogTailReader | null = null,
   relToRepos: RelToRepos | null = null,
   codexAbsent = false,
+  sessionNames: ReadonlyMap<string, string> | null = null,
 ): HubEnvelopeData {
   const { projects, historicalTruncated } = getHubMembership(db, live, now);
   const codexSource: HubCodexSource =
@@ -1973,6 +2334,8 @@ export function getHubData(
       heartbeat: heartbeatFor(db, project, now),
       lastAction: lastActionFor(db, project, now),
     };
+    const split = getSessionSplit(db, project, panes, codexSessions, now, readChildLogTail, relToRepos, byProject[project].activeRuns.length > 0, sessionNames);
+    if (split) byProject[project].split = split;
   }
   // spec §10, round 3 F1: a STANDALONE scan, no membership filter — a pinned/hidden project with
   // zero workflow_events rows and no live pane still gets its row, independent of `byProject`.

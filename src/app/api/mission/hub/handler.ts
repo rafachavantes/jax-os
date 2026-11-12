@@ -1,10 +1,12 @@
 import { isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
 import { collectorResponse } from "../../../../server/api";
 import { getProjects, type ProjectScan } from "../../../../server/collectors/projects";
 import { collectCodexSnapshot, createCodexConnector, isCodexCliPresent, type CodexSnapshot } from "../../../../server/collectors/workflow-codex";
 import { listLivePanes } from "../../../../server/collectors/workflow-tmux";
 import { readChildLogTail } from "../../../../server/collectors/child-log";
 import { relativeWithin } from "../../../../server/collectors/files";
+import { readSessionNames } from "../../../../server/collectors/session-names";
 import { getDb } from "../../../../server/db";
 import { readGeneralSettings } from "../../../../server/settings";
 import { getHubData, type ChildLogTailReader, type HubEnvelopeData, type RelToRepos } from "../../../../server/db/workflows";
@@ -22,6 +24,8 @@ export type HubRouteDeps = {
   readChildLogTail?: ChildLogTailReader;
   relToRepos?: RelToRepos;
   codexEnabled?: () => boolean; // MOA-504 D11: omitted = enabled (existing literals still compile)
+  // Session cards (spec §9): optional, same contract — omitted means "no display names".
+  readSessionNames?: () => ReadonlyMap<string, string>;
 };
 
 const systemDeps: HubRouteDeps = {
@@ -33,6 +37,7 @@ const systemDeps: HubRouteDeps = {
   codexEnabled: () => { const s = readGeneralSettings(); return s.ok && s.data.integrations.agents.codex; },
   getHubData,
   readChildLogTail,
+  readSessionNames: () => readSessionNames(homedir()),
 };
 
 // Per-request artifact resolver: the project root comes from THIS scan's discovered location, and
@@ -87,6 +92,7 @@ export async function handleHubGet(deps: HubRouteDeps = systemDeps) {
     return deps.getHubData(
       deps.getDb(), live, statusMtimes, codex, Date.now(), tmuxSourceOk,
       deps.readChildLogTail ?? null, relToRepos, codexAbsent,
+      deps.readSessionNames?.() ?? null,
     );
   });
 }

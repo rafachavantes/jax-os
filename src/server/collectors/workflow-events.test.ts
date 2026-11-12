@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseAnswerBody, parseIngress, parseSessionBody, projectPayload, renderMessage, toForwardBody } from "./workflow-events";
 import { EVENT_MATRIX, EVENT_TYPES, HOOK_TELEMETRY_TYPES, LIMITS, parseIndexedReply, type WorkflowEventRow } from "../../lib/workflow";
 
@@ -506,6 +509,71 @@ describe("renderMessage", () => {
     expect(renderMessage(ROW({ run_id: "r1", role: "reviewer", type: "run-started", emitter: "wrapper", payload: { phase: "B", runtime: "codex" } }))).toBe("Project jax-os (phase B): reviewer run started on codex.");
     expect(renderMessage(ROW({ type: "question-resolved", emitter: "claude-posttool", payload: { tool_use_id: "t1" } }))).toBe("Project jax-os: question t1 resolved.");
     expect(renderMessage(ROW({ type: "question-answered", emitter: "jaxos", payload: { question_event_id: 3, tool_use_id: "t1", mutation_id: 9, ok: false, error: "pane gone" } }))).toBe("Project jax-os: answer injected for question #3 (failed: pane gone).");
+  });
+});
+
+describe("renderMessage/toForwardBody — optional session name (spec §9)", () => {
+  it("renders byte-identically with the argument omitted, null or undefined", () => {
+    const rows: WorkflowEventRow[] = [
+      ROW({}),
+      ROW({ type: "run-started", run_id: "r1", role: "reviewer", emitter: "wrapper", payload: { phase: "B", runtime: "codex" } }),
+      ROW({ type: "run-finished", run_id: "r2", role: "builder", emitter: "wrapper", payload: { phase: "B", exit_code: 0, contract_status: "ok", report_path: "/x", summary: "s", head_sha: null } }),
+      ROW({ type: "question", emitter: "claude-pretool", payload: { tool_use_id: "t", questions: [{ question: "Merge?", options: [{ label: "Yes" }] }] } }),
+      ROW({ type: "question-resolved", emitter: "claude-posttool", payload: { tool_use_id: "t1" } }),
+      ROW({ type: "question-answered", emitter: "jaxos", payload: { question_event_id: 3, ok: true } }),
+      ROW({ type: "attention-needed", source: "behavioral", emitter: "claude-notification", payload: { reason: "no-signal" } }),
+      ROW({ type: "tool-used", emitter: "claude-toolused", payload: { tool: "Bash" } }),
+      ROW({ type: "subagent-started", emitter: "claude-toolused", payload: { agent_type: "x" } }),
+      ROW({ type: "subagent-stopped", emitter: "claude-toolused", payload: {} }),
+      ROW({ type: "merge-approved", emitter: "wrapper", payload: { phase: "B", branch: "b", target: "main", merge_sha: "abc", approved_by: "owner" } }),
+      ROW({ type: "pr-opened", emitter: "wrapper", payload: { pr_number: 1, branch: "b", base: "main", pr_url: "u" } }),
+      ROW({ type: "gc-removed", emitter: "wrapper", payload: { worktree: "w", branch: "b", reason: "r" } }),
+      ROW({ type: "mission-status-updated", emitter: "wrapper", payload: {} }),
+      ROW({ type: "mission-finished", emitter: "wrapper", payload: {} }),
+    ];
+    for (const row of rows) {
+      const plain = renderMessage(row);
+      expect(renderMessage(row, undefined, null)).toBe(plain);
+      expect(renderMessage(row, undefined, undefined)).toBe(plain);
+    }
+  });
+
+  it("inserts the name after the project name, in the same position for every event type", () => {
+    expect(renderMessage({ type: "tool-used", project: "p", role: "lead", payload: { tool: "Bash" } }, undefined, "multi-sessao"))
+      .toBe("Project p · multi-sessao: tool Bash used.");
+    expect(renderMessage(
+      { type: "run-started", project: "p", role: "builder", payload: { phase: "B", runtime: "codex" } }, undefined, "work",
+    )).toBe("Project p · work (phase B): builder run started on codex.");
+  });
+
+  it("toForwardBody forwards the name to the message and leaves delivery identity untouched", () => {
+    const q = ROW({
+      id: 9, project: "p", type: "question", emitter: "claude-pretool",
+      payload: { tool_use_id: "t", questions: [{ question: "Merge?", options: [{ label: "Yes" }] }] },
+    });
+    const named = toForwardBody(q, undefined, "work");
+    const plain = toForwardBody(q);
+    expect(named.message.split("\n")[0]).toBe("Workflow event #9");
+    expect(named.message.split("\n")[1].startsWith("Project p · work: the tech lead asks —")).toBe(true);
+    expect(named.message).not.toBe(plain.message);
+    expect([named.payload, named.event_id, named.type, named.run_id])
+      .toEqual([plain.payload, plain.event_id, plain.type, plain.run_id]);
+  });
+
+  it("stays pure: a registry name is never read inside the renderer", () => {
+    const home = mkdtempSync(join(tmpdir(), "jaxos-events-home-"));
+    try {
+      mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
+      writeFileSync(join(home, ".claude", "sessions", "1.json"), JSON.stringify({ sessionId: "S1", name: "leaky" }), "utf8");
+      vi.stubEnv("HOME", home);
+      const msg = renderMessage(ROW({ harness_session: "S1" }));
+      expect(msg).not.toContain("leaky");
+      expect(msg).not.toContain(" · ");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+    expect(readFileSync("src/server/collectors/workflow-events.ts", "utf8")).not.toMatch(/session-names|from "node:fs"|homedir/);
   });
 });
 

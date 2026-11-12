@@ -28,12 +28,38 @@ export function parseWorktreePorcelain(output: string): WorktreeEntry[] {
 
 export type LedgerRow = { id: number; runId: string; kind: "spec" | "plan" | "diff" | "build" | "merge"; branch: string; startedAt: string; status: "running" | "finished"; finishedAt: string | null };
 
-export type WorktreeResult = { ok: true; count: number; oldestAgeDays: number } | { ok: false; error: string };
+// Session cards: how many of the retained worktrees each agent session's builds left behind.
+// `session` is the build run's recorded agent session (null = none recorded). Optional so every
+// pre-existing producer/fixture of WorktreeResult stays valid.
+export type RetainedWorktreeSession = { session: string | null; count: number };
+
+export type WorktreeResult = { ok: true; count: number; oldestAgeDays: number; sessions?: RetainedWorktreeSession[] } | { ok: false; error: string };
+
+type RetainedOpts = { now: string; thresholdDays: number; controlRepoPath: string };
 
 // Pure (spec §7): injected porcelain/ledgerRows/opts, no tmux/git calls of its own.
-export function collectRetainedWorktrees(
-  porcelain: string, ledgerRows: LedgerRow[], opts: { now: string; thresholdDays: number; controlRepoPath: string },
-): WorktreeResult {
+export function collectRetainedWorktrees(porcelain: string, ledgerRows: LedgerRow[], opts: RetainedOpts): WorktreeResult {
+  const retained = retainedBuilds(porcelain, ledgerRows, opts);
+  const oldestAgeDays = retained.reduce((max, r) => Math.max(max, r.ageDays), 0);
+  return { ok: true, count: retained.length, oldestAgeDays: Math.floor(oldestAgeDays) };
+}
+
+// The same retained set as collectRetainedWorktrees, grouped by the agent session that ran each
+// build (`runSessions`: run_id -> recorded session). A build with no recorded session groups
+// under null. Pure, like its sibling.
+export function retainedWorktreeSessions(
+  porcelain: string, ledgerRows: LedgerRow[], runSessions: { runId: string; session: string | null }[], opts: RetainedOpts,
+): RetainedWorktreeSession[] {
+  const sessionByRun = new Map(runSessions.map((r) => [r.runId, r.session]));
+  const counts = new Map<string | null, number>();
+  for (const r of retainedBuilds(porcelain, ledgerRows, opts)) {
+    const session = sessionByRun.get(r.row.runId) ?? null;
+    counts.set(session, (counts.get(session) ?? 0) + 1);
+  }
+  return [...counts].map(([session, count]) => ({ session, count }));
+}
+
+function retainedBuilds(porcelain: string, ledgerRows: LedgerRow[], opts: RetainedOpts): { row: LedgerRow; ageDays: number }[] {
   const entries = parseWorktreePorcelain(porcelain);
   const registeredBranches = new Set(entries.filter((e) => !e.detached && e.path !== opts.controlRepoPath && e.branch).map((e) => e.branch as string));
   // F6 (round 4): "latest" is by event TIMESTAMP, `id` breaking an exact tie -- the
@@ -49,17 +75,15 @@ export function collectRetainedWorktrees(
     }
   }
   const nowMs = Date.parse(opts.now);
-  let count = 0;
-  let oldestAgeDays = 0;
+  const retained: { row: LedgerRow; ageDays: number }[] = [];
   for (const [branch, r] of latestBuildByBranch) {
     if (!registeredBranches.has(branch)) continue;
     if (r.status !== "finished" || !r.finishedAt) continue;
     const ageDays = (nowMs - Date.parse(r.finishedAt)) / 86_400_000;
     if (ageDays < opts.thresholdDays) continue;
-    count += 1;
-    if (ageDays > oldestAgeDays) oldestAgeDays = ageDays;
+    retained.push({ row: r, ageDays });
   }
-  return { ok: true, count, oldestAgeDays: Math.floor(oldestAgeDays) };
+  return retained;
 }
 
 // Real collector: one `git worktree list --porcelain` call for `repoPath`.

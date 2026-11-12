@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseWorktreePorcelain, collectRetainedWorktrees, type LedgerRow } from "./worktrees";
+import { parseWorktreePorcelain, collectRetainedWorktrees, retainedWorktreeSessions, type LedgerRow } from "./worktrees";
 
 const PORCELAIN =
   "worktree /home/rafa/repos/demo\nHEAD " + "a".repeat(40) + "\nbranch refs/heads/main\n\n" +
@@ -51,5 +51,31 @@ describe("collectRetainedWorktrees", () => {
     // old enough) wins and the branch is NOT counted, whichever order they're given in.
     expect(collectRetainedWorktrees(PORCELAIN, [older, newerById], opts)).toEqual({ ok: true, count: 0, oldestAgeDays: 0 });
     expect(collectRetainedWorktrees(PORCELAIN, [newerById, older], opts)).toEqual({ ok: true, count: 0, oldestAgeDays: 0 });
+  });
+});
+
+describe("retainedWorktreeSessions", () => {
+  const opts = { now: "2026-09-19T00:00:00Z", thresholdDays: 7, controlRepoPath: "/home/rafa/repos/demo" };
+  const TWO = "worktree /home/rafa/repos/demo\nHEAD " + "a".repeat(40) + "\nbranch refs/heads/main\n\n" +
+    "worktree /home/rafa/repos/demo-feat-x\nHEAD " + "b".repeat(40) + "\nbranch refs/heads/feat/x\n\n" +
+    "worktree /home/rafa/repos/demo-feat-y\nHEAD " + "c".repeat(40) + "\nbranch refs/heads/feat/y\n";
+  const A = "aaaaaaaa-0000-4000-8000-00000000000a";
+
+  test("attributes each retained build to its run's recorded session", () => {
+    const rows = [row({ id: 1, runId: "r1", branch: "feat/x" }), row({ id: 2, runId: "r2", branch: "feat/y" })];
+    expect(retainedWorktreeSessions(TWO, rows, [{ runId: "r1", session: A }, { runId: "r2", session: null }], opts))
+      .toEqual([{ session: A, count: 1 }, { session: null, count: 1 }]);
+  });
+
+  test("groups a run id absent from runSessions under null", () => {
+    const rows = [row({ id: 1, runId: "r1", branch: "feat/x" }), row({ id: 2, runId: "r2", branch: "feat/y" })];
+    expect(retainedWorktreeSessions(TWO, rows, [{ runId: "r1", session: A }], opts))
+      .toEqual([{ session: A, count: 1 }, { session: null, count: 1 }]);
+  });
+
+  test("counts two retained builds of one session together", () => {
+    const rows = [row({ id: 1, runId: "r1", branch: "feat/x" }), row({ id: 2, runId: "r2", branch: "feat/y" })];
+    expect(retainedWorktreeSessions(TWO, rows, [{ runId: "r1", session: A }, { runId: "r2", session: A }], opts))
+      .toEqual([{ session: A, count: 2 }]);
   });
 });

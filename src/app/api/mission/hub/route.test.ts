@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../../../server/db/index";
-import { insertEvent, getHubData } from "../../../../server/db/workflows";
+import { getHubData, insertEvent } from "../../../../server/db/workflows";
 import { handleHubGet, type HubRouteDeps } from "./handler";
 
 const NO_CODEX = async () => ({ ok: false as const, ts: "2026-09-10T00:00:00.000Z", error: "codex runtime unavailable" });
@@ -320,5 +320,45 @@ describe("GET /api/mission/hub (wiring)", () => {
       expect(body.data.codexSource).toBe("ok");
       db.close();
     }
+  });
+});
+
+describe("session display names (spec §9)", () => {
+  const A = "aaaaaaaa-0000-4000-8000-00000000000a";
+  const INC = "100:1";
+  const paneDeps = (db: ReturnType<typeof openDb>, readSessionNames?: () => ReadonlyMap<string, string>): HubRouteDeps => ({
+    getDb: () => db,
+    getProjects: () => ({ projects: [{ dir: "p1", statusMtime: "2026-08-01T00:00:00.000Z" }], skipped: 0 }) as unknown as ReturnType<HubRouteDeps["getProjects"]>,
+    listLivePanes: async () => ({ paneIds: new Set(["%1"]), incarnation: INC, paneCommands: new Map() }),
+    collectCodexSnapshot: NO_CODEX, isCodexCliPresent: () => true, getHubData, readSessionNames,
+  });
+
+  it("names a seat from the injected reader, and leaves it null without one or with an empty map", async () => {
+    const db = openDb(":memory:");
+    insertEvent(db, {
+      run_id: null, project: "p1", role: "lead", type: "turn-started", source: "deterministic",
+      emitter: "claude-userprompt", payload: {}, pane: "%1", tmux_incarnation: INC, harness_session: A,
+    }, new Date("2026-08-27T10:00:00Z"));
+    const named = await (await handleHubGet(paneDeps(db, () => new Map([[A, "multi-sessao"]])))).json();
+    expect(named.data.byProject.p1.split.seats[0].name).toBe("multi-sessao");
+    const unnamed = await (await handleHubGet(paneDeps(db))).json();
+    expect(unnamed.data.byProject.p1.split.seats[0].name).toBeNull();
+    const empty = await (await handleHubGet(paneDeps(db, () => new Map()))).json();
+    expect(empty.data.byProject.p1.split.seats[0].name).toBeNull();
+    db.close();
+  });
+
+  it("a getProjects failure keeps the 200 {ok:false} house envelope", async () => {
+    const db = openDb(":memory:");
+    const deps: HubRouteDeps = {
+      getDb: () => db,
+      getProjects: () => { throw new Error("project scan failed"); },
+      listLivePanes: async () => ({ paneIds: new Set(), incarnation: null, paneCommands: new Map() }),
+      collectCodexSnapshot: NO_CODEX, isCodexCliPresent: () => true, getHubData,
+    };
+    const res = await handleHubGet(deps);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: false, error: "project scan failed" });
+    db.close();
   });
 });
