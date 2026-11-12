@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Clock3, File, FolderGit2, GitBranch, GitPullRequest, Hourglass, MoreHorizontal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
-  answerEventId, artifactRel, composeIndexedReply, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix,
+  answerEventId, artifactRel, cancelAction, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix,
   stuckLine, gateWaitingLine, heartbeatPath, worstFinding, worstPaneState,
   type MissionActiveRunSummary, type MissionCard, type MissionPendingQuestion, type MissionState,
 } from "@/lib/mission";
@@ -199,8 +199,12 @@ function ActionRow({
   onExpand: () => void; onAction: (url: string, body: unknown) => void;
 }) {
   const t = useTranslations("mission");
-  const showCancel = (card.headline === "working" || card.headline === "stuck") && !!card.activeRun;
+  const cancel = cancelAction(card);
+  const showCancel = cancel !== null;
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  // The run id pinned when the dialog opened — the confirm posts THIS id, never the card's
+  // current run (which may have finished or been replaced, spec §10).
+  const [pinnedRunId, setPinnedRunId] = useState<string | null>(null);
   const isActionable = action?.kind === "generic" || action?.kind === "approve";
   // F3: the bare-capsule fallback needs an actual capsule (a freeform pane/session with capsuleStatus)
   // or a structured pending question to describe — a blocked/awaiting gate with neither is not a
@@ -220,13 +224,13 @@ function ActionRow({
           </span>
         ) : null}
         {showCancel ? (
-          <button key="cancel" type="button" className={BTN_DANGER} disabled={busy} onClick={() => setConfirmingCancel(true)}>{t("actions.cancel")}</button>
+          <button key="cancel" type="button" className={BTN_DANGER} disabled={busy} onClick={() => { setPinnedRunId(cancel?.body.run_id ?? null); setConfirmingCancel(true); }}>{t("actions.cancel")}</button>
         ) : null}
-        {confirmingCancel && card.activeRun ? (
+        {confirmingCancel ? (
           <CancelDialog
             busy={busy}
             onDismiss={() => setConfirmingCancel(false)}
-            onConfirm={() => { setConfirmingCancel(false); onAction("/api/workflow/cancel", { run_id: card.activeRun!.runId }); }}
+            onConfirm={() => onConfirmCancel(pinnedRunId, card, onAction, () => setConfirmingCancel(false))}
           />
         ) : null}
       </div>
@@ -262,6 +266,16 @@ export function CancelDialog({ busy, onConfirm, onDismiss }: { busy: boolean; on
       </div>
     </dialog>
   );
+}
+
+// The cancel confirmation's whole decision, exported so tests drive it without a DOM: post the
+// pinned id only while it is still in flight; close the dialog either way.
+export function onConfirmCancel(
+  pinnedRunId: string | null, card: MissionCard, post: (url: string, body: unknown) => void, close: () => void,
+) {
+  const request = pinnedRunId !== null ? confirmCancel(pinnedRunId, card) : null;
+  close();
+  if (request) post(request.url, request.body);
 }
 
 function FreeformForm({ eventId, answerable, busy, onAction }: { eventId: number; answerable: boolean; busy: boolean; onAction: (url: string, body: unknown) => void }) {

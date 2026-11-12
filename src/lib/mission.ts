@@ -1326,6 +1326,30 @@ export async function postWorkflowAction<T>(url: string, body: unknown): Promise
   return { ok: false, error: "unexpected response" };
 }
 
+// ---- Cancel (spec §10) -----------------------------------------------------------------------
+export type CancelRequest = { url: "/api/workflow/cancel"; body: { run_id: string } };
+
+// The card's own newest in-flight run. Never on a grouped project card (the header is not a
+// run); a waiting card only when it stands in for a session, so a 2→1 transition keeps Cancel.
+export function cancelAction(card: Pick<MissionCard, "headline" | "activeRun" | "scope" | "key" | "group">): CancelRequest | null {
+  if (!card.activeRun || card.group !== undefined) return null;
+  const sessionBacked = card.scope !== undefined || card.key !== undefined;
+  const allowed = card.headline === "working" || card.headline === "stuck" || (card.headline === "waiting" && sessionBacked);
+  return allowed ? { url: "/api/workflow/cancel", body: { run_id: card.activeRun.runId } } : null;
+}
+
+export function inFlightRunIds(card: Pick<MissionCard, "activeRun" | "activeRuns">): Set<string> {
+  const ids = new Set((card.activeRuns ?? []).map((r) => r.runId));
+  if (card.activeRun) ids.add(card.activeRun.runId);
+  return ids;
+}
+
+// The confirmation posts the run id PINNED when the dialog opened, and only while that run is
+// still in flight — never whatever replaced it (spec §10).
+export function confirmCancel(pinnedRunId: string, card: Pick<MissionCard, "activeRun" | "activeRuns">): CancelRequest | null {
+  return inFlightRunIds(card).has(pinnedRunId) ? { url: "/api/workflow/cancel", body: { run_id: pinnedRunId } } : null;
+}
+
 // merge-button-hide fix: pulls the numeric event id out of an answer POST body (every
 // PendingActionButtons click posts `{event_id, reply}`) so the caller can key its optimistic
 // "answered" confirmation to the exact question just replied to. A cancel/dispatch/prefs POST

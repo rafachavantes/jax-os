@@ -210,8 +210,11 @@ describe("InboxStrip — direct handler tests, no jsdom (round-2 F4)", () => {
     postSpy.mockClear();
     const setBusy = vi.fn();
     const setConfirming = vi.fn();
-    await runStuckCancel("r1", setBusy, setConfirming);
+    const card = { ...cardBase, activeRun: { runId: "r1", startedAt: null, kind: "build" as const, runtime: "claude" as const, target: "x", count: 1, lastStep: null, stage: "build" as const, descriptionKey: "building" as const, targetKind: "branch" as const }, activeRuns: [] };
+    await runStuckCancel("r1", card, setBusy, setConfirming);
     expect(postSpy).toHaveBeenCalledExactlyOnceWith("/api/workflow/cancel", { run_id: "r1" });
+    expect(setBusy).toHaveBeenNthCalledWith(1, true);
+    expect(setBusy).toHaveBeenNthCalledWith(2, false);
     expect(setConfirming).toHaveBeenCalledExactlyOnceWith(false);
   });
 });
