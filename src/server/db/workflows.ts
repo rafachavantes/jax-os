@@ -1867,6 +1867,18 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
   return { runId: row.run_id as string, role, kind, runtime, target, finishedAt, outcome, contractStatus, stage, diagnostic, headSha, findings, runtimeModel, profileName, reportRel, targetRel, verifyCommand, buildCommand };
 }
 
+// Session cards: the recorded agent session of every builder run of the project (latest start
+// per run_id, the same ownership rule as RunScope), for attributing retained worktrees.
+export function getBuildRunSessions(db: Database.Database, project: string): { runId: string; session: string | null }[] {
+  return db.prepare(
+    `SELECT s.run_id AS runId, s.harness_session AS session FROM workflow_events s
+     WHERE s.project = ? AND s.type = 'run-started' AND s.role = 'builder' AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM workflow_events n
+         WHERE n.project = s.project AND n.run_id = s.run_id AND n.type = 'run-started' AND n.emitter != 'jaxos' AND n.id > s.id)`,
+  ).all(project) as { runId: string; session: string | null }[];
+}
+
 export function getWorktreeLedgerRows(db: Database.Database, project: string): LedgerRow[] {
   const rows = db.prepare(
     `SELECT s.id AS id, s.run_id AS runId, s.payload AS startedPayload, s.ts AS startedAt,

@@ -28,7 +28,7 @@ vi.mock("../settings", async (importOriginal) => {
 
 import { openDb } from "./index";
 import {
-  activeRunsFor, getHubData, getProjectTimeline, insertEvent, lastRunFor, questionOwnsPane, setAfk, setForwardTypes, upsertSession,
+  activeRunsFor, getBuildRunSessions, getHubData, getProjectTimeline, insertEvent, lastRunFor, questionOwnsPane, setAfk, setForwardTypes, upsertSession,
   type HubEnvelopeData, type HubPane, type LiveSnapshot, type RunScope,
 } from "./workflows";
 import { FORWARDABLE_EVENT_TYPES, HOOK_TELEMETRY_TYPES, type WorkflowEventInput } from "../../lib/workflow";
@@ -640,6 +640,32 @@ describe("session status inputs", () => {
   it("omits the split key entirely for a project with no seats and nothing in flight", () => {
     insertEvent(db, claude(A, "%3", "turn-stopped", "claude-stop", { capsule_status: "done" }), at(1));
     expect("split" in hubOf(db).byProject[P]).toBe(false);
+    db.close();
+  });
+});
+
+describe("getBuildRunSessions", () => {
+  it("keeps one row per run, owned by the latest builder start", () => {
+    insertEvent(db, runStarted("r-shared", "builder", "build", "claude", A, "feat/x"), at(1));
+    insertEvent(db, runStarted("r-shared", "builder", "build", "claude", B, "feat/x"), at(2));
+    expect(getBuildRunSessions(db, P)).toEqual([{ runId: "r-shared", session: B }]);
+    db.close();
+  });
+
+  it("reports null for a builder run with no recorded session", () => {
+    insertEvent(db, {
+      run_id: "r-none", project: P, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+      payload: { phase: "P1", runtime: "opencode-builder", kind: "build", target: "feat/n", caller: "claude" },
+    }, at(1));
+    expect(getBuildRunSessions(db, P)).toEqual([{ runId: "r-none", session: null }]);
+    db.close();
+  });
+
+  it("excludes reviewer runs and jaxos-emitted rows, and keeps a dashboard dispatch's session", () => {
+    insertEvent(db, runStarted("r-review", "reviewer", "diff", "claude", A, "feat/r"), at(1));
+    insertEvent(db, { run_id: "r-jaxos-row", project: P, role: "builder", type: "run-started", source: "deterministic", emitter: "jaxos", payload: { kind: "build", target: "feat/j" } }, at(2));
+    insertEvent(db, runStarted("r-dash", "builder", "build", "jaxos", "jaxos", "feat/j"), at(3));
+    expect(getBuildRunSessions(db, P)).toEqual([{ runId: "r-dash", session: "jaxos" }]);
     db.close();
   });
 });

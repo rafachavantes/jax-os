@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import { collectorResponse } from "../../../../server/api";
 import { getProjects, REPOS_ROOT } from "../../../../server/collectors/projects";
-import { collectRetainedWorktrees, probeWorktreePorcelain, type WorktreeResult } from "../../../../server/collectors/worktrees";
+import { collectRetainedWorktrees, probeWorktreePorcelain, retainedWorktreeSessions, type WorktreeResult } from "../../../../server/collectors/worktrees";
 import { getDb } from "../../../../server/db";
-import { getWorktreeLedgerRows } from "../../../../server/db/workflows";
+import { getBuildRunSessions, getWorktreeLedgerRows } from "../../../../server/db/workflows";
 
 const OLDER_THAN_DAYS = 7; // 7 days, the default the retired jaxflow gc used
 
@@ -13,9 +13,12 @@ export type WorktreesRouteDeps = {
   getWorktreeLedgerRows: typeof getWorktreeLedgerRows;
   getDb: typeof getDb;
   now: () => string;
+  // Session cards: optional — without it the per-session breakdown is simply omitted and the
+  // session cards show no retained-worktree count of their own.
+  getBuildRunSessions?: typeof getBuildRunSessions;
 };
 
-const systemDeps: WorktreesRouteDeps = { getProjects, probeWorktreePorcelain, getWorktreeLedgerRows, getDb, now: () => new Date().toISOString() };
+const systemDeps: WorktreesRouteDeps = { getProjects, probeWorktreePorcelain, getWorktreeLedgerRows, getDb, now: () => new Date().toISOString(), getBuildRunSessions };
 
 // Round 3 F2: one entry per PROJECT-SCAN entry (getProjects()), never gated on
 // getHubData's 30-day/live-pane membership -- an idle project still gets its real count.
@@ -37,7 +40,11 @@ export async function handleWorktreesGet(deps: WorktreesRouteDeps = systemDeps) 
         continue;
       }
       const ledgerRows = deps.getWorktreeLedgerRows(db, p.dir);
-      out[p.dir] = collectRetainedWorktrees(probe.stdout, ledgerRows, { now, thresholdDays: OLDER_THAN_DAYS, controlRepoPath: absPath });
+      const opts = { now, thresholdDays: OLDER_THAN_DAYS, controlRepoPath: absPath };
+      const result = collectRetainedWorktrees(probe.stdout, ledgerRows, opts);
+      out[p.dir] = result.ok && deps.getBuildRunSessions
+        ? { ...result, sessions: retainedWorktreeSessions(probe.stdout, ledgerRows, deps.getBuildRunSessions(db, p.dir), opts) }
+        : result;
     }
     return out;
   });
