@@ -15,6 +15,7 @@ import {
   LIMITS, RUN_ID_RE, validOptionalFocus, validPhaseToken, validRefName, validSingleLineCommand,
 } from "@/lib/workflow";
 import { RelativeTime } from "@/components/RelativeTime";
+import { draftKeys, settleAnswer, useAnswerDraft, useAnswerDraftStore } from "@/components/mission/AnswerDrafts";
 import { serializeFileSelection } from "@/lib/filesUrl";
 import { TimelineEntryText } from "@/components/mission/TimelineEntryText";
 
@@ -265,7 +266,7 @@ export function CancelDialog({ busy, onConfirm, onDismiss }: { busy: boolean; on
 
 function FreeformForm({ eventId, answerable, busy, onAction }: { eventId: number; answerable: boolean; busy: boolean; onAction: (url: string, body: unknown) => void }) {
   const t = useTranslations("mission");
-  const [reply, setReply] = useState("");
+  const [reply, setReply] = useAnswerDraft(draftKeys.freeform(eventId), () => "");
   // round-2 F1: LIMITS.freeformReply (2000) is pre-existing in src/lib/workflow.ts (spec
   // §4.6.2 guard 6, commit 3f08724) — Part 1's own LIMITS edit only appends checks/focus/
   // whitelist, it never touches this field. Already imported above with the rest of LIMITS.
@@ -288,10 +289,12 @@ function FreeformForm({ eventId, answerable, busy, onAction }: { eventId: number
 
 function GenericQuestionForm({ pendingQuestion, busy, onAction }: { pendingQuestion: MissionPendingQuestion; busy: boolean; onAction: (url: string, body: unknown) => void }) {
   const t = useTranslations("mission");
-  const [selections, setSelections] = useState<number[][]>(() => pendingQuestion.questions.map(() => []));
+  const [stored, setSelections] = useAnswerDraft<number[][]>(draftKeys.question(pendingQuestion.eventId), () => pendingQuestion.questions.map(() => []));
+  // A stored selection from a different question shape is ignored, never half-applied.
+  const selections = stored.length === pendingQuestion.questions.length ? stored : pendingQuestion.questions.map(() => []);
   const valid = selections.every((s) => s.length > 0);
   function toggle(qIdx: number, optIdx: number, multi: boolean) {
-    setSelections((prev) => prev.map((sel, i) => {
+    setSelections(selections.map((sel, i) => {
       if (i !== qIdx) return sel;
       if (!multi) return [optIdx];
       return sel.includes(optIdx) ? sel.filter((v) => v !== optIdx) : [...sel, optIdx].sort((a, b) => a - b);
@@ -546,6 +549,7 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
   // actionEventId(action) below, so the confirmation only shows for the question it actually
   // answered and clears itself once the hub poll moves the card on to something else.
   const [answeredEventId, setAnsweredEventId] = useState<number | null>(null);
+  const drafts = useAnswerDraftStore();
   const action = pendingUiAction(card, undefined, t);
   const answered = answeredEventId !== null && answeredEventId === actionEventId(action);
   // MOA-486 round 2: an all-zero heartbeat means nothing has been recorded yet — render no
@@ -558,6 +562,7 @@ export function ProjectCard({ card, issues, expanded, onToggle }: { card: Missio
     setActionError(null);
     const result = await postWorkflowAction<unknown>(url, body);
     setBusy(false);
+    settleAnswer(drafts, result.ok, body);
     if (!result.ok) { setActionError(result.error); return; }
     const eventId = answerEventId(body);
     if (eventId !== null) setAnsweredEventId(eventId);
@@ -997,7 +1002,7 @@ function ExpandedCard({
                 {card.pendingQuestions[0].answerable === false ? (
                   <span className="block text-[11px] text-danger">{t("actions.questionFromEarlierSession")}</span>
                 ) : action?.kind === "generic" && !(action.pendingQuestion.questions.length === 1 && !action.pendingQuestion.questions[0].multiSelect) ? (
-                  <GenericQuestionForm pendingQuestion={action.pendingQuestion} busy={busy} onAction={onAction} />
+                  <GenericQuestionForm key={action.pendingQuestion.eventId} pendingQuestion={action.pendingQuestion} busy={busy} onAction={onAction} />
                 ) : null}
                 <span className="text-[11px] text-muted">
                   {t("expanded.answerHint")}{" "}
@@ -1005,7 +1010,7 @@ function ExpandedCard({
                 </span>
               </div>
             ) : null}
-            {action?.kind === "freeform" ? <FreeformForm eventId={action.eventId} answerable={action.answerable} busy={busy} onAction={onAction} /> : null}
+            {action?.kind === "freeform" ? <FreeformForm key={action.eventId} eventId={action.eventId} answerable={action.answerable} busy={busy} onAction={onAction} /> : null}
           </>
         )}
       </section>

@@ -15,6 +15,7 @@ import { ProjectsColumn } from "@/components/mission/ProjectsColumn";
 import { InboxStrip } from "@/components/mission/InboxStrip";
 import { ServerPanel } from "@/components/mission/ServerPanel";
 import { MissionBlock } from "@/components/mission/MissionBlock";
+import { AnswerDraftsProvider } from "@/components/mission/AnswerDrafts";
 import { EventTicker } from "@/components/mission/EventTicker";
 import type { ProjectScan } from "@/server/collectors/projects";
 import type { Commit } from "@/server/collectors/activity";
@@ -89,13 +90,15 @@ export default function MissionPage() {
 
       <MissionBlock />
 
-      <InboxStrip mission={mission} onExpand={setExpandedDir} />
+      <AnswerDraftsProvider>
+        <InboxStrip mission={mission} onExpand={setExpandedDir} />
 
-      <ProjectsColumn
-        mission={mission} reposRoot={mission.model.reposRoot} counts={countsByName} filter={filter}
-        expandedDir={expandedDir}
-        onToggleExpand={(dir) => setExpandedDir((d) => (d === dir ? null : dir))}
-      />
+        <ProjectsColumn
+          mission={mission} reposRoot={mission.model.reposRoot} counts={countsByName} filter={filter}
+          expandedDir={expandedDir}
+          onToggleExpand={(dir) => setExpandedDir((d) => (d === dir ? null : dir))}
+        />
+      </AnswerDraftsProvider>
 
       <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
         <EventTicker items={ticker} />
