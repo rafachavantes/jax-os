@@ -91,7 +91,8 @@ export function pendingUiAction(
       };
     }
     // Gate fallback only when the classifier gave no score (null); a scored non-merge ask must not get a merge button.
-    if (pending.mergeAsk === null && pending.role === "lead" && card.gate === "awaiting-approval" && card.headline === "needs-you") {
+    if (pending.mergeAsk === null && pending.role === "lead" && card.gate === "awaiting-approval" && card.headline === "needs-you"
+      && card.scope === undefined && card.group === undefined) {
       return {
         kind: "approve", eventId: pending.eventId, question: pending.question,
         replyYes: card.branch
@@ -128,13 +129,18 @@ export function bareCapsuleStatus(card: MissionCard): "needs_input" | "blocked" 
 // Decision 9: the merge/generic/approve button set, shared by ActionRow (compact face) and InboxStrip's question/gate rows (Task 9) — one source of truth. Freeform renders nothing here (Decision 12).
 export function PendingActionButtons({
   action, busy, answered = false, onExpand, onAction,
-}: { action: PendingUiAction; busy: boolean; answered?: boolean; onExpand: () => void; onAction: (url: string, body: unknown) => void }) {
+}: { action: PendingUiAction; busy: boolean; answered?: boolean; onExpand?: () => void; onAction: (url: string, body: unknown) => void }) {
   const t = useTranslations("mission");
   // merge-button-hide fix: a successful POST for THIS action's eventId hides the buttons right
   // away instead of waiting for the next hub poll to prove it — the caller sets `answered` from
   // its own optimistic local state, keyed to that eventId (round-trips through actionEventId).
   if (answered) return <span className="text-[11.5px] text-muted">{t("actions.answerSent")}</span>;
   if (action?.kind === "generic") {
+    // The question can no longer be answered (an earlier conversation in its pane asked it):
+    // say why and offer nothing. Every surface uses this same early return.
+    if (action.pendingQuestion.answerable === false) {
+      return <span className="text-[11.5px] text-danger">{t("actions.questionFromEarlierSession")}</span>;
+    }
     const single = action.pendingQuestion.questions.length === 1 && !action.pendingQuestion.questions[0].multiSelect;
     if (single) {
       return (
@@ -148,7 +154,7 @@ export function PendingActionButtons({
         </>
       );
     }
-    return <button type="button" className={BTN_GHOST} disabled={busy} onClick={onExpand}>{t("actions.respond")}</button>;
+    return onExpand ? <button type="button" className={BTN_GHOST} disabled={busy} onClick={onExpand}>{t("actions.respond")}</button> : null;
   }
   if (action?.kind === "approve") {
     return (
@@ -988,7 +994,9 @@ function ExpandedCard({
                     <span className="text-[11px] text-muted">{sub.multiSelect ? t("expanded.multiSelect") : null}</span>
                   </div>
                 ))}
-                {action?.kind === "generic" && !(action.pendingQuestion.questions.length === 1 && !action.pendingQuestion.questions[0].multiSelect) ? (
+                {card.pendingQuestions[0].answerable === false ? (
+                  <span className="block text-[11px] text-danger">{t("actions.questionFromEarlierSession")}</span>
+                ) : action?.kind === "generic" && !(action.pendingQuestion.questions.length === 1 && !action.pendingQuestion.questions[0].multiSelect) ? (
                   <GenericQuestionForm pendingQuestion={action.pendingQuestion} busy={busy} onAction={onAction} />
                 ) : null}
                 <span className="text-[11px] text-muted">

@@ -194,6 +194,7 @@ describe("InboxStrip — direct handler tests, no jsdom (round-2 F4)", () => {
     const onExpand = vi.fn();
     expandAndScroll("p1", onExpand);
     expect(onExpand).toHaveBeenCalledExactlyOnceWith("p1");
+    expect(document.querySelector).toHaveBeenCalledWith('[data-card-key="p1"]');
     expect(scrollIntoView).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });

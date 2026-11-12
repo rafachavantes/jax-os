@@ -2,7 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { useState } from "react";
-import { bucketOf, type Mission, type MissionBucket, type MissionCard } from "@/lib/mission";
+import { bucketOf, cardKey, type Mission, type MissionBucket, type MissionCard } from "@/lib/mission";
 import { PrefsButtons, ProjectCard } from "./ProjectCard";
 import { SourceWarning } from "./SourceWarning";
 
@@ -142,7 +142,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
       // 1 = full). Tablet 2 per row, phone 1. The expanded card takes a 2-of-3 basis.
       <div className="flex flex-wrap gap-4">
         {cards.map((c) => (
-          <div key={c.dir} data-card-dir={c.dir} className={`min-w-0 grow basis-full sm:basis-[45%] ${c.dir === expandedDir ? "lg:basis-[63%]" : "lg:basis-[30%]"}`}>
+          <div key={cardKey(c)} data-card-dir={c.dir} data-card-key={cardKey(c)} className={`min-w-0 grow basis-full sm:basis-[45%] ${c.dir === expandedDir ? "lg:basis-[63%]" : "lg:basis-[30%]"}`}>
             <ProjectCard card={c} issues={counts?.[c.name.toLowerCase()]} expanded={c.dir === expandedDir} onToggle={() => onToggleExpand(c.dir)} />
           </div>
         ))}

@@ -2,7 +2,7 @@
 
 import { AlertCircle, Flag, GitPullRequest, HelpCircle } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { answerEventId, postWorkflowAction, stripPresentation, type InboxRow, type Mission, type MissionCard } from "@/lib/mission";
+import { answerEventId, boardCardKeyFor, postWorkflowAction, stripPresentation, type InboxRow, type Mission, type MissionCard } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "./SourceWarning";
 import { actionEventId, bareCapsuleStatus, CancelDialog, pendingUiAction, PendingActionButtons } from "./ProjectCard";
@@ -17,10 +17,12 @@ function RowIcon({ kind }: { kind: InboxRow["kind"] }) {
   return <GitPullRequest className="h-4 w-4 flex-none text-info" />;
 }
 
-// Decision 13b: expand the target card and scroll it into view via the data-card-dir attribute ProjectsColumn already stamps on every card.
-export function expandAndScroll(dir: string, onExpand: (dir: string) => void) {
-  onExpand(dir);
-  document.querySelector(`[data-card-dir="${dir}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+// Decision 13b: expand the target card and scroll it into view via the data-card-key attribute
+// ProjectsColumn stamps on every board card.
+export function expandAndScroll(key: string, onExpand: (key: string) => void) {
+  onExpand(key);
+  const value = key.replace(/["\\]/g, "\\$&");
+  document.querySelector(`[data-card-key="${value}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 // merge-button-hide fix: reports success (and the answered eventId) back to the caller instead
 // of a bare fire-and-forget POST, so the row can hide its buttons for a confirmation state right
@@ -37,18 +39,39 @@ export async function runQuestionAction(url: string, body: unknown, setBusy: (b:
 // Decision 9: each row looks up its own card, computes pendingUiAction, and reuses the SAME button component the compact face uses.
 // F2: `eventId` (the row's own event) is passed for question rows so a card with multiple pending
 // questions doesn't have every row answer pendingQuestions[0]; gate rows omit it (unchanged default).
-function QuestionRowActions({ card, eventId, onExpand }: { card: MissionCard; eventId?: number; onExpand: (dir: string) => void }) {
-  const t = useTranslations("mission");
+function QuestionRowActions({ card, eventId, onExpand }: { card: MissionCard; eventId?: number; onExpand: (key: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [answeredEventId, setAnsweredEventId] = useState<number | null>(null);
+  return (
+    <QuestionRowButtons
+      card={card} eventId={eventId} busy={busy} answeredEventId={answeredEventId} onExpand={onExpand}
+      onAction={(url, body) => runQuestionAction(url, body, setBusy, setAnsweredEventId)}
+    />
+  );
+}
+
+// The stateless part of a question/gate row's actions (exported so tests can drive the real
+// handlers): the exact pending action for this row's event, its answer buttons, and "Respond" —
+// which opens the board card carrying THIS question. With no holder there is no Respond.
+export function QuestionRowButtons({
+  card, eventId, busy, answeredEventId, onExpand, onAction,
+}: {
+  card: MissionCard; eventId?: number; busy: boolean; answeredEventId: number | null;
+  onExpand: (key: string) => void; onAction: (url: string, body: unknown) => void;
+}) {
+  const t = useTranslations("mission");
   const action = pendingUiAction(card, eventId, t);
   if (!(action?.kind === "generic" || action?.kind === "approve")) return null;
+  if (action.kind === "generic" && action.pendingQuestion.answerable === false) {
+    return <span className="text-[11.5px] text-danger">{t("actions.questionFromEarlierSession")}</span>;
+  }
   const answered = answeredEventId !== null && answeredEventId === actionEventId(action);
+  const target = boardCardKeyFor(card, actionEventId(action));
   return (
     <PendingActionButtons
       action={action} busy={busy} answered={answered}
-      onExpand={() => expandAndScroll(card.dir, onExpand)}
-      onAction={(url, body) => runQuestionAction(url, body, setBusy, setAnsweredEventId)}
+      onExpand={target !== null ? () => expandAndScroll(target, onExpand) : undefined}
+      onAction={onAction}
     />
   );
 }
@@ -74,8 +97,9 @@ function StuckRowActions({ card }: { card: MissionCard }) {
   );
 }
 
-function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard | undefined; onExpand: (dir: string) => void }) {
+function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard | undefined; onExpand: (key: string) => void }) {
   const t = useTranslations("mission.inbox");
+  const tMission = useTranslations("mission");
   if (row.kind === "gate") {
     const updatedMs = Date.parse(row.updated);
     return (
@@ -120,12 +144,20 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
     // CARD, with nothing in the strip at all — this row is that same signal, at the same place
     // every other "waiting on you" item lives. MOA-469 §4 adds the native Codex variant: a native
     // session needing attention has no pane and therefore no tmux action.
+    const respondKey = card ? boardCardKeyFor(card, row.capsuleEventId) : null;
+    const respond = respondKey !== null ? (
+      <button type="button" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink"
+        onClick={() => expandAndScroll(respondKey, onExpand)}>
+        {tMission("actions.respond")}
+      </button>
+    ) : null;
     if (row.transport === "tmux") {
       return (
         <div className="flex items-center gap-2.5 text-[13px]">
           <RowIcon kind="attention" />
           <span className="truncate font-semibold text-ink">{row.name}</span>
           <span className="text-body-ink">{t(row.status === "blocked" ? "blocked" : "needsInput")}</span>
+          {respond}
           <span className="ml-auto flex-none font-mono text-[11px] text-muted">{row.pane}</span>
           <a href="/tmux" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
             {t("openTmux")}
@@ -138,6 +170,7 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
         <RowIcon kind="attention" />
         <span className="truncate font-semibold text-ink">{row.name}</span>
         <span className="text-body-ink">{t("needsInput")}</span>
+        {respond}
         <span className="ml-auto flex-none font-mono text-[11px] text-muted" title={row.threadId}>{t("codexSession")}</span>
       </div>
     );
