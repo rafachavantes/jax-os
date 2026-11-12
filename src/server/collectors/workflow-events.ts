@@ -632,17 +632,21 @@ export type ForwardBody = {
 export function renderMessage(
   ev: Pick<WorkflowEventRow, "type" | "project" | "role" | "payload">,
   viewerUrl?: string,
+  sessionName?: string | null,
 ): string {
   const p = ev.payload;
+  // Session cards (spec §9): the caller resolves the display name and passes it in — this
+  // renderer stays pure (no registry read here), and a row without one renders exactly as before.
+  const proj = sessionName ? `${ev.project} · ${sessionName}` : ev.project;
   const s = (k: string): string => (typeof p[k] === "string" ? (p[k] as string) : "");
   const viewer = viewerUrl ? `Viewer: ${viewerUrl}` : "Open the tmux viewer in Jax OS.";
   switch (ev.type) {
     case "run-started":
-      return `Project ${ev.project} (phase ${s("phase")}): ${ev.role} run started on ${s("runtime")}.`;
+      return `Project ${proj} (phase ${s("phase")}): ${ev.role} run started on ${s("runtime")}.`;
     case "run-finished": {
       const contractStatus = s("contract_status");
       if (contractStatus === "cancelled") {
-        return `Project ${ev.project} (phase ${s("phase")}): ${ev.role} run cancelled: ${s("summary")}.`;
+        return `Project ${proj} (phase ${s("phase")}): ${ev.role} run cancelled: ${s("summary")}.`;
       }
       // §12.1's shared <outcome> table, reused verbatim by §12.3: builder reads `result`,
       // reviewer reads `verdict` only when contract_status is ok — but the LITERAL fallback
@@ -660,10 +664,10 @@ export function renderMessage(
       // decision table Part 2 row 8 / §Reviewer decision table row 3).
       const stageDiag = stage || diagnostic ? ` · ${stage} — ${diagnostic}` : "";
       if (contractStatus === "interrupted") {
-        return `Project ${ev.project} (phase ${s("phase")}): ${ev.role} run interrupted — ${outcome}${stageDiag}.`;
+        return `Project ${proj} (phase ${s("phase")}): ${ev.role} run interrupted — ${outcome}${stageDiag}.`;
       }
       const reportFlag = contractStatus === "missing" || contractStatus === "invalid" ? ` [report ${contractStatus}]` : "";
-      return `Project ${ev.project} (phase ${s("phase")}): ${ev.role} run finished — ${outcome}${stageDiag}, exit ${p.exit_code}${reportFlag}. Report at ${s("report_path")}.`;
+      return `Project ${proj} (phase ${s("phase")}): ${ev.role} run finished — ${outcome}${stageDiag}, exit ${p.exit_code}${reportFlag}. Report at ${s("report_path")}.`;
     }
     case "question": {
       const qs = Array.isArray(p.questions) ? (p.questions as Obj[]) : [];
@@ -673,35 +677,35 @@ export function renderMessage(
         const body = opts.map((o, j) => `  ${j + 1}) ${o.label}${o.description ? ` — ${o.description}` : ""}`);
         return [head, ...body].join("\n");
       });
-      return `Project ${ev.project}: the tech lead asks —\n${lines.join("\n")}\nReply to this message once, one line per question: "1: 2" or "2: 1,3"; text is also allowed after the colon.`;
+      return `Project ${proj}: the tech lead asks —\n${lines.join("\n")}\nReply to this message once, one line per question: "1: 2" or "2: 1,3"; text is also allowed after the colon.`;
     }
     case "question-resolved":
-      return `Project ${ev.project}: question ${s("tool_use_id")} resolved.`;
+      return `Project ${proj}: question ${s("tool_use_id")} resolved.`;
     case "attention-needed":
-      return `Project ${ev.project}: the tech lead needs attention (${s("reason")}). ${viewer}`;
+      return `Project ${proj}: the tech lead needs attention (${s("reason")}). ${viewer}`;
     case "turn-stopped":
-      return `Project ${ev.project}: tech lead turn ended.${s("excerpt") ? ` Proposal: ${s("excerpt")}` : ""} ${viewer}`;
+      return `Project ${proj}: tech lead turn ended.${s("excerpt") ? ` Proposal: ${s("excerpt")}` : ""} ${viewer}`;
     case "turn-started":
-      return `Project ${ev.project}: tech lead turn started.`;
+      return `Project ${proj}: tech lead turn started.`;
     case "tool-used":
-      return `Project ${ev.project}: tool ${s("tool")} used.`;
+      return `Project ${proj}: tool ${s("tool")} used.`;
     case "subagent-started":
-      return `Project ${ev.project}: subagent ${s("agent_type")} started.`;
+      return `Project ${proj}: subagent ${s("agent_type")} started.`;
     case "subagent-stopped":
-      return `Project ${ev.project}: subagent stopped.`;
+      return `Project ${proj}: subagent stopped.`;
     case "question-answered":
-      return `Project ${ev.project}: answer injected for question #${p.question_event_id} (${p.ok === true ? "ok" : `failed: ${s("error")}`}).`;
+      return `Project ${proj}: answer injected for question #${p.question_event_id} (${p.ok === true ? "ok" : `failed: ${s("error")}`}).`;
     case "merge-approved":
-      return `Project ${ev.project} (phase ${s("phase")}): ${s("branch")} merged into ${s("target")} as ${s("merge_sha")}, approved by ${s("approved_by")}.`;
+      return `Project ${proj} (phase ${s("phase")}): ${s("branch")} merged into ${s("target")} as ${s("merge_sha")}, approved by ${s("approved_by")}.`;
     case "pr-opened":
-      return `Project ${ev.project}: PR #${p.pr_number} opened (${s("branch")} → ${s("base")}). ${s("pr_url")}`;
+      return `Project ${proj}: PR #${p.pr_number} opened (${s("branch")} → ${s("base")}). ${s("pr_url")}`;
     case "gc-removed":
-      return `Project ${ev.project}: worktree ${s("worktree")} removed (branch ${s("branch")}, ${s("reason")}).`;
+      return `Project ${proj}: worktree ${s("worktree")} removed (branch ${s("branch")}, ${s("reason")}).`;
     // temporary until MOA-488 defines the payload (jaxflow-mission spec §9)
     case "mission-status-updated":
-      return `Project ${ev.project}: mission status updated.`;
+      return `Project ${proj}: mission status updated.`;
     case "mission-finished":
-      return `Project ${ev.project}: mission finished.`;
+      return `Project ${proj}: mission finished.`;
   }
 }
 
@@ -729,7 +733,7 @@ export function projectPayload(type: EventType, payload: Record<string, unknown>
   return Object.fromEntries(Object.entries(payload).filter(([k]) => !drop.includes(k)));
 }
 
-export function toForwardBody(row: WorkflowEventRow, viewerUrl?: string): ForwardBody {
+export function toForwardBody(row: WorkflowEventRow, viewerUrl?: string, sessionName?: string | null): ForwardBody {
   const payload = projectPayload(row.type, row.payload);
   return {
     event_id: row.id,
@@ -741,8 +745,8 @@ export function toForwardBody(row: WorkflowEventRow, viewerUrl?: string): Forwar
     source: row.source,
     emitter: row.emitter,
     message: row.type === "question" || row.type === "turn-stopped" || row.type === "attention-needed"
-      ? `Workflow event #${row.id}\n${renderMessage(row, viewerUrl)}`
-      : renderMessage(row, viewerUrl),
+      ? `Workflow event #${row.id}\n${renderMessage(row, viewerUrl, sessionName)}`
+      : renderMessage(row, viewerUrl, sessionName),
     payload,
   };
 }
