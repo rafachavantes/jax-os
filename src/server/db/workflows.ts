@@ -1014,6 +1014,15 @@ export type HubLastRun = {
   buildCommand: string | null;
 };
 
+// The session card's stage/branch/Now inputs (spec §7.5): the newest owned run drives the first
+// two, the newest FINISHED owned run's summary is Now — whatever its outcome (a cancelled run's
+// summary says what happened). Not a status.md read: a session's own runs, never the last writer.
+export type HubSessionStatus = {
+  latestKind: (typeof RUN_KINDS)[number] | null;
+  latestTarget: string | null;
+  lastSummary: string | null;
+};
+
 // Session cards (one card per open agent session). Everything a card shows about its own work —
 // activity, runs, last result — is selected by the recorded agent session id, never by recency or
 // by the pane that happens to be live: hook rows carry it as harness_session, and a jaxflow run
@@ -1027,6 +1036,8 @@ export type HubScopedActivity = {
   heartbeat: number[];
   lastAction: { tool: string; ts: string } | null;
   newestEventTs: string | null;
+  // Session scopes only (null for unlinked, an unidentified seat, or a session owning no runs).
+  status: HubSessionStatus | null;
 };
 
 // One open agent session of a project. `sessionId` is the agent session; null only for a live
@@ -1036,6 +1047,8 @@ export type HubSessionSeat = {
   sessionId: string | null;
   transport: "tmux" | "codex";
   panes: PaneRef[];
+  // Display name from the runtime registry (spec §9); null when the source has none.
+  name: string | null;
   activity: HubScopedActivity;
 };
 
@@ -1046,6 +1059,9 @@ export type HubSessionSeat = {
 export type HubSessionSplit = {
   seats: HubSessionSeat[];
   unlinked: HubScopedActivity;
+  // The project's last finished run when its owner is not an open seat (spec §6, group footer):
+  // project-wide today's hide rule, never the scoped one.
+  unownedLastRun: HubLastRun | null;
 };
 
 export type HubProject = {
@@ -2138,9 +2154,9 @@ function paneOrder(a: HubPane, b: HubPane): number {
 // pane with no recorded session is its own seat), then every loaded native Codex thread. The order
 // is a pure function of identity (tmux session name, pane id, thread id) — never of recency — so a
 // session becoming the most recently active one never reorders or re-attributes anything.
-export function sessionSeats(panes: HubPane[], codexSessions: HubCodexSession[]): Omit<HubSessionSeat, "activity">[] {
-  const seats: Omit<HubSessionSeat, "activity">[] = [];
-  const bySession = new Map<string, Omit<HubSessionSeat, "activity">>();
+export function sessionSeats(panes: HubPane[], codexSessions: HubCodexSession[]): Omit<HubSessionSeat, "activity" | "name">[] {
+  const seats: Omit<HubSessionSeat, "activity" | "name">[] = [];
+  const bySession = new Map<string, Omit<HubSessionSeat, "activity" | "name">>();
   for (const p of [...panes].filter((p) => p.live).sort(paneOrder)) {
     const ref: PaneRef = { pane: p.pane, tmuxIncarnation: p.tmuxIncarnation };
     const id = p.harnessSession ?? null;
@@ -2179,14 +2195,57 @@ function scopedActivity(
     heartbeat: heartbeatFor(db, project, now, scope),
     lastAction: lastActionFor(db, project, now, scope),
     newestEventTs: newest.ts,
+    status: scope.kind === "session" ? sessionStatus(db, project, scope.session) : null,
   };
 }
 
 function emptyActivity(now: number): HubScopedActivity {
   return {
     timeline: [], activeRun: null, activeRuns: [], lastRun: null,
-    heartbeat: heartbeatFromRows([], now), lastAction: null, newestEventTs: null,
+    heartbeat: heartbeatFromRows([], now), lastAction: null, newestEventTs: null, status: null,
   };
+}
+
+// The session card's stage/branch/Now inputs — two small queries over the same owned-run set every
+// scoped read uses, so a superseded duplicate start or another session's run never leaks in.
+function sessionStatus(db: Database.Database, project: string, session: string): HubSessionStatus | null {
+  const owned = ownedRunIdsSql(project, { kind: "session", session });
+  const newestRun = db.prepare(
+    `SELECT payload FROM workflow_events
+     WHERE project = ? AND type = 'run-started' AND run_id IN (${owned.sql})
+     ORDER BY id DESC LIMIT 1`,
+  ).get(project, ...owned.params) as { payload: string | null } | undefined;
+  if (!newestRun) return null; // a session that owns no runs has no stage/branch/Now to show
+  const fields = boundedRunFields(projectPayload("run-started", parseStoredPayload(newestRun.payload)));
+  const finished = db.prepare(
+    `SELECT payload FROM workflow_events
+     WHERE project = ? AND type = 'run-finished' AND run_id IN (${owned.sql})
+     ORDER BY id DESC LIMIT 1`,
+  ).get(project, ...owned.params) as { payload: string | null } | undefined;
+  let lastSummary: string | null = null;
+  if (finished) {
+    const summary = parseStoredPayload(finished.payload).summary;
+    if (typeof summary === "string" && summary.length > 0) {
+      lastSummary = [...summary].slice(0, LIMITS.summary).join("");
+    }
+  }
+  return { latestKind: fields.kind, latestTarget: fields.target, lastSummary };
+}
+
+// The project's last finished run when no open session owns it (closed session, dashboard
+// dispatch, legacy owner-less run) — the group footer's "last run" line.
+function unownedLastRunFor(
+  db: Database.Database, project: string, relToRepos: RelToRepos | null, openSessions: string[],
+): HubLastRun | null {
+  const last = lastRunFor(db, project, relToRepos);
+  if (!last) return null;
+  const owner = db.prepare(
+    `SELECT harness_session FROM workflow_events
+     WHERE project = ? AND run_id = ? AND type = 'run-started' AND emitter != 'jaxos'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(project, last.runId) as { harness_session: string | null } | undefined;
+  const session = owner?.harness_session ?? null;
+  return session === null || !openSessions.includes(session) ? last : null;
 }
 
 // Session cards. With two or more open sessions the board always splits; with exactly one, only
@@ -2198,11 +2257,19 @@ function emptyActivity(now: number): HubScopedActivity {
 export function getSessionSplit(
   db: Database.Database, project: string, panes: HubPane[], codexSessions: HubCodexSession[], now: number,
   readChildLogTail: ChildLogTailReader | null = null, relToRepos: RelToRepos | null = null, hasActiveRuns = false,
+  sessionNames: ReadonlyMap<string, string> | null = null,
 ): HubSessionSplit | null {
-  const seats = sessionSeats(panes, codexSessions);
+  const seats = sessionSeats(panes, codexSessions).map((seat) => ({
+    ...seat,
+    name: seat.sessionId ? sessionNames?.get(seat.sessionId) ?? null : null,
+  }));
   if (seats.length === 0) {
     if (!hasActiveRuns) return null;
-    return { seats: [], unlinked: scopedActivity(db, project, { kind: "unlinked", openSessions: [] }, now, readChildLogTail, relToRepos) };
+    return {
+      seats: [],
+      unlinked: scopedActivity(db, project, { kind: "unlinked", openSessions: [] }, now, readChildLogTail, relToRepos),
+      unownedLastRun: unownedLastRunFor(db, project, relToRepos, []),
+    };
   }
   const openSessions = seats.flatMap((seat) => (seat.sessionId !== null ? [seat.sessionId] : []));
   return {
@@ -2213,6 +2280,7 @@ export function getSessionSplit(
         : emptyActivity(now),
     })),
     unlinked: scopedActivity(db, project, { kind: "unlinked", openSessions }, now, readChildLogTail, relToRepos),
+    unownedLastRun: unownedLastRunFor(db, project, relToRepos, openSessions),
   };
 }
 
@@ -2226,6 +2294,7 @@ export function getHubData(
   readChildLogTail: ChildLogTailReader | null = null,
   relToRepos: RelToRepos | null = null,
   codexAbsent = false,
+  sessionNames: ReadonlyMap<string, string> | null = null,
 ): HubEnvelopeData {
   const { projects, historicalTruncated } = getHubMembership(db, live, now);
   const codexSource: HubCodexSource =
@@ -2262,7 +2331,7 @@ export function getHubData(
       heartbeat: heartbeatFor(db, project, now),
       lastAction: lastActionFor(db, project, now),
     };
-    const split = getSessionSplit(db, project, panes, codexSessions, now, readChildLogTail, relToRepos, byProject[project].activeRuns.length > 0);
+    const split = getSessionSplit(db, project, panes, codexSessions, now, readChildLogTail, relToRepos, byProject[project].activeRuns.length > 0, sessionNames);
     if (split) byProject[project].split = split;
   }
   // spec §10, round 3 F1: a STANDALONE scan, no membership filter — a pinned/hidden project with

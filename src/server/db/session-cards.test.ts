@@ -519,3 +519,127 @@ describe("session seats", () => {
     db.close();
   });
 });
+
+describe("session status inputs", () => {
+  const seatOf = (hub: HubEnvelopeData, id: string) => hub.byProject[P].split!.seats.find((s) => s.sessionId === id)!;
+
+  it("drives stage/branch from the newest owned run and Now from the newest finished one", () => {
+    seedTwoSessions(db);
+    insertEvent(db, runStarted("r-spec", "builder", "spec", "claude", A, "docs/s.md"), at(1));
+    insertEvent(db, runFinished("r-spec", "builder", { result: "success", exit_code: 0, report_path: "/r/s.md", summary: "spec ok" }), at(2));
+    insertEvent(db, runStarted("r-build", "builder", "build", "claude", A, "feat/a"), at(3));
+    expect(seatOf(hubOf(db), A).activity.status).toEqual({ latestKind: "build", latestTarget: "feat/a", lastSummary: "spec ok" });
+    db.close();
+  });
+
+  it("shows a spec target as its basename", () => {
+    upsertSession(db, { project: P, session: "acme-lead", pane: "%1", role: "lead", tmux_incarnation: INC }, at(0));
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, runStarted("r-spec", "builder", "spec", "claude", A, "docs/s.md"), at(2));
+    expect(seatOf(hubOf(db), A).activity.status).toEqual({ latestKind: "spec", latestTarget: "s.md", lastSummary: null });
+    db.close();
+  });
+
+  it("keeps the summary of a cancelled or interrupted run as Now", () => {
+    seedTwoSessions(db);
+    insertEvent(db, runStarted("r1", "builder", "build", "claude", A, "feat/1"), at(1));
+    insertEvent(db, runFinished("r1", "builder", { contract_status: "cancelled", summary: "cancelled by owner" }), at(2));
+    expect(seatOf(hubOf(db), A).activity.status?.lastSummary).toBe("cancelled by owner");
+    insertEvent(db, runStarted("r2", "builder", "build", "claude", A, "feat/2"), at(3));
+    insertEvent(db, runFinished("r2", "builder", { contract_status: "interrupted", summary: "worker interrupted by SIGHUP" }), at(4));
+    expect(seatOf(hubOf(db), A).activity.status?.lastSummary).toBe("worker interrupted by SIGHUP");
+    db.close();
+  });
+
+  it("a session with no owned runs has no status; an unidentified seat and unlinked are null", () => {
+    seedTwoSessions(db);
+    upsertSession(db, { project: P, session: "acme-lead", pane: "%5", role: "lead", tmux_incarnation: INC }, at(0));
+    const hub = hubOf(db);
+    expect(seatOf(hub, A).activity.status).toBeNull();
+    expect(hub.byProject[P].split!.seats.find((s) => s.sessionId === null)!.activity.status).toBeNull();
+    expect(hub.byProject[P].split!.unlinked.status).toBeNull();
+    db.close();
+  });
+
+  it("ignores runs owned by another session, including duplicate starts", () => {
+    seedTwoSessions(db);
+    insertEvent(db, runStarted("r-r", "builder", "build", "claude", A, "feat/r"), at(1));
+    insertEvent(db, runStarted("r-r", "builder", "build", "claude", B, "feat/r"), at(2));
+    insertEvent(db, runFinished("r-r", "builder", { result: "success", exit_code: 0, report_path: "/r/r.md", summary: "from B" }), at(3));
+    expect(seatOf(hubOf(db), A).activity.status).toBeNull();
+    expect(seatOf(hubOf(db), B).activity.status).toEqual({ latestKind: "build", latestTarget: "feat/r", lastSummary: "from B" });
+    db.close();
+  });
+
+  it("never shows an owner-less run in any seat's status", () => {
+    seedTwoSessions(db);
+    insertEvent(db, {
+      run_id: "run-u", project: P, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+      payload: { phase: "P1", runtime: "opencode-builder", kind: "build", target: "feat/u", caller: "claude" },
+    }, at(1));
+    insertEvent(db, runFinished("run-u", "builder", { result: "success", summary: "unowned" }), at(2));
+    const hub = hubOf(db);
+    expect(seatOf(hub, A).activity.status).toBeNull();
+    expect(seatOf(hub, B).activity.status).toBeNull();
+    db.close();
+  });
+
+  it("degrades corrupt inputs silently and caps a long summary", () => {
+    seedTwoSessions(db);
+    insertEvent(db, {
+      run_id: "r-bad", project: P, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+      payload: { phase: "P1", runtime: "opencode-builder", kind: "zzz", target: "feat/x", caller: "claude", caller_session: A },
+    }, at(1));
+    expect(seatOf(hubOf(db), A).activity.status).toEqual({ latestKind: null, latestTarget: null, lastSummary: null });
+    insertEvent(db, runFinished("r-bad", "builder", { summary: 42 }), at(2));
+    expect(seatOf(hubOf(db), A).activity.status?.lastSummary).toBeNull();
+    insertEvent(db, runStarted("r-long", "builder", "build", "claude", A, "feat/long"), at(3));
+    insertEvent(db, runFinished("r-long", "builder", { summary: "x".repeat(500) }), at(4));
+    expect(seatOf(hubOf(db), A).activity.status?.lastSummary).toHaveLength(200);
+    db.close();
+  });
+
+  it("returns the last finished run in unownedLastRun only while no open session owns it", () => {
+    seedTwoSessions(db);
+    insertEvent(db, runStarted("run-d", "builder", "build", "claude", D, "feat/d"), at(1));
+    insertEvent(db, runFinished("run-d", "builder", { result: "success", exit_code: 0, report_path: "/r/d.md", summary: "done" }), at(2));
+    expect(hubOf(db).byProject[P].split!.unownedLastRun?.runId).toBe("run-d");
+
+    insertEvent(db, runStarted("run-a", "builder", "build", "claude", A, "feat/a"), at(3));
+    insertEvent(db, runFinished("run-a", "builder", { result: "success", exit_code: 0, report_path: "/r/a.md", summary: "ok" }), at(4));
+    expect(hubOf(db).byProject[P].split!.unownedLastRun).toBeNull();
+
+    insertEvent(db, runStarted("run-next", "builder", "build", "claude", D, "feat/next"), at(5));
+    expect(hubOf(db).byProject[P].split!.unownedLastRun).toBeNull();
+    db.close();
+  });
+
+  it("returns an owner-less finished run in unownedLastRun", () => {
+    upsertSession(db, { project: P, session: "acme-lead", pane: "%1", role: "lead", tmux_incarnation: INC }, at(0));
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, {
+      run_id: "run-u", project: P, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+      payload: { phase: "P1", runtime: "opencode-builder", kind: "build", target: "feat/u", caller: "claude" },
+    }, at(2));
+    insertEvent(db, runFinished("run-u", "builder", { result: "success", exit_code: 0, report_path: "/r/u.md", summary: "ok" }), at(3));
+    expect(hubOf(db).byProject[P].split!.unownedLastRun?.runId).toBe("run-u");
+    db.close();
+  });
+
+  it("puts registry names on identified seats only", () => {
+    seedTwoSessions(db);
+    upsertSession(db, { project: P, session: "acme-lead", pane: "%5", role: "lead", tmux_incarnation: INC }, at(0));
+    const named = getHubData(db, LIVE, {}, CODEX, NOW, true, null, null, false, new Map([[A, "multi-sessao"]]));
+    expect(named.byProject[P].split!.seats.map((s) => [s.sessionId, s.name])).toEqual([
+      [A, "multi-sessao"], [B, null], [null, null],
+    ]);
+    expect(hubOf(db).byProject[P].split!.seats.every((s) => s.name === null)).toBe(true);
+    db.close();
+  });
+
+  it("omits the split key entirely for a project with no seats and nothing in flight", () => {
+    insertEvent(db, claude(A, "%3", "turn-stopped", "claude-stop", { capsule_status: "done" }), at(1));
+    expect("split" in hubOf(db).byProject[P]).toBe(false);
+    db.close();
+  });
+});
