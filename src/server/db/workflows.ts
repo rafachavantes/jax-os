@@ -1517,14 +1517,12 @@ function runScopeClause(scope: RunScope | undefined, sessionExpr: string): { sql
 
 // run_ids owned by the scope (latest non-jaxos start per run_id).
 function ownedRunIdsSql(project: string, scope: RunScope): { sql: string; params: string[] } {
-  const clause = runScopeClause(scope, "s.harness_session");
+  const clause = runScopeClause(scope, "harness_session");
+  // One grouped pass: with MAX(id), SQLite's bare harness_session is the latest start's session.
   return {
-    sql: `SELECT s.run_id FROM workflow_events s
-          WHERE s.project = ? AND s.type = 'run-started' AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL${clause.sql}
-            AND NOT EXISTS (
-              SELECT 1 FROM workflow_events n
-              WHERE n.project = s.project AND n.run_id = s.run_id AND n.type = 'run-started'
-                AND n.emitter != 'jaxos' AND n.id > s.id)`,
+    sql: `SELECT run_id FROM (SELECT run_id, harness_session, MAX(id) FROM workflow_events
+            WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL
+            GROUP BY run_id) WHERE 1=1${clause.sql}`,
     params: [project, ...clause.params],
   };
 }
@@ -1689,21 +1687,12 @@ function unfinishedRunStartedRows(db: Database.Database, project: string, scope?
   const own = runScopeClause(scope, "s.harness_session");
   return db.prepare(
     `SELECT s.* FROM workflow_events s
-     WHERE s.project = ? AND s.type = 'run-started'
-       AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL${own.sql}
-       AND NOT EXISTS (
-         SELECT 1 FROM workflow_events f
-         WHERE f.project = s.project AND f.run_id = s.run_id
-           AND f.type = 'run-finished'
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM workflow_events newer
-         WHERE newer.project = s.project AND newer.run_id = s.run_id
-           AND newer.type = 'run-started' AND newer.emitter != 'jaxos'
-           AND newer.id > s.id
-       )
+     WHERE s.id IN (SELECT MAX(id) FROM workflow_events
+         WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL GROUP BY run_id)
+       AND s.run_id NOT IN (SELECT run_id FROM workflow_events
+         WHERE project = ? AND type = 'run-finished' AND run_id IS NOT NULL)${own.sql}
      ORDER BY s.id DESC`,
-  ).all(project, ...own.params) as RawRow[];
+  ).all(project, project, ...own.params) as RawRow[];
 }
 
 // The kind/runtime/target/startedAt fields both activeRunFor and activeRunsFor project off a
@@ -1772,26 +1761,29 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
   // the same scope hides it — another session starting a run never clears this session's result.
   // "Start" is that run's LATEST non-jaxos start (the same owner rule ownedRunIdsSql uses), so a
   // superseded duplicate start never hides anything. The unscoped hide rule is unchanged.
-  const finishedOwn = runScopeClause(scope, `(SELECT st.harness_session FROM workflow_events st
-    WHERE st.project = f.project AND st.run_id = f.run_id AND st.type = 'run-started' AND st.emitter != 'jaxos'
-    ORDER BY st.id DESC LIMIT 1)`);
-  const laterOwn = runScopeClause(scope, "s.harness_session");
-  const latestStartOnly = scope
-    ? ` AND NOT EXISTS (
-         SELECT 1 FROM workflow_events n
-         WHERE n.project = s.project AND n.run_id = s.run_id AND n.type = 'run-started'
-           AND n.emitter != 'jaxos' AND n.id > s.id)`
-    : "";
-  const rows = db.prepare(
-    `SELECT f.* FROM workflow_events f
-     WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL${finishedOwn.sql}
-       AND NOT EXISTS (
-         SELECT 1 FROM workflow_events s
-         WHERE s.project = f.project AND s.type = 'run-started' AND s.emitter != 'jaxos'
-           AND s.id > f.id${laterOwn.sql}${latestStartOnly}
-       )
-     ORDER BY f.id DESC LIMIT 1`,
-  ).all(project, ...finishedOwn.params, ...laterOwn.params) as RawRow[];
+  const sql = scope
+    ? (() => {
+        const fo = runScopeClause(scope, "ls.harness_session");
+        const lo = runScopeClause(scope, "harness_session");
+        return {
+          text: `WITH ls AS MATERIALIZED (SELECT run_id, harness_session, MAX(id) AS id FROM workflow_events
+                   WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL GROUP BY run_id)
+                 SELECT f.* FROM workflow_events f LEFT JOIN ls ON ls.run_id = f.run_id
+                 WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL${fo.sql}
+                   AND f.id > (SELECT COALESCE(MAX(id), 0) FROM ls WHERE 1=1${lo.sql})
+                 ORDER BY f.id DESC LIMIT 1`,
+          params: [project, project, ...fo.params, ...lo.params],
+        };
+      })()
+    : {
+        text: `SELECT f.* FROM workflow_events f
+               WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL
+                 AND f.id > (SELECT COALESCE(MAX(id), 0) FROM workflow_events
+                   WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos')
+               ORDER BY f.id DESC LIMIT 1`,
+        params: [project, project],
+      };
+  const rows = db.prepare(sql.text).all(...sql.params) as RawRow[];
   if (rows.length === 0) return null;
   const row = rowOf(rows[0]);
   const p = projectPayload("run-finished", row.payload);
@@ -1872,10 +1864,9 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
 export function getBuildRunSessions(db: Database.Database, project: string): { runId: string; session: string | null }[] {
   return db.prepare(
     `SELECT s.run_id AS runId, s.harness_session AS session FROM workflow_events s
-     WHERE s.project = ? AND s.type = 'run-started' AND s.role = 'builder' AND s.emitter != 'jaxos' AND s.run_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM workflow_events n
-         WHERE n.project = s.project AND n.run_id = s.run_id AND n.type = 'run-started' AND n.emitter != 'jaxos' AND n.id > s.id)`,
+     WHERE s.id IN (SELECT MAX(id) FROM workflow_events
+         WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL GROUP BY run_id)
+       AND s.role = 'builder'`,
   ).all(project) as { runId: string; session: string | null }[];
 }
 
