@@ -264,6 +264,13 @@ export function boardEntries(cards: MissionCard[], filter: MissionBucket | null)
   return entries;
 }
 
+// Whether card (or group section) `key` is on screen under `filter`; Respond drops a filter that hides it.
+export function boardShowsKey(cards: MissionCard[], filter: MissionBucket | null, key: string): boolean {
+  return boardEntries(cards, filter).some((e) => (e.kind === "plain"
+    ? cardKey(e.card) === key
+    : projectSectionKey(e.project.dir) === key || e.cards.some((c) => cardKey(c) === key)));
+}
+
 const STAGE_BY_KIND: Record<"spec" | "plan" | "build" | "diff" | "merge", ProjectStage> = {
   spec: "spec", plan: "spec", build: "build", diff: "review", merge: "ship",
 };
