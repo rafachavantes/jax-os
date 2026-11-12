@@ -8,7 +8,7 @@ vi.mock("next-intl", () => ({
 }));
 // PrefsButtons (item 2) reads a QueryClient via useQueryClient — no provider exists in these
 // static-markup renders, same stand-in AfkToggle.test.tsx already uses for the same hook.
-vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({}) }));
+vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({}), useQuery: () => ({ data: undefined }) }));
 // The real module's PrefsButtons is kept (spread from the actual module) so the hidden/
 // autoHidden management rows under test render the real control, not a stand-in; only
 // ProjectCard itself is replaced by the lightweight data-card marker this file already used.
@@ -16,9 +16,9 @@ vi.mock("./ProjectCard", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./ProjectCard")>();
   return {
     ...actual,
-    ProjectCard: ({ card, expanded, onToggle }: { card: { dir: string; headline: string; codexSource: string }; expanded: boolean; onToggle: () => void }) => {
+    ProjectCard: ({ card, expanded, onToggle, rootAttrs }: { card: { dir: string; headline: string; codexSource: string }; expanded: boolean; onToggle: () => void; rootAttrs?: { "data-card-key": string } }) => {
       onToggle(); // called during render so the test's OWN onToggleExpand closure records which dir it fired for — proves each card's onToggle is wired to ITS OWN dir, not a shared/misrouted one
-      return createElement("div", { "data-card": card.dir, "data-headline": card.headline, "data-expanded": String(expanded) }, `card-${card.dir}`);
+      return createElement("div", { "data-card-key": rootAttrs?.["data-card-key"], "data-card": card.dir, "data-headline": card.headline, "data-expanded": String(expanded) }, `card-${card.dir}`);
     },
   };
 });
@@ -288,5 +288,33 @@ describe("ProjectsColumn — flex-wrap rows, max 3 per row, partial rows stretch
     expect(p1Tag).toContain("lg:basis-[30%]");
     expect(p2Tag).toContain("lg:basis-[63%]");
     expect(p2Tag).not.toContain("lg:basis-[30%]");
+  });
+});
+
+describe("ProjectsColumn — grouped projects (multi-session cards spec §5, §13)", () => {
+  const sessionScope = { kind: "session" as const, sessionId: "A", transport: "tmux" as const, runtime: "claude" as const, name: null, tmuxSessions: ["s1"], panes: ["%1"] };
+  const s1 = { ...cardBase, key: "p1#session:A", scope: sessionScope, headline: "working" as const };
+  const s2 = { ...cardBase, key: "p1#session:B", scope: { ...sessionScope, sessionId: "B" }, headline: "idle" as const };
+  const project = { ...cardBase, dir: "p1", headline: "working" as const, group: { cards: [s1, s2], footer: null } };
+
+  it("renders one group section keyed by the project section, its session cards keyed by cardKey", () => {
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, {
+      reposRoot: REPOS_ROOT_DISPLAY, mission: missionWithVisibility([project as never]), counts: null, expandedDir: null, onToggleExpand: () => {},
+    }));
+    expect((html.match(/data-testid="group-header"/g) ?? []).length).toBe(1);
+    expect(html).toContain('data-card-key="p1#project"');
+    expect(html).toContain('data-card-key="p1#session:A"');
+    expect(html).toContain('data-card-key="p1#session:B"');
+    expect((html.match(/data-card="p1"/g) ?? []).length).toBe(2);
+  });
+
+  it("a hidden grouped project renders neither a group header nor its session cards", () => {
+    const hidden = { ...project, visibility: "hidden" as const };
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, {
+      reposRoot: REPOS_ROOT_DISPLAY, mission: missionWithVisibility([hidden as never], { hiddenCount: 1 }), counts: null, expandedDir: null, onToggleExpand: () => {},
+    }));
+    expect(html).not.toContain('data-testid="group-header"');
+    expect(html).not.toContain("p1#session:A");
+    expect(html).toContain("hiddenBar");
   });
 });

@@ -277,7 +277,8 @@
       "unpin": "Unpin",
       "show": "Show",
       "manage": "manage",
-      "more": "More options"
+      "more": "More options",
+      "questionFromEarlierSession": "Asked by an earlier conversation in this pane — it can no longer be answered from here."
     },
     "expanded": {
       "unknown": "Not known yet — hub data hasn't loaded.",
@@ -337,7 +338,21 @@
         "mergeApproved": "merge approved"
       }
     },
-    "codexSession": "Codex session"
+    "codexSession": "Codex session",
+    "board": {
+      "sessionsChip": "{count, plural, one {# session} other {# sessions}}",
+      "newSession": "new session",
+      "location": "{session} · {pane}",
+      "unlinkedTitle": "Runs without an open session",
+      "unlinkedHint": "Started from Jax OS, or by a session that is no longer open.",
+      "projectToggle": "Project section",
+      "footerNoSession": "No open session",
+      "footerWorktrees": "{count, plural, one {# retained worktree} other {# retained worktrees}}",
+      "footerLastRun": "last run: {run}",
+      "runs": "Runs",
+      "noRuns": "No run in progress.",
+      "dispatchHint": "A run started here belongs to no session and shows under “Runs without an open session”."
+    }
   },
   "missionBlock": {
     "milestonesLabel": "Mission milestones",

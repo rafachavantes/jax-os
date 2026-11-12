@@ -55,15 +55,28 @@ export function MosaicAnswerOptions({
 // (MosaicActionArea) and the mobile dialog (MosaicCellDetail), same as MosaicAnswerOptions above.
 // Blank/whitespace-only text renders nothing rather than an empty bar.
 export function MosaicQuestionText({ pendingQuestion }: { pendingQuestion: MissionPendingQuestion }) {
-  const text = pendingQuestion.questions[0].question.trim();
+  const text = pendingQuestion.questions[0]?.question?.trim();
   if (!text) return null;
   return <p className="max-h-9 overflow-hidden text-[11.5px] font-medium text-body-ink">{text}</p>;
+}
+
+// The stale-question state shared by every Mosaic surface (spec §8.3): the question stays visible,
+// the reason replaces any control.
+export function MosaicUnanswerable({ pendingQuestion }: { pendingQuestion: MissionPendingQuestion }) {
+  const t = useTranslations("mission");
+  return (
+    <div data-testid="mosaic-unanswerable" className="flex flex-col gap-1">
+      <MosaicQuestionText pendingQuestion={pendingQuestion} />
+      <span className="text-[11px] text-danger">{t("actions.questionFromEarlierSession")}</span>
+    </div>
+  );
 }
 
 function MosaicActionArea({
   action, busy, onAction, onOpen,
 }: { action: MosaicPaneAction; busy: boolean; onAction: (url: string, body: unknown) => void; onOpen: (() => void) | null }) {
   const t = useTranslations("mission");
+  if (action.kind === "unanswerable") return <MosaicUnanswerable pendingQuestion={action.pendingQuestion} />;
   if (action.kind === "options") {
     return (
       <div className="flex flex-col gap-1">
@@ -80,6 +93,7 @@ function MosaicActionArea({
       </button>
     );
   }
+  if (action.kind === "capsule-unanswerable") return <span data-testid="mosaic-capsule-unanswerable" className="text-[11px] text-danger">{t("actions.answerUnreachable")}</span>;
   if (action.kind === "open-pane") return <span className="text-[11px] text-muted">{t("inbox.blocked")}</span>;
   return null; // kind === "none"
 }

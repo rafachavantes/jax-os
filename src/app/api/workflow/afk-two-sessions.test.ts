@@ -42,6 +42,10 @@ vi.mock("../../../server/settings", async (importOriginal) => {
     },
   };
 });
+// The board render path is client code: give it the same stand-ins the component tests use.
+vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key, useLocale: () => "en-US" }));
+vi.mock("@/components/RelativeTime", () => ({ RelativeTime: () => null }));
+vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({}), useQuery: () => ({ data: undefined }) }));
 // The names reader is wrapped in a spy so "session-less rows never read the registry" is
 // assertable; every other export (and the real reader) stays as-is.
 vi.mock("../../../server/collectors/session-names", async (importOriginal) => {
@@ -63,6 +67,10 @@ import { POST as ackPost } from "./events/ack/route";
 import { handleAfkPost } from "./afk/handler";
 import { handleAnswerPost } from "./answer/handler";
 import { handleHubGet } from "../mission/hub/handler";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { buildMission } from "@/lib/mission";
+import { ProjectsColumn } from "@/components/mission/ProjectsColumn";
 
 const P = "afkproj";
 const INC = "4242:1700000000";
@@ -411,6 +419,39 @@ describe("AFK on, two sessions in one project", () => {
     const stop = await post(hook(A, "%1", "turn-stopped", "claude-stop", { capsule_status: "done", capsule_rule: "tag" }));
     expect(stop.delivery).toBe("local");
     expect(sent).toEqual([]);
+  });
+
+  it("rendering group cards and polling generate no additional notifications or event rows", async () => {
+    const qa = await post(ask(A, "%1", "tu_a", "A?"));
+    const qb = await post(ask(B, "%2", "tu_b", "B?"));
+    expect([qa.delivery, qb.delivery]).toEqual(["delivered", "delivered"]);
+    const rows = eventCount();
+    const transports = fetchSpy.mock.calls.length;
+
+    const hub = await pollHub(["%1", "%2"]);
+    const mission = buildMission(
+      {
+        ok: true,
+        data: {
+          projects: [{ dir: P, name: "AFK project", stage: "build", gate: null, legacyGateField: false, builder: "opencode", branch: "main",
+            updated: "2026-09-20T09:00:00-03:00", now: "", residuals: [], statusMtime: "2026-09-20T12:00:00.000Z", archived: false }],
+          skipped: 0, reposRoot: "/r",
+        },
+      },
+      { ok: true, data: hub },
+      undefined,
+      Date.now(),
+    );
+    expect(mission.model.cards[0].group).toBeDefined();
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, {
+      mission, reposRoot: "/r", counts: null, filter: null, expandedDir: null, onToggleExpand: () => {},
+    }));
+    expect(html).toContain('data-testid="group-header"');
+
+    for (let i = 0; i < 3; i++) await pollHub(["%1", "%2"]);
+    await pollPending();
+    expect(eventCount()).toBe(rows);
+    expect(fetchSpy.mock.calls.length).toBe(transports);
   });
 
   it("keeps a closed session's runs on the unlinked card until nothing is in flight", async () => {

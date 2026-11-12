@@ -26,6 +26,7 @@ vi.mock("@/lib/useMission", () => ({
     return harness.perEndpoint[args[0] as string] ?? harness.mission;
   },
 }));
+const summarizeBucketsSpy = vi.hoisted(() => vi.fn((_readiness: unknown, _cards: unknown[]) => ({ counts: { "needs-you": 0, stuck: 0, working: 0, idle: 0 }, worst: "idle" })));
 const buildMissionSpy = vi.hoisted(() => vi.fn(() => ({
   readiness: { kind: "ready" },
   model: {
@@ -39,7 +40,7 @@ vi.mock("@/lib/mission", async (importOriginal) => {
   return {
     ...actual,
     buildMission: buildMissionSpy,
-    summarizeBuckets: () => ({ counts: { "needs-you": 0, stuck: 0, working: 0, idle: 0 }, worst: "idle" }),
+    summarizeBuckets: summarizeBucketsSpy,
   };
 });
 vi.mock("@/components/mission/PitCounts", () => ({ PitCounts: () => createElement("div", null, "pits") }));
@@ -49,7 +50,7 @@ vi.mock("@/components/mission/ServerPanel", () => ({ ServerPanel: () => createEl
 vi.mock("@/components/mission/MissionBlock", () => ({ MissionBlock: () => createElement("div", null, "missionblock") }));
 vi.mock("@/components/mission/ActivityFeed", () => ({ ActivityFeed: () => createElement("div", null, "activity") }));
 
-import { toggleFilter } from "@/lib/mission";
+import { boardCards, toggleFilter, type MissionCard } from "@/lib/mission";
 import MissionPage from "./page";
 
 describe("MissionPage retained poll data", () => {
@@ -146,5 +147,34 @@ describe("MissionPage threads githubEnabled from settings (diff review e52d9e6dc
     harness.mission = { data: { ok: false, error: "x" }, isError: false, dataUpdatedAt: 0, error: undefined };
     renderToStaticMarkup(createElement(MissionPage));
     expect(buildMissionSpy).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.any(Number), expect.anything(), true);
+  });
+});
+
+describe("MissionPage counts board cards (multi-session cards, spec §12)", () => {
+  it("passes boardCards(model.cards) to summarizeBuckets, not the project cards", () => {
+    const base: MissionCard = {
+      dir: "p", name: "p", stage: "build", branch: "main", builder: "claude-code",
+      gate: null, legacyGateField: false, now: "", residuals: [], updated: "2026-11-10T10:00:00-03:00",
+      headline: "working", hubReady: true, lastEventAgo: null, freshnessCount: null, freshnessWarning: false,
+      sessions: [], pendingQuestions: [], timeline: [], pr: { status: "unknown" },
+      codexSource: "ok", codexUntracked: false,
+      heartbeat: new Array(60).fill(0), lastAction: null, prefs: { pinned: false, hiddenAt: null }, visibility: "visible",
+    };
+    const s1 = { ...base, dir: "p", key: "p#session:A", headline: "idle" as const };
+    const s2 = { ...base, dir: "p", key: "p#session:B", headline: "working" as const };
+    const cards = [{ ...base, group: { cards: [s1, s2], footer: null } }];
+    buildMissionSpy.mockReturnValueOnce({
+      readiness: { kind: "ready" } as const,
+      model: {
+        cards, uncardedProjectNames: [], historicalTruncated: false, skipped: 0,
+        inbox: [], inboxTotalCount: 0, inboxPrRemainder: 0, prTruncatedAny: false,
+        codexSource: "ok" as const, tmuxSource: "ok" as const, archiveAfterDays: 14, hiddenCount: 0, autoHiddenCount: 0, reposRoot: "",
+      },
+    } as never);
+    summarizeBucketsSpy.mockClear();
+    harness.mission = { data: { ok: true, data: { projects: [], skipped: 0 } }, isError: false, dataUpdatedAt: 0, error: undefined };
+    renderToStaticMarkup(createElement(MissionPage));
+    expect(summarizeBucketsSpy).toHaveBeenCalled();
+    expect(summarizeBucketsSpy.mock.calls.at(-1)![1]).toEqual(boardCards(cards));
   });
 });

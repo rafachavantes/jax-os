@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMission } from "@/lib/useMission";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import { fetchEnvelope } from "@/lib/api";
-import { buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
+import { boardCards, buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
 import type { MissionBucket } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
@@ -15,6 +15,7 @@ import { ProjectsColumn } from "@/components/mission/ProjectsColumn";
 import { InboxStrip } from "@/components/mission/InboxStrip";
 import { ServerPanel } from "@/components/mission/ServerPanel";
 import { MissionBlock } from "@/components/mission/MissionBlock";
+import { AnswerDraftsProvider } from "@/components/mission/AnswerDrafts";
 import { EventTicker } from "@/components/mission/EventTicker";
 import type { ProjectScan } from "@/server/collectors/projects";
 import type { Commit } from "@/server/collectors/activity";
@@ -60,7 +61,7 @@ export default function MissionPage() {
   // harness returns a projects-shaped envelope for every source — a non-iterable value must
   // degrade to an empty ticker, never crash the page (hard rule 3).
   const ticker = buildTicker(mission.model.cards, Array.isArray(activity.data?.data) ? activity.data.data : [], prs.data?.ok ? prs.data.data : {}, nowMs);
-  const summary = summarizeBuckets(mission.readiness, mission.model.cards);
+  const summary = summarizeBuckets(mission.readiness, boardCards(mission.model.cards));
   // F3: worktrees is deliberately OUT of this array (spec §7 quiet-failure exception,
   // decision C2) -- every other source here still raises the page-level warning.
   const staleSource = [projects, hub, prs, activity, counts].find((q) => q.isError);
@@ -89,13 +90,15 @@ export default function MissionPage() {
 
       <MissionBlock />
 
-      <InboxStrip mission={mission} onExpand={setExpandedDir} />
+      <AnswerDraftsProvider>
+        <InboxStrip mission={mission} onExpand={setExpandedDir} />
 
-      <ProjectsColumn
-        mission={mission} reposRoot={mission.model.reposRoot} counts={countsByName} filter={filter}
-        expandedDir={expandedDir}
-        onToggleExpand={(dir) => setExpandedDir((d) => (d === dir ? null : dir))}
-      />
+        <ProjectsColumn
+          mission={mission} reposRoot={mission.model.reposRoot} counts={countsByName} filter={filter}
+          expandedDir={expandedDir}
+          onToggleExpand={(dir) => setExpandedDir((d) => (d === dir ? null : dir))}
+        />
+      </AnswerDraftsProvider>
 
       <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
         <EventTicker items={ticker} />

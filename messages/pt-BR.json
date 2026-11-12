@@ -277,7 +277,8 @@
       "unpin": "Desfixar",
       "show": "Mostrar",
       "manage": "gerenciar",
-      "more": "Mais opções"
+      "more": "Mais opções",
+      "questionFromEarlierSession": "Feita por uma conversa anterior neste pane — não pode mais ser respondida por aqui."
     },
     "expanded": {
       "unknown": "Ainda não conhecido — dados do hub não carregaram.",
@@ -337,7 +338,21 @@
         "mergeApproved": "merge aprovado"
       }
     },
-    "codexSession": "Sessão Codex"
+    "codexSession": "Sessão Codex",
+    "board": {
+      "sessionsChip": "{count, plural, one {# sessão} other {# sessões}}",
+      "newSession": "nova sessão",
+      "location": "{session} · {pane}",
+      "unlinkedTitle": "Execuções sem sessão aberta",
+      "unlinkedHint": "Iniciadas pelo Jax OS ou por uma sessão que não está mais aberta.",
+      "projectToggle": "Seção do projeto",
+      "footerNoSession": "Nenhuma sessão aberta",
+      "footerWorktrees": "{count, plural, one {# worktree retido} other {# worktrees retidos}}",
+      "footerLastRun": "última execução: {run}",
+      "runs": "Execuções",
+      "noRuns": "Nenhuma execução em andamento.",
+      "dispatchHint": "Uma execução iniciada aqui não pertence a nenhuma sessão e aparece em “Execuções sem sessão aberta”."
+    }
   },
   "missionBlock": {
     "milestonesLabel": "Marcos da missão",
