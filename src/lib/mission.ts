@@ -399,6 +399,7 @@ export function mosaicPaneState(pane: Pick<MissionPane, "state" | "capsuleStatus
 
 export type MosaicPaneAction =
   | { kind: "options"; pendingQuestion: MissionPendingQuestion }
+  | { kind: "unanswerable"; pendingQuestion: MissionPendingQuestion }
   | { kind: "respond" }
   | { kind: "open-pane"; capsuleEventId: number | null }
   | { kind: "none" };
@@ -416,6 +417,8 @@ export type MosaicPaneAction =
 export function mosaicPaneAction(pane: Pick<MissionPane, "pendingQuestion" | "capsuleStatus" | "capsuleEventId">): MosaicPaneAction {
   const pq = pane.pendingQuestion;
   if (pq !== null) {
+    // Asked by an earlier conversation in this pane: same reason, no controls (spec §8.3).
+    if (pq.answerable === false) return { kind: "unanswerable", pendingQuestion: pq };
     const q0 = pq.questions[0];
     const singleSimple = pq.questions.length === 1 && q0 !== undefined && !q0.multiSelect
       && typeof q0.question === "string" && q0.question.trim().length > 0;

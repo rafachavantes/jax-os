@@ -2,7 +2,7 @@
 // Decision 16). No JSX, no fetch: the mosaic PAGE (Part 2) calls these and renders their output;
 // every branch here is unit-tested without a DOM.
 import type { MissionCard, MissionPane, MissionReadiness } from "./mission";
-import { mosaicPaneState } from "./mission";
+import { mosaicPaneAction, mosaicPaneState } from "./mission";
 
 export type MosaicGroup = { dir: string; name: string; panes: MissionPane[] };
 
@@ -34,6 +34,8 @@ export type MosaicSpotlight = { dir: string; pane: MissionPane } | null;
 export function selectSpotlightPane(groups: MosaicGroup[]): MosaicSpotlight {
   for (const g of groups) {
     for (const p of g.panes) {
+      // A question this pane can no longer answer is never the spotlight (spec §8.3).
+      if (mosaicPaneAction(p).kind === "unanswerable") continue;
       const state = mosaicPaneState(p);
       if (state === "waiting-for-input" || state === "blocked-permission") return { dir: g.dir, pane: p };
     }

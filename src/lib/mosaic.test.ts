@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mosaicGroups, mosaicPageState, selectSpotlightPane, type MosaicGroup } from "./mosaic";
-import type { MissionCard, MissionPane, MissionReadiness } from "./mission";
+import { mosaicPaneAction, type MissionCard, type MissionPane, type MissionReadiness } from "./mission";
 
 const pane = (over: Partial<MissionPane> = {}): MissionPane => ({
   pane: "%1", tmuxIncarnation: "1:1", session: "s1", tmuxSession: "s1", role: "lead",
@@ -69,5 +69,23 @@ describe("mosaicPageState (Sessions mosaic spec §7 Decision 18, round-2 F4)", (
   it("ready with zero groups is empty; ready with any group is ready", () => {
     expect(mosaicPageState(READY, [])).toBe("empty");
     expect(mosaicPageState(READY, [{ dir: "p1", name: "p1", panes: [pane()] }])).toBe("ready");
+  });
+});
+
+describe("unanswerable pane questions (multi-session cards spec §8.3)", () => {
+  const stale = { pane: "%1", eventId: 77, answerable: false as const, questions: [{ question: "Stale?", multiSelect: false, options: [{ label: "stale-opt" }] }] };
+  const answerable = { pane: "%2", eventId: 78, questions: [{ question: "Live?", multiSelect: false, options: [{ label: "alpha" }, { label: "beta" }] }] };
+
+  it("mosaicPaneAction marks it unanswerable", () => {
+    expect(mosaicPaneAction(pane({ pendingQuestion: stale })).kind).toBe("unanswerable");
+  });
+
+  it("the spotlight skips it and picks the next answerable pane; only-stale yields null", () => {
+    const cardWithBoth = card({
+      sessions: [{ transport: "tmux", session: "s1", panes: [pane({ pane: "%1", pendingQuestion: stale }), pane({ pane: "%2", pendingQuestion: answerable })] }],
+    });
+    expect(selectSpotlightPane(mosaicGroups([cardWithBoth]))?.pane.pane).toBe("%2");
+    const cardWithStale = card({ sessions: [{ transport: "tmux", session: "s1", panes: [pane({ pendingQuestion: stale })] }] });
+    expect(selectSpotlightPane(mosaicGroups([cardWithStale]))).toBeNull();
   });
 });

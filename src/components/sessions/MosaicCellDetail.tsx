@@ -5,7 +5,7 @@ import { X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { mosaicPaneAction, postWorkflowAction, type MissionCard, type MissionPane } from "@/lib/mission";
 import { LIMITS } from "@/lib/workflow";
-import { MosaicAnswerOptions, MosaicQuestionText } from "./Mosaic";
+import { MosaicAnswerOptions, MosaicQuestionText, MosaicUnanswerable } from "./Mosaic";
 
 // Direct-tested handlers (round-2 F4 pattern) — the ACTUAL POST call, independent of the
 // component's own dialog/render lifecycle.
@@ -91,7 +91,9 @@ export function MosaicCellDetail({ card, pane, session, lines, busy, onAction, o
         </div>
         {action.kind !== "none" ? (
           <div className="flex flex-none flex-col gap-2 border-t border-line px-3 py-3">
-            {action.kind === "options" ? (
+            {action.kind === "unanswerable" ? (
+              <MosaicUnanswerable pendingQuestion={action.pendingQuestion} />
+            ) : action.kind === "options" ? (
               <>
                 <MosaicQuestionText pendingQuestion={action.pendingQuestion} />
                 <MosaicAnswerOptions pendingQuestion={action.pendingQuestion} busy={busy} onAction={onAction} size="mobile" />
