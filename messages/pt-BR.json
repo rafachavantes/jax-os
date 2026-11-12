@@ -43,6 +43,195 @@
     "hide": "Ocultar"
   },
   "mission": {
+    "rings": {
+      "unavailable": "indisponível",
+      "resetInMinutes": "em {minutes} min",
+      "resetInHoursMinutes": "em {hours}h {minutes}min",
+      "resetOnAt": "{weekday} às {time}",
+      "detailsTitle": "Cotas dos provedores",
+      "close": "Fechar"
+    },
+    "topbar": {
+      "liveSources": "{count, plural, one {# fonte viva} other {# fontes vivas}}",
+      "hubLoading": "carregando",
+      "hubOk": "operacional",
+      "hubDegraded": "degradado",
+      "noSources": "sem fontes vivas"
+    },
+    "projects": {
+      "title": "Projetos ativos",
+      "empty": "Nenhum projeto com plans/status.md ainda — adote a convenção de frontmatter para aparecer aqui.",
+      "skipped": "{count, plural, one {# repositório ignorado (status inválido/ilegível, descoberta ilegível ou nome ambíguo)} other {# repositórios ignorados (status inválido/ilegível, descoberta ilegível ou nomes ambíguos)}}",
+      "issueCount": "{count, plural, one {# issue} other {# issues}}",
+      "unavailable": "Fonte de projetos indisponível",
+      "uncarded": "{count, plural, one {# projeto com atividade não aparece neste painel} other {# projetos com atividade não aparecem neste painel}}",
+      "uncardedNames": ": {names}",
+      "uncardedShow": "ver",
+      "uncardedHide": "ocultar",
+      "uncardedTruncated": "e outros — lista truncada",
+      "hubListTruncated": "lista de projetos do hub truncada",
+      "codexUnavailable": "Runtime Codex indisponível",
+      "codexTruncated": "Lista de sessões Codex truncada",
+      "tmuxUnavailable": "Runtime tmux indisponível",
+      "hiddenBar": "{count, plural, one {# oculto} other {# ocultos}}",
+      "autoHiddenBar": "{count, plural, one {# recolhido} other {# recolhidos}}",
+      "autoHiddenShow": "mostrar"
+    },
+    "stages": {
+      "spec": "Spec",
+      "build": "Build",
+      "review": "Review",
+      "test": "Test",
+      "ship": "Ship"
+    },
+    "states": {
+      "needs-you": "precisa de você",
+      "stuck": "travado?",
+      "working": "trabalhando",
+      "waiting": "esperando",
+      "idle": "ocioso",
+      "unknown": "desconhecido"
+    },
+    "alerts": {
+      "title": "Alertas do sistema",
+      "empty": "Tudo limpo — nenhum limite estourado.",
+      "unavailable": "Alertas indisponíveis",
+      "disk": "Disco {mount} em {percent}% de uso",
+      "load": "Load 5min em {load} (acima de {cores} cores)",
+      "zombies": "{count, plural, one {# processo zumbi} other {# processos zumbis}}",
+      "updates": "{count, plural, one {# atualização de pacote pendente} other {# atualizações de pacote pendentes}}"
+    },
+    "activity": {
+      "title": "Atividade recente",
+      "empty": "Nenhum commit recente nos projetos.",
+      "unavailable": "Atividade indisponível",
+      "building": "Implementando",
+      "reviewSpec": "Revisando spec",
+      "reviewPlan": "Revisando plano",
+      "reviewDiff": "Revisando diff",
+      "generic": "Execução em andamento",
+      "started": "Iniciado",
+      "lastRecord": "Último registro",
+      "otherRuns": "{count, plural, one {+# outra execução} other {+# outras execuções}}",
+      "running": "rodando"
+    },
+    "lastRun": {
+      "stage": {
+        "runtime": "runtime",
+        "verify": "verify",
+        "build": "build",
+        "worker": "worker",
+        "report": "relatório"
+      },
+      "severity": {
+        "high": "alta",
+        "medium": "média",
+        "low": "baixa"
+      },
+      "noCause": "sem causa registrada",
+      "reportProblem": "[relatório {status}]",
+      "findings": "{high} alta · {medium} média · {low} baixa",
+      "buildOk": "build ok",
+      "buildFailed": "build falhou",
+      "buildBlocked": "build bloqueado",
+      "buildInterrupted": "build interrompido",
+      "buildCancelled": "build cancelado",
+      "buildNoResult": "sem resultado",
+      "reviewOk": "review aprovado",
+      "reviewChanges": "aprovado com mudanças",
+      "reviewRejected": "review rejeitado",
+      "reviewInterrupted": "review interrompido",
+      "reviewCancelled": "review cancelado",
+      "reviewNoVerdict": "sem veredito"
+    },
+    "pill": {
+      "subagents": " · subagente ×{count}",
+      "elapsed": " · {minutes} min"
+    },
+    "pit": {
+      "hidden": "{count, plural, one { · # oculto} other { · # ocultos}}"
+    },
+    "pitHint": "Contagens funcionam como filtro: clicar em \"{workingCount} trabalhando\" mostra só esses cards.",
+    "server": {
+      "title": "Servidor",
+      "host": "{hostname} · ativo há {uptime}",
+      "metersUnavailable": "Métricas do servidor indisponíveis",
+      "alertsUnavailable": "Alertas do servidor indisponíveis",
+      "meters": {
+        "cpu": "CPU",
+        "mem": "Memória",
+        "disk": "Disco",
+        "load": "Load"
+      },
+      "zombies": "Processos zumbis",
+      "zombiesCount": "{count, plural, one {# processo zumbi} other {# processos zumbis}}",
+      "zombiesEmpty": "Nenhum processo zumbi.",
+      "zombieUnknownParent": "processo pai desconhecido",
+      "zombieAgeMin": "{min} min",
+      "packages": "Atualizações pendentes",
+      "packagesCount": "{count, plural, one {# atualização} other {# atualizações}}",
+      "packagesSecurityCount": "{count} de segurança",
+      "packagesMore": "+{count} mais",
+      "packagesEmpty": "Nenhuma atualização pendente.",
+      "security": "segurança",
+      "copy": "copiar",
+      "copyCaption": "copiar, não executar"
+    },
+    "inbox": {
+      "title": "ESPERANDO POR VOCÊ · {count}",
+      "stuckSuffix": " · TRAVADO · {count}",
+      "stuckTitle": "TRAVADO · {count}",
+      "titleEmpty": "NADA ESPERA POR VOCÊ",
+      "titleUnknown": "ESPERANDO POR VOCÊ",
+      "unavailable": "Fonte de dados indisponível",
+      "approvalPending": "aprovação pendente",
+      "blocked": "bloqueado",
+      "needsInput": "precisa de input",
+      "openTmux": "abrir no tmux",
+      "openGithub": "→ GitHub",
+      "prLabel": "PR #{number}",
+      "prRemainder": "+{count} mais",
+      "prRemainderAtLeast": "+{count} ou mais",
+      "ci": {
+        "green": "CI verde",
+        "pending": "CI pendente",
+        "failing": "CI falhando",
+        "none": "sem CI"
+      },
+      "codexSession": "sessão codex"
+    },
+    "source": {
+      "projects": "Projetos",
+      "hub": "Hub",
+      "prs": "PRs",
+      "codex": "Codex",
+      "tmux": "tmux"
+    },
+    "afk": {
+      "label": "AFK",
+      "on": "eventos vão pro Telegram",
+      "off": "eventos ficam aqui",
+      "loading": "…",
+      "unavailable": "indisponível",
+      "toggleFailed": "falha ao salvar"
+    },
+    "legacyGateHint": "Este status.md ainda usa o campo obsoleto `state:` — escreva `gate:` para remover este aviso.",
+    "freshness": "{count, plural, one {# evento desde a última escrita} other {# eventos desde a última escrita}}",
+    "prMore": "+{count}",
+    "prMoreTruncated": "+{count} ou mais",
+    "prUnavailable": "PRs indisponíveis",
+    "card": {
+      "ci": {
+        "green": "CI verde",
+        "pending": "CI pendente",
+        "failing": "CI falhando",
+        "none": "sem CI"
+      }
+    },
+    "roles": {
+      "lead": "líder",
+      "adhoc": "avulso"
+    },
     "actions": {
       "respond": "Responder",
       "approveMerge": "Aprovar merge",
@@ -91,60 +280,6 @@
       "more": "Mais opções",
       "questionFromEarlierSession": "Feita por uma conversa anterior neste pane — não pode mais ser respondida por aqui."
     },
-    "activity": {
-      "title": "Atividade recente",
-      "empty": "Nenhum commit recente nos projetos.",
-      "unavailable": "Atividade indisponível",
-      "building": "Implementando",
-      "reviewSpec": "Revisando spec",
-      "reviewPlan": "Revisando plano",
-      "reviewDiff": "Revisando diff",
-      "generic": "Execução em andamento",
-      "started": "Iniciado",
-      "lastRecord": "Último registro",
-      "otherRuns": "{count, plural, one {+# outra execução} other {+# outras execuções}}",
-      "running": "rodando"
-    },
-    "afk": {
-      "label": "AFK",
-      "on": "eventos vão pro Telegram",
-      "off": "eventos ficam aqui",
-      "loading": "…",
-      "unavailable": "indisponível",
-      "toggleFailed": "falha ao salvar"
-    },
-    "alerts": {
-      "title": "Alertas do sistema",
-      "empty": "Tudo limpo — nenhum limite estourado.",
-      "unavailable": "Alertas indisponíveis",
-      "disk": "Disco {mount} em {percent}% de uso",
-      "load": "Load 5min em {load} (acima de {cores} cores)",
-      "zombies": "{count, plural, one {# processo zumbi} other {# processos zumbis}}",
-      "updates": "{count, plural, one {# atualização de pacote pendente} other {# atualizações de pacote pendentes}}"
-    },
-    "board": {
-      "sessionsChip": "{count, plural, one {# sessão} other {# sessões}}",
-      "newSession": "nova sessão",
-      "location": "{session} · {pane}",
-      "unlinkedTitle": "Execuções sem sessão aberta",
-      "unlinkedHint": "Iniciadas pelo Jax OS ou por uma sessão que não está mais aberta.",
-      "projectToggle": "Seção do projeto",
-      "footerNoSession": "Nenhuma sessão aberta",
-      "footerWorktrees": "{count, plural, one {# worktree retido} other {# worktrees retidos}}",
-      "footerLastRun": "última execução: {run}",
-      "runs": "Execuções",
-      "noRuns": "Nenhuma execução em andamento.",
-      "dispatchHint": "Uma execução iniciada aqui não pertence a nenhuma sessão e aparece em “Execuções sem sessão aberta”."
-    },
-    "card": {
-      "ci": {
-        "green": "CI verde",
-        "pending": "CI pendente",
-        "failing": "CI falhando",
-        "none": "sem CI"
-      }
-    },
-    "codexSession": "Sessão Codex",
     "expanded": {
       "unknown": "Ainda não conhecido — dados do hub não carregaram.",
       "sessions": "Sessões",
@@ -170,149 +305,6 @@
       "retainedWorktrees": "Worktrees retidas",
       "loopSummary": "{specCount, plural, =0 {} one {# spec · } other {# specs · }}{planCount, plural, =0 {} one {# plano · } other {# planos · }}{buildCount, plural, one {# build} other {# builds}} · {diffCount, plural, one {# review} other {# reviews}} · {rounds, plural, one {# rodada} other {# rodadas}}",
       "loopWallTime": "{days, plural, one {# dia} other {# dias}}"
-    },
-    "freshness": "{count, plural, one {# evento desde a última escrita} other {# eventos desde a última escrita}}",
-    "inbox": {
-      "title": "ESPERANDO POR VOCÊ · {count}",
-      "stuckSuffix": " · TRAVADO · {count}",
-      "stuckTitle": "TRAVADO · {count}",
-      "titleEmpty": "NADA ESPERA POR VOCÊ",
-      "titleUnknown": "ESPERANDO POR VOCÊ",
-      "unavailable": "Fonte de dados indisponível",
-      "approvalPending": "aprovação pendente",
-      "blocked": "bloqueado",
-      "needsInput": "precisa de input",
-      "openTmux": "abrir no tmux",
-      "openGithub": "→ GitHub",
-      "prLabel": "PR #{number}",
-      "prRemainder": "+{count} mais",
-      "prRemainderAtLeast": "+{count} ou mais",
-      "ci": {
-        "green": "CI verde",
-        "pending": "CI pendente",
-        "failing": "CI falhando",
-        "none": "sem CI"
-      },
-      "codexSession": "sessão codex"
-    },
-    "lastRun": {
-      "stage": {
-        "runtime": "runtime",
-        "verify": "verify",
-        "build": "build",
-        "worker": "worker",
-        "report": "relatório"
-      },
-      "severity": {
-        "high": "alta",
-        "medium": "média",
-        "low": "baixa"
-      },
-      "noCause": "sem causa registrada",
-      "reportProblem": "[relatório {status}]",
-      "findings": "{high} alta · {medium} média · {low} baixa",
-      "buildOk": "build ok",
-      "buildFailed": "build falhou",
-      "buildBlocked": "build bloqueado",
-      "buildInterrupted": "build interrompido",
-      "buildCancelled": "build cancelado",
-      "buildNoResult": "sem resultado",
-      "reviewOk": "review aprovado",
-      "reviewChanges": "aprovado com mudanças",
-      "reviewRejected": "review rejeitado",
-      "reviewInterrupted": "review interrompido",
-      "reviewCancelled": "review cancelado",
-      "reviewNoVerdict": "sem veredito"
-    },
-    "legacyGateHint": "Este status.md ainda usa o campo obsoleto `state:` — escreva `gate:` para remover este aviso.",
-    "pill": {
-      "subagents": " · subagente ×{count}",
-      "elapsed": " · {minutes} min"
-    },
-    "pit": {
-      "hidden": "{count, plural, one { · # oculto} other { · # ocultos}}"
-    },
-    "pitHint": "Contagens funcionam como filtro: clicar em \"{workingCount} trabalhando\" mostra só esses cards.",
-    "prMore": "+{count}",
-    "prMoreTruncated": "+{count} ou mais",
-    "prUnavailable": "PRs indisponíveis",
-    "projects": {
-      "title": "Projetos ativos",
-      "empty": "Nenhum projeto com plans/status.md ainda — adote a convenção de frontmatter para aparecer aqui.",
-      "skipped": "{count, plural, one {# repositório ignorado (status inválido/ilegível, descoberta ilegível ou nome ambíguo)} other {# repositórios ignorados (status inválido/ilegível, descoberta ilegível ou nomes ambíguos)}}",
-      "issueCount": "{count, plural, one {# issue} other {# issues}}",
-      "unavailable": "Fonte de projetos indisponível",
-      "uncarded": "{count, plural, one {# projeto com atividade não aparece neste painel} other {# projetos com atividade não aparecem neste painel}}",
-      "uncardedNames": ": {names}",
-      "uncardedShow": "ver",
-      "uncardedHide": "ocultar",
-      "uncardedTruncated": "e outros — lista truncada",
-      "hubListTruncated": "lista de projetos do hub truncada",
-      "codexUnavailable": "Runtime Codex indisponível",
-      "codexTruncated": "Lista de sessões Codex truncada",
-      "tmuxUnavailable": "Runtime tmux indisponível",
-      "hiddenBar": "{count, plural, one {# oculto} other {# ocultos}}",
-      "autoHiddenBar": "{count, plural, one {# recolhido} other {# recolhidos}}",
-      "autoHiddenShow": "mostrar"
-    },
-    "rings": {
-      "unavailable": "indisponível",
-      "resetInMinutes": "em {minutes} min",
-      "resetInHoursMinutes": "em {hours}h {minutes}min",
-      "resetOnAt": "{weekday} às {time}",
-      "detailsTitle": "Cotas dos provedores",
-      "close": "Fechar"
-    },
-    "roles": {
-      "lead": "líder",
-      "adhoc": "avulso"
-    },
-    "server": {
-      "title": "Servidor",
-      "host": "{hostname} · ativo há {uptime}",
-      "metersUnavailable": "Métricas do servidor indisponíveis",
-      "alertsUnavailable": "Alertas do servidor indisponíveis",
-      "meters": {
-        "cpu": "CPU",
-        "mem": "Memória",
-        "disk": "Disco",
-        "load": "Load"
-      },
-      "zombies": "Processos zumbis",
-      "zombiesCount": "{count, plural, one {# processo zumbi} other {# processos zumbis}}",
-      "zombiesEmpty": "Nenhum processo zumbi.",
-      "zombieUnknownParent": "processo pai desconhecido",
-      "zombieAgeMin": "{min} min",
-      "packages": "Atualizações pendentes",
-      "packagesCount": "{count, plural, one {# atualização} other {# atualizações}}",
-      "packagesSecurityCount": "{count} de segurança",
-      "packagesMore": "+{count} mais",
-      "packagesEmpty": "Nenhuma atualização pendente.",
-      "security": "segurança",
-      "copy": "copiar",
-      "copyCaption": "copiar, não executar"
-    },
-    "source": {
-      "projects": "Projetos",
-      "hub": "Hub",
-      "prs": "PRs",
-      "codex": "Codex",
-      "tmux": "tmux"
-    },
-    "stages": {
-      "spec": "Spec",
-      "build": "Build",
-      "review": "Review",
-      "test": "Test",
-      "ship": "Ship"
-    },
-    "states": {
-      "needs-you": "precisa de você",
-      "stuck": "travado?",
-      "working": "trabalhando",
-      "waiting": "esperando",
-      "idle": "ocioso",
-      "unknown": "desconhecido"
     },
     "ticker": {
       "title": "Eventos",
@@ -346,12 +338,20 @@
         "mergeApproved": "merge aprovado"
       }
     },
-    "topbar": {
-      "liveSources": "{count, plural, one {# fonte viva} other {# fontes vivas}}",
-      "hubLoading": "carregando",
-      "hubOk": "operacional",
-      "hubDegraded": "degradado",
-      "noSources": "sem fontes vivas"
+    "codexSession": "Sessão Codex",
+    "board": {
+      "sessionsChip": "{count, plural, one {# sessão} other {# sessões}}",
+      "newSession": "nova sessão",
+      "location": "{session} · {pane}",
+      "unlinkedTitle": "Execuções sem sessão aberta",
+      "unlinkedHint": "Iniciadas pelo Jax OS ou por uma sessão que não está mais aberta.",
+      "projectToggle": "Seção do projeto",
+      "footerNoSession": "Nenhuma sessão aberta",
+      "footerWorktrees": "{count, plural, one {# worktree retido} other {# worktrees retidos}}",
+      "footerLastRun": "última execução: {run}",
+      "runs": "Execuções",
+      "noRuns": "Nenhuma execução em andamento.",
+      "dispatchHint": "Uma execução iniciada aqui não pertence a nenhuma sessão e aparece em “Execuções sem sessão aberta”."
     }
   },
   "missionBlock": {

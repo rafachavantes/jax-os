@@ -250,6 +250,7 @@ describe("Respond opens only the card holding the event (spec §8.4)", () => {
 // ---- Task 8: group frame, session card content and board layout --------------------------------
 
 import { ProjectsColumn } from "./ProjectsColumn";
+import { footerSegments } from "./GroupFrame";
 import { missionOf, mkActivity, mkHubProject, mkPane, mkProject, mkSeat, mkSplit, runSummary, U as FU } from "@/lib/multiSessionFixtures";
 import type { HubActiveRun, HubSessionSplit } from "@/server/db/workflows";
 import { AnswerDraftsProvider } from "./AnswerDrafts";
@@ -495,5 +496,17 @@ describe("display names and remaining consumers (Task 9)", () => {
     const html = renderColumn(m, `Alpha#session:${A}`);
     expect(segment(html, `Alpha#session:${A}`)).toContain("expanded.retainedWorktrees");
     expect(html).toContain("board.footerWorktrees");
+  });
+});
+
+describe("footerSegments (Task 8 interface)", () => {
+  it("splits the footer into its two segments", () => {
+    const lastRun = {
+      runId: "r9", role: "builder" as const, contractStatus: "ok" as const, stage: "build" as const, diagnostic: null,
+      finishedAt: null, headSha: null, labelKey: "buildOk" as const, tone: "success" as const, findings: null, target: null,
+      verifyCommand: null, buildCommand: null, runtimeModel: null, profileName: null, reportRel: null, targetRel: null,
+    };
+    expect(footerSegments({ retainedWorktrees: 2, unownedLastRun: lastRun })).toEqual({ worktrees: 2, lastRun });
+    expect(footerSegments({ retainedWorktrees: null, unownedLastRun: null })).toEqual({ worktrees: null, lastRun: null });
   });
 });
