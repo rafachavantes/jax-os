@@ -1043,12 +1043,8 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
 
 def run_worker(manifest_path, *, run=jr.run_command, post=jc._post_event, popen=subprocess.Popen,
                 killpg=os.killpg, env=None, allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    # Sealed env (§2.3) is set on a COPY, never on the real os.environ (fixes cold review
-    # F4 — the old in-place os.environ mutation was untestable and left every later test
-    # in the same process permanently sealed too). The copy is what actually reaches the
-    # child via Popen(env=...) below.
+    # Prepare the child's one-shot environment without changing the caller's values.
     env = dict(os.environ if env is None else env)
-    env["HONCHO_ENABLED"] = "false"
     env["JAXFLOW_ONESHOT"] = "1"
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     worker_kwargs = dict(run=run, post=post, popen=popen, killpg=killpg, env=env,

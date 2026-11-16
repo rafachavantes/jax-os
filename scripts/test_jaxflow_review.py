@@ -691,10 +691,9 @@ def test_dispatch_quotes_tmux_command_for_space_and_semicolon_in_repo_path(monke
         # the raw ";" is present in the string but only inside a shlex-quoted token --
         # round-tripping through shlex.split proves it can never act as a shell separator.
         assert ";" in cmd
-        # fixes cold review F4: the worker PROCESS is sealed from birth via an `env`
-        # prefix in the launch command itself, not by writing os.environ after the fact.
+        # Set one-shot mode before the worker starts.
         assert shlex.split(cmd) == [
-            "env", "HONCHO_ENABLED=false", "JAXFLOW_ONESHOT=1",
+            "env", "JAXFLOW_ONESHOT=1",
             sys.executable, str(jaxflow_common.SCRIPT_PATH), "--run-worker", str(manifest_path),
         ]
 

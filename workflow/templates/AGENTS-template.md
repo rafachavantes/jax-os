@@ -34,7 +34,7 @@ explicit merge approval.
 - `src/` — <what lives where, one line per top-level dir that matters>
 - `.local/` — ALL non-code project memory, gitignored: `docs/specs/`, `docs/plans/`,
   `reports/` (workflow run reports), `scratch/` (per-run temp, auto-deleted), `handoff.md`
-  (session summary — last session only, always overwritten; history lives in Honcho).
+  (session summary — last session only, always overwritten).
 - `.jax-os/status.md` — Jax OS dashboard card (gitignored). Schema: see
   `workflow/contracts/status-report-contract.md` in jax-os.
 
