@@ -65,7 +65,7 @@ def run_command(argv, cwd=None):
 
 def _truthy(value):
     """None (absent) is falsy in an `if` — the caller's fail-open default. A present value is
-    truthy unless it matches the falsy set, case-insensitively (same convention as HONCHO_ENABLED)."""
+    truthy unless it matches the falsy set, case-insensitively."""
     if value is None:
         return None
     return str(value).strip().lower() not in ("0", "false", "no", "off")

@@ -126,7 +126,7 @@ def _dispatch_run(*, run, post, repo, project, phase, kind, role, run_id, sessio
 
     cmd = " ".join(
         shlex.quote(part) for part in (
-            "env", "HONCHO_ENABLED=false", "JAXFLOW_ONESHOT=1",
+            "env", "JAXFLOW_ONESHOT=1",
             sys.executable, str(SCRIPT_PATH), "--run-worker", str(manifest_path),
         )
     )

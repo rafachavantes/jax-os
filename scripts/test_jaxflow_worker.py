@@ -128,17 +128,18 @@ def test_worker_stdin_carries_prompt_text_no_shell_argv_leak():
                 captured["env"] = env
 
         snapshot = dict(os.environ)
+        base_env = {"PATH": os.environ["PATH"], "JAXFLOW_INHERITED_SENTINEL": "kept"}
         jaxflow_worker.run_worker(
             str(manifest_path), run=_run_with_tmux(FakeTmux()), post=lambda e: {"ok": True}, popen=CapturePopen,
-            allowlist_root=root,
+            allowlist_root=root, env=base_env,
         )
         assert captured["start_new_session"] is True
         assert b"SECRET-HANDOFF-TEXT" not in captured["stdin_bytes"]
         assert "SECRET-HANDOFF-TEXT" not in " ".join(captured["argv"])
-        # sealed env reaches the child on a COPY; the real os.environ is never touched
-        # (fixes cold review F4).
-        assert captured["env"]["HONCHO_ENABLED"] == "false"
-        assert captured["env"]["JAXFLOW_ONESHOT"] == "1"
+        # One-shot mode reaches the child on a copied environment and the real
+        # os.environ remains unchanged.
+        assert captured["env"] == {**base_env, "JAXFLOW_ONESHOT": "1"}
+        assert base_env == {"PATH": os.environ["PATH"], "JAXFLOW_INHERITED_SENTINEL": "kept"}
         assert dict(os.environ) == snapshot
 
 
@@ -4557,7 +4558,8 @@ def test_worker_builder_invalid_report_is_invalid_not_missing():
         assert payload["diagnostic"] == "no commit beyond base"
 
 
-def test_worker_builder_seals_env_for_child_process():
+def test_worker_builder_preserves_inherited_env_and_marks_one_shot(monkeypatch):
+    monkeypatch.setenv("JAXFLOW_INHERITED_SENTINEL", "kept")
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
         _init_repo(root)
@@ -4575,7 +4577,7 @@ def test_worker_builder_seals_env_for_child_process():
             str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
             post=lambda e: {"ok": True}, popen=CapturePopen, allowlist_root=root.parent,
         )
-        assert captured["env"]["HONCHO_ENABLED"] == "false"
+        assert captured["env"]["JAXFLOW_INHERITED_SENTINEL"] == "kept"
         assert captured["env"]["JAXFLOW_ONESHOT"] == "1"
 
 

@@ -31,10 +31,8 @@ describe("compose (§7 test 1)", () => {
   it("both sides get normalized independently before composing", () => {
     expect(compose("exc\r\n\r\n\r\n", "canon")).toBe("exc\n\n\ncanon\n");
   });
-  // Codex-SHAPED fixture, 3-LF trailing prefix (same SHAPE as ~/.codex/AGENTS.md's
-  // COMPOUND CODEX TOOL MAP + Honcho Memory block — separator mechanics only; the
-  // "..." line is a stand-in, so this is NOT the real bytes. The real byte-exact
-  // proof is the live probe recorded in the plan-header note).
+  // Codex-shaped fixture with a user note and exactly three trailing LFs.
+  // The "..." placeholder tests separator mechanics rather than a real user file.
   it("codex-shaped fixture (separator mechanics, 3-LF trailing prefix)", () => {
     const exception = [
       "<!-- BEGIN COMPOUND CODEX TOOL MAP -->",
@@ -42,19 +40,19 @@ describe("compose (§7 test 1)", () => {
       "...",
       "<!-- END COMPOUND CODEX TOOL MAP -->",
       "",
-      "## Honcho Memory",
-      "Use the `honcho-codex` skill for persistent memory via Honcho MCP tools.",
+      "## Personal note",
+      "Keep local notes here.",
       "",
       "",
       "",
-    ].join("\n"); // ends with exactly 3 raw LFs: "...tools.\n" + "\n" + "\n"
+    ].join("\n"); // ends with exactly 3 raw LFs
     expect(exception.endsWith("\n\n\n")).toBe(true); // sanity: fixture really has the real file's 3-LF shape
     const canonical = "<!-- BEGIN JAX RULES -->\n## Jax OS\ncontent\n<!-- END JAX RULES -->\n";
     expect(compose(exception, canonical)).toBe(norm(exception) + "\n\n" + norm(canonical));
     expect(compose(exception, canonical)).toBe(
       "<!-- BEGIN COMPOUND CODEX TOOL MAP -->\n## Compound Codex Tool Mapping (Claude Compatibility)\n...\n" +
-        "<!-- END COMPOUND CODEX TOOL MAP -->\n\n## Honcho Memory\n" +
-        "Use the `honcho-codex` skill for persistent memory via Honcho MCP tools.\n\n\n" +
+        "<!-- END COMPOUND CODEX TOOL MAP -->\n\n## Personal note\n" +
+        "Keep local notes here.\n\n\n" +
         "<!-- BEGIN JAX RULES -->\n## Jax OS\ncontent\n<!-- END JAX RULES -->\n",
     );
   });

@@ -191,11 +191,10 @@ def dispatch_review(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_
         paths["tests"].unlink(missing_ok=True)
         raise jc._hub_refusal(exc) from exc
 
-    # The worker PROCESS is sealed from birth via an `env` prefix (fixes branch review F4)
-    # -- not by writing os.environ once the process is already running.
+    # Set one-shot mode before the worker starts.
     cmd = " ".join(
         shlex.quote(part) for part in (
-            "env", "HONCHO_ENABLED=false", "JAXFLOW_ONESHOT=1",
+            "env", "JAXFLOW_ONESHOT=1",
             sys.executable, str(jc.SCRIPT_PATH), "--run-worker", str(manifest_path),
         )
     )

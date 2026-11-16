@@ -2140,7 +2140,7 @@ def test_build_quotes_tmux_command_for_space_and_semicolon_in_repo_path(monkeypa
         cmd = new_session_call[-1]
         manifest_path = root / ".local" / "runs" / run_id / "manifest.json"
         assert shlex.split(cmd) == [
-            "env", "HONCHO_ENABLED=false", "JAXFLOW_ONESHOT=1",
+            "env", "JAXFLOW_ONESHOT=1",
             sys.executable, str(jaxflow_common.SCRIPT_PATH), "--run-worker", str(manifest_path),
         ]
 
