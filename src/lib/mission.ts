@@ -244,6 +244,10 @@ export function boardCards(cards: MissionCard[]): MissionCard[] {
   return cards.flatMap((c) => c.group?.cards ?? [c]);
 }
 
+export function hiddenBoardCards(cards: MissionCard[]): MissionCard[] {
+  return cards.flatMap((c) => c.visibility === "hidden" ? [c] : c.visibility === "visible" ? (c.group?.cards.filter((child) => child.visibility === "hidden") ?? []) : []);
+}
+
 export type BoardEntry =
   | { kind: "plain"; card: MissionCard }
   | { kind: "group"; project: MissionCard; cards: MissionCard[] };
@@ -255,7 +259,7 @@ export function boardEntries(cards: MissionCard[], filter: MissionBucket | null)
   for (const card of cards) {
     if (card.visibility !== "visible") continue;
     if (card.group) {
-      const matching = card.group.cards.filter((c) => filter === null || bucketOf(c.headline) === filter);
+      const matching = card.group.cards.filter((c) => c.visibility === "visible" && (filter === null || bucketOf(c.headline) === filter));
       if (matching.length > 0) entries.push({ kind: "group", project: card, cards: matching });
     } else if (filter === null || bucketOf(card.headline) === filter) {
       entries.push({ kind: "plain", card });
@@ -629,6 +633,7 @@ function isGrouped(split: HubSessionSplit | undefined): boolean {
 function buildSeatCard(
   project: MissionCard, hp: HubProject, seat: HubSessionSeat,
   worktreeSessions: { session: string | null; count: number }[] | undefined, nowMs: number,
+  prefs: MissionCard["prefs"] = { pinned: false, hiddenAt: null },
 ): MissionCard {
   const seatPaneKeys = new Set(seat.panes.map((r) => paneKey(r.pane, r.tmuxIncarnation)));
   const panes = hp.panes.filter((p) => seatPaneKeys.has(paneKey(p.pane, p.tmuxIncarnation))).map((p) => paneForSeat(p, seat.sessionId));
@@ -643,6 +648,8 @@ function buildSeatCard(
   return {
     ...project,
     key: seatKey(project.dir, seat),
+    prefs,
+    visibility: project.visibility === "visible" && prefs.hiddenAt !== null && (activity.newestEventTs === null || Date.parse(activity.newestEventTs) <= Date.parse(prefs.hiddenAt)) ? "hidden" : project.visibility,
     scope: {
       kind: "session", sessionId: seat.sessionId, transport: seat.transport, runtime, name: seat.name,
       tmuxSessions: [...new Set(panes.flatMap((p) => (p.session ? [p.session] : [])))],
@@ -689,9 +696,10 @@ function buildUnlinkedCard(project: MissionCard, unlinked: HubScopedActivity): M
 function buildGroup(
   project: MissionCard, hp: HubProject, seats: HubSessionSeat[], unlinked: HubScopedActivity,
   worktreeSessions: { session: string | null; count: number }[] | undefined, unownedLastRun: HubLastRun | null, nowMs: number,
+  prefs: Record<string, MissionCard["prefs"]>,
 ): MissionGroup {
   const openIds = new Set(seats.flatMap((seat) => (seat.sessionId !== null ? [seat.sessionId] : [])));
-  const cards = seats.map((seat) => buildSeatCard(project, hp, seat, worktreeSessions, nowMs));
+  const cards = seats.map((seat) => buildSeatCard(project, hp, seat, worktreeSessions, nowMs, prefs[seatKey(project.dir, seat)]));
   if (unlinked.activeRuns.length >= 1) cards.push(buildUnlinkedCard(project, unlinked));
   const retainedWorktrees = retainedCount(worktreeSessions, (s) => s === null || !openIds.has(s));
   const lastRun = toMissionLastRun(unownedLastRun);
@@ -998,9 +1006,12 @@ function buildModel(
     const split = hubReady ? hp?.split : undefined;
     if (split && isGrouped(split)) {
       const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;
-      card.group = buildGroup(card, hp!, split.seats, split.unlinked, wr && wr.ok ? wr.sessions : undefined, split.unownedLastRun, nowMs);
+      card.group = buildGroup(card, hp!, split.seats, split.unlinked, wr && wr.ok ? wr.sessions : undefined, split.unownedLastRun, nowMs, hub?.ok ? hub.data.prefs ?? {} : {});
     } else if (split && split.seats.length === 1) {
       card.key = seatKey(project.dir, split.seats[0]);
+      // Keep a hidden seat recoverable after its sibling closes and the group becomes a plain card.
+      const seat = buildSeatCard(card, hp!, split.seats[0], undefined, nowMs, hub?.ok ? hub.data.prefs?.[card.key] : undefined);
+      if (card.visibility === "visible" && seat.visibility === "hidden") return seat;
       if (card.headline === "idle" && split.seats[0].activity.activeRuns.length > 0) card.headline = "waiting";
     }
     return card;
@@ -1058,7 +1069,7 @@ function buildModel(
     .map((x) => ({ kind: "pr" as const, dir: x.dir, name: x.name, number: x.pr.number, url: x.pr.url, ci: x.pr.ciState }));
   const inboxPrRemainder = Math.max(0, mergeReady.length - INBOX_PR_CAP);
   const prTruncatedAny = cards.some((c) => c.pr.status === "ok" && c.pr.truncated);
-  const hiddenCount = cards.filter((c) => c.visibility === "hidden").length;
+  const hiddenCount = hiddenBoardCards(cards).length;
   const autoHiddenCount = cards.filter((c) => c.visibility === "autoHidden").length;
   const archiveAfterDaysOut = hub && hub.ok ? (hub.data.settings?.archiveAfterDays ?? 14) : 14;
 
@@ -1161,7 +1172,7 @@ export function buildMission(
 // The inbox stuck rail lists board cards (session and unlinked cards included), never projects —
 // each row's Cancel targets that card's own run (spec §10, §12).
 export function stuckBoardCards(model: MissionModel): MissionCard[] {
-  return boardCards(model.cards).filter((c) => c.headline === "stuck");
+  return boardCards(model.cards).filter((c) => c.visibility === "visible" && c.headline === "stuck");
 }
 
 export type StripTitle = { kind: "empty" } | { kind: "count"; count: number } | { kind: "unknown" };

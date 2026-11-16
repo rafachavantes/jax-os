@@ -18,7 +18,7 @@ vi.mock("@/lib/mission", async (importOriginal) => {
 });
 
 import {
-  boardCardKeyFor, cardKey, type InboxRow, type Mission, type MissionBucket, type MissionCard, type MissionPane,
+  boardCardKeyFor, cardKey, hiddenBoardCards, stuckBoardCards, summarizeBuckets, boardCards, type InboxRow, type Mission, type MissionBucket, type MissionCard, type MissionPane,
 } from "@/lib/mission";
 import { pendingUiAction, ProjectCard } from "./ProjectCard";
 import { expandAndScroll, InboxStrip, QuestionRowButtons } from "./InboxStrip";
@@ -302,7 +302,7 @@ describe("group frame render (spec §7.1–§7.3, §13)", () => {
     const html = renderColumn(m);
     expect((html.match(/board\.sessionsChip/g) ?? []).length).toBe(1);
     expect((html.match(/Alpha</g) ?? []).length).toBe(1);
-    expect((html.match(/aria-label="actions\.more"/g) ?? []).length).toBe(1);
+    expect((html.match(/aria-label="actions\.more"/g) ?? []).length).toBe(3);
     expect((html.match(/PR #12/g) ?? []).length).toBe(1);
     expect(segment(html, `Alpha#session:${A}`)).not.toContain("PR #12");
     expect(segment(html, `Alpha#session:${B}`)).not.toContain("PR #12");
@@ -416,7 +416,7 @@ describe("group frame render (spec §7.1–§7.3, §13)", () => {
     expect(segment(html, `Alpha#session:${A}`)).not.toContain("expanded.sessionLineNoRole");
   });
 
-  it("prefs stay project-scoped on the group header, and a hidden project renders no group", () => {
+  it("pin stays project-scoped on the group header, and a hidden project renders no group", () => {
     const panes = [mkPane({ pane: "%1", tmuxIncarnation: "1:1", harnessSession: A }), mkPane({ pane: "%2", tmuxIncarnation: "1:1", harnessSession: B })];
     const split = mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] }), mkSeat({ sessionId: B, panes: [{ pane: "%2", tmuxIncarnation: "1:1" }] })] });
     const pinned = missionOf({ Alpha: mkHubProject({ panes, split }) }, { prefs: { Alpha: { pinned: true, hiddenAt: null } } });
@@ -429,6 +429,30 @@ describe("group frame render (spec §7.1–§7.3, §13)", () => {
     expect(hiddenHtml).not.toContain('data-testid="group-header"');
     expect(hiddenHtml).not.toContain(`data-card-key="Alpha#session:${A}"`);
     expect(hiddenHtml).toContain("hiddenBar");
+  });
+
+  it("hides one session, keeps recovery and counts correct, and resurfaces only on its own activity", () => {
+    const key = `Alpha#session:${A}`;
+    const seat = mkSeat({ sessionId: A, name: "Finished", activity: mkActivity({ newestEventTs: "2026-11-10T00:00:00Z" }) });
+    const prefs: Record<string, MissionCard["prefs"]> = { Alpha: { pinned: true, hiddenAt: null }, [key]: { pinned: false, hiddenAt: "2026-11-11T00:00:00Z" } };
+    const build = (seats = [seat, mkSeat({ sessionId: B, activity: mkActivity({ newestEventTs: "2026-11-12T00:00:00Z" }) })], settings = prefs) =>
+      missionOf({ Alpha: mkHubProject({ split: mkSplit({ seats }) }) }, { prefs: settings });
+    const m = build();
+    const html = renderColumn(m);
+    expect(html).not.toContain(`data-card-key="${key}"`);
+    expect(segment(html, `Alpha#session:${B}`)).toContain("actions.hide");
+    expect(segment(html, `Alpha#session:${B}`)).not.toContain("actions.pin");
+    expect(html).toContain('data-testid="group-header"');
+    expect(html).toContain("hiddenBar");
+    expect(hiddenBoardCards(m.model.cards).map(cardKey)).toEqual([key]);
+    expect(m.model.hiddenCount).toBe(1);
+    expect(summarizeBuckets({ kind: "ready" }, boardCards(m.model.cards)).counts?.idle).toBe(1);
+    const hidden = hiddenBoardCards(m.model.cards)[0];
+    expect(stuckBoardCards({ ...m.model, cards: [{ ...hidden, headline: "stuck" }] })).toEqual([]);
+    expect(hiddenBoardCards(build([seat]).model.cards).map(cardKey)).toEqual([key]);
+    expect(renderColumn(build([{ ...seat, activity: mkActivity({ newestEventTs: "2026-11-12T00:00:00Z" }) }, mkSeat({ sessionId: B })]))).toContain(`data-card-key="${key}"`);
+    expect(hiddenBoardCards(build(undefined, { ...prefs, [key]: { pinned: false, hiddenAt: null } }).model.cards)).toEqual([]);
+    expect(hiddenBoardCards(build(undefined, { ...prefs, Alpha: { pinned: false, hiddenAt: "2026-11-13T00:00:00Z" } }).model.cards).map((c) => c.dir)).toEqual(["Alpha"]);
   });
 
   it("the filter applies inside groups: one matching card keeps the group, none drops it", () => {
