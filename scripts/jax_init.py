@@ -592,7 +592,13 @@ def _emit(path, created, kept, ran, refused, head):
     }))
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(prog="jax-init")
+    parser = argparse.ArgumentParser(
+        prog="jax-init",
+        epilog="The jax-init skill records delivery choices in AGENTS.md after bootstrap. "
+               "For single-branch, set Merge method to merge (default) or squash in the "
+               "selected Deploy policy block. PR presets also support rebase and auto; "
+               "other local presets cannot configure a merge method.",
+    )
     parser.add_argument("--path", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--preset", required=True, choices=list(PRESETS))

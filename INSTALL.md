@@ -165,14 +165,35 @@ effective instructions and every enabled managed destination, normalizing only l
 endings and paragraph wrapping:
 
 ```text
-Project conventions may override only commit subjects, PR titles, implementation branch naming, PR merge method, and generated delivery commit subject; omitted conventions retain Jax defaults and all other guarantees remain binding.
+Project conventions may override only commit subjects, PR titles, implementation branch naming, delivery merge method, and generated delivery commit subject; omitted conventions retain Jax defaults and all other guarantees remain binding.
 ```
+
+The former wording, `PR merge method`, remains valid for previously supported
+nondefault conventions. Local squash requires the expanded wording above in every
+enabled instruction destination. Existing personal canonical rules are not replaced
+by starter-template updates: save the amendment and apply it to the enabled agents.
 
 Apply it through `/settings` -> Jax Rules (canonical edit, or an exception slot for an
 enabled destination) and keep the existing default values. `INSTALL` and the skill's
 fixture/manual transcript checks exercise the dialogue, never the installer's real
 instruction files: nothing here edits `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
 `~/.config/opencode/AGENTS.md`, or the Jax Rules database automatically.
+
+### Delivery merge method
+
+For main-only projects without PRs, choose `single-branch` and set this line inside
+its selected Deploy policy block in the project's `AGENTS.md`:
+
+```markdown
+- Merge method: `squash`
+```
+
+Omission or `merge` retains the existing merge commit. Squash creates one delivery
+commit, preserving the reviewed source commits and the same approval, checks, audit,
+and push gates. `jax-init` asks for this choice; its CLI has no separate merge-method
+flag. PR presets retain `merge`/`squash`/`rebase`/`auto`; other local presets cannot
+set this field. See `jaxflow merge --help`, `jax-init --help`, and
+`workflow/contracts/merge-contract.md` for the delivery and retry rules.
 
 ### Git commit hook
 
