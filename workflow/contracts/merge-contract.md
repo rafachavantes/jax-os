@@ -41,12 +41,15 @@ official code — treat it as the most restricted action in the workflow.
 - Follow the project `AGENTS.md` **Deploy policy** preset, running ONE verification
   sequence for every local-merge preset: after the source check above (the
   tracked tree is already clean), `git switch <Delivery target>`; verify `git branch
-  --show-current` equals that exact preset value; then `git merge --no-ff --no-commit
-  <approved-full-head-sha>` → run the FULL required checks on the merged tree, unless the
-  checks-reuse rule below applies →
-  fail ⇒ `git merge --abort`, do not deliver, report; pass ⇒ commit the merge,
-  then push/deploy exactly as the preset directs — one run, on the exact tree to
-  be delivered. `jaxflow merge` requires `--target <branch>` naming that destination;
+  --show-current` equals that exact preset value; then stage the approved full head SHA using
+  the configured method (`git merge --no-ff --no-commit <sha>` for `merge`, or
+  `git merge --squash <sha>` for `squash`) → run the FULL required checks on the staged result,
+  unless the checks-reuse rule below applies → fail ⇒ abort the merge or, for squash, run
+  `git reset --merge HEAD`; report any tracked changes that remain and never run
+  `reset --hard`/`clean`; pass ⇒ commit, then push/deploy exactly as the preset directs — one
+  run, on the exact tree to be delivered. A squash commit has the target tip as its sole
+  parent and exactly one body trailer `Jaxflow-Squash-Source: <approved-full-sha>`; it never
+  amends, rebases, or rewrites source commits. `jaxflow merge` requires `--target <branch>` naming that destination;
   it is asserted against policy and cannot override it. Identical-command retries keep
   the same `--target`. Changing `--target` is a new approval, not a retry.
    - PR presets (`single-branch-pr`, `dual-branch-pr`) — jaxflow owns the whole delivery, no manual `gh` command. Per feature: once a
@@ -83,7 +86,11 @@ official code — treat it as the most restricted action in the workflow.
      run. The `merge-approved` audit records `checks: reused|run|resumed`. A fast-forward means the
      approved sha is a strict descendant of the delivery target's pre-merge tip; an
      EQUAL tip is never treated as a fast-forward.
-   - `single-branch` / `dual-branch` — the sequence above into the `Delivery target`; push on pass.
+   - `single-branch` — the sequence above into the configured `Delivery target`; `Merge method`
+     may be `merge` (default) or `squash`. Push that target on pass. `dual-branch` and
+     `bubble-buildprint` keep the existing merge-only behavior and reject an explicit
+     `Merge method`.
+   - `dual-branch` — the sequence above into the `Delivery target`; push on pass.
   - `bubble-buildprint` — the sequence above into the `Delivery target`. If a remote
     exists, push that exact branch. If no remote exists, stop after the successful local
     delivery merge and report `no remote delivery configured`. Buildprint deployment to
@@ -92,6 +99,14 @@ official code — treat it as the most restricted action in the workflow.
     action — it exists only as builder verification under `agent-deploy-verify`.
 - Use the project's commit convention (imperative, `feat:` / `fix:` / `docs:`
   prefixes); merge commit message: `feat: <phase title> (merge <approved-branch>)`.
+- A squash delivery uses the same subject convention and approval, checks, audit, push, and
+  cleanup gates. A retry recognizes only the current target tip with the exact generated
+  subject, exactly one parent, and a body consisting of exactly one
+  `Jaxflow-Squash-Source: <approved-full-sha>` trailer. The source branch must be absent or
+  still at that SHA. A matching
+  receipt on an older target ancestor refuses with `sha-mismatch`; it never creates a second
+  delivery. After removing the worktree, cleanup deletes the source branch only if it still
+  points at the approved SHA; otherwise it keeps the branch and reports why.
 - `jaxflow merge` writes `.jax-os/status.md` (`stage: ship`) itself, §4.5/§5 of the jaxflow spec — no manual step here.
 - Report the outcome so it reaches the owner: a PR preset ⇒ the PR URL; local-merge preset with
   a remote ⇒ the merge hash and pushed ref; `bubble-buildprint` without a remote ⇒ the

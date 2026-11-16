@@ -50,18 +50,21 @@ explicit merge approval.
   promotions keep the fixed `Release: <target> promotion <date>` format.
 - Implementation branch convention: `feat/<phase>` — e.g. `feat/checkout-retry`.
 
-A PR preset's chosen block may also set `Merge method` (`merge`, `squash`, `rebase`, or
-`auto`) and `Merge subject` (`default`, `pr-title`, or `phase`). A local preset may set only
-`Merge subject` (`default` or `phase`, never `Merge method`); `phase` appends ` (merge
-<branch>)` to the
-validated subject locally, while a PR delivery passes the exact phase text. `release/*`
-production promotions always keep the legacy `--merge` format and generated
+A `single-branch` preset may set `Merge method` (`merge` or `squash`; default `merge`). Other
+local presets cannot set it. PR presets retain `Merge method` (`merge`, `squash`, `rebase`, or
+`auto`) and `Merge subject` (`default`, `pr-title`, or `phase`). Local `Merge subject`
+(`default` or `phase`) is unchanged: `phase` appends ` (merge <branch>)` to the validated
+subject locally, while a PR delivery passes the exact phase text. `release/*` production
+promotions always keep the legacy `--merge` format and generated
 `feat: <phase> (merge release/...)` subject, regardless of these fields.
 
 ## Deploy policy  <!-- CHOOSE ONE PRESET, DELETE THE OTHERS -->
 
 **Preset: `single-branch`** — trunk-based development: only `main`, local merge and push.
 - Base branch: `main` (default). `main` is the only PERSISTENT branch.
+- Merge method: `merge`
+- Squash is optional for this preset; it keeps source commits unchanged and records their
+  approved full SHA in the delivery commit body.
 - Implementation runs use temporary branches following the Implementation branch
   convention above (default `feat/<phase>`) from the base.
 - Delivery target: `main`, merged and pushed per `merge-contract.md` after the owner's merge

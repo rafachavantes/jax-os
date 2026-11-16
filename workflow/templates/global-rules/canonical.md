@@ -61,4 +61,4 @@ Imperative mood, `feat:`/`fix:`/`docs:` prefixes.
 
 ## Project conventions (global rule)
 
-Project conventions may override only commit subjects, PR titles, implementation branch naming, PR merge method, and generated delivery commit subject; omitted conventions retain Jax defaults and all other guarantees remain binding.
+Project conventions may override only commit subjects, PR titles, implementation branch naming, delivery merge method, and generated delivery commit subject; omitted conventions retain Jax defaults and all other guarantees remain binding.

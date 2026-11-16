@@ -189,9 +189,7 @@ def test_project_merge_conventions_local_phase_and_method_rules(tmp_path):
     assert jaxflow_merge._merge_conventions(repo) == ("merge", "phase")
     repo = _agents(tmp_path, "**Preset: `single-branch`** — a.\n\nDelivery target: `main`.\n"
                               "- Merge method: `merge`\n")
-    with pytest.raises(ji.Refusal) as exc:
-        jaxflow_merge._merge_conventions(repo)
-    assert exc.value.code == "merge-policy-invalid"
+    assert jaxflow_merge._merge_conventions(repo) == ("merge", "default")
 
 
 @pytest.mark.parametrize("block_extra", [
@@ -3998,6 +3996,170 @@ def test_merge_pr_squash_only_promotion_surfaces_github_refusal(tmp_path, monkey
 
 def _local_policy_agents(extra="", preset="single-branch", target="main"):
     return (f"**Preset: `{preset}`** — a.\n\n- Delivery target: `{target}`.\n" + extra)
+
+
+@pytest.mark.parametrize("preset,method,valid", [
+    ("single-branch", "merge", True), ("single-branch", "squash", True),
+    ("single-branch", "auto", False), ("single-branch", "rebase", False),
+    ("dual-branch", "squash", False), ("bubble-buildprint", "squash", False),
+])
+def test_local_merge_method_configuration(tmp_path, preset, method, valid):
+    (tmp_path / "AGENTS.md").write_text(
+        _local_policy_agents(f"- Merge method: `{method}`\n", preset=preset))
+    if valid:
+        assert jaxflow_merge._merge_conventions(tmp_path) == (method, "default")
+    else:
+        with pytest.raises(ji.Refusal, match="merge-policy-invalid"):
+            jaxflow_merge._merge_conventions(tmp_path)
+
+
+def _real_local_squash(tmp_path, monkeypatch, subject="default"):
+    repo = tmp_path / "project"
+    repo.mkdir()
+
+    def git(*args, cwd=repo):
+        result = _run_real(["git", *args], cwd=cwd)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    git("init", "-b", "main")
+    for key, value in [("user.name", "Test"), ("user.email", "test@example.com"),
+                       ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")]:
+        git("config", key, value)
+    (repo / ".git/info/exclude").write_text("AGENTS.md\n.local/\n.jax-os/\n")
+    (repo / "AGENTS.md").write_text(_local_policy_agents(
+        f"- Merge method: `squash`\n- Merge subject: `{subject}`\n"))
+    (repo / "base.txt").write_text("original\n")
+    git("add", "base.txt")
+    git("commit", "-m", "feat: initial")
+    worktree = _worktree_path(repo)
+    git("worktree", "add", "-b", "feat/x", str(worktree))
+    for content in ("one\n", "two\n"):
+        (worktree / "change.txt").write_text(content)
+        git("add", "change.txt", cwd=worktree)
+        git("commit", "-m", "feat: change", cwd=worktree)
+    sha = git("rev-parse", "feat/x")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(jr, "DB_PATH", tmp_path / "unused.db")
+    return repo, worktree, sha, git
+
+
+@pytest.mark.parametrize("subject", ["default", "phase"])
+@pytest.mark.parametrize("target_moved", [False, True])
+def test_local_squash_delivers_one_commit_and_resumes_after_cleanup(
+    tmp_path, monkeypatch, subject, target_moved,
+):
+    repo, worktree, sha, git = _real_local_squash(tmp_path, monkeypatch, subject)
+    if target_moved:
+        (repo / "target.txt").write_text("independent\n")
+        git("add", "target.txt")
+        git("commit", "-m", "feat: independent")
+    parent = git("rev-parse", "HEAD")
+    events = []
+    args = _MergeArgs(sha=sha, phase="DRA-1: deliver", checks="test -f change.txt")
+    kwargs = dict(run=_run_real, post=lambda e: events.append(e) or {"ok": True},
+                  get=lambda url: (200, {"ok": False}), env=_merge_env(),
+                  allowlist_root=tmp_path)
+    assert jaxflow_merge.cmd_merge(args, **kwargs) == jaxflow_common.OK
+    delivered = git("rev-parse", "HEAD")
+    assert git("rev-list", "--parents", "-n", "1", "HEAD").split() == [delivered, parent]
+    assert git("show", "HEAD:change.txt") == "two"
+    assert git("log", "-1", "--format=%s") == (
+        ("feat: " if subject == "default" else "") + "DRA-1: deliver (merge feat/x)")
+    assert git("log", "-1", "--format=%b") == f"Jaxflow-Squash-Source: {sha}"
+    assert git("show", f"{sha}:change.txt") == "two"
+    assert not worktree.exists()
+    assert _run_real(["git", "show-ref", "--verify", "refs/heads/feat/x"], cwd=repo).returncode != 0
+    if target_moved:
+        assert git("show", "HEAD:target.txt") == "independent"
+    assert jaxflow_merge.cmd_merge(args, **kwargs) == jaxflow_common.OK
+    assert git("rev-parse", "HEAD") == delivered
+    assert events[-1]["payload"]["checks"] == {"mode": "resumed"}
+
+
+@pytest.mark.parametrize("failure", ["checks", "hook", "conflict", "dirty-checks"])
+def test_local_squash_failure_keeps_target_and_untracked_files(tmp_path, monkeypatch, failure):
+    repo, worktree, sha, git = _real_local_squash(tmp_path, monkeypatch)
+    if failure == "conflict":
+        (repo / "change.txt").write_text("conflicting\n")
+        git("add", "change.txt")
+        git("commit", "-m", "feat: conflicting")
+    parent = git("rev-parse", "HEAD")
+    (repo / "untracked.txt").write_text("keep\n")
+
+    def run(argv, cwd=None):
+        if failure == "hook" and argv[:2] == ["git", "commit"]:
+            return _completed(1, "", "hook rejected")
+        return _run_real(argv, cwd=cwd)
+
+    checks = "printf changed > base.txt" if failure == "dirty-checks" else "false"
+    if failure in ("hook", "conflict"):
+        checks = "true"
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge.cmd_merge(
+            _MergeArgs(sha=sha, checks=checks), run=run, post=_never_post,
+            env=_merge_env(), allowlist_root=tmp_path)
+    assert exc.value.code == {"checks": "checks-failed", "dirty-checks": "checks-dirtied-tree"
+                              }.get(failure, "merge-failed")
+    assert git("rev-parse", "HEAD") == parent
+    assert git("diff", "--cached") == ""
+    assert (repo / "untracked.txt").read_text() == "keep\n"
+    assert worktree.exists() and git("rev-parse", "feat/x") == sha
+    if failure == "dirty-checks":
+        assert (repo / "base.txt").read_text() == "changed"
+        assert "tracked changes remain" in exc.value.hint
+    else:
+        assert git("status", "--porcelain", "--untracked-files=no") == ""
+
+
+@pytest.mark.parametrize("retry", ["audit", "push", "phase", "alias", "method", "target", "source", "body"])
+def test_local_squash_retry_identity(tmp_path, monkeypatch, retry):
+    repo, worktree, sha, git = _real_local_squash(tmp_path, monkeypatch)
+    if retry == "push":
+        remote = tmp_path / "remote.git"
+        git("init", "--bare", str(remote))
+        git("remote", "add", "origin", str(remote))
+
+    def fail_post(event):
+        raise RuntimeError("hub down")
+
+    def fail_push(argv, cwd=None):
+        return _completed(1, "", "push failed") if argv[:2] == ["git", "push"] else _run_real(argv, cwd=cwd)
+
+    args = _MergeArgs(sha=sha)
+    with pytest.raises(ji.Refusal) as exc:
+        jaxflow_merge.cmd_merge(
+            args, run=fail_push if retry == "push" else _run_real,
+            post=(lambda e: {"ok": True}) if retry == "push" else fail_post,
+            get=lambda url: (200, {"ok": False}), env=_merge_env(), allowlist_root=tmp_path)
+    assert exc.value.code == ("push-failed" if retry == "push" else "hub-unreachable")
+    if retry == "phase":
+        args.phase = "Another phase"
+    elif retry == "alias":
+        git("branch", "feat/alias", sha)
+        args.branch = "feat/alias"
+    elif retry == "method":
+        (repo / "AGENTS.md").write_text(_local_policy_agents("- Merge method: `merge`\n"))
+    elif retry == "target":
+        git("commit", "--allow-empty", "-m", "feat: later")
+    elif retry == "source":
+        git("commit", "--allow-empty", "-m", "feat: later source", cwd=worktree)
+    elif retry == "body":
+        git("commit", "--amend", "-m", "feat: Phase X (merge feat/x)",
+            "-m", f"Jaxflow-Squash-Source: {sha}\nJaxflow-Squash-Source: {sha}")
+    delivered = git("rev-parse", "HEAD")
+    events = []
+    kwargs = dict(run=_run_real, post=lambda e: events.append(e) or {"ok": True},
+                  get=lambda url: (200, {"ok": False}), env=_merge_env(), allowlist_root=tmp_path)
+    if retry in ("audit", "push"):
+        assert jaxflow_merge.cmd_merge(args, **kwargs) == jaxflow_common.OK
+        assert events[-1]["payload"]["checks"] == {"mode": "resumed"}
+        assert not worktree.exists()
+    else:
+        with pytest.raises(ji.Refusal, match="sha-mismatch"):
+            jaxflow_merge.cmd_merge(args, **kwargs)
+        assert not events and worktree.exists()
+    assert git("rev-parse", "HEAD") == delivered
 
 
 def test_merge_local_phase_subject_commits_exact_company_subject(tmp_path):
