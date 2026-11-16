@@ -2,7 +2,7 @@
 
 import { useTranslations } from "next-intl";
 import { useState } from "react";
-import { boardEntries, type Mission, type MissionBucket, type MissionCard } from "@/lib/mission";
+import { boardEntries, cardKey, hiddenBoardCards, sessionDisplay, type Mission, type MissionBucket, type MissionCard } from "@/lib/mission";
 import { PrefsButtons, ProjectCard } from "./ProjectCard";
 import { renderBoardEntry } from "./boardEntry";
 import { SourceWarning } from "./SourceWarning";
@@ -79,9 +79,9 @@ function ProjectVisibilityDisclosure({
         </div>
       ))}
       {visible.hidden.map((c) => (
-        <div key={c.dir} className="flex items-center justify-between gap-2">
-          <span className="truncate text-body-ink">{c.name}</span>
-          <PrefsButtons dir={c.dir} prefs={c.prefs} bucket="hidden" />
+        <div key={cardKey(c)} className="flex items-center justify-between gap-2">
+          <span className="truncate text-body-ink">{c.name}{c.scope?.kind === "session" ? ` · ${sessionDisplay(c.scope).text || t("board.newSession")}` : ""}</span>
+          <PrefsButtons dir={c.scope?.kind === "session" ? cardKey(c) : c.dir} prefs={c.prefs} bucket="hidden" />
         </div>
       ))}
     </div>
@@ -110,7 +110,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
   // Phase 3 §10: non-visible cards never render in the main grid — each gets a per-project
   // management row below instead. Declared here (not in the else branch that builds `body`)
   // because the return JSX below consumes them too.
-  const hiddenCards = model.cards.filter((c) => c.visibility === "hidden");
+  const hiddenCards = hiddenBoardCards(model.cards);
   const autoHiddenCards = model.cards.filter((c) => c.visibility === "autoHidden");
 
   let body: React.ReactNode;

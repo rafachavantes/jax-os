@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Clock3, File, FolderGit2, GitBranch, GitPullRequest, Hourglass, MoreHorizontal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
-  answerEventId, artifactRel, cancelAction, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
+  answerEventId, artifactRel, cancelAction, cardKey, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
   stuckLine, gateWaitingLine, heartbeatPath, worstFinding, worstPaneState,
   type MissionActiveRunSummary, type MissionCard, type MissionCardPr, type MissionPendingQuestion, type MissionState,
 } from "@/lib/mission";
@@ -637,6 +637,7 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
             </span>
             {location ? <span className="flex-none truncate font-mono text-[11px] font-normal text-muted">{location}</span> : null}
           </button>
+          <PrefsButtons dir={cardKey(card)} prefs={card.prefs} visibility={card.visibility} hideOnly />
           {expanded ? <ChevronDown className="h-4 w-4 flex-none text-muted" /> : <ChevronRight className="h-4 w-4 flex-none text-muted" />}
         </div>
       ) : unlinkedScope ? (
@@ -821,7 +822,7 @@ const MENU_ITEM = "rounded px-2 py-1.5 text-left text-[12px] font-medium text-bo
 // decide whether the card is shown — so the menu can never disagree with the board.
 export function PrefsMenu({
   prefs, hidden, pending, error, onPin, onHide,
-}: { prefs: MissionCard["prefs"]; hidden: boolean; pending: boolean; error: string | null; onPin: () => void; onHide: () => void }) {
+}: { prefs: MissionCard["prefs"]; hidden: boolean; pending: boolean; error: string | null; onPin?: () => void; onHide: () => void }) {
   const t = useTranslations("mission");
   return (
     <details className="relative flex-none">
@@ -833,9 +834,9 @@ export function PrefsMenu({
         <MoreHorizontal className="h-4 w-4" aria-hidden />
       </summary>
       <div aria-busy={pending} className={`absolute right-0 z-10 mt-1 flex w-36 flex-col gap-1 rounded-md border border-line bg-surface p-1.5 shadow-lg ${pending ? "opacity-60" : ""}`}>
-        <button type="button" disabled={pending} className={MENU_ITEM} onClick={(e) => { e.stopPropagation(); onPin(); }}>
+        {onPin ? <button type="button" disabled={pending} className={MENU_ITEM} onClick={(e) => { e.stopPropagation(); onPin(); }}>
           {prefs.pinned ? t("actions.unpin") : t("actions.pin")}
-        </button>
+        </button> : null}
         <button type="button" disabled={pending} className={MENU_ITEM} onClick={(e) => { e.stopPropagation(); onHide(); }}>
           {hidden ? t("actions.show") : t("actions.hide")}
         </button>
@@ -854,7 +855,7 @@ export function PrefsMenu({
 // pattern for the failure surface (ProjectCard.runAction below) rather than the kanban board's
 // heavier WriteGuidance machinery, which exists for Linear's richer write-conflict states that
 // don't apply to a boolean prefs flag.
-export function PrefsButtons({ dir, prefs, bucket, visibility }: { dir: string; prefs: MissionCard["prefs"]; bucket?: "hidden" | "autoHidden"; visibility?: MissionCard["visibility"] }) {
+export function PrefsButtons({ dir, prefs, bucket, visibility, hideOnly = false }: { dir: string; prefs: MissionCard["prefs"]; bucket?: "hidden" | "autoHidden"; visibility?: MissionCard["visibility"]; hideOnly?: boolean }) {
   const t = useTranslations("mission");
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
@@ -887,7 +888,7 @@ export function PrefsButtons({ dir, prefs, bucket, visibility }: { dir: string; 
   return (
     <PrefsMenu
       prefs={prefs} hidden={hidden} pending={pending} error={error}
-      onPin={() => void act({ pinned: !prefs.pinned })}
+      onPin={hideOnly ? undefined : () => void act({ pinned: !prefs.pinned })}
       onHide={() => void act({ hidden: !hidden })}
     />
   );
