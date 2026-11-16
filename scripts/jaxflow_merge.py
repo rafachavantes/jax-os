@@ -301,7 +301,9 @@ def _merge_conventions(repo):
             f"unknown `Merge subject` value `{jr._bound(subject, 40)}`; "
             f"valid values: {', '.join(_MERGE_SUBJECT_VALUES)}")
     if name in _LOCAL_PRESETS:
-        if "method" in values:
+        if name == "single-branch" and method not in ("merge", "squash"):
+            raise _policy_invalid("`single-branch` supports only `merge` or `squash`")
+        if name != "single-branch" and "method" in values:
             raise _policy_invalid("local-merge presets cannot configure `Merge method`")
         if subject == "pr-title":
             raise _policy_invalid("`Merge subject: pr-title` is invalid for local-merge presets")
@@ -558,7 +560,7 @@ def _status_tracked(run, cwd):
     return run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd)
 
 
-def _abort_merge(run, repo):
+def _abort_merge(run, repo, method="merge"):
     """Aborts an in-progress merge and reports what actually survived. `git merge --abort`
     is NOT a guaranteed restore (verified 2026-09-07): when the checks modified a tracked
     file that was part of the merge it exits 128 and leaves an `AM` merge state, and when
@@ -566,13 +568,15 @@ def _abort_merge(run, repo):
     this returns a bounded description of the leftover state -- appended to the refusal's
     own hint -- or `""` when the checkout is genuinely clean. jaxflow NEVER runs
     `git reset --hard` or any other destructive recovery on its own: that is the tech
-    lead's decision (spec §5.3, amended 2026-09-07). The abort's own exit code is part of
-    the report (round-3 F11): a non-zero abort and a clean one that merely left a file
+    lead's decision (spec §5.3, amended 2026-09-07). Squash has no MERGE_HEAD, so
+    `reset --merge HEAD` clears its index while preserving unstaged changes. The abort's
+    own exit code is part of the report (round-3 F11): a non-zero abort and a clean one that merely left a file
     modified are different situations for whoever has to fix the checkout."""
-    aborted = run(["git", "merge", "--abort"], cwd=repo)
+    command = ["git", "reset", "--merge", "HEAD"] if method == "squash" else ["git", "merge", "--abort"]
+    aborted = run(command, cwd=repo)
     notes = []
     if aborted.returncode != 0:
-        notes.append(f"`git merge --abort` exited {aborted.returncode}")
+        notes.append(f"`{' '.join(command)}` exited {aborted.returncode}")
     # `-q --verify MERGE_HEAD` exits 1 for "no such ref" and 128 for a repository error.
     # Reporting "clean" because the probe itself failed is the one thing this function
     # must not do -- its whole purpose is telling the tech lead what survived (round-5 F9).
@@ -818,7 +822,7 @@ def cmd_pr_open(args, *, run=jr.run_command, post=jc._post_event, env=None, now=
                      allowlist_root=allowlist_root)
 
 
-def _cleanup_merged_worktree(run, repo, worktree, branch, allowlist_root):
+def _cleanup_merged_worktree(run, repo, worktree, branch, allowlist_root, squash_sha=None):
     """Best-effort cleanup after a delivered merge: copy the run reports out of the build
     worktree, then remove it and delete the branch. Fails closed on a failed report copy
     (the worktree is kept, spec §4 guard 7) and never turns a completed merge into a
@@ -832,7 +836,10 @@ def _cleanup_merged_worktree(run, repo, worktree, branch, allowlist_root):
         return
     removed = run(["git", "worktree", "remove", str(worktree)], cwd=repo)
     if removed.returncode == 0:
-        deleted = run(["git", "branch", "-d", branch], cwd=repo)
+        # Squash has no source parent; compare-delete only the delivered source ref.
+        command = (["git", "update-ref", "-d", f"refs/heads/{branch}", squash_sha]
+                   if squash_sha else ["git", "branch", "-d", branch])
+        deleted = run(command, cwd=repo)
         if deleted.returncode != 0:
             print(f"branch {branch} kept ({jr._bound((deleted.stderr or deleted.stdout).strip(), 200)})")
     else:
@@ -1099,16 +1106,17 @@ def _merge_prepare_target(args, *, run, repo, target):
 
 
 def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, subject,
-                              allowlist_root, target_tip):
-    """Stage the merge (`--no-ff --no-commit`), fingerprint the index, reuse or run the
+                              allowlist_root, target_tip, method="merge"):
+    """Stage the selected merge method, fingerprint the index, reuse or run the
     checks, prove the checks did not change WHAT GETS DELIVERED, commit. Returns
     `(merge_sha, checks_audit)`. The two `git write-tree` calls stay DIRECT `run` calls
     (Decision 8): `_git_read` discards the underlying git failure text, and the F9 test
     expects it in the refusal hint."""
     checks_cmd = args.checks
-    merged = run(["git", "merge", "--no-ff", "--no-commit", args.sha], cwd=repo)
+    flags = ["--squash"] if method == "squash" else ["--no-ff", "--no-commit"]
+    merged = run(["git", "merge", *flags, args.sha], cwd=repo)
     if merged.returncode != 0:
-        raise jc._refuse("merge-failed", f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo)}")
+        raise jc._refuse("merge-failed", f"hint: {jr._bound(merged.stderr.strip(), 200)}{_abort_merge(run, repo, method)}")
 
     # The exact merge result, as an object id, BEFORE the checks touch anything.
     # `git write-tree` is what `git commit` itself runs; it succeeds here because a
@@ -1128,7 +1136,7 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, sub
         # (round-3 F9). Refuse BEFORE spending a checks run on it.
         detail = jr._bound((tree_before_probe.stderr or tree_before_probe.stdout).strip(), 200)
         raise jc._refuse("merge-failed", f"hint: could not fingerprint the merged index: {detail}"
-                      + _abort_merge(run, repo))
+                      + _abort_merge(run, repo, method))
 
     # MOA-510 D4: `fast_forward` keeps its meaning ("the target has no commits the
     # branch lacks": the merged tree is byte-identical to the branch head) but is no
@@ -1148,7 +1156,7 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, sub
         checked = run(["/bin/bash", "-lc", checks_cmd], cwd=repo)
         if checked.returncode != 0:
             raise jc._refuse("checks-failed",
-                          f"hint: {checks_cmd} exit {checked.returncode}{_abort_merge(run, repo)}")
+                          f"hint: {checks_cmd} exit {checked.returncode}{_abort_merge(run, repo, method)}")
 
         # The checks must not have changed WHAT GETS DELIVERED: a checks command that
         # rewrites a lockfile or a snapshot would otherwise ride along inside the merge.
@@ -1165,22 +1173,25 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, sub
             detail = jr._bound((tree_after_probe.stderr or tree_after_probe.stdout).strip(), 200)
             raise jc._refuse("checks-dirtied-tree",
                           f"hint: the index could not be fingerprinted after the checks: {detail}"
-                          + _abort_merge(run, repo))
+                          + _abort_merge(run, repo, method))
         staged_changed = tree_after != tree_before
         if staged_changed or run(["git", "diff", "--quiet"], cwd=repo).returncode != 0:
             raise jc._refuse("checks-dirtied-tree",
                           "hint: the checks command modified a tracked file "
                           + ("(staged)" if staged_changed else "(unstaged)")
-                          + _abort_merge(run, repo))
+                          + _abort_merge(run, repo, method))
 
     # A commit hook can refuse -- this very repository has one (`.githooks/commit-msg`).
     # An unchecked failure here would audit and push a merge that was never committed
     # (cold review F3).
-    committed = run(["git", "commit", "-m", subject], cwd=repo)
+    message = ["-m", subject]
+    if method == "squash":
+        message += ["-m", f"Jaxflow-Squash-Source: {args.sha}"]
+    committed = run(["git", "commit", *message], cwd=repo)
     if committed.returncode != 0:
         raise jc._refuse("merge-failed", f"hint: commit refused: "
                     f"{jr._bound((committed.stderr or committed.stdout).strip(), 200)}"
-                    + _abort_merge(run, repo))
+                    + _abort_merge(run, repo, method))
     merge_sha = jc._git_read(run, repo, ["git", "rev-parse", "HEAD"],
                           shape=r"[0-9a-f]{40}")
     return merge_sha, checks_audit
@@ -1545,7 +1556,7 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
         raise jc._refuse("target-mismatch", f"hint: approved target {jr._bound(approved_target, 120)} "
                     f"differs from policy target {jr._bound(target, 120)}")
 
-    _method, subject_mode = _merge_conventions(repo)
+    method, subject_mode = _merge_conventions(repo)
     if subject_mode == "phase" and not _valid_commit_subject(phase):
         raise jc._refuse("phase-invalid", "hint: an explicit phase subject must be a single "
                     "trimmed line with no control characters or Co-Authored-By text")
@@ -1554,13 +1565,32 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
     worktree = jc._branch_worktree_path(allowlist_root, project, args.branch)
     with jresume.worktree_claim(repo, worktree):
         _refuse_nonterminal_builder(project, repo, args.branch)
+        # A squash has no second parent. Search its durable receipt before staging,
+        # including older ancestors so an advanced target cannot cause redelivery.
+        receipt = f"Jaxflow-Squash-Source: {args.sha}"
+        squash_probe = run(["git", "log", "-1", "--format=%H", "--fixed-strings",
+                            f"--grep={receipt}", target, "--"], cwd=repo)
+        if squash_probe.returncode != 0:
+            raise jc._refuse("sha-mismatch", "hint: could not check prior squash delivery")
+        squash_commit = squash_probe.stdout.strip()
+        if squash_commit:
+            tip = jc._git_read(run, repo, ["git", "rev-parse", f"{target}^{{commit}}"])
+            body = jc._git_read(run, repo, ["git", "log", "-1", "--format=%b", squash_commit])
+            parents = jc._git_read(run, repo, ["git", "log", "-1", "--format=%P", squash_commit])
+            if (method != "squash" or not re.fullmatch(r"[0-9a-f]{40}", squash_commit)
+                    or squash_commit != tip or body != receipt
+                    or not re.fullmatch(r"[0-9a-f]{40}", parents or "")):
+                raise jc._refuse("sha-mismatch", "hint: prior squash delivery does not match the approved retry")
         # Resume check (§5.2). `--verify` rather than a bare rev-parse: the bare form exits
         # non-zero but ECHOES the unresolved argument on stdout for a non-merge commit, so the
         # returncode is the only reliable signal there; `--verify` gives an empty stdout too.
         # Both the returncode AND an exact sha match are required, so a target whose HEAD is
         # some unrelated merge is never mistaken for this delivery.
         probe = run(["git", "rev-parse", "--verify", f"{target}^2"], cwd=repo)
-        resuming = probe.returncode == 0 and probe.stdout.strip() == args.sha
+        merge_resume = probe.returncode == 0 and probe.stdout.strip() == args.sha
+        if merge_resume and method == "squash":
+            raise jc._refuse("sha-mismatch", "hint: prior delivery used merge, not squash")
+        resuming = bool(squash_commit) or merge_resume
         if not resuming and probe.returncode == 0:
             # The target carries SOME delivery under this exact generated subject, but its
             # second parent is another commit: not a resume, and never a second delivery.
@@ -1586,7 +1616,7 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
         if not resuming:
             merge_sha, checks_audit = _merge_stage_check_commit(
                 args, run=run, repo=repo, project=project, worktree=worktree, target=target,
-                subject=subject, allowlist_root=allowlist_root, target_tip=target_tip)
+                subject=subject, allowlist_root=allowlist_root, target_tip=target_tip, method=method)
 
         # One guard for BOTH paths (round-4 F5). `merge-approved` requires a full 40-hex sha
         # and the validator rejects anything else, so an unchecked probe would turn a durable
@@ -1611,7 +1641,8 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
         # Everything below is best-effort: the delivery is durable and pushed, and a failure
         # here must never turn a completed merge into a refusal.
         if branch_present:
-            _cleanup_merged_worktree(run, repo, worktree, args.branch, allowlist_root)
+            _cleanup_merged_worktree(run, repo, worktree, args.branch, allowlist_root,
+                                    squash_sha=args.sha if method == "squash" else None)
 
         outcome = (f"merged {merge_sha} pushed origin/{target}" if pushed
                    else f"merged {merge_sha} — no remote delivery configured")

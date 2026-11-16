@@ -64,9 +64,11 @@ silently adopted. Fixed order:
    keep the fixed `Release: <target> promotion <date>` format.
 7. **Implementation branch convention** -- the owner's format and example. Present the
    default `feat/<phase>`; `release/` stays reserved for the existing promotion procedure.
-8. **PR merge method** -- PR presets only: `merge` (default), `squash`, `rebase`, or
-   `auto`. `auto` prefers merge, then squash, then rebase. Do not ask for a local-only
-   repo; a local preset must not configure one.
+8. **Merge method** -- for `single-branch`, ask whether local delivery uses `merge`
+   (default) or `squash`. Squash preserves source commits and records the approved SHA in
+   the delivery commit. Other local presets cannot configure a method. For PR presets, ask
+   `merge` (default), `squash`, `rebase`, or `auto`; `auto` prefers merge, then squash, then
+   rebase. PR behavior is unchanged.
 9. **Merge subject** -- ask only the choices that apply: `default` (Jax default
    everywhere), `pr-title` (PR presets; not with rebase), or `phase` (not with
    `auto`). Explain the outcomes:
@@ -111,9 +113,17 @@ Pass it through `--initial-commit-subject`; omission keeps the default.
 
 ### Before nondefault conventions -- amendment preflight
 
-Defaults require no amendment migration. Before writing NONDEFAULT conventions, verify
-the exact amendment text is present in the current tech lead's effective global
-instructions and every ENABLED Jax-managed instruction destination:
+Defaults require no amendment migration. Existing nondefault convention choices accept
+either the legacy or expanded exact amendment below. Before configuring `Merge method:
+squash` on `single-branch`, verify the expanded amendment is present in the current tech
+lead's effective global instructions and every ENABLED Jax-managed instruction destination:
+
+```text
+Project conventions may override only commit subjects, PR titles, implementation branch naming, delivery merge method, and generated delivery commit subject; omitted conventions retain Jax defaults and all other guarantees remain binding.
+```
+
+The expanded amendment also covers all previously supported nondefault conventions. The
+legacy exact text remains valid for those choices:
 
 ```text
 Project conventions may override only commit subjects, PR titles, implementation branch naming, PR merge method, and generated delivery commit subject; omitted conventions retain Jax defaults and all other guarantees remain binding.

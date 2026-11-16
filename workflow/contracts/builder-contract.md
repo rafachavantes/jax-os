@@ -105,7 +105,7 @@ summary: <ONE line, ≤200 chars>
 Precedence: this role contract → the target project's `AGENTS.md` → the phase handoff.
 Layers are cumulative — a lower layer may narrow but never relax a higher one, except at
 an explicitly named override point (v0: only `verification`). Project conventions may
-override only commit subjects, PR titles, implementation branch naming, PR merge method,
+override only commit subjects, PR titles, implementation branch naming, delivery merge method,
 and generated delivery commit subject; omitted conventions retain Jax defaults and all
 other guarantees (approval, SHA/destination, checks, audit, production gates, no attribution,
 reviewer evidence) remain binding. GitHub-side squash/rebase delivery never rewrites the

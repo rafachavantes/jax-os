@@ -398,9 +398,10 @@ no `status`/`result` for a merge. It resolves the delivery target from the proje
 `AGENTS.md` Deploy policy, refuses `target-mismatch` if `--target` differs, runs the
 merge-contract sequence on the merged tree (a local preset's `Merge subject: phase` commits
 the exact validated `--phase` plus ` (merge <branch>)`, and its resume requires that whole
-subject plus the approved second parent), posts the `merge-approved` audit event, pushes
-when an `origin` remote exists, copies the build worktree's reports into the control repo,
-removes that worktree and its branch, and writes `status.md` with `stage: ship`.
+subject plus the approved second parent for `Merge method: merge`), posts the
+`merge-approved` audit event, pushes when an `origin` remote exists, copies the build
+worktree's reports into the control repo, removes that worktree and cleans up its source
+branch per the selected delivery method, and writes `status.md` with `stage: ship`.
 
 The last two lines of its output are the outcome to relay to the owner:
 
@@ -423,6 +424,24 @@ EQUAL tip (`--sha` already IS the target's tip: it fails at `git commit` with no
 review, unreadable manifest, missing build worktree) never refuses: the checks simply run. The
 `merge-approved` audit carries `checks: reused|run|resumed`; a retry of an already-merged delivery
 (`resumed`) prints no `checks:` line.
+
+Only `single-branch` may configure local `Merge method: squash`; omitted means `merge`.
+`dual-branch` and `bubble-buildprint` reject this field. Squash stages with `git merge
+--squash`, then uses the same tree fingerprints and checks as the merge method. A failure
+uses `git reset --merge HEAD` and reports tracked changes that remain; never use
+`reset --hard` or `clean`. The successful commit has one parent (the previous target tip),
+the normal generated subject, and exactly one body trailer
+`Jaxflow-Squash-Source: <approved-full-sha>`. Source commits are not rewritten.
+
+A squash retry examines the current target tip and resumes only when it has the exact
+generated subject, exactly one parent, and a body consisting of exactly one
+`Jaxflow-Squash-Source: <approved-full-sha>` trailer matching the approved SHA; the named
+source branch must be absent or still point to that SHA. It posts the audit and
+continues push/cleanup without rerunning checks or creating another commit. If the matching
+receipt is on an older target ancestor, it refuses `sha-mismatch` instead of delivering
+again. Cleanup removes the worktree first and deletes the source ref only if it still points
+to the approved SHA; otherwise the branch is kept and the reason reported. Owner approval,
+full checks (subject to the existing checks-reuse rule), audit, and push gates are unchanged.
 
 Refusals: `sha-mismatch` (HEAD is not the approved SHA, or `--sha` is not full 40-hex),
 `phase-invalid` (`--phase` is empty, untrimmed, over 200 UTF-16 code units, or carries a
