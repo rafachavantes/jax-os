@@ -17,7 +17,7 @@ vi.mock("@tanstack/react-query", () => ({
   },
 }));
 
-import MissionPage, { homeViewHref, parseHomeView } from "@/app/page";
+import MissionPage, { homeViewClickPlan, homeViewHref, parseHomeView, readHomeLocation } from "@/app/page";
 
 const PROJECT = {
   dir: "Alpha", name: "Alpha", stage: "build", gate: null, legacyGateField: false,
@@ -110,5 +110,40 @@ describe("Home cockpit hierarchy (M2 plan Task 5, spec AC1/AC2/AC10)", () => {
     const html = render();
     expect(html).toContain("<details");
     expect(html).toContain("m1");
+  });
+});
+
+const plainClick = (over: Partial<{ button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }> = {}) => ({
+  button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...over,
+});
+
+describe("Home view navigation keeps the mounted board (M2 plan Task 2)", () => {
+  it("an ordinary primary click intercepts and pushes the meaningful view URL, preserving other parameters", () => {
+    expect(homeViewClickPlan("projects", "activity", plainClick(), "/", "?view=projects&foo=1"))
+      .toEqual({ intercept: true, push: true, href: "/?view=activity&foo=1" });
+  });
+
+  it("clicking the selected view is swallowed without a duplicate history entry", () => {
+    expect(homeViewClickPlan("projects", "projects", plainClick(), "/", ""))
+      .toEqual({ intercept: true, push: false, href: "/?view=projects" });
+    expect(homeViewClickPlan("activity", "activity", plainClick(), "/", "?view=activity"))
+      .toEqual({ intercept: true, push: false, href: "/?view=activity" });
+  });
+
+  it.each([
+    ["middle button", { button: 1 }],
+    ["meta", { metaKey: true }],
+    ["ctrl", { ctrlKey: true }],
+    ["shift", { shiftKey: true }],
+    ["alt", { altKey: true }],
+  ])("a %s click keeps the browser's own navigation", (_label, over) => {
+    expect(homeViewClickPlan("projects", "activity", plainClick(over), "/", ""))
+      .toMatchObject({ intercept: false, push: false });
+  });
+
+  it("mount and popstate read the view from the actual location, not a stale search", () => {
+    expect(readHomeLocation({ pathname: "/", search: "?view=activity&foo=1" }))
+      .toEqual({ view: "activity", location: { path: "/", search: "?view=activity&foo=1" } });
+    expect(readHomeLocation({ pathname: "/", search: "" }).view).toBe("projects");
   });
 });

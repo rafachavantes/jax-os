@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { flushSync } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useMission } from "@/lib/useMission";
@@ -40,6 +40,28 @@ export function homeViewHref(pathname: string, search: string, view: HomeView): 
   return `${pathname}?${params.toString()}`;
 }
 
+// Modifier/button shape of a click that should keep the browser's own navigation (new tab,
+// window, download…). Everything else is an ordinary primary click on a plain link.
+export type HomeViewClick = {
+  button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean;
+};
+
+// The whole decision, pure: whether to intercept this click and whether it changes the selection.
+// Clicking the already-selected tab is swallowed without a duplicate history entry.
+export function homeViewClickPlan(
+  current: HomeView, next: HomeView, click: HomeViewClick, pathname: string, search: string,
+): { intercept: boolean; push: boolean; href: string } {
+  const href = homeViewHref(pathname, search, next);
+  const plain = click.button === 0 && !click.metaKey && !click.ctrlKey && !click.shiftKey && !click.altKey;
+  return plain ? { intercept: true, push: next !== current, href } : { intercept: false, push: false, href };
+}
+
+// Back/Forward and the first client render both read the REAL current location (never a stale
+// captured search), so the selection follows the URL in both directions.
+export function readHomeLocation(loc: { pathname: string; search: string }): { view: HomeView; location: { path: string; search: string } } {
+  return { view: parseHomeView(loc.search), location: { path: loc.pathname, search: loc.search } };
+}
+
 function HomeCockpit() {
   const t = useTranslations();
   const tNav = useTranslations("nav");
@@ -47,8 +69,14 @@ function HomeCockpit() {
   const [view, setView] = useState<HomeView>("projects");
   const [location, setLocation] = useState<{ path: string; search: string }>({ path: "/", search: "" });
   useEffect(() => {
-    setView(parseHomeView(window.location.search));
-    setLocation({ path: window.location.pathname, search: window.location.search });
+    const sync = () => {
+      const next = readHomeLocation(window.location);
+      setView(next.view);
+      setLocation(next.location);
+    };
+    sync();
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
   }, []);
   const projects = useMission<ProjectScan>("projects", 10_000);
   const hub = useMission<HubEnvelopeData>("hub", 10_000);
@@ -99,6 +127,17 @@ function HomeCockpit() {
   const lastGood = staleSource && staleSource.dataUpdatedAt > 0 ? staleSource.dataUpdatedAt : undefined;
 
   const viewHref = (next: HomeView) => homeViewHref(location.path, location.search, next);
+  // The board, its provider and drafts stay mounted: an ordinary click only pushes the meaningful
+  // ?view= URL and updates the local selection instead of reloading the document.
+  const onViewClick = (event: MouseEvent<HTMLAnchorElement>, next: HomeView) => {
+    const plan = homeViewClickPlan(view, next, event, location.path, location.search);
+    if (!plan.intercept) return;
+    event.preventDefault();
+    if (!plan.push) return;
+    window.history.pushState(null, "", plan.href);
+    setView(next);
+    setLocation({ path: location.path, search: plan.href.slice(location.path.length) });
+  };
   const tabClass = (active: boolean) =>
     `rounded-md border px-3 py-1 text-[12px] font-semibold ${active ? "border-brand-soft-border bg-brand-soft text-brand" : "border-line text-muted hover:text-body-ink"}`;
 
@@ -115,8 +154,8 @@ function HomeCockpit() {
       <ServerPanel />
 
       <nav aria-label={tViews("label")} className="flex items-center gap-1.5">
-        <a href={viewHref("projects")} aria-current={view === "projects" ? "page" : undefined} className={tabClass(view === "projects")}>{tViews("projects")}</a>
-        <a href={viewHref("activity")} aria-current={view === "activity" ? "page" : undefined} className={tabClass(view === "activity")}>{tViews("activity")}</a>
+        <a href={viewHref("projects")} onClick={(event) => onViewClick(event, "projects")} aria-current={view === "projects" ? "page" : undefined} className={tabClass(view === "projects")}>{tViews("projects")}</a>
+        <a href={viewHref("activity")} onClick={(event) => onViewClick(event, "activity")} aria-current={view === "activity" ? "page" : undefined} className={tabClass(view === "activity")}>{tViews("activity")}</a>
       </nav>
 
       <AnswerDraftsProvider>
