@@ -6,7 +6,7 @@ import { useState } from "react";
 import { postWorkflowAction, projectSectionKey, type MissionCard, type MissionGroupFooter, type MissionLastRun } from "@/lib/mission";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import { RelativeTime } from "@/components/RelativeTime";
-import { DispatchForm, PrefsButtons, PrSummary } from "./ProjectCard";
+import { OwnershipUnknownBadge, DispatchForm, PrefsButtons, PrSummary } from "./ProjectCard";
 
 // The footer's two segments, exposed pure for testing (spec §7.3).
 export function footerSegments(footer: MissionGroupFooter): { worktrees: number | null; lastRun: MissionLastRun | null } {
@@ -113,6 +113,7 @@ export function GroupFooter({ project }: { project: MissionCard }) {
               · {t("board.footerLastRun", { run: t(`lastRun.${footer.lastRun.labelKey}`) })}
               {footer.lastRun.finishedAt && Number.isFinite(Date.parse(footer.lastRun.finishedAt))
                 ? <> · <RelativeTime epochMs={Date.parse(footer.lastRun.finishedAt)} /></> : null}
+              {footer.lastRun.ownershipUnknown ? <> · <OwnershipUnknownBadge /></> : null}
             </span>
           ) : null}
         </div>

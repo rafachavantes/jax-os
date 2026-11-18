@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  boardCardKeyFor, boardCards, boardEntries, boardShowsKey, bucketOf, buildTicker, cardKey, sessionDisplay, stuckBoardCards, type MissionCard,
+  boardCardKeyFor, boardCards, boardEntries, boardShowsKey, bucketOf, buildTicker, cardKey, hiddenBoardCards, sessionDisplay, stuckBoardCards, type MissionCard,
 } from "./mission";
 import {
   missionOf, mkActivity, mkHubProject, mkPane, mkProject, mkSeat, mkSplit, runSummary, NOW, U,
@@ -399,6 +399,184 @@ describe("unlinked card", () => {
     const unlinked = cardOf(m, "p#unlinked");
     expect(unlinked.activeRuns).toHaveLength(2);
     expect(unlinked.activeRun?.runId).toBe("r9");
+  });
+});
+
+describe("standalone single-session card (MOA-533)", () => {
+  const lastRun = {
+    runId: "r9", role: "builder" as const, kind: "build" as const, runtime: "claude" as const, target: "feat/x",
+    finishedAt: "2026-11-12T10:00:00.000Z", outcome: "success", contractStatus: "ok" as const, stage: "build" as const,
+    diagnostic: null, headSha: null, findings: null, runtimeModel: null, profileName: null, reportRel: null, targetRel: null,
+    verifyCommand: null, buildCommand: null,
+  };
+
+  function standalone(over: Partial<HubSessionSplit> = {}) {
+    return missionOf(
+      {
+        p: mkHubProject({
+          panes: [pane("%1", { runtime: "claude" })],
+          split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] })], ...over }),
+        }),
+      },
+      {
+        projects: [mkProject({ dir: "p", name: "Project P", builder: "codex", branch: "stale-branch", stage: "test", now: "stale-now" })],
+        prs: { p: { ok: true, truncated: false, prs: [{ number: 7, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
+      },
+    );
+  }
+
+  it("uses the session projection for a lone seat and keeps stale project metadata out of it", () => {
+    const c = standalone().model.cards[0];
+    expect(cardKey(c)).toBe(`p#session:${A}`);
+    expect(c.scope).toMatchObject({ kind: "session", runtime: "claude", sessionId: A });
+    expect(c.builder).toBe("");
+    expect(c.now).toBe("");
+    expect(c.branch).toBe("");
+    expect(c.residuals).toEqual([]);
+    expect(c.headline).toBe("idle");
+  });
+
+  it("retains project name, PR summary and project-level prefs as separate context", () => {
+    const c = standalone({ unownedLastRun: lastRun }).model.cards[0];
+    expect(c.name).toBe("Project P");
+    expect(c.pr).toMatchObject({ status: "ok" });
+    expect(c.projectContext).toBeDefined();
+    expect(c.projectContext!.prefs).toEqual({ pinned: false, hiddenAt: null });
+    expect(c.projectContext!.lastRun?.runId).toBe("r9");
+    // The ownerless project result is project activity, never the session's own result.
+    expect(c.lastRun).toBeNull();
+  });
+
+  it("keeps ownerless retained worktrees in lone-seat project context without a duplicate gate row", () => {
+    const blocked = { status: "blocked" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 3, mergeAsk: null, question: null };
+    const m = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { capsule: blocked })], split: mkSplit({ seats: [seat(A, "%1")] }) }) },
+      { projects: [mkProject({ dir: "p", gate: "awaiting-approval" })], worktrees: { p: { ok: true, count: 6, oldestAgeDays: 1, sessions: [{ session: A, count: 1 }, { session: null, count: 2 }, { session: "closed", count: 3 }] } } },
+    );
+    const c = m.model.cards[0];
+    expect(c.projectContext?.retainedWorktrees).toBe(5);
+    expect(c.retainedWorktrees).toBe(1);
+    expect(c.headline).toBe("needs-you");
+    expect(m.model.inbox.some((row) => row.kind === "gate")).toBe(false);
+  });
+
+  it("keeps a hidden seat recoverable when it is the only one left", () => {
+    const key = `p#session:${A}`;
+    const m = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { runtime: "claude" })], split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] })], }) }) },
+      { prefs: { [key]: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } } },
+    );
+    expect(m.model.cards[0].visibility).toBe("hidden");
+    expect(cardKey(m.model.cards[0])).toBe(key);
+  });
+
+  it("projects a hidden standalone project to its project controls", () => {
+    const m = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { runtime: "claude" })], split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] })] }) }) },
+      { prefs: { p: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } } },
+    );
+    const actual = m.model.cards[0];
+    const hidden = hiddenBoardCards(m.model.cards);
+    expect(actual).toMatchObject({ visibility: "hidden", key: `p#session:${A}`, scope: { kind: "session" }, projectContext: { hidden: true } });
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]).toMatchObject({ dir: "p", prefs: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } });
+    expect(hidden[0].key).toBeUndefined();
+    expect(hidden[0].scope).toBeUndefined();
+  });
+
+  it("maps a foreign result's destination to its discovered path and suppresses unresolvable links", () => {
+    const foreign = { ...lastRun, destinationProject: "q", reportRel: ".local/reports/q.md", targetRel: "specs/q.md" };
+    const build = (projects: ReturnType<typeof mkProject>[]) => missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { runtime: "claude" })], split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }], activity: mkActivity({ lastRun: foreign }) })] }) }) },
+      { projects },
+    );
+    const found = build([mkProject({ dir: "p" }), mkProject({ dir: "q", path: "nested/q" })]).model.cards.find((c) => c.dir === "p")!;
+    expect(found.lastRun).toMatchObject({ destinationProject: "q", destinationPath: "nested/q", reportRel: ".local/reports/q.md", targetRel: "specs/q.md" });
+
+    const missing = build([mkProject({ dir: "p" })]).model.cards.find((c) => c.dir === "p")!;
+    expect(missing.lastRun?.destinationProject).toBe("q");
+    expect(missing.lastRun?.destinationPath).toBeUndefined();
+    expect(missing.lastRun?.reportRel).toBeNull();
+    expect(missing.lastRun?.targetRel).toBeNull();
+  });
+});
+
+describe("M1 review corrections (F2/F4/F5)", () => {
+  const lastRun = {
+    runId: "r9", role: "builder" as const, kind: "build" as const, runtime: "claude" as const, target: "feat/x",
+    finishedAt: "2026-11-12T10:00:00.000Z", outcome: "success", contractStatus: "ok" as const, stage: "build" as const,
+    diagnostic: null, headSha: null, findings: null, runtimeModel: null, profileName: null, reportRel: null, targetRel: null,
+    verifyCommand: null, buildCommand: null,
+  };
+
+  it("F4: keeps destinationProject on the seat's activeRun and activeRuns[0]", () => {
+    const split = mkSplit({
+      seats: [seat(A, "%1", {
+        activity: mkActivity({
+          activeRun: { ...activeRun("r1"), destinationProject: "qproj" },
+          activeRuns: [runSummary("r1", { destinationProject: "qproj" })],
+        }),
+      })],
+    });
+    const m = missionOf({ p: mkHubProject({ panes: [pane("%1")], split }) });
+    const c = m.model.cards[0];
+    expect(c.activeRun?.destinationProject).toBe("qproj");
+    expect(c.activeRuns?.[0].destinationProject).toBe("qproj");
+  });
+
+  it("F5: a project-level pin drives the lone session's pin state and board position 1→2→1", () => {
+    const key = `p#session:${A}`;
+    const panes = [pane("%1"), pane("%2", { harnessSession: B })];
+    const prefs = { p: { pinned: true, hiddenAt: null }, [key]: { pinned: false, hiddenAt: null } };
+    const build = (split: HubSessionSplit, used = panes) => missionOf(
+      { p: mkHubProject({ panes: used, split }) },
+      { projects: [mkProject({ dir: "p" }), mkProject({ dir: "u" })], prefs },
+    );
+    const one = build(mkSplit({ seats: [seat(A, "%1")] }), [panes[0]]);
+    expect(one.model.cards.map((c) => c.dir)).toEqual(["p", "u"]);
+    expect(cardOf(one, key).prefs.pinned).toBe(true);
+    expect(cardOf(one, key).projectContext!.prefs.pinned).toBe(true);
+
+    const two = build(mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")] }));
+    expect(keys(two)).toEqual([`p#session:${A}`, `p#session:${B}`, "u"]);
+    expect(cardOf(two, `p#session:${B}`).prefs.pinned).toBe(false);
+
+    const oneAgain = build(mkSplit({ seats: [seat(A, "%1")] }), [panes[0]]);
+    expect(oneAgain.model.cards.map((c) => c.dir)).toEqual(["p", "u"]);
+    expect(cardOf(oneAgain, key).prefs.pinned).toBe(true);
+  });
+
+  it("F5: the project pin wins a conflicting session pin and the session hiddenAt survives", () => {
+    const key = `p#session:${A}`;
+    const unpinnedProject = missionOf(
+      { p: mkHubProject({ panes: [pane("%1")], split: mkSplit({ seats: [seat(A, "%1")] }) }) },
+      { prefs: { p: { pinned: false, hiddenAt: null }, [key]: { pinned: true, hiddenAt: null } } },
+    );
+    expect(unpinnedProject.model.cards[0].prefs.pinned).toBe(false);
+
+    const hiddenSession = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { harnessSession: A })], split: mkSplit({ seats: [seat(A, "%1")] }) }) },
+      { prefs: { p: { pinned: true, hiddenAt: null }, [key]: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } } },
+    );
+    const card = hiddenSession.model.cards[0];
+    expect(card.prefs).toEqual({ pinned: true, hiddenAt: "2026-11-13T00:00:00.000Z" });
+    expect(card.visibility).toBe("hidden");
+    expect(card.projectContext!.prefs).toEqual({ pinned: true, hiddenAt: null });
+  });
+
+  it("F2: carries a flagged unowned result into the group footer and the lone-session project context", () => {
+    const flagged = { ...lastRun, ownershipUnknown: true as const };
+    const grouped = missionOf({
+      p: mkHubProject({ split: mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")], unownedLastRun: flagged }) }),
+    });
+    expect(grouped.model.cards[0].group!.footer!.unownedLastRun!.ownershipUnknown).toBe(true);
+
+    const lone = missionOf({
+      p: mkHubProject({ panes: [pane("%1")], split: mkSplit({ seats: [seat(A, "%1")], unownedLastRun: flagged }) }),
+    });
+    const card = lone.model.cards[0];
+    expect(card.lastRun).toBeNull();
+    expect(card.projectContext!.lastRun?.ownershipUnknown).toBe(true);
   });
 });
 

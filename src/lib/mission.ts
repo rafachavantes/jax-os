@@ -154,6 +154,13 @@ export type MissionLastRun = {
   profileName: string | null;
   reportRel: string | null;
   targetRel: string | null;
+  // Cross-project provenance (MOA-532): where the child actually ran, and the discovered
+  // repos-root-relative base its artifact links must use. Absent for a local run.
+  destinationProject?: string;
+  destinationPath?: string;
+  // M1 review F2: this unlinked result's ownership could not be proven (source failed or the
+  // match is ambiguous) — render the ownership-source warning beside the result.
+  ownershipUnknown?: boolean;
 };
 
 export type MissionCard = {
@@ -198,8 +205,21 @@ export type MissionCard = {
   key?: string;
   scope?: MissionCardScope;
   sessionStatus?: MissionSessionStatus | null;
+  // A single open session rendered standalone (MOA-533): the project facts the session card must
+  // keep reachable without letting status.md's historical builder/branch back onto the session.
+  projectContext?: MissionProjectContext;
+  // The destination's unlinked runs could not be proven ownerless (a transport failed or the
+  // match is ambiguous): render the unknown-ownership copy, never a confident no-session title.
+  ownershipUnknown?: boolean;
   // On a project card only: the cards rendered in its place under one group frame.
   group?: MissionGroup;
+};
+
+export type MissionProjectContext = {
+  prefs: { pinned: boolean; hiddenAt: string | null };
+  lastRun: MissionLastRun | null;
+  retainedWorktrees?: number | null;
+  hidden?: true;
 };
 
 // One open agent session's card identity (spec §4 "Card key"): the agent conversation id
@@ -245,7 +265,14 @@ export function boardCards(cards: MissionCard[]): MissionCard[] {
 }
 
 export function hiddenBoardCards(cards: MissionCard[]): MissionCard[] {
-  return cards.flatMap((c) => c.visibility === "hidden" ? [c] : c.visibility === "visible" ? (c.group?.cards.filter((child) => child.visibility === "hidden") ?? []) : []);
+  return cards.flatMap((c) => {
+    const hidden = c.visibility === "hidden" ? [c] : c.visibility === "visible" ? (c.group?.cards.filter((child) => child.visibility === "hidden") ?? []) : [];
+    return hidden.map((card) => {
+      if (card.projectContext?.hidden !== true) return card;
+      const { key: _key, scope: _scope, ...projectCard } = card;
+      return { ...projectCard, prefs: card.projectContext.prefs };
+    });
+  });
 }
 
 export type BoardEntry =
@@ -634,6 +661,7 @@ function buildSeatCard(
   project: MissionCard, hp: HubProject, seat: HubSessionSeat,
   worktreeSessions: { session: string | null; count: number }[] | undefined, nowMs: number,
   prefs: MissionCard["prefs"] = { pinned: false, hiddenAt: null },
+  locations: ReadonlyMap<string, string> = new Map(),
 ): MissionCard {
   const seatPaneKeys = new Set(seat.panes.map((r) => paneKey(r.pane, r.tmuxIncarnation)));
   const panes = hp.panes.filter((p) => seatPaneKeys.has(paneKey(p.pane, p.tmuxIncarnation))).map((p) => paneForSeat(p, seat.sessionId));
@@ -666,14 +694,14 @@ function buildSeatCard(
     timeline: scopedTimeline(activity),
     activeRun: toMissionActiveRun(activity.activeRun),
     activeRuns: activity.activeRuns.map(toMissionActiveRunSummary),
-    lastRun: toMissionLastRun(activity.lastRun),
+    lastRun: toMissionLastRun(activity.lastRun, locations),
     heartbeat: activity.heartbeat,
     lastAction: activity.lastAction,
     retainedWorktrees: retainedCount(worktreeSessions, (s) => s !== null && s === seat.sessionId),
   };
 }
 
-function buildUnlinkedCard(project: MissionCard, unlinked: HubScopedActivity): MissionCard {
+function buildUnlinkedCard(project: MissionCard, unlinked: HubScopedActivity, locations: ReadonlyMap<string, string>, ownershipUnknown = false): MissionCard {
   return {
     ...project,
     key: unlinkedKey(project.dir),
@@ -686,23 +714,24 @@ function buildUnlinkedCard(project: MissionCard, unlinked: HubScopedActivity): M
     timeline: scopedTimeline(unlinked),
     activeRun: toMissionActiveRun(unlinked.activeRun),
     activeRuns: unlinked.activeRuns.map(toMissionActiveRunSummary),
-    lastRun: toMissionLastRun(unlinked.lastRun),
+    lastRun: toMissionLastRun(unlinked.lastRun, locations),
     heartbeat: unlinked.heartbeat,
     lastAction: unlinked.lastAction,
     retainedWorktrees: null,
+    ...(ownershipUnknown ? { ownershipUnknown: true } : {}),
   };
 }
 
 function buildGroup(
   project: MissionCard, hp: HubProject, seats: HubSessionSeat[], unlinked: HubScopedActivity,
   worktreeSessions: { session: string | null; count: number }[] | undefined, unownedLastRun: HubLastRun | null, nowMs: number,
-  prefs: Record<string, MissionCard["prefs"]>,
+  prefs: Record<string, MissionCard["prefs"]>, locations: ReadonlyMap<string, string>, ownershipUnknown = false,
 ): MissionGroup {
   const openIds = new Set(seats.flatMap((seat) => (seat.sessionId !== null ? [seat.sessionId] : [])));
-  const cards = seats.map((seat) => buildSeatCard(project, hp, seat, worktreeSessions, nowMs, prefs[seatKey(project.dir, seat)]));
-  if (unlinked.activeRuns.length >= 1) cards.push(buildUnlinkedCard(project, unlinked));
+  const cards = seats.map((seat) => buildSeatCard(project, hp, seat, worktreeSessions, nowMs, prefs[seatKey(project.dir, seat)], locations));
+  if (unlinked.activeRuns.length >= 1) cards.push(buildUnlinkedCard(project, unlinked, locations, ownershipUnknown));
   const retainedWorktrees = retainedCount(worktreeSessions, (s) => s === null || !openIds.has(s));
-  const lastRun = toMissionLastRun(unownedLastRun);
+  const lastRun = toMissionLastRun(unownedLastRun, locations);
   return {
     cards,
     footer: retainedWorktrees !== null || lastRun !== null ? { retainedWorktrees, unownedLastRun: lastRun } : null,
@@ -766,14 +795,22 @@ function classifyLastRun(role: Role, contractStatus: ContractStatus, outcome: st
   return { labelKey: "buildFailed", tone: "danger" }; // failure, any stage, incl. interrupted row 1a
 }
 
-function toMissionLastRun(run: HubLastRun | null | undefined): MissionLastRun | null {
+function toMissionLastRun(run: HubLastRun | null | undefined, locations: ReadonlyMap<string, string>): MissionLastRun | null {
   if (!run) return null;
   const { labelKey, tone } = classifyLastRun(run.role, run.contractStatus, run.outcome, run.stage);
+  const destinationPath = run.destinationProject !== undefined ? locations.get(run.destinationProject) ?? null : undefined;
+  // A foreign result whose destination was not discovered/unambiguous gets no guessed artifact
+  // link (never the parent's root); the result itself stays visible.
+  const suppressArtifacts = destinationPath === null;
   return {
     runId: run.runId, role: run.role, contractStatus: run.contractStatus, stage: run.stage,
     diagnostic: run.diagnostic, finishedAt: run.finishedAt, headSha: run.headSha, labelKey, tone,
     findings: run.findings, target: run.target, verifyCommand: run.verifyCommand, buildCommand: run.buildCommand,
-    runtimeModel: run.runtimeModel, profileName: run.profileName, reportRel: run.reportRel, targetRel: run.targetRel,
+    runtimeModel: run.runtimeModel, profileName: run.profileName,
+    reportRel: suppressArtifacts ? null : run.reportRel, targetRel: suppressArtifacts ? null : run.targetRel,
+    ...(run.destinationProject !== undefined ? { destinationProject: run.destinationProject } : {}),
+    ...(run.ownershipUnknown ? { ownershipUnknown: true } : {}),
+    ...(destinationPath !== null && destinationPath !== undefined ? { destinationPath } : {}),
   };
 }
 
@@ -874,6 +911,12 @@ function buildModel(
   const hubMapCodexSource: "ok" | "failed" | "truncated" | "absent" = hub === undefined ? "ok" : hub.ok ? hub.data.codexSource : "failed";
   const hubMapTmuxSource: "ok" | "failed" = hub === undefined ? "ok" : hub.ok ? hub.data.tmuxSource : "failed";
   const cardedDirs = new Set(projects.projects.map((p) => p.dir));
+  // Each project's repos-root-relative base for artifact links. A dir discovered more than once is
+  // ambiguous, so a foreign result targeting it gets no guessed link.
+  const locationCounts = new Map<string, number>();
+  for (const p of projects.projects) locationCounts.set(p.dir, (locationCounts.get(p.dir) ?? 0) + 1);
+  const locations = new Map<string, string>();
+  for (const p of projects.projects) if (locationCounts.get(p.dir) === 1) locations.set(p.dir, p.path ?? p.dir);
 
   // Finding 3 (cold review round 3): spec §4.1's needs-you condition includes "any pane's last
   // capsule is blocked or needs_input" as its OWN trigger, independent of a pending question. The
@@ -993,7 +1036,7 @@ function buildModel(
       headline, hubReady, lastEventAgo, freshnessCount, freshnessWarning, sessions, pendingQuestions, timeline, pr,
       activeRun: hubReady ? toMissionActiveRun(hp?.activeRun) : null,
       activeRuns: hubReady ? (hp?.activeRuns ?? []).map(toMissionActiveRunSummary) : [],
-      lastRun: hubReady ? toMissionLastRun(hp?.lastRun) : null,
+      lastRun: hubReady ? toMissionLastRun(hp?.lastRun, locations) : null,
       retainedWorktrees, loopSummary: hubReady ? (hp?.loopSummary ?? null) : null,
       codexSource: hubMapCodexSource,
       codexUntracked: hubReady ? (hp?.codexUntracked ?? false) : false,
@@ -1006,13 +1049,24 @@ function buildModel(
     const split = hubReady ? hp?.split : undefined;
     if (split && isGrouped(split)) {
       const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;
-      card.group = buildGroup(card, hp!, split.seats, split.unlinked, wr && wr.ok ? wr.sessions : undefined, split.unownedLastRun, nowMs, hub?.ok ? hub.data.prefs ?? {} : {});
+      card.group = buildGroup(card, hp!, split.seats, split.unlinked, wr && wr.ok ? wr.sessions : undefined, split.unownedLastRun, nowMs, hub?.ok ? hub.data.prefs ?? {} : {}, locations, split.unlinkedOwnershipUnknown === true);
     } else if (split && split.seats.length === 1) {
+      // One open seat: the SAME session projection grouped cards use (MOA-533), never status.md's
+      // historical builder/branch. Project facts stay accessible through `projectContext`.
       card.key = seatKey(project.dir, split.seats[0]);
-      // Keep a hidden seat recoverable after its sibling closes and the group becomes a plain card.
-      const seat = buildSeatCard(card, hp!, split.seats[0], undefined, nowMs, hub?.ok ? hub.data.prefs?.[card.key] : undefined);
-      if (card.visibility === "visible" && seat.visibility === "hidden") return seat;
-      if (card.headline === "idle" && split.seats[0].activity.activeRuns.length > 0) card.headline = "waiting";
+      const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;
+      // M1 review F5: the project pin is the project's, never a session pin. The lone session
+      // keeps its own hiddenAt; only `pinned` comes from the project so a pinned project is not
+      // demoted by the seat-default prefs. The session record and mutation targets stay intact
+      // (the header is hide-only; projectContext.prefs keeps the project target).
+      const seatPrefs = (hub?.ok ? hub.data.prefs?.[card.key] : undefined) ?? { pinned: false, hiddenAt: null };
+      const seat = buildSeatCard(card, hp!, split.seats[0], wr && wr.ok ? wr.sessions : undefined, nowMs, { ...seatPrefs, pinned: prefs.pinned }, locations);
+      seat.projectContext = {
+        prefs, lastRun: toMissionLastRun(split.unownedLastRun, locations),
+        retainedWorktrees: retainedCount(wr && wr.ok ? wr.sessions : undefined, (s) => s === null || s !== split.seats[0].sessionId),
+        ...(card.visibility === "hidden" ? { hidden: true } : {}),
+      };
+      return seat;
     }
     return card;
   });
@@ -1608,6 +1662,18 @@ export function gateWaitingLine(card: Pick<MissionCard, "updated">, nowMs: numbe
 // the basename identity for a direct child (which omits `path`).
 export function artifactRel(card: Pick<MissionCard, "dir" | "path">, rel: string): string {
   return `${card.path ?? card.dir}/${rel}`;
+}
+
+// A foreign run's artifact base is ITS destination's discovered location, never the parent's
+// root. A destination that was not discovered has no guessed fallback — its links are suppressed
+// upstream (null rel), so this only ever receives a real base.
+export function artifactRelForRun(
+  card: Pick<MissionCard, "dir" | "path">,
+  run: Pick<MissionLastRun, "destinationProject" | "destinationPath">,
+  rel: string,
+): string {
+  if (run.destinationProject === undefined) return artifactRel(card, rel);
+  return run.destinationPath !== undefined ? `${run.destinationPath}/${rel}` : rel;
 }
 
 // ---- Round 3, item 10: the heartbeat sparkline's SVG path (viewBox "0 0 200 26") ----------
