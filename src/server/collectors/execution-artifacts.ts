@@ -70,8 +70,8 @@ export class InspectionBudget {
     return Math.max(0, this.deadline - this.clock());
   }
 
-  private acquire(): Promise<void> {
-    if (this.expired) return Promise.reject(new BudgetError("deadline"));
+  private acquire(startDeadline = this.deadline): Promise<void> {
+    if (this.clock() >= startDeadline || this.expired) return Promise.reject(new BudgetError("deadline"));
     if (this.active < this.limit) {
       this.active++;
       return Promise.resolve();
@@ -80,7 +80,7 @@ export class InspectionBudget {
       const waiter = () => {
         clearTimeout(timer);
         // Re-check after wakeup: a queued callback must never start native work after the deadline.
-        if (this.expired) {
+        if (this.clock() >= startDeadline || this.expired) {
           reject(new BudgetError("deadline"));
           return;
         }
@@ -91,7 +91,7 @@ export class InspectionBudget {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
         reject(new BudgetError("deadline"));
-      }, Math.max(0, this.deadline - this.clock()));
+      }, Math.max(0, Math.min(startDeadline, this.deadline) - this.clock()));
       this.waiters.push(waiter);
     });
   }
@@ -102,9 +102,9 @@ export class InspectionBudget {
     if (next) next();
   }
 
-  async run<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T> {
-    await this.acquire();
-    if (this.expired) {
+  async run<T>(fn: () => Promise<T>, timeoutMs: number, startDeadline = this.deadline): Promise<T> {
+    await this.acquire(startDeadline);
+    if (this.clock() >= startDeadline || this.expired) {
       this.release();
       throw new BudgetError("deadline");
     }
@@ -123,7 +123,7 @@ export class InspectionBudget {
     this.pending.add(native);
     void native.then(done, done);
     return await new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new BudgetError("timeout")), Math.max(0, Math.min(timeoutMs, this.remainingMs)));
+      const timer = setTimeout(() => reject(new BudgetError("timeout")), Math.max(0, Math.min(timeoutMs, this.remainingMs, startDeadline - this.clock())));
       native.then(
         (value) => { clearTimeout(timer); resolve(value); },
         (error) => { clearTimeout(timer); reject(error); },
@@ -148,7 +148,7 @@ export class InspectionBudget {
       get remainingMs() { return remaining(); },
       async run<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T> {
         if (parent.clock() >= deadline) throw new BudgetError("deadline");
-        return parent.run(fn, Math.min(timeoutMs, remaining()));
+        return parent.run(fn, Math.min(timeoutMs, remaining()), deadline);
       },
       async check(): Promise<void> {
         if (parent.clock() >= deadline || parent.expired) throw new BudgetError("deadline");

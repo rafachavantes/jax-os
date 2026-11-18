@@ -323,6 +323,21 @@ describe("InspectionBudget", () => {
     expect(starts).toBe(1);
   });
 
+  it("does not start scoped work after its deadline while queued on the parent", async () => {
+    let now = 0;
+    const budget = new InspectionBudget(1, 1_000, () => now);
+    const gate = deferred<void>();
+    let starts = 0;
+    const first = budget.run(async () => { starts++; await gate.promise; }, 1_000);
+    await Promise.resolve();
+    const queued = budget.scope(100).run(async () => { starts++; return "late"; }, 1_000);
+    now = 101;
+    gate.resolve();
+    await expect(first).resolves.toBeUndefined();
+    await expect(queued).rejects.toBeInstanceOf(BudgetError);
+    expect(starts).toBe(1);
+  });
+
   it("keeps a timed-out hung native operation's slot until it actually settles", async () => {
     let now = 0;
     const budget = new InspectionBudget(1, 50, () => now);
