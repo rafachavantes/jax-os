@@ -79,6 +79,7 @@ export function mkSplit(over: Partial<HubSessionSplit> = {}): HubSessionSplit {
     seats: over.seats ?? [],
     unlinked: over.unlinked ?? mkActivity(),
     unownedLastRun: over.unownedLastRun ?? null,
+    ...(over.unlinkedOwnershipUnknown ? { unlinkedOwnershipUnknown: true } : {}),
   };
 }
 
@@ -109,6 +110,7 @@ export function runSummary(runId: string, over: Partial<HubActiveRunSummary> = {
     runtime: over.runtime ?? "claude",
     target: over.target ?? null,
     startedAt: over.startedAt ?? new Date(NOW - 5 * 60_000).toISOString(),
+    ...(over.destinationProject ? { destinationProject: over.destinationProject } : {}),
   };
 }
 

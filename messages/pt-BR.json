@@ -351,7 +351,11 @@
       "footerLastRun": "última execução: {run}",
       "runs": "Execuções",
       "noRuns": "Nenhuma execução em andamento.",
-      "dispatchHint": "Uma execução iniciada aqui não pertence a nenhuma sessão e aparece em “Execuções sem sessão aberta”."
+      "dispatchHint": "Uma execução iniciada aqui não pertence a nenhuma sessão e aparece em “Execuções sem sessão aberta”.",
+      "destination": "destino: {project}",
+      "projectActivity": "atividade do projeto",
+      "unlinkedUnknownTitle": "Execuções com dono não confirmado",
+      "unlinkedUnknownHint": "Uma fonte de agentes falhou ou a correspondência é ambígua — não dá para ligar estas execuções a uma sessão aberta."
     }
   },
   "missionBlock": {

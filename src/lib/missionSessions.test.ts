@@ -402,6 +402,78 @@ describe("unlinked card", () => {
   });
 });
 
+describe("standalone single-session card (MOA-533)", () => {
+  const lastRun = {
+    runId: "r9", role: "builder" as const, kind: "build" as const, runtime: "claude" as const, target: "feat/x",
+    finishedAt: "2026-11-12T10:00:00.000Z", outcome: "success", contractStatus: "ok" as const, stage: "build" as const,
+    diagnostic: null, headSha: null, findings: null, runtimeModel: null, profileName: null, reportRel: null, targetRel: null,
+    verifyCommand: null, buildCommand: null,
+  };
+
+  function standalone(over: Partial<HubSessionSplit> = {}) {
+    return missionOf(
+      {
+        p: mkHubProject({
+          panes: [pane("%1", { runtime: "claude" })],
+          split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] })], ...over }),
+        }),
+      },
+      {
+        projects: [mkProject({ dir: "p", name: "Project P", builder: "codex", branch: "stale-branch", stage: "test", now: "stale-now" })],
+        prs: { p: { ok: true, truncated: false, prs: [{ number: 7, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
+      },
+    );
+  }
+
+  it("uses the session projection for a lone seat and keeps stale project metadata out of it", () => {
+    const c = standalone().model.cards[0];
+    expect(cardKey(c)).toBe(`p#session:${A}`);
+    expect(c.scope).toMatchObject({ kind: "session", runtime: "claude", sessionId: A });
+    expect(c.builder).toBe("");
+    expect(c.now).toBe("");
+    expect(c.branch).toBe("");
+    expect(c.residuals).toEqual([]);
+    expect(c.headline).toBe("idle");
+  });
+
+  it("retains project name, PR summary and project-level prefs as separate context", () => {
+    const c = standalone({ unownedLastRun: lastRun }).model.cards[0];
+    expect(c.name).toBe("Project P");
+    expect(c.pr).toMatchObject({ status: "ok" });
+    expect(c.projectContext).toBeDefined();
+    expect(c.projectContext!.prefs).toEqual({ pinned: false, hiddenAt: null });
+    expect(c.projectContext!.lastRun?.runId).toBe("r9");
+    // The ownerless project result is project activity, never the session's own result.
+    expect(c.lastRun).toBeNull();
+  });
+
+  it("keeps a hidden seat recoverable when it is the only one left", () => {
+    const key = `p#session:${A}`;
+    const m = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { runtime: "claude" })], split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] })], }) }) },
+      { prefs: { [key]: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } } },
+    );
+    expect(m.model.cards[0].visibility).toBe("hidden");
+    expect(cardKey(m.model.cards[0])).toBe(key);
+  });
+
+  it("maps a foreign result's destination to its discovered path and suppresses unresolvable links", () => {
+    const foreign = { ...lastRun, destinationProject: "q", reportRel: ".local/reports/q.md", targetRel: "specs/q.md" };
+    const build = (projects: ReturnType<typeof mkProject>[]) => missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { runtime: "claude" })], split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }], activity: mkActivity({ lastRun: foreign }) })] }) }) },
+      { projects },
+    );
+    const found = build([mkProject({ dir: "p" }), mkProject({ dir: "q", path: "nested/q" })]).model.cards.find((c) => c.dir === "p")!;
+    expect(found.lastRun).toMatchObject({ destinationProject: "q", destinationPath: "nested/q", reportRel: ".local/reports/q.md", targetRel: "specs/q.md" });
+
+    const missing = build([mkProject({ dir: "p" })]).model.cards.find((c) => c.dir === "p")!;
+    expect(missing.lastRun?.destinationProject).toBe("q");
+    expect(missing.lastRun?.destinationPath).toBeUndefined();
+    expect(missing.lastRun?.reportRel).toBeNull();
+    expect(missing.lastRun?.targetRel).toBeNull();
+  });
+});
+
 describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
   it("a grouped project emits no gate row; the identical plain project keeps it", () => {
     const blocked = { status: "blocked" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 3, mergeAsk: null, question: null };

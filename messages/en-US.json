@@ -351,7 +351,11 @@
       "footerLastRun": "last run: {run}",
       "runs": "Runs",
       "noRuns": "No run in progress.",
-      "dispatchHint": "A run started here belongs to no session and shows under “Runs without an open session”."
+      "dispatchHint": "A run started here belongs to no session and shows under “Runs without an open session”.",
+      "destination": "destination: {project}",
+      "projectActivity": "project activity",
+      "unlinkedUnknownTitle": "Runs with unconfirmed ownership",
+      "unlinkedUnknownHint": "An agent source failed or the match is ambiguous — these runs cannot be linked to an open session."
     }
   },
   "missionBlock": {

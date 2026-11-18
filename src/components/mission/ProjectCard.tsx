@@ -5,9 +5,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Clock3, File, FolderGit2, GitBranch, GitPullRequest, Hourglass, MoreHorizontal } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
-  answerEventId, artifactRel, cancelAction, cardKey, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
+  answerEventId, artifactRelForRun, cancelAction, cardKey, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
   stuckLine, gateWaitingLine, heartbeatPath, worstFinding, worstPaneState,
-  type MissionActiveRunSummary, type MissionCard, type MissionCardPr, type MissionPendingQuestion, type MissionState,
+  type MissionActiveRunSummary, type MissionCard, type MissionCardPr, type MissionLastRun, type MissionPendingQuestion, type MissionState,
 } from "@/lib/mission";
 import { postPrefsPatch } from "@/lib/prefsAction";
 import { useGeneralSettings } from "@/lib/settingsQuery";
@@ -493,6 +493,7 @@ function ActiveRunLine({ run }: { run: MissionActiveRunSummary }) {
     <div className="truncate font-mono text-[11px] text-muted">
       {t("expanded.sessionLineNoRole", { name: run.stage ? t(`stages.${run.stage}`) : "", runtime: run.runtime ?? "?", state: t("activity.running") })}
       {minutes !== null ? t("pill.elapsed", { minutes }) : null}
+      {run.destinationProject ? <> · {t("board.destination", { project: run.destinationProject })}</> : null}
     </div>
   );
 }
@@ -647,8 +648,8 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
               <Hourglass className="h-[18px] w-[18px]" />
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-[15px] font-semibold text-ink">{t("board.unlinkedTitle")}</span>
-              <span className="truncate text-[11px] text-muted">{t("board.unlinkedHint")}</span>
+              <span className="truncate text-[15px] font-semibold text-ink">{t(card.ownershipUnknown ? "board.unlinkedUnknownTitle" : "board.unlinkedTitle")}</span>
+              <span className="truncate text-[11px] text-muted">{t(card.ownershipUnknown ? "board.unlinkedUnknownHint" : "board.unlinkedHint")}</span>
             </span>
           </button>
           {expanded ? <ChevronDown className="h-4 w-4 flex-none text-muted" /> : <ChevronRight className="h-4 w-4 flex-none text-muted" />}
@@ -737,6 +738,7 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
               </span>
             ) : null}
             {card.activeRun.runtime ? <span className="flex items-center gap-1"><Bot className="h-3.5 w-3.5" aria-hidden />{card.activeRun.runtime}</span> : null}
+            {card.activeRun.destinationProject ? <span>{t("board.destination", { project: card.activeRun.destinationProject })}</span> : null}
             <span>{t(`activity.${card.activeRun.descriptionKey}`)}</span>
             {card.activeRun.count > 1 ? <span>{t("activity.otherRuns", { count: card.activeRun.count - 1 })}</span> : null}
             {card.activeRun.kind === "build" && card.activeRun.lastStep ? (
@@ -759,6 +761,7 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
             <LastLine card={card} />
           </>
         ) : null}
+        {scoped && card.lastRun ? <LastRunLine card={card} /> : null}
         {unlinkedScope ? (card.activeRuns ?? []).map((run) => <ActiveRunLine key={run.runId} run={run} />) : null}
       </div>
 
@@ -767,7 +770,28 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
         {card.branch ? <span className="flex items-center gap-1"><GitBranch className="h-3.5 w-3.5" aria-hidden />{card.branch}</span> : null}
         {typeof issues === "number" ? <span>{t("projects.issueCount", { count: issues })}</span> : null}
         <PrSummary pr={card.pr} githubEnabled={githubEnabled} />
-      </div>) : null}
+      </div>) : card.projectContext ? (
+        // A lone open session (MOA-533): project facts stay reachable as PROJECT context — never
+        // as this session's builder/branch. Pin/hide here targets the project (card.dir); the
+        // header's own hide targets only this session (cardKey).
+        <div data-testid="project-context" className="flex flex-col gap-1.5 border-t border-line-subtle pt-[13px] text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="flex min-w-0 items-center gap-1">
+              <FolderGit2 className="h-3.5 w-3.5 flex-none" aria-hidden />
+              <span className="truncate font-semibold text-body-ink">{card.name}</span>
+            </span>
+            {typeof issues === "number" ? <span>{t("projects.issueCount", { count: issues })}</span> : null}
+            <PrSummary pr={card.pr} githubEnabled={githubEnabled} />
+            <PrefsButtons dir={card.dir} prefs={card.projectContext.prefs} visibility={card.visibility} />
+          </div>
+          {card.projectContext.lastRun ? (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[11px] uppercase tracking-[.06em]">{t("board.projectActivity")}</span>
+              <LastRunLine card={card} run={card.projectContext.lastRun} />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <ActionRow card={card} action={action} busy={busy} answered={answered} expanded={expanded} onExpand={onToggle} onAction={runAction} />
       {actionError ? <p className="text-[11.5px] text-danger">{t("actions.actionFailed", { error: actionError })}</p> : null}
@@ -927,9 +951,9 @@ function LastRecord({ card }: { card: MissionCard }) {
   );
 }
 
-function LastRunLine({ card }: { card: MissionCard }) {
+function LastRunLine({ card, run = card.lastRun }: { card: MissionCard; run?: MissionLastRun | null }) {
   const t = useTranslations("mission");
-  const lastRun = card.lastRun;
+  const lastRun = run;
   if (!lastRun) return null;
   const showReportProblem = lastRun.contractStatus === "missing" || lastRun.contractStatus === "invalid";
   return (
@@ -940,6 +964,7 @@ function LastRunLine({ card }: { card: MissionCard }) {
       {lastRun.labelKey === "buildOk" && lastRun.headSha ? (
         <span className="font-mono text-muted">· {lastRun.headSha.slice(0, 7)}</span>
       ) : null}
+      {lastRun.destinationProject ? <span className="text-muted">· {t("board.destination", { project: lastRun.destinationProject })}</span> : null}
       {lastRun.stage || lastRun.diagnostic ? (
         <span className="text-muted">
           · {lastRun.stage ? t(`lastRun.stage.${lastRun.stage}`) : null} — {lastRun.diagnostic ?? t("lastRun.noCause")}
@@ -961,12 +986,12 @@ function LastRunLine({ card }: { card: MissionCard }) {
         </span>
       ) : null}
       {lastRun.reportRel ? (
-        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: artifactRel(card, lastRun.reportRel) }).toString()}`} className="font-semibold text-brand">
+        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: artifactRelForRun(card, lastRun, lastRun.reportRel) }).toString()}`} className="font-semibold text-brand">
           {t("expanded.openReport")}
         </a>
       ) : null}
       {lastRun.targetRel ? (
-        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: artifactRel(card, lastRun.targetRel) }).toString()}`} className="font-semibold text-brand">
+        <a href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: artifactRelForRun(card, lastRun, lastRun.targetRel) }).toString()}`} className="font-semibold text-brand">
           {t("expanded.openDocument")}
         </a>
       ) : null}

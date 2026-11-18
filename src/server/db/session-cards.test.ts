@@ -31,6 +31,7 @@ import {
   activeRunsFor, getBuildRunSessions, getHubData, getProjectTimeline, insertEvent, lastRunFor, questionOwnsPane, setAfk, setForwardTypes, upsertSession,
   type HubEnvelopeData, type HubPane, type LiveSnapshot, type RunScope,
 } from "./workflows";
+import { parseIngress } from "../collectors/workflow-events";
 import { FORWARDABLE_EVENT_TYPES, HOOK_TELEMETRY_TYPES, type WorkflowEventInput } from "../../lib/workflow";
 import type { CodexSnapshot } from "../collectors/workflow-codex";
 
@@ -63,6 +64,23 @@ function runStarted(runId: string, role: "builder" | "reviewer", kind: string, c
 }
 function runFinished(runId: string, role: "builder" | "reviewer", payload: Record<string, unknown>, project = P): WorkflowEventInput {
   return { run_id: runId, project, role, type: "run-finished", source: "deterministic", emitter: "wrapper", payload: { phase: "P1", contract_status: "ok", ...payload } };
+}
+// An INGRESS-VALID managed builder start (parseIngress is the real gate): 12-hex run ids,
+// requested_profile/root_build_run_id lineage, and the full transport evidence jaxflow sends.
+function builderStarted(runId: string, caller: "claude" | "codex", callerSession: string, target: string, project: string, opts: { runtime?: string; repo?: string } = {}): WorkflowEventInput {
+  const runtime = opts.runtime ?? "opencode-builder";
+  const parsed = parseIngress({
+    project, run_id: runId, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+    payload: {
+      phase: "M1", runtime, kind: "build", target,
+      caller, caller_session: callerSession,
+      ...(runtime === "opencode-builder" ? { requested_profile: "default", root_build_run_id: "aaaabbbbcccc" } : {}),
+      verify: "pnpm test", model: "opencode-builder/default", effort: "high",
+      session: "jax-m1-build", repo: opts.repo ?? `/repos/${project}`,
+    },
+  });
+  if (!parsed.ok) throw new Error(`builder fixture is not ingress-valid: ${parsed.error}`);
+  return parsed.event;
 }
 function setAfkOn(db: Db): void {
   setAfk(db, true);
@@ -525,6 +543,221 @@ describe("session seats", () => {
     expect(seat(A).activity.heartbeat.reduce((a, b) => a + b, 0)).toBe(3); // turn-started + run-started + tool-used
     expect(seat(B).activity.heartbeat.reduce((a, b) => a + b, 0)).toBe(3);
     expect(seat(A).activity.newestEventTs! > seat(B).activity.newestEventTs!).toBe(true);
+    db.close();
+  });
+});
+
+describe("cross-project run ownership (MOA-532)", () => {
+  const Q = "qproj";
+  const R = "rproj";
+  const RUN = "aaaabbbbcccc";
+  const seatOf = (hub: HubEnvelopeData, project: string, id: string) =>
+    hub.byProject[project].split?.seats.find((s) => s.sessionId === id);
+  function parentOpen(): void {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+  }
+
+  it("binds a builder run called by a unique open parent elsewhere and keeps the destination overview", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    const hub = hubOf(db);
+    const parent = seatOf(hub, P, A)!;
+    expect(parent.activity.activeRuns.map((r) => [r.runId, r.destinationProject])).toEqual([[RUN, Q]]);
+    expect(parent.activity.activeRun).toMatchObject({ runId: RUN, count: 1, destinationProject: Q });
+    // The destination keeps the work as project history...
+    expect(hub.byProject[Q].activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    // ...but has no ownerless representation of it.
+    expect(hub.byProject[Q].split).toBeUndefined();
+    db.close();
+  });
+
+  it("lets a destination-local open owner win with no foreign duplicate", () => {
+    parentOpen();
+    insertEvent(db, claude(A, "%3", "turn-started", "claude-userprompt", {}, Q), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    const live = { ...LIVE, paneIds: new Set(["%1", "%3"]) };
+    const hub = getHubData(db, live, {}, CODEX, NOW);
+    expect(seatOf(hub, Q, A)!.activity.activeRuns.map((r) => [r.runId, r.destinationProject])).toEqual([[RUN, undefined]]);
+    expect(seatOf(hub, P, A)!.activity.activeRuns).toEqual([]);
+    db.close();
+  });
+
+  it("leaves an ambiguous foreign match unlinked with an ownership warning", () => {
+    parentOpen();
+    insertEvent(db, claude(A, "%3", "turn-started", "claude-userprompt", {}, R), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    const live = { ...LIVE, paneIds: new Set(["%1", "%3"]) };
+    const hub = getHubData(db, live, {}, CODEX, NOW);
+    expect(seatOf(hub, P, A)!.activity.activeRuns).toEqual([]);
+    expect(seatOf(hub, R, A)!.activity.activeRuns).toEqual([]);
+    const split = hub.byProject[Q].split!;
+    expect(split.unlinked.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(split.unlinkedOwnershipUnknown).toBe(true);
+    db.close();
+  });
+
+  it("never binds a dashboard caller or a row without explicit caller identity", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", "jaxos", "feat/q", Q), at(3));
+    // Legacy row: a recorded session but NO explicit caller identity — never proof of ownership,
+    // and it must not disappear from the destination's unlinked view because of the bound run.
+    insertEvent(db, {
+      run_id: "111122223333", project: Q, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+      harness_session: A, payload: { phase: "M1", runtime: "opencode-builder", kind: "build", target: "feat/legacy" },
+    }, at(4));
+    const hub = hubOf(db);
+    expect(seatOf(hub, P, A)!.activity.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(hub.byProject[Q].split!.unlinked.activeRuns.map((r) => r.runId).sort()).toEqual(["111122223333", "ddddeeeeffff"]);
+    expect(hub.byProject[Q].split!.unlinkedOwnershipUnknown).toBeUndefined();
+    db.close();
+  });
+
+  it("does not bind a run whose caller harness conflicts with the only matching seat", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "codex", A, "feat/q", Q, { runtime: "codex" }), at(2));
+    const hub = hubOf(db);
+    expect(seatOf(hub, P, A)!.activity.activeRuns).toEqual([]);
+    expect(hub.byProject[Q].split!.unlinked.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(hub.byProject[Q].split!.unlinkedOwnershipUnknown).toBeUndefined();
+    db.close();
+  });
+
+  it("moves the run back to the destination when the parent closes and restores it when it reopens", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    const closed = getHubData(db, { paneIds: new Set(), incarnation: INC, paneCommands: new Map() }, {}, CODEX, NOW);
+    expect(closed.byProject[Q].split!.unlinked.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    const reopened = hubOf(db);
+    expect(seatOf(reopened, P, A)!.activity.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(reopened.byProject[Q].split).toBeUndefined();
+    db.close();
+  });
+
+  it("keeps a bound finished child as the parent's result with destination provenance", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", { result: "success", exit_code: 0, report_path: "/reports/q.md", summary: "ok", head_sha: "a".repeat(40) }, Q), at(3));
+    const hub = hubOf(db);
+    const parent = seatOf(hub, P, A)!;
+    expect(parent.activity.activeRuns).toEqual([]);
+    expect(parent.activity.lastRun).toMatchObject({ runId: RUN, destinationProject: Q });
+    // Project overview still shows the finished work at its destination...
+    expect(hub.byProject[Q].lastRun?.runId).toBe(RUN);
+    expect(hub.byProject[Q].timeline.map((e) => e.type).sort()).toEqual(["run-finished", "run-started"]);
+    // ...and the split has no ownerless result or unlinked run.
+    expect(hub.byProject[Q].split).toBeUndefined();
+    db.close();
+  });
+
+  it("never lets another parent's later start clear this parent's result", () => {
+    parentOpen();
+    insertEvent(db, claude(B, "%3", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", { result: "success", exit_code: 0, report_path: "/reports/q.md", summary: "ok", head_sha: "a".repeat(40) }, Q), at(3));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", B, "feat/q2", Q), at(4));
+    const live = { ...LIVE, paneIds: new Set(["%1", "%3"]) };
+    const hub = getHubData(db, live, {}, CODEX, NOW);
+    expect(seatOf(hub, P, A)!.activity.lastRun?.runId).toBe(RUN);
+    expect(seatOf(hub, P, B)!.activity.activeRuns.map((r) => r.runId)).toEqual(["ddddeeeeffff"]);
+    // B's start does not belong to A's run set, so Q's unlinked card is gone (both runs owned).
+    expect(hub.byProject[Q].split).toBeUndefined();
+    db.close();
+  });
+
+  it("suppresses the parent's older result when a later start exists in its own combined set", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", { result: "success", exit_code: 0, report_path: "/reports/q.md", summary: "ok", head_sha: "a".repeat(40) }, Q), at(3));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", A, "feat/p", P), at(4));
+    expect(seatOf(hubOf(db), P, A)!.activity.lastRun).toBeNull();
+    db.close();
+  });
+
+  it("represents several parallel local and foreign runs once each, newest start first", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/p", P), at(2));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", A, "feat/q", Q), at(3));
+    insertEvent(db, builderStarted("111122223333", "claude", A, "feat/r", R), at(4));
+    const parent = seatOf(hubOf(db), P, A)!;
+    expect(parent.activity.activeRuns.map((r) => [r.runId, r.destinationProject])).toEqual([
+      ["111122223333", R], ["ddddeeeeffff", Q], [RUN, undefined],
+    ]);
+    expect(parent.activity.activeRun?.count).toBe(3);
+    db.close();
+  });
+
+  it("moves a reassigned duplicate start to its latest owner across projects", () => {
+    parentOpen();
+    insertEvent(db, claude(B, "%3", "turn-started", "claude-userprompt", {}, R), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, builderStarted(RUN, "claude", B, "feat/q", Q), at(3));
+    const live = { ...LIVE, paneIds: new Set(["%1", "%3"]) };
+    const hub = getHubData(db, live, {}, CODEX, NOW);
+    expect(seatOf(hub, R, B)!.activity.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(seatOf(hub, P, A)!.activity.activeRuns).toEqual([]);
+    db.close();
+  });
+
+  it("keeps a local legacy result (no caller identity) alongside the session's foreign run", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, {
+      run_id: "111122223333", project: P, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+      harness_session: A, payload: { phase: "M1", runtime: "opencode-builder", kind: "build", target: "feat/local" },
+    }, at(3));
+    insertEvent(db, runFinished("111122223333", "builder", { result: "success", exit_code: 0, report_path: "/r/local.md", summary: "local", head_sha: "a".repeat(40) }), at(4));
+    const parent = seatOf(hubOf(db), P, A)!;
+    expect(parent.activity.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(parent.activity.lastRun?.runId).toBe("111122223333");
+    expect(parent.activity.lastRun?.destinationProject).toBeUndefined();
+    db.close();
+  });
+
+  it("treats a failed tmux source as unknown ownership, never a confident no-session finding", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    const hub = getHubData(db, LIVE, {}, CODEX, NOW, false);
+    const split = hub.byProject[Q].split!;
+    expect(split.unlinked.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(split.unlinkedOwnershipUnknown).toBe(true);
+    db.close();
+  });
+
+  it("treats failed Codex evidence as unknown for a Codex caller but irrelevant for a Claude caller", () => {
+    parentOpen();
+    insertEvent(db, builderStarted("ddddeeeeffff", "codex", C, "feat/q", Q, { runtime: "codex" }), at(2));
+    const codexHub = getHubData(db, LIVE, {}, NO_CODEX, NOW);
+    expect(codexHub.byProject[Q].split!.unlinkedOwnershipUnknown).toBe(true);
+
+    insertEvent(db, builderStarted("111122223333", "claude", A, "feat/q", Q), at(3));
+    const claudeHub = getHubData(db, LIVE, {}, NO_CODEX, NOW);
+    expect(seatOf(claudeHub, P, A)!.activity.activeRuns.map((r) => r.runId)).toEqual(["111122223333"]);
+    expect(claudeHub.byProject[Q].split!.unlinked.activeRuns.map((r) => r.runId)).toEqual(["ddddeeeeffff"]);
+    db.close();
+  });
+
+  it("binds a Codex caller to its open native thread and treats intentional source absence as a real no-match", () => {
+    insertEvent(db, codex("turn-started", "codex-userprompt"), at(0));
+    insertEvent(db, builderStarted("ddddeeeeffff", "codex", C, "feat/q", Q, { runtime: "codex" }), at(2));
+    const bound = hubOf(db);
+    expect(seatOf(bound, P, C)!.activity.activeRuns.map((r) => [r.runId, r.destinationProject])).toEqual([["ddddeeeeffff", Q]]);
+    const absent = getHubData(db, LIVE, {}, null, NOW, true, null, null, true);
+    expect(absent.codexSource).toBe("absent");
+    const split = absent.byProject[Q].split!;
+    expect(split.unlinked.activeRuns.map((r) => r.runId)).toEqual(["ddddeeeeffff"]);
+    expect(split.unlinkedOwnershipUnknown).toBeUndefined();
+    db.close();
+  });
+
+  it("never copies the child's timeline, heartbeat or audits into the parent's session scope", () => {
+    parentOpen();
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, { run_id: null, project: Q, role: "lead", type: "question-answered", source: "deterministic", emitter: "jaxos", payload: { ok: true } }, at(3));
+    const parent = seatOf(hubOf(db), P, A)!;
+    expect(parent.activity.activeRuns).toHaveLength(1);
+    expect(parent.activity.timeline.map((e) => e.type)).toEqual(["turn-started"]);
+    expect(parent.activity.heartbeat.reduce((a, b) => a + b, 0)).toBe(1);
     db.close();
   });
 });

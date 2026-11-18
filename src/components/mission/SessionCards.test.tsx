@@ -396,8 +396,11 @@ describe("group frame render (spec §7.1–§7.3, §13)", () => {
     const html = renderColumn(m);
     expect(html).not.toContain("board.sessionsChip");
     expect(html).not.toContain("board.unlinkedTitle");
+    expect(html).not.toContain("board.footerNoSession");
     expect(html).not.toContain('data-testid="group-header"');
-    expect(html).not.toContain("board.");
+    // The lone seat still uses the session projection (spec MOA-533), not the project card.
+    expect(html).toContain('data-card-key="Alpha#session:' + A + '"');
+    expect(html).toContain("board.location");
   });
 
   it("an unlinked dispatch result shows its run and Cancel on the unlinked card only", () => {
@@ -520,6 +523,59 @@ describe("display names and remaining consumers (Task 9)", () => {
     const html = renderColumn(m, `Alpha#session:${A}`);
     expect(segment(html, `Alpha#session:${A}`)).toContain("expanded.retainedWorktrees");
     expect(html).toContain("board.footerWorktrees");
+  });
+});
+
+describe("standalone project context and cross-project provenance (MOA-532/533)", () => {
+  const lastRun = {
+    runId: "r9", role: "builder" as const, contractStatus: "ok" as const, stage: "build" as const, diagnostic: null,
+    finishedAt: null, headSha: null, labelKey: "buildOk" as const, tone: "success" as const, findings: null, target: null,
+    verifyCommand: null, buildCommand: null, runtimeModel: null, profileName: null,
+    reportRel: ".local/reports/q.md", targetRel: null,
+  };
+
+  it("a lone session keeps project name, PR, issue count and project pin as context", () => {
+    const c = card({
+      dir: "p", name: "Alpha", scope: sessionScope, builder: "", branch: "",
+      pr: { status: "ok", count: 2, ci: "green", truncated: false, newest: { number: 12, ci: "green" } },
+      projectContext: { prefs: { pinned: false, hiddenAt: null }, lastRun: null },
+    });
+    const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, issues: 7, expanded: false, onToggle: () => {} }));
+    expect(html).toContain('data-testid="project-context"');
+    expect(html).toContain("Alpha");
+    expect(html).toContain("PR #12");
+    expect(html).toContain("projects.issueCount");
+    expect(html).toContain("actions.pin");
+    expect(html).not.toContain("claude-code");
+  });
+
+  it("an ownerless completed result is labeled project activity, never the session's result", () => {
+    const c = card({ dir: "p", scope: sessionScope, lastRun: null, projectContext: { prefs: { pinned: false, hiddenAt: null }, lastRun } });
+    const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, expanded: false, onToggle: () => {} }));
+    expect(html).toContain("board.projectActivity");
+    expect(html).toContain("lastRun.buildOk");
+  });
+
+  it("a foreign run shows its destination next to its existing executor fields", () => {
+    const foreign = { ...run("r1"), destinationProject: "qproj", stage: "build" as const, descriptionKey: "building" as const, targetKind: "branch" as const };
+    const foreignSummary = { runId: "r1", role: "builder" as const, kind: "build" as const, runtime: "codex" as const, target: "feat/q", startedAt: null, destinationProject: "qproj", stage: "build" as const, descriptionKey: "building" as const, targetKind: "branch" as const };
+    const c = card({
+      dir: "p", scope: sessionScope, headline: "waiting",
+      activeRun: foreign,
+      activeRuns: [foreignSummary],
+      lastRun: { ...lastRun, destinationProject: "qproj", destinationPath: "qproj" },
+    });
+    const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, expanded: true, onToggle: () => {} }));
+    expect(html).toContain("board.destination");
+    expect(html).toContain("qproj");
+  });
+
+  it("the unlinked card uses the unknown-ownership copy when a source could hide the owner", () => {
+    const c = card({ dir: "p", scope: { kind: "unlinked" }, headline: "working", ownershipUnknown: true });
+    const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, expanded: false, onToggle: () => {} }));
+    expect(html).toContain("board.unlinkedUnknownTitle");
+    expect(html).toContain("board.unlinkedUnknownHint");
+    expect(html).not.toContain("board.unlinkedTitle");
   });
 });
 
