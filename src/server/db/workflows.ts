@@ -2786,7 +2786,7 @@ const EXECUTION_GROUPED = `s AS (
   SELECT ev.project, ev.run_id,
     COUNT(DISTINCT ev.role || '|' || ev.contract || '|' ||
       COALESCE(ev.result, '') || '|' || COALESCE(ev.verdict, '')) AS conflicts
-  FROM ev JOIN s ON s.project = ev.project AND s.run_id = ev.run_id
+  FROM ev LEFT JOIN s ON s.project = ev.project AND s.run_id = ev.run_id
   WHERE ev.type = 'run-finished' AND ev.role IN ('builder','reviewer')
     AND (s.id IS NULL OR ev.id > s.id)
   GROUP BY ev.project, ev.run_id
@@ -2932,23 +2932,30 @@ export function buildExecutionQuery(
 
   const sql = `WITH
   ${executionEventCte("id <= ?", restriction)},
-  ${EXECUTION_GROUPED}
-  SELECT r.project AS destination, r.run_id AS runId, r.latest_id AS latestId,
-    r.start_id AS startId, evs.role AS startRole, evs.ts AS startTs, sr.payload AS startPayload,
-    r.finish_id AS finishId, evf.role AS finishRole, evf.ts AS finishTs, fr.payload AS finishPayload,
-    fsr.ts AS firstStartTs, ffr.ts AS lastFinishTs,
-    CASE WHEN COALESCE(fc.conflicts, 0) > 1 THEN 1 ELSE 0 END AS finishConflict
-  FROM r
-  LEFT JOIN ev evs ON evs.id = r.start_id
-  LEFT JOIN ev evf ON evf.id = r.finish_id
-  LEFT JOIN workflow_events sr ON sr.id = r.start_id
-  LEFT JOIN workflow_events fr ON fr.id = r.finish_id
-  LEFT JOIN ev fsr ON fsr.id = r.first_start_id
-  LEFT JOIN ev ffr ON ffr.id = r.last_finish_id
-  LEFT JOIN fc ON fc.project = r.project AND fc.run_id = r.run_id
-  WHERE ${where.join(" AND ")}
-  ORDER BY r.latest_id DESC, r.project ASC, r.run_id ASC
-  LIMIT ?`;
+  ${EXECUTION_GROUPED},
+  page AS (
+    SELECT r.project AS destination, r.run_id AS runId, r.latest_id AS latestId,
+      r.start_id AS startId, evs.role AS startRole, evs.ts AS startTs,
+      r.finish_id AS finishId, evf.role AS finishRole, evf.ts AS finishTs,
+      fsr.ts AS firstStartTs, ffr.ts AS lastFinishTs,
+      CASE WHEN COALESCE(fc.conflicts, 0) > 1 THEN 1 ELSE 0 END AS finishConflict
+    FROM r
+    LEFT JOIN ev evs ON evs.id = r.start_id
+    LEFT JOIN ev evf ON evf.id = r.finish_id
+    LEFT JOIN ev fsr ON fsr.id = r.first_start_id
+    LEFT JOIN ev ffr ON ffr.id = r.last_finish_id
+    LEFT JOIN fc ON fc.project = r.project AND fc.run_id = r.run_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY r.latest_id DESC, r.project ASC, r.run_id ASC
+    LIMIT ?
+  )
+  SELECT page.destination, page.runId, page.latestId, page.startId, page.startRole, page.startTs,
+    sr.payload AS startPayload, page.finishId, page.finishRole, page.finishTs,
+    fr.payload AS finishPayload, page.firstStartTs, page.lastFinishTs, page.finishConflict
+  FROM page
+  LEFT JOIN workflow_events sr ON sr.id = page.startId
+  LEFT JOIN workflow_events fr ON fr.id = page.finishId
+  ORDER BY page.latestId DESC, page.destination ASC, page.runId ASC`;
   params.push(filters.limit + 1);
   return { sql, params };
 }
@@ -3022,7 +3029,7 @@ export function getCurrentRunStates(
       WHERE ${executionEventBase("e.")}
     ),
     ${EXECUTION_GROUPED}
-    SELECT sel.idx AS idx, r.project AS destination, r.run_id AS runId, r.latest_id AS latestId,
+    SELECT sel.idx AS idx, sel.project AS destination, sel.run_id AS runId, r.latest_id AS latestId,
       r.start_id AS startId, evs.role AS startRole, evs.ts AS startTs, sr.payload AS startPayload,
       r.finish_id AS finishId, evf.role AS finishRole, evf.ts AS finishTs, fr.payload AS finishPayload,
       fsr.ts AS firstStartTs, ffr.ts AS lastFinishTs,

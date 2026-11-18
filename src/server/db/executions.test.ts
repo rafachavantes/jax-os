@@ -164,6 +164,10 @@ describe("queryExecutions — durable projection", () => {
     const conflict = queryExecutions(db, filters(), null, NOW).rows[0];
     expect(conflict.outcome).toBe("failure");
     expect(conflict.warnings).toContain("finish-conflict");
+    ev(db, { runId: "dddddddddddd", type: "run-finished", ts: "2026-11-17T10:07:00.000Z", role: "reviewer", payload: { contract_status: "ok", verdict: "approve-with-changes" } });
+    ev(db, { runId: "dddddddddddd", type: "run-finished", ts: "2026-11-17T10:08:00.000Z", role: "reviewer", payload: { contract_status: "ok", verdict: "reject" } });
+    expect(queryExecutions(db, filters(), null, NOW).rows.find((r) => r.runId === "dddddddddddd"))
+      .toMatchObject({ outcome: "reject", warnings: expect.arrayContaining(["finish-conflict"]) });
 
     start(db, RUN_B, "2026-11-17T11:00:00.000Z");
     finish(db, RUN_B, "2026-11-17T11:05:00.000Z");
@@ -357,6 +361,7 @@ describe("getCurrentRunStates", () => {
     });
     expect(states[0].row?.outcome).toBe("success");
     expect(states[1].row).toBeNull();
+    expect(states[1]).toMatchObject({ destination: DEST, runId: RUN_B });
     expect(states[2].row).toBeNull(); // illegal destination never reaches a query
   });
 
