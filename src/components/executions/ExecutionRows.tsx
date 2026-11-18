@@ -151,12 +151,16 @@ export function ExecutionRows({
                     <a className="font-semibold text-brand" href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: report.rel }).toString()}`}>
                       {t("report")}
                     </a>
-                  ) : <span>{t("reportUnavailable")}</span>}
+                  ) : inspection?.artifactsChecked === false
+                    ? <span>{t("report")}: {t("worker.notChecked")}</span>
+                    : <span>{t("reportUnavailable")}</span>}
                   {tests ? (
                     <a className="font-semibold text-brand" href={`/files?${serializeFileSelection(new URLSearchParams(), { root: "repos", rel: tests.rel }).toString()}`}>
                       {t("tests")}
                     </a>
-                  ) : <span>{t("testsUnavailable")}</span>}
+                  ) : inspection?.artifactsChecked === false
+                    ? <span>{t("tests")}: {t("worker.notChecked")}</span>
+                    : <span>{t("testsUnavailable")}</span>}
                 </div>
                 {overlay.warnings.length > 0 ? (
                   <span className="min-w-0 font-mono [overflow-wrap:anywhere]">{t("warnings")}: {overlay.warnings.join(", ")}</span>

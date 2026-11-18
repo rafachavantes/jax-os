@@ -140,6 +140,18 @@ describe("ExecutionRows", () => {
     expect(html).toContain("[overflow-wrap:anywhere]");
   });
 
+  it("labels a skipped artifact inspection instead of unavailable artifacts", () => {
+    const html = render([row()], {
+      [`jax-os/${RUN}`]: inspection({ report: null, tests: null, warnings: [], artifactsChecked: false }),
+    }, `jax-os/${RUN}`);
+    expect(html).toContain("worker.notChecked");
+    expect(html).toContain("report");
+    expect(html).toContain("tests");
+    expect(html).not.toContain("reportUnavailable");
+    expect(html).not.toContain("testsUnavailable");
+    expect(html).not.toContain("root-unavailable");
+  });
+
   it("marks unavailable artifacts instead of linking a guessed path", () => {
     const html = render([row()], { [`jax-os/${RUN}`]: inspection({ report: null, tests: null, warnings: ["report-missing", "tests-missing"] }) }, `jax-os/${RUN}`);
     expect(html).toContain("reportUnavailable");

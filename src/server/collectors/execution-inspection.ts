@@ -42,6 +42,9 @@ export type InspectionRow = {
   refreshNeeded: boolean;
   current: InspectionCurrent | null;
   warnings: string[];
+  // False means this response did not attempt artifact inspection (database-only path), so a
+  // missing link is "not checked", not "unavailable". A failed/timed-out attempt is true.
+  artifactsChecked?: boolean;
 };
 
 export type InspectionDeps = {
@@ -107,7 +110,8 @@ function databaseOnlyRows(db: Database.Database, selectors: readonly InspectionS
       observation: { status: "not-checked" },
       refreshNeeded: refreshFor(selector, state),
       current: currentOf(state),
-      warnings: ["root-unavailable"],
+      warnings: [],
+      artifactsChecked: false,
     };
   });
 }
@@ -204,6 +208,7 @@ async function runPass(
       refreshNeeded,
       current: currentOf(state),
       warnings: [...fact.warnings, ...(observation.warning ? [observation.warning] : [])],
+      artifactsChecked: true,
     };
   });
 }

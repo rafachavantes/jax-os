@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../db";
+import { collectorResponse } from "../api";
 import { inspectExecutionRows } from "./execution-inspection";
 import { InspectionBudget } from "./execution-artifacts";
 import type { ProcReader } from "./execution-worker";
@@ -108,7 +109,35 @@ describe("inspectExecutionRows", () => {
     });
     expect(rows[0].branch).toBeNull();
     expect(rows[0].warnings).toContain("root-unavailable");
+    expect(rows[0].artifactsChecked).toBe(true);
     expect(rows[0].current?.outcome).toBe("open");
+  });
+
+  it("serializes a database-only inspection as not artifact-checked", async () => {
+    const { root, db, startId } = fixture();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let tmuxCalls = 0;
+    const deps = {
+      reposRoot: join(root, "missing"), now: () => NOW, lastGood: new Map(),
+      tmux: async () => { tmuxCalls++; await gate; return ""; },
+    };
+    try {
+      const pending = inspectExecutionRows(db, [{ destination: DEST, runId: RUN, startEventId: startId }], deps);
+      while (tmuxCalls === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+      const response = await collectorResponse(() =>
+        inspectExecutionRows(db, [{ destination: DEST, runId: RUN, startEventId: startId + 1 }], deps));
+      const body = await response.json() as {
+        ok: boolean; data: { artifactsChecked?: boolean; warnings: string[] }[];
+      };
+      expect(body.ok).toBe(true);
+      expect(body.data[0].artifactsChecked).toBe(false);
+      expect(body.data[0].warnings).toEqual([]);
+      release();
+      await pending;
+    } finally {
+      release();
+    }
   });
 
   it("never resolves an unknown selector into a row", async () => {
