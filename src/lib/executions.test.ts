@@ -180,6 +180,58 @@ describe("buildExecutionRow", () => {
     expect(row.warnings).toContain("result-unknown");
   });
 
+  it("an absent or malformed required contract status is invalid, never ok", () => {
+    const review = buildExecutionRow(facts({
+      start: { id: 1, role: "reviewer", ts: "2026-11-18T10:00:00.000Z", payload: { kind: "diff" } },
+      finish: { id: 2, role: "reviewer", ts: "2026-11-18T10:05:00.000Z", payload: { verdict: "approve" } },
+    }))!;
+    expect(review.outcome).toBe("unknown");
+    expect(review.contractStatus).toBe("invalid");
+    expect(review.warnings).toContain("contract-invalid");
+    expect(review.warnings).toContain("verdict-unknown");
+
+    const build = buildExecutionRow(facts({
+      finish: { id: 2, role: "builder", ts: "2026-11-18T10:05:00.000Z", payload: { result: "success" } },
+    }))!;
+    expect(build.outcome).toBe("success");
+    expect(build.contractStatus).toBe("invalid");
+    expect(build.warnings).toContain("contract-invalid");
+
+    const malformed = buildExecutionRow(facts({
+      finish: { id: 2, role: "builder", ts: "2026-11-18T10:05:00.000Z", payload: null },
+    }))!;
+    expect(malformed.contractStatus).toBe("invalid");
+    expect(malformed.outcome).toBe("unknown");
+    expect(malformed.warnings).toContain("contract-invalid");
+  });
+
+  it("rejects facts with no admissible start or finish instead of inventing a row", () => {
+    expect(buildExecutionRow(facts({ start: null, finish: null, latestEventId: 0 }))).toBeNull();
+  });
+
+  it("surfaces a distinct-finish conflict but not identical duplicates", () => {
+    expect(buildExecutionRow(facts({ finishConflict: true }))!.warnings).toContain("finish-conflict");
+    expect(buildExecutionRow(facts({ finishConflict: false }))!.warnings).not.toContain("finish-conflict");
+  });
+
+  it("bounds candidate timestamps before parsing them", () => {
+    const padded = "2026-11-18T10:00:00.000Z" + " ".repeat(200);
+    expect(executionDurationMs(padded, "2026-11-18T10:05:00.000Z")).toBeNull();
+    const row = buildExecutionRow(facts({
+      start: { id: 1, role: "builder", ts: padded, payload: { kind: "build" } },
+      finish: null,
+      firstStartTs: padded,
+    }))!;
+    expect(row.firstDispatchedAt).toBeNull();
+    expect(row.attemptStartedAt).toBeNull();
+    expect(row.warnings).toContain("attempt-timestamp-unknown");
+    const cursor: ExecutionCursor = {
+      v: 1, fence: 9, lastId: 2, project: DEST, runId: RUN,
+      cutoff: padded, identity: executionFilterIdentity({ project: null, kind: "all", state: "all", period: "7d", run: null, limit: 20 }),
+    };
+    expect(decodeExecutionCursor(encodeExecutionCursor(cursor))).toBeNull();
+  });
+
   it("invalid attempt timestamps are unknown, never borrowed from an earlier attempt", () => {
     const row = buildExecutionRow(facts({
       start: { id: 3, role: "builder", ts: "not-a-date", payload: { kind: "build" } },

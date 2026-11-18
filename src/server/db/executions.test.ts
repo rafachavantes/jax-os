@@ -130,6 +130,68 @@ describe("queryExecutions — durable projection", () => {
     expect(queryExecutions(db, filters({ kind: "diff" }), null, NOW).rows).toHaveLength(0);
   });
 
+  it("build/review filters include orphan finishes and kind-missing rows by recorded role", () => {
+    const db = openDb(":memory:");
+    finish(db, RUN_A, "2026-11-17T10:00:00.000Z", { result: "failure" });
+    finish(db, RUN_B, "2026-11-17T10:01:00.000Z", { verdict: "approve" }, { role: "reviewer" });
+    start(db, RUN_C, "2026-11-17T10:02:00.000Z", { kind: undefined }, {});
+    finish(db, RUN_C, "2026-11-17T10:03:00.000Z", { contract_status: "ok", result: "success" });
+    // an explicit subtype still requires the recorded subtype, never just the role
+    start(db, RUN_A, "2026-11-17T10:04:00.000Z", { kind: "build" });
+
+    const builds = queryExecutions(db, filters({ kind: "build" }), null, NOW).rows.map((r) => r.runId);
+    expect(builds).toEqual(expect.arrayContaining([RUN_A, RUN_C]));
+    const reviews = queryExecutions(db, filters({ kind: "review" }), null, NOW).rows.map((r) => r.runId);
+    expect(reviews).toEqual([RUN_B]);
+    expect(queryExecutions(db, filters({ kind: "spec" }), null, NOW).rows).toHaveLength(0);
+  });
+
+  it("an absent required contract status is invalid in the SQL projection too", () => {
+    const db = openDb(":memory:");
+    start(db, RUN_A, "2026-11-17T10:00:00.000Z");
+    ev(db, { runId: RUN_A, type: "run-finished", ts: "2026-11-17T10:05:00.000Z", payload: { result: "success" } });
+    const row = queryExecutions(db, filters(), null, NOW).rows[0];
+    expect(row.outcome).toBe("success");
+    expect(row.contractStatus).toBe("invalid");
+    expect(row.warnings).toContain("contract-invalid");
+  });
+
+  it("warns on distinct finishes of the selected attempt only", () => {
+    const db = openDb(":memory:");
+    start(db, RUN_A, "2026-11-17T10:00:00.000Z");
+    finish(db, RUN_A, "2026-11-17T10:05:00.000Z", { contract_status: "ok", result: "success" });
+    finish(db, RUN_A, "2026-11-17T10:06:00.000Z", { contract_status: "ok", result: "failure" });
+    const conflict = queryExecutions(db, filters(), null, NOW).rows[0];
+    expect(conflict.outcome).toBe("failure");
+    expect(conflict.warnings).toContain("finish-conflict");
+
+    start(db, RUN_B, "2026-11-17T11:00:00.000Z");
+    finish(db, RUN_B, "2026-11-17T11:05:00.000Z");
+    finish(db, RUN_B, "2026-11-17T11:06:00.000Z");
+    expect(queryExecutions(db, filters(), null, NOW).rows.find((r) => r.runId === RUN_B)!.warnings)
+      .not.toContain("finish-conflict");
+
+    start(db, RUN_C, "2026-11-17T12:00:00.000Z");
+    finish(db, RUN_C, "2026-11-17T12:01:00.000Z", { contract_status: "ok", result: "failure" });
+    start(db, RUN_C, "2026-11-17T12:02:00.000Z");
+    finish(db, RUN_C, "2026-11-17T12:03:00.000Z", { contract_status: "ok", result: "success" });
+    const reopened = queryExecutions(db, filters(), null, NOW).rows.find((r) => r.runId === RUN_C)!;
+    expect(reopened.outcome).toBe("success");
+    expect(reopened.warnings).not.toContain("finish-conflict");
+  });
+
+  it("moves the event projection before the page limit and joins payloads only for the page", () => {
+    const { sql } = buildExecutionQuery(filters({ project: "alpha" }), null, Number.MAX_SAFE_INTEGER, null);
+    const page = sql.indexOf("q AS (");
+    expect(page).toBeGreaterThan(-1);
+    const preLimit = sql.slice(0, page);
+    expect(preLimit).not.toMatch(/payload AS/i);
+    expect(preLimit).not.toMatch(/AS payload/i);
+    expect(preLimit).toContain("json_extract");
+    expect(sql.slice(page)).toMatch(/srp?\.payload AS startPayload/i);
+    expect(sql.slice(page)).toMatch(/LIMIT \?/);
+  });
+
   it("applies every filter before the page limit", () => {
     const db = openDb(":memory:");
     run(db, RUN_A, { start: "2026-11-17T10:00:00.000Z", finish: "2026-11-17T10:01:00.000Z", project: "alpha" });
@@ -296,5 +358,33 @@ describe("getCurrentRunStates", () => {
     expect(states[0].row?.outcome).toBe("success");
     expect(states[1].row).toBeNull();
     expect(states[2].row).toBeNull(); // illegal destination never reaches a query
+  });
+
+  it("never invents a row for a selector with no admissible role", () => {
+    const db = openDb(":memory:");
+    ev(db, { runId: RUN_A, type: "run-started", ts: "2026-11-18T11:00:00.000Z", role: "lead", payload: { kind: "build" } });
+    ev(db, { runId: RUN_A, type: "run-finished", ts: "2026-11-18T11:01:00.000Z", role: "lead", payload: { contract_status: "ok" } });
+    const [state] = getCurrentRunStates(db, [{ destination: DEST, runId: RUN_A }]);
+    expect(state.row).toBeNull();
+    expect(state.startEventId).toBeNull();
+    expect(state.finishEventId).toBeNull();
+  });
+
+  it("returns one facts row per selector despite a legacy repeated-ID event history", () => {
+    const db = openDb(":memory:");
+    const insert = db.prepare(
+      `INSERT INTO workflow_events (ts, run_id, project, role, type, source, emitter, payload, delivery)
+       VALUES (?, ?, ?, 'builder', ?, 'deterministic', 'wrapper', '{"kind":"build"}', 'local')`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 1000; i++) {
+        insert.run("2026-11-18T11:00:00.000Z", RUN_A, DEST, i % 2 === 0 ? "run-started" : "run-finished");
+      }
+    })();
+    const states = getCurrentRunStates(db, [{ destination: DEST, runId: RUN_A }]);
+    expect(states).toHaveLength(1);
+    expect(states[0].row).not.toBeNull();
+    expect(states[0].startEventId).toBe(999);
+    expect(states[0].finishEventId).toBe(1000);
   });
 });

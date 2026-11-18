@@ -40,6 +40,7 @@ export const EXECUTION_WARNINGS = [
   "period-unknown",
   "attempt-timestamp-unknown",
   "duration-unknown",
+  "finish-conflict",
 ] as const;
 export type ExecutionWarning = (typeof EXECUTION_WARNINGS)[number];
 
@@ -180,14 +181,20 @@ export type ExecutionFacts = {
   finish: ExecutionEventFact | null;
   firstStartTs: string | null;
   lastFinishTs: string | null;
+  // True when admissible finishes of the selected attempt carry distinct normalized facts.
+  finishConflict?: boolean;
 };
 
 function isRole(v: unknown): v is "builder" | "reviewer" {
   return v === "builder" || v === "reviewer";
 }
 
+// Implementation bound for malformed legacy input: anything longer than this is never parsed as
+// a date. It is not a new date-format restriction — a real timestamp is far shorter.
+const TIMESTAMP_MAX = 128;
+
 function finiteMs(ts: string | null): number | null {
-  if (ts === null) return null;
+  if (ts === null || ts.length > TIMESTAMP_MAX) return null;
   const ms = Date.parse(ts);
   return Number.isFinite(ms) ? ms : null;
 }
@@ -197,12 +204,16 @@ function boundedString(v: unknown, cap: number, pattern?: RegExp): string | null
     && (!pattern || pattern.test(v)) ? v : null;
 }
 
+// The required terminal contract status. A stored row without a parseable payload or without
+// a recognized status is invalid evidence, never a valid run: only an explicit status is
+// trusted. `missing`/`invalid` remain the producer's explicit report states.
 function contractOf(payload: Record<string, unknown> | null): ContractStatus {
-  if (payload === null) return "ok";
+  if (payload === null) return "invalid";
   const raw = payload.contract_status;
-  if (raw === undefined || raw === null) return "ok";
-  return typeof raw === "string" && (CONTRACT_STATUSES as readonly string[]).includes(raw)
-    ? (raw as ContractStatus) : "invalid";
+  if (typeof raw === "string" && (CONTRACT_STATUSES as readonly string[]).includes(raw)) {
+    return raw as ContractStatus;
+  }
+  return "invalid";
 }
 
 // Terminal lifecycle: the latest admissible finish applies only when it is newer than the
@@ -241,6 +252,8 @@ export function buildExecutionRow(facts: ExecutionFacts): ExecutionRow | null {
   if (!PROJECT_LABEL.test(facts.project) || !RUN_ID_RE.test(facts.runId)) return null;
   const start = facts.start && isRole(facts.start.role) ? facts.start : null;
   const finish = facts.finish && isRole(facts.finish.role) ? facts.finish : null;
+  // No admissible lifecycle event is not an open run: the selector resolves to nothing.
+  if (start === null && finish === null) return null;
   const role = (start !== null && isRole(start.role) ? start.role : null)
     ?? (finish !== null && isRole(finish.role) ? finish.role : null);
   const startPayload = start?.payload ?? null;
@@ -255,6 +268,7 @@ export function buildExecutionRow(facts: ExecutionFacts): ExecutionRow | null {
   const warnings: ExecutionWarning[] = [];
   if (start === null && finish !== null) warnings.push("orphan");
   if (start !== null && finish !== null && start.role !== finish.role) warnings.push("role-conflict");
+  if (terminal && facts.finishConflict === true) warnings.push("finish-conflict");
   if (kind !== null && role !== null) {
     const expected = kind === "build" ? "builder" : "reviewer";
     if (role !== expected) warnings.push("kind-role-conflict");
@@ -352,7 +366,7 @@ export function decodeExecutionCursor(raw: string): ExecutionCursor | null {
   if (c.v !== 1 || !safeInt(c.fence) || !safeInt(c.lastId)) return null;
   if (typeof c.project !== "string" || !boundedLabelled(c.project)) return null;
   if (typeof c.runId !== "string" || !RUN_ID_RE.test(c.runId)) return null;
-  if (c.cutoff !== null && (typeof c.cutoff !== "string" || !Number.isFinite(Date.parse(c.cutoff)))) return null;
+  if (c.cutoff !== null && (typeof c.cutoff !== "string" || c.cutoff.length > 128 || !Number.isFinite(Date.parse(c.cutoff)))) return null;
   if (typeof c.identity !== "string" || c.identity.length > 512) return null;
   return {
     v: 1,

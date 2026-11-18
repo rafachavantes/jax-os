@@ -27,7 +27,7 @@ function inspection(overrides: Partial<InspectionRow> = {}): InspectionRow {
     destination: "jax-os", runId: RUN, branch: "feat/x", branchSource: "manifest",
     report: { rel: `jax-os/.local/reports/${RUN}.md` }, tests: { rel: `jax-os/.local/reports/${RUN}.tests.txt` },
     observation: { status: "not-checked" }, refreshNeeded: false,
-    current: { outcome: "success", terminal: true, finishEventId: 2, finishedAt: "2026-11-18T10:05:00.000Z", contractStatus: "ok", durationMs: 300_000 },
+    current: { outcome: "success", terminal: true, finishEventId: 2, finishedAt: "2026-11-18T10:05:00.000Z", contractStatus: "ok", durationMs: 300_000, warnings: [] },
     warnings: [], ...overrides,
   };
 }
@@ -56,7 +56,7 @@ describe("ExecutionRows", () => {
       [`jax-os/${RUN}`]: inspection({
         branch: null, branchSource: null, report: null, tests: null,
         observation: { status: "observed", pid: 100 },
-        current: { outcome: "open", terminal: false, finishEventId: null, finishedAt: null, contractStatus: null, durationMs: null },
+        current: { outcome: "open", terminal: false, finishEventId: null, finishedAt: null, contractStatus: null, durationMs: null, warnings: [] },
       }),
     });
     expect(observed).toContain("worker.observed");
@@ -75,7 +75,7 @@ describe("ExecutionRows", () => {
     const open = row({ outcome: "open", terminal: false, contractStatus: null, durationMs: null, finishedAt: null });
     const html = render([open], {
       [`jax-os/${RUN}`]: inspection({
-        current: { outcome: "failure", terminal: true, finishEventId: 9, finishedAt: "2026-11-18T10:06:00.000Z", contractStatus: "ok", durationMs: 360_000 },
+        current: { outcome: "failure", terminal: true, finishEventId: 9, finishedAt: "2026-11-18T10:06:00.000Z", contractStatus: "ok", durationMs: 360_000, warnings: [] },
       }),
     });
     expect(html).toContain("outcome.failure");

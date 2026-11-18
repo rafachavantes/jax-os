@@ -5,7 +5,7 @@ import {
   type ArtifactDeps, type ArtifactLink, type ExecutionArtifactFacts,
 } from "./execution-artifacts";
 import { inspectWorkers, workerKey, type ProcReader, type WorkerDeps, type WorkerObservation, type WorkerTarget } from "./execution-worker";
-import type { ExecutionOutcome } from "../../lib/executions";
+import type { ExecutionOutcome, ExecutionWarning } from "../../lib/executions";
 import type { ContractStatus } from "../../lib/workflow";
 import type { GitProbe } from "./projects";
 
@@ -26,6 +26,9 @@ export type InspectionCurrent = {
   finishedAt: string | null;
   contractStatus: ContractStatus | null;
   durationMs: number | null;
+  // Bounded existing warning codes only, so a fresh finish's contract/conflict warning reaches
+  // the client without exposing raw payload or a new public field.
+  warnings: ExecutionWarning[];
 };
 
 export type InspectionRow = {
@@ -141,6 +144,7 @@ export async function inspectExecutionRows(
         finishedAt: live.finishedAt,
         contractStatus: live.contractStatus,
         durationMs: live.durationMs,
+        warnings: live.warnings,
       },
       warnings: [...fact.warnings, ...(observation.warning ? [observation.warning] : [])],
     };

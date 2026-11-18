@@ -2708,23 +2708,58 @@ export function getHubData(
 function ensureTsMsFunction(db: Database.Database): void {
   try {
     db.function("jaxos_ts_ms", { deterministic: true }, (value: unknown) =>
-      typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null);
+      typeof value === "string" && value.length <= 128 && Number.isFinite(Date.parse(value))
+        ? Date.parse(value) : null);
   } catch {
     // already registered on this connection
   }
 }
 
-const EXECUTION_EV = `ev AS (
-  SELECT id, project, run_id, type, role, emitter, ts,
-         CASE WHEN json_valid(payload) THEN payload ELSE NULL END AS payload
-  FROM workflow_events
-  WHERE id <= ? AND run_id IS NOT NULL AND type IN ('run-started', 'run-finished')
-    AND length(project) BETWEEN 1 AND 64 AND project NOT GLOB '*[^ -~]*'
-    AND length(run_id) = 12 AND run_id NOT GLOB '*[^0-9a-f]*'
-)`;
+// Implementation bound for malformed legacy input, mirroring lib/executions.ts. Not a new
+// date-format restriction: a real timestamp is far shorter than this.
+const EXECUTION_TS_MAX = 128;
 
-// The one SQL projection of "latest admissible start/finish + first valid start + latest valid
-// finish" per destination/run. Every predicate below mirrors lib/executions.ts's pure mapper.
+function executionEventBase(prefix: string): string {
+  return `${prefix}run_id IS NOT NULL AND ${prefix}type IN ('run-started', 'run-finished')
+    AND length(${prefix}project) BETWEEN 1 AND 64 AND ${prefix}project NOT GLOB '*[^ -~]*'
+    AND length(${prefix}run_id) = 12 AND ${prefix}run_id NOT GLOB '*[^0-9a-f]*'`;
+}
+
+// Bounded scalar projection of a stored event. The payload itself never leaves this expression:
+// only allowlisted kind/contract/result/verdict values are exposed to grouping, filtering and
+// finish-conflict signatures, and the full payload is joined back only for selected page rows.
+function executionScalarColumns(prefix: string): string {
+  const payload = `${prefix}payload`;
+  return `CASE WHEN ${prefix}type = 'run-started' THEN
+      CASE WHEN json_valid(${payload}) THEN
+        CASE WHEN json_extract(${payload}, '$.kind') IN ('build','spec','plan','diff','merge')
+          THEN json_extract(${payload}, '$.kind') END END END AS kind,
+    CASE WHEN ${prefix}type = 'run-finished' THEN
+      CASE WHEN json_valid(${payload}) THEN
+        CASE WHEN json_extract(${payload}, '$.contract_status') IN ('ok','missing','invalid','cancelled','interrupted')
+          THEN json_extract(${payload}, '$.contract_status') ELSE 'invalid' END
+      ELSE 'invalid' END END AS contract,
+    CASE WHEN ${prefix}type = 'run-finished' THEN
+      CASE WHEN json_valid(${payload}) THEN
+        CASE WHEN json_extract(${payload}, '$.result') IN ('success','failure','blocked')
+          THEN json_extract(${payload}, '$.result') END END END AS result,
+    CASE WHEN ${prefix}type = 'run-finished' THEN
+      CASE WHEN json_valid(${payload}) THEN
+        CASE WHEN json_extract(${payload}, '$.verdict') IN ('approve','approve-with-changes','reject')
+          THEN json_extract(${payload}, '$.verdict') END END END AS verdict`;
+}
+
+function executionEventCte(window: string, restriction: string): string {
+  return `ev AS (
+  SELECT id, project, run_id, type, role, emitter, ts, ${executionScalarColumns("")}
+  FROM workflow_events
+  WHERE ${window} AND ${executionEventBase("")}${restriction}
+)`;
+}
+
+// One SQL projection of "latest admissible start/finish + first valid start + latest valid
+// finish" per destination/run. `s`/`f`/`g` are IDs only; `fc` counts distinct bounded scalar
+// finish signatures for the selected attempt; `r` mirrors lib/executions.ts's mapper.
 const EXECUTION_GROUPED = `s AS (
   SELECT project, run_id, MAX(id) AS id FROM ev
   WHERE type = 'run-started' AND role IN ('builder','reviewer') AND emitter != 'jaxos'
@@ -2747,48 +2782,47 @@ const EXECUTION_GROUPED = `s AS (
   WHERE (type = 'run-started' AND role IN ('builder','reviewer') AND emitter != 'jaxos')
      OR (type = 'run-finished' AND role IN ('builder','reviewer'))
   GROUP BY project, run_id
+), fc AS (
+  SELECT ev.project, ev.run_id,
+    COUNT(DISTINCT ev.role || '|' || ev.contract || '|' ||
+      COALESCE(ev.result, '') || '|' || COALESCE(ev.verdict, '')) AS conflicts
+  FROM ev JOIN s ON s.project = ev.project AND s.run_id = ev.run_id
+  WHERE ev.type = 'run-finished' AND ev.role IN ('builder','reviewer')
+    AND (s.id IS NULL OR ev.id > s.id)
+  GROUP BY ev.project, ev.run_id
+), q AS (
+  SELECT g.project AS project, g.run_id AS run_id, g.latest_id AS latest_id,
+    s.id AS start_id, f.id AS finish_id, fs.id AS first_start_id, ff.id AS last_finish_id,
+    COALESCE(evs.role, evf.role) AS role,
+    evs.kind AS kind,
+    CASE WHEN f.id IS NOT NULL AND (s.id IS NULL OR f.id > s.id) THEN 1 ELSE 0 END AS terminal,
+    CASE WHEN f.id IS NOT NULL AND (s.id IS NULL OR f.id > s.id) THEN evf.contract ELSE NULL END AS contract,
+    CASE WHEN f.id IS NOT NULL AND (s.id IS NULL OR f.id > s.id) THEN evf.result ELSE NULL END AS result,
+    CASE WHEN f.id IS NOT NULL AND (s.id IS NULL OR f.id > s.id) THEN evf.verdict ELSE NULL END AS verdict,
+    CASE WHEN s.id IS NOT NULL AND f.id IS NOT NULL AND evs.role != evf.role THEN 1 ELSE 0 END AS role_conflict
+  FROM g
+  LEFT JOIN s ON s.project = g.project AND s.run_id = g.run_id
+  LEFT JOIN f ON f.project = g.project AND f.run_id = g.run_id
+  LEFT JOIN ev evs ON evs.id = s.id
+  LEFT JOIN ev evf ON evf.id = f.id
+  LEFT JOIN fs ON fs.project = g.project AND fs.run_id = g.run_id
+  LEFT JOIN ff ON ff.project = g.project AND ff.run_id = g.run_id
+), r AS (
+  SELECT q.*,
+    CASE
+      WHEN q.terminal = 0 THEN 'open'
+      WHEN q.contract IN ('cancelled','interrupted') THEN q.contract
+      WHEN q.role = 'builder' AND q.contract IN ('ok','missing','invalid') THEN COALESCE(q.result, 'unknown')
+      WHEN q.role = 'reviewer' AND q.contract = 'ok' THEN COALESCE(q.verdict, 'unknown')
+      ELSE 'unknown' END AS outcome,
+    CASE
+      WHEN q.kind = 'merge' THEN 1
+      WHEN q.kind = 'build' AND COALESCE(q.role, '') != 'builder' THEN 1
+      WHEN q.kind IN ('spec','plan','diff') AND COALESCE(q.role, '') != 'reviewer' THEN 1
+      WHEN q.role_conflict = 1 THEN 1
+      ELSE 0 END AS conflict
+  FROM q
 )`;
-
-const EXECUTION_SELECT = `SELECT g.project AS destination, g.run_id AS runId, g.latest_id AS latestId,
-  s.id AS startId, sr.role AS startRole, sr.ts AS startTs, sr.payload AS startPayload,
-  f.id AS finishId, fr.role AS finishRole, fr.ts AS finishTs, fr.payload AS finishPayload,
-  fsr.ts AS firstStartTs, ffr.ts AS lastFinishTs
-FROM g
-LEFT JOIN s ON s.project = g.project AND s.run_id = g.run_id
-LEFT JOIN ev sr ON sr.id = s.id
-LEFT JOIN f ON f.project = g.project AND f.run_id = g.run_id
-LEFT JOIN ev fr ON fr.id = f.id
-LEFT JOIN fs ON fs.project = g.project AND fs.run_id = g.run_id
-LEFT JOIN ev fsr ON fsr.id = fs.id
-LEFT JOIN ff ON ff.project = g.project AND ff.run_id = g.run_id
-LEFT JOIN ev ffr ON ffr.id = ff.id`;
-
-const EXECUTION_ROLE = "COALESCE(sr.role, fr.role)";
-const EXECUTION_KIND = `CASE WHEN sr.payload IS NOT NULL
-  AND json_extract(sr.payload, '$.kind') IN ('build','spec','plan','diff','merge')
-  THEN json_extract(sr.payload, '$.kind') ELSE NULL END`;
-const EXECUTION_TERMINAL = "CASE WHEN fr.id IS NOT NULL AND (s.id IS NULL OR fr.id > s.id) THEN 1 ELSE 0 END";
-const EXECUTION_CONTRACT = `CASE
-  WHEN fr.id IS NULL THEN NULL
-  WHEN fr.payload IS NULL THEN 'ok'
-  WHEN json_extract(fr.payload, '$.contract_status') IS NULL THEN 'ok'
-  WHEN json_extract(fr.payload, '$.contract_status') IN ('ok','missing','invalid','cancelled','interrupted')
-    THEN json_extract(fr.payload, '$.contract_status')
-  ELSE 'invalid' END`;
-const EXECUTION_OUTCOME = `CASE
-  WHEN ${EXECUTION_TERMINAL} = 0 THEN 'open'
-  WHEN ${EXECUTION_CONTRACT} IN ('cancelled','interrupted') THEN ${EXECUTION_CONTRACT}
-  WHEN ${EXECUTION_ROLE} = 'builder' AND ${EXECUTION_CONTRACT} IN ('ok','missing','invalid') THEN
-    CASE WHEN json_extract(fr.payload, '$.result') IN ('success','failure','blocked')
-         THEN json_extract(fr.payload, '$.result') ELSE 'unknown' END
-  WHEN ${EXECUTION_ROLE} = 'reviewer' AND ${EXECUTION_CONTRACT} = 'ok' THEN
-    CASE WHEN json_extract(fr.payload, '$.verdict') IN ('approve','approve-with-changes','reject')
-         THEN json_extract(fr.payload, '$.verdict') ELSE 'unknown' END
-  ELSE 'unknown' END`;
-const EXECUTION_CONFLICT = `(${EXECUTION_KIND} = 'merge'
-  OR (${EXECUTION_KIND} = 'build' AND COALESCE(${EXECUTION_ROLE}, '') != 'builder')
-  OR (${EXECUTION_KIND} IN ('spec','plan','diff') AND COALESCE(${EXECUTION_ROLE}, '') != 'reviewer')
-  OR (sr.id IS NOT NULL AND fr.id IS NOT NULL AND sr.role != fr.role))`;
 
 export type ExecutionPage = { rows: ExecutionRow[]; nextCursor: string | null };
 
@@ -2806,7 +2840,15 @@ type ExecutionQueryRow = {
   finishPayload: string | null;
   firstStartTs: string | null;
   lastFinishTs: string | null;
+  finishConflict: number;
 };
+
+// Every payload leaving this DB layer passes the one projectPayload boundary.
+function projectedStoredPayload(
+  type: "run-started" | "run-finished", raw: string | null,
+): Record<string, unknown> | null {
+  return raw === null ? null : projectPayload(type, parseStoredPayload(raw));
+}
 
 function executionFacts(row: ExecutionQueryRow): ExecutionFacts {
   return {
@@ -2815,14 +2857,15 @@ function executionFacts(row: ExecutionQueryRow): ExecutionFacts {
     latestEventId: row.latestId,
     start: row.startId === null ? null : {
       id: row.startId, role: row.startRole, ts: row.startTs ?? "",
-      payload: row.startPayload === null ? null : parseStoredPayload(row.startPayload),
+      payload: projectedStoredPayload("run-started", row.startPayload),
     },
     finish: row.finishId === null ? null : {
       id: row.finishId, role: row.finishRole, ts: row.finishTs ?? "",
-      payload: row.finishPayload === null ? null : parseStoredPayload(row.finishPayload),
+      payload: projectedStoredPayload("run-finished", row.finishPayload),
     },
     firstStartTs: row.firstStartTs,
     lastFinishTs: row.lastFinishTs,
+    finishConflict: row.finishConflict === 1,
   };
 }
 
@@ -2845,35 +2888,37 @@ function executionCursorCutoff(
 }
 
 // The exact statement queryExecutions runs. Exported so an independent check can EXPLAIN the
-// actual query planner decision instead of a lookalike SQL string.
+// actual query planner decision instead of a lookalike SQL string. The pre-limit CTEs carry IDs
+// and bounded scalars only; full payloads are joined only for the selected page rows.
 export function buildExecutionQuery(
   filters: ExecutionFilters, cursor: ExecutionCursor | null, fence: number, cutoffMs: number | null,
 ): { sql: string; params: unknown[] } {
-  const where: string[] = [`(${EXECUTION_KIND} IS NULL OR ${EXECUTION_KIND} != 'merge')`];
+  const where: string[] = ["(r.kind IS NULL OR r.kind != 'merge')"];
   const params: unknown[] = [fence];
 
-  if (filters.project !== null) {
-    where.push("g.project = ?");
+  let restriction = "";
+  if (filters.run !== null) {
+    restriction = " AND project = ? AND run_id = ?";
+    params.push(filters.run.project, filters.run.runId);
+  } else if (filters.project !== null) {
+    restriction = " AND project = ?";
     params.push(filters.project);
   }
-  if (filters.run !== null) {
-    where.push("g.project = ? AND g.run_id = ?");
-    params.push(filters.run.project, filters.run.runId);
-  }
+
   if (filters.kind === "build" || filters.kind === "review") {
-    where.push(`${EXECUTION_ROLE} = ?`);
+    where.push("r.role = ?");
     params.push(filters.kind === "build" ? "builder" : "reviewer");
-    where.push(`NOT ${EXECUTION_CONFLICT}`);
+    where.push("r.conflict = 0");
   } else if (filters.kind !== "all") {
-    where.push(`${EXECUTION_KIND} = ?`);
+    where.push("r.kind = ?");
     params.push(filters.kind);
-    where.push(`NOT ${EXECUTION_CONFLICT}`);
+    where.push("r.conflict = 0");
   }
   if (filters.state === "open" || filters.state === "finished") {
-    where.push(`${EXECUTION_TERMINAL} = ?`);
+    where.push("r.terminal = ?");
     params.push(filters.state === "open" ? 0 : 1);
   } else if (filters.state !== "all") {
-    where.push(`${EXECUTION_TERMINAL} = 1 AND ${EXECUTION_OUTCOME} = ?`);
+    where.push("r.terminal = 1 AND r.outcome = ?");
     params.push(filters.state);
   }
   if (cutoffMs !== null) {
@@ -2881,16 +2926,28 @@ export function buildExecutionQuery(
     params.push(cutoffMs);
   }
   if (cursor !== null) {
-    where.push(`(g.latest_id < ? OR (g.latest_id = ? AND (g.project > ? OR (g.project = ? AND g.run_id > ?))))`);
+    where.push(`(r.latest_id < ? OR (r.latest_id = ? AND (r.project > ? OR (r.project = ? AND r.run_id > ?))))`);
     params.push(cursor.lastId, cursor.lastId, cursor.project, cursor.project, cursor.runId);
   }
 
   const sql = `WITH
-  ${EXECUTION_EV},
+  ${executionEventCte("id <= ?", restriction)},
   ${EXECUTION_GROUPED}
-  ${EXECUTION_SELECT}
+  SELECT r.project AS destination, r.run_id AS runId, r.latest_id AS latestId,
+    r.start_id AS startId, evs.role AS startRole, evs.ts AS startTs, sr.payload AS startPayload,
+    r.finish_id AS finishId, evf.role AS finishRole, evf.ts AS finishTs, fr.payload AS finishPayload,
+    fsr.ts AS firstStartTs, ffr.ts AS lastFinishTs,
+    CASE WHEN COALESCE(fc.conflicts, 0) > 1 THEN 1 ELSE 0 END AS finishConflict
+  FROM r
+  LEFT JOIN ev evs ON evs.id = r.start_id
+  LEFT JOIN ev evf ON evf.id = r.finish_id
+  LEFT JOIN workflow_events sr ON sr.id = r.start_id
+  LEFT JOIN workflow_events fr ON fr.id = r.finish_id
+  LEFT JOIN ev fsr ON fsr.id = r.first_start_id
+  LEFT JOIN ev ffr ON ffr.id = r.last_finish_id
+  LEFT JOIN fc ON fc.project = r.project AND fc.run_id = r.run_id
   WHERE ${where.join(" AND ")}
-  ORDER BY g.latest_id DESC, g.project ASC, g.run_id ASC
+  ORDER BY r.latest_id DESC, r.project ASC, r.run_id ASC
   LIMIT ?`;
   params.push(filters.limit + 1);
   return { sql, params };
@@ -2940,7 +2997,9 @@ export type CurrentExecutionState = {
 };
 
 // Current start/finish facts for at most 20 requested runs, in ONE bounded statement. The
-// inspection route re-resolves client selectors through this, never trusting client facts.
+// inspection route re-resolves client selectors through this, never trusting client facts. The
+// statement selects grouped IDs/scalars only and joins payloads for the selected attempts, so a
+// legacy run with thousands of repeated-ID events still materializes one facts row.
 export function getCurrentRunStates(
   db: Database.Database,
   selectors: readonly ExecutionSelector[],
@@ -2948,52 +3007,66 @@ export function getCurrentRunStates(
   const bounded = selectors.slice(0, 20).filter((s) =>
     PROJECT_LABEL.test(s.destination) && RUN_ID_RE.test(s.runId));
   if (bounded.length === 0) return [];
-  const clause = bounded.map(() => "(project = ? AND run_id = ?)").join(" OR ");
-  const params = bounded.flatMap((s) => [s.destination, s.runId]);
-  const rows = db.prepare(
-    `SELECT id, project, run_id, type, role, emitter, ts,
-            CASE WHEN json_valid(payload) THEN payload ELSE NULL END AS payload
-     FROM workflow_events
-     WHERE run_id IS NOT NULL AND type IN ('run-started','run-finished') AND (${clause})
-     ORDER BY id`,
-  ).all(...params) as { id: number; project: string; run_id: string; type: string; role: string | null; emitter: string; ts: string; payload: string | null }[];
+  ensureTsMsFunction(db);
+  const values = bounded.map(() => "(?, ?, ?)").join(", ");
+  const params: unknown[] = [];
+  bounded.forEach((selector, index) => params.push(index, selector.destination, selector.runId));
 
-  return bounded.map((selector) => {
-    const events = rows.filter((r) => r.project === selector.destination && r.run_id === selector.runId);
-    let start: ExecutionEventFact | null = null;
-    let finish: ExecutionEventFact | null = null;
-    let firstStartId: number | null = null;
-    let firstStartTs: string | null = null;
-    let lastFinishTs: string | null = null;
-    let latestEventId = 0;
-    for (const e of events) {
-      const admissibleRole = e.role === "builder" || e.role === "reviewer";
-      if (!admissibleRole) continue;
-      if (e.type === "run-started" && e.emitter === "jaxos") continue;
-      latestEventId = Math.max(latestEventId, e.id);
-      if (e.type === "run-started") {
-        if (start === null || e.id > start.id) {
-          start = { id: e.id, role: e.role, ts: e.ts, payload: e.payload === null ? null : parseStoredPayload(e.payload) };
-        }
-        if (Number.isFinite(Date.parse(e.ts)) && (firstStartId === null || e.id < firstStartId)) {
-          firstStartId = e.id;
-          firstStartTs = e.ts;
-        }
-      } else if (e.type === "run-finished") {
-        if (finish === null || e.id > finish.id) {
-          finish = { id: e.id, role: e.role, ts: e.ts, payload: e.payload === null ? null : parseStoredPayload(e.payload) };
-        }
-        if (Number.isFinite(Date.parse(e.ts))) lastFinishTs = e.ts;
-      }
-    }
-    const row = events.length === 0 ? null : buildExecutionRow({
-      project: selector.destination, runId: selector.runId, latestEventId,
-      start, finish, firstStartTs, lastFinishTs,
+  const rows = db.prepare(
+    `WITH
+    sel(idx, project, run_id) AS (VALUES ${values}),
+    ev AS (
+      SELECT e.id, e.project, e.run_id, e.type, e.role, e.emitter, e.ts, ${executionScalarColumns("e.")}
+      FROM workflow_events e
+      JOIN sel ON e.project = sel.project AND e.run_id = sel.run_id
+      WHERE ${executionEventBase("e.")}
+    ),
+    ${EXECUTION_GROUPED}
+    SELECT sel.idx AS idx, r.project AS destination, r.run_id AS runId, r.latest_id AS latestId,
+      r.start_id AS startId, evs.role AS startRole, evs.ts AS startTs, sr.payload AS startPayload,
+      r.finish_id AS finishId, evf.role AS finishRole, evf.ts AS finishTs, fr.payload AS finishPayload,
+      fsr.ts AS firstStartTs, ffr.ts AS lastFinishTs,
+      CASE WHEN COALESCE(fc.conflicts, 0) > 1 THEN 1 ELSE 0 END AS finishConflict
+    FROM sel
+    LEFT JOIN r ON r.project = sel.project AND r.run_id = sel.run_id
+    LEFT JOIN ev evs ON evs.id = r.start_id
+    LEFT JOIN ev evf ON evf.id = r.finish_id
+    LEFT JOIN workflow_events sr ON sr.id = r.start_id
+    LEFT JOIN workflow_events fr ON fr.id = r.finish_id
+    LEFT JOIN ev fsr ON fsr.id = r.first_start_id
+    LEFT JOIN ev ffr ON ffr.id = r.last_finish_id
+    LEFT JOIN fc ON fc.project = r.project AND fc.run_id = r.run_id
+    ORDER BY sel.idx`,
+  ).all(...params) as {
+    idx: number; destination: string; runId: string; latestId: number | null;
+    startId: number | null; startRole: string | null; startTs: string | null; startPayload: string | null;
+    finishId: number | null; finishRole: string | null; finishTs: string | null; finishPayload: string | null;
+    firstStartTs: string | null; lastFinishTs: string | null; finishConflict: number;
+  }[];
+
+  return rows.map((row) => {
+    const startPayload = projectedStoredPayload("run-started", row.startPayload);
+    const finishPayload = projectedStoredPayload("run-finished", row.finishPayload);
+    const start: ExecutionEventFact | null = row.startId === null ? null : {
+      id: row.startId, role: row.startRole, ts: row.startTs ?? "", payload: startPayload,
+    };
+    const finish: ExecutionEventFact | null = row.finishId === null ? null : {
+      id: row.finishId, role: row.finishRole, ts: row.finishTs ?? "", payload: finishPayload,
+    };
+    const built = buildExecutionRow({
+      project: row.destination,
+      runId: row.runId,
+      latestEventId: row.latestId ?? 0,
+      start,
+      finish,
+      firstStartTs: row.firstStartTs,
+      lastFinishTs: row.lastFinishTs,
+      finishConflict: row.finishConflict === 1,
     });
     return {
-      destination: selector.destination,
-      runId: selector.runId,
-      row,
+      destination: row.destination,
+      runId: row.runId,
+      row: built,
       startEventId: start?.id ?? null,
       finishEventId: finish?.id ?? null,
       attemptStartedAt: start && Number.isFinite(Date.parse(start.ts)) ? start.ts : null,
