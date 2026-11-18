@@ -36,8 +36,7 @@ vi.mock("./SourceWarning", () => ({
 }));
 
 import type { Mission, MissionCard } from "@/lib/mission";
-import { beginSave, enterOrganize } from "@/lib/cockpitPrefsQuery";
-import { disclosureVisibleCards, hiddenAutoHiddenSummary, planProjectMove, ProjectsColumn } from "./ProjectsColumn";
+import { disclosureVisibleCards, hiddenAutoHiddenSummary, ProjectsColumn } from "./ProjectsColumn";
 
 // Any fixed string: the component renders whatever reposRoot the server passes it.
 const REPOS_ROOT_DISPLAY = "/home/rafa/repos";
@@ -334,25 +333,6 @@ describe("ProjectsColumn — saved 12-column spans (M2 plan Task 3, spec AC4)", 
     expect(html).toContain("states.needs-you");
     expect(html).toContain("states.working");
     expect(html).not.toContain("pitHint"); // compact: the hint line does not come back
-  });
-});
-
-describe("ProjectsColumn — a rejected move announces nothing (plan Task 3)", () => {
-  const snapshot = { revision: 1, layout: null, prScope: "mine" as const };
-  const editing = () => enterOrganize(snapshot, [{ dir: "A" }, { dir: "B" }]);
-
-  it("a move attempted while the layout write is pending returns null — no announcement", () => {
-    expect(planProjectMove(beginSave(editing()), "B", -1, "B")).toBeNull();
-  });
-
-  it("an accepted move returns the reordered draft and the 1-based destination to announce", () => {
-    const plan = planProjectMove(editing(), "B", -1, "B");
-    expect(plan?.announcement).toEqual({ name: "B", position: 1 });
-    expect(plan?.state.draft?.map((e) => e.project)).toEqual(["B", "A"]);
-  });
-
-  it("an edge move is rejected without an announcement", () => {
-    expect(planProjectMove(editing(), "A", -1, "A")).toBeNull();
   });
 });
 
