@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  boardCardKeyFor, boardCards, boardEntries, boardShowsKey, bucketOf, buildTicker, cardKey, sessionDisplay, stuckBoardCards, type MissionCard,
+  boardCardKeyFor, boardCards, boardEntries, boardShowsKey, bucketOf, buildTicker, cardKey, hiddenBoardCards, sessionDisplay, stuckBoardCards, type MissionCard,
 } from "./mission";
 import {
   missionOf, mkActivity, mkHubProject, mkPane, mkProject, mkSeat, mkSplit, runSummary, NOW, U,
@@ -455,6 +455,20 @@ describe("standalone single-session card (MOA-533)", () => {
     );
     expect(m.model.cards[0].visibility).toBe("hidden");
     expect(cardKey(m.model.cards[0])).toBe(key);
+  });
+
+  it("projects a hidden standalone project to its project controls", () => {
+    const m = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { runtime: "claude" })], split: mkSplit({ seats: [mkSeat({ sessionId: A, panes: [{ pane: "%1", tmuxIncarnation: "1:1" }] })] }) }) },
+      { prefs: { p: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } } },
+    );
+    const actual = m.model.cards[0];
+    const hidden = hiddenBoardCards(m.model.cards);
+    expect(actual).toMatchObject({ visibility: "hidden", key: `p#session:${A}`, scope: { kind: "session" }, projectContext: { hidden: true } });
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]).toMatchObject({ dir: "p", prefs: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } });
+    expect(hidden[0].key).toBeUndefined();
+    expect(hidden[0].scope).toBeUndefined();
   });
 
   it("maps a foreign result's destination to its discovered path and suppresses unresolvable links", () => {

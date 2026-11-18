@@ -215,6 +215,7 @@ export type MissionCard = {
 export type MissionProjectContext = {
   prefs: { pinned: boolean; hiddenAt: string | null };
   lastRun: MissionLastRun | null;
+  hidden?: true;
 };
 
 // One open agent session's card identity (spec §4 "Card key"): the agent conversation id
@@ -260,7 +261,14 @@ export function boardCards(cards: MissionCard[]): MissionCard[] {
 }
 
 export function hiddenBoardCards(cards: MissionCard[]): MissionCard[] {
-  return cards.flatMap((c) => c.visibility === "hidden" ? [c] : c.visibility === "visible" ? (c.group?.cards.filter((child) => child.visibility === "hidden") ?? []) : []);
+  return cards.flatMap((c) => {
+    const hidden = c.visibility === "hidden" ? [c] : c.visibility === "visible" ? (c.group?.cards.filter((child) => child.visibility === "hidden") ?? []) : [];
+    return hidden.map((card) => {
+      if (card.projectContext?.hidden !== true) return card;
+      const { key: _key, scope: _scope, ...projectCard } = card;
+      return { ...projectCard, prefs: card.projectContext.prefs };
+    });
+  });
 }
 
 export type BoardEntry =
@@ -1043,7 +1051,7 @@ function buildModel(
       card.key = seatKey(project.dir, split.seats[0]);
       const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;
       const seat = buildSeatCard(card, hp!, split.seats[0], wr && wr.ok ? wr.sessions : undefined, nowMs, hub?.ok ? hub.data.prefs?.[card.key] : undefined, locations);
-      seat.projectContext = { prefs, lastRun: toMissionLastRun(split.unownedLastRun, locations) };
+      seat.projectContext = { prefs, lastRun: toMissionLastRun(split.unownedLastRun, locations), ...(card.visibility === "hidden" ? { hidden: true } : {}) };
       return seat;
     }
     return card;
