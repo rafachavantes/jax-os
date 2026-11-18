@@ -113,13 +113,12 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
   const preferencesUnavailable = snapshotQuery.isError && snapshot === null;
   const [organize, setOrganize] = useState(initialOrganizeState);
   const [scopeBusy, setScopeBusy] = useState(false);
-  const [pendingScope, setPendingScope] = useState<PrScope | null>(null);
   const [scopeError, setScopeError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const layout = organize.draft ?? snapshot?.layout ?? null;
   const orderedCards = applySavedOrder(model.cards, layout);
   const widths = layoutMap(layout);
-  const prScope: PrScope = pendingScope ?? snapshot?.prScope ?? "mine";
+  const prScope: PrScope = snapshot?.prScope ?? "mine";
 
   function startOrganize() {
     if (!snapshot || organize.status === "saving") return;
@@ -181,13 +180,10 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
     if (scope === prScope || scopeBusy) return;
     setScopeBusy(true);
     setScopeError(null);
-    setPendingScope(scope);
     try {
       const next = await writes.savePrScope(scope);
       writes.apply(next);
-      setPendingScope(null);
     } catch (e) {
-      setPendingScope(null);
       setScopeError(e instanceof Error ? e.message : String(e));
     } finally {
       setScopeBusy(false);
