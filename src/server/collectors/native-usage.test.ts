@@ -280,3 +280,491 @@ describe("OpenCode accounting", () => {
     expect(out.item.cost).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bounded collection and the OpenCode helper boundary.
+
+import {
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  closeSync,
+  realpathSync as fsRealpathSync,
+  readdirSync as fsReaddirSync,
+  rmSync,
+  statSync as fsStatSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+  appendFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { runInNewContext } from "node:vm";
+import BetterSqlite3 from "better-sqlite3";
+import { parseSettings, type SettingsResult } from "../settings";
+import { getSourceStatuses, queryNativeUsage } from "../db/native-usage";
+import { openDb } from "../db";
+import {
+  discoverJsonlFiles,
+  OPENCODE_EXECUTABLE_SHA256,
+  OPENCODE_HELPER_SOURCE,
+  runNativeUsagePass,
+  type NativeCollectorDeps,
+  type NativeFs,
+  type StatLike,
+} from "./native-usage";
+
+const VERIFY_HOME = process.env.JAXOS_HOME || join(process.cwd(), ".local/verify-home");
+mkdirSync(VERIFY_HOME, { recursive: true });
+
+const nativeFs: NativeFs = {
+  statSync: (p) => fsStatSync(p),
+  realpathSync: (p) => fsRealpathSync(p),
+  readdirSync: (p) => fsReaddirSync(p, { withFileTypes: true }) as never,
+  openSync: (p) => openSync(p, "r"),
+  readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
+  closeSync: (fd) => closeSync(fd),
+};
+
+type MakeDepsOptions = {
+  enabled?: { claude: boolean; codex: boolean; opencode: boolean };
+  settings?: () => SettingsResult;
+  fs?: NativeFs;
+  exec?: NativeCollectorDeps["opencode"]["exec"];
+  stat?: (path: string) => StatLike | null;
+  hash?: (path: string) => string | null;
+  base?: string;
+  nowOffset?: number;
+};
+
+function makeDeps(opts: MakeDepsOptions = {}): NativeCollectorDeps {
+  const base = opts.base ?? mkdtempSync(join(VERIFY_HOME, "native-collector-"));
+  const claude = join(base, "claude");
+  const codex = join(base, "codex");
+  const data = join(base, "opencode-data");
+  mkdirSync(claude, { recursive: true });
+  mkdirSync(codex, { recursive: true });
+  mkdirSync(data, { recursive: true });
+  const enabled = opts.enabled ?? { claude: true, codex: true, opencode: true };
+  const hash = opts.hash ?? (() => OPENCODE_EXECUTABLE_SHA256);
+  const stat = opts.stat ?? (() => ({
+    dev: 1, ino: 1, size: 100, mtimeMs: Date.parse("2026-11-18T10:00:00Z"),
+    isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
+  }));
+  let clock = Date.parse("2026-11-18T12:00:00Z") + (opts.nowOffset ?? 0);
+  const emptyReply = JSON.stringify({
+    v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows: [],
+    next: { v1: { after: 0, ceiling: 0, done: true }, v2: { after: 0, ceiling: 0, done: true } },
+    warnings: {},
+  });
+  return {
+    db: openDb(":memory:"),
+    now: () => Math.floor(clock / 1000),
+    nowMs: () => (clock += 1),
+    settings: opts.settings ?? (() => parseSettings({ integrations: { agents: enabled } })),
+    fs: opts.fs ?? nativeFs,
+    roots: {
+      claude,
+      codex,
+      opencodeDataRoot: data,
+      opencodeDb: join(data, "opencode.db"),
+    },
+    opencode: {
+      executable: join(base, "fake-opencode"),
+      cwd: join(base, "adapter-cwd"),
+      configPath: join(base, "adapter-empty.toml"),
+      xdgConfigHome: join(base, "adapter-config"),
+      exec: opts.exec ?? (async () => ({ stdout: emptyReply })),
+      stat,
+      hash,
+    },
+  };
+}
+
+function writeClaude(deps: NativeCollectorDeps, rel: string, lines: string[]): string {
+  const path = join(deps.roots.claude, rel);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, lines.join("\n") + "\n");
+  return path;
+}
+
+const claudeLine = (id: string, extra: Record<string, unknown> = {}, usage: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    type: "assistant",
+    sessionId: "sess-1",
+    timestamp: "2026-11-17T10:00:00Z",
+    message: { id, model: "claude-sonnet-5-5", usage: { input_tokens: 10, output_tokens: 5, ...usage } },
+    ...extra,
+  });
+
+const codexLine = (responseId: string, threadId = "thread-1") =>
+  JSON.stringify({
+    type: "token_usage_record",
+    timestamp: "2026-11-17T10:00:00Z",
+    payload: {
+      session_id: "root-1", thread_id: threadId, turn_id: "turn-1", root_turn_id: "turn-1",
+      response_id: responseId,
+      usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+    },
+  });
+
+describe("bounded JSONL collection", () => {
+  it("collects lead and explicit child layouts, dedupes mirrors and warns unsupported layouts", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "proj-a/s1.jsonl", [claudeLine("msg-1")]);
+    writeClaude(deps, "proj-b/s2.jsonl", [claudeLine("msg-1")]);
+    writeClaude(deps, "proj-a/child/subagents/agent-1.jsonl", [claudeLine("msg-2", { agentId: "agent-1" })]);
+    writeFileSync(join(deps.roots.claude, "proj-a", "notes.txt"), "not jsonl");
+    await runNativeUsagePass(deps);
+    const snap = queryNativeUsage(deps.db, { period: 30, now: NOW });
+    expect(snap.totalTokens).toBe(30);
+    expect(snap.sessions).toEqual({ lead: 1, child: 1 });
+    expect(snap.sources.find((s) => s.source === "claude")?.state).toBe("available");
+    expect(snap.warnings).toContain("unsupported-layout");
+    deps.db.close();
+  });
+
+  it("rejects a symlink escaping the native root", async () => {
+    const deps = makeDeps();
+    const outside = join(deps.roots.claude, "..", "outside.jsonl");
+    writeFileSync(outside, claudeLine("msg-outside") + "\n");
+    mkdirSync(join(deps.roots.claude, "proj"), { recursive: true });
+    symlinkSync(outside, join(deps.roots.claude, "proj", "evil.jsonl"));
+    await runNativeUsagePass(deps);
+    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).totalTokens).toBe(0);
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "claude")?.warnings).toContain("symlink-escape");
+    deps.db.close();
+  });
+
+  it("caps files per pass, completes across passes, handles append and truncation idempotently", async () => {
+    const deps = makeDeps();
+    const files = Array.from({ length: 8 }, (_, i) => writeClaude(deps, `p/f${i}.jsonl`, [claudeLine(`msg-${i}`)]));
+    await runNativeUsagePass(deps);
+    let status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.state).toBe("indexing");
+    expect(status?.progress?.filesDone).toBeLessThanOrEqual(6);
+    await runNativeUsagePass(deps);
+    status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.state).toBe("available");
+    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).sessions.lead).toBe(1);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 8 });
+
+    appendFileSync(files[0], claudeLine("msg-appended", { sessionId: "sess-2" }) + "\n");
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 9 });
+
+    truncateSync(files[1], 0);
+    await runNativeUsagePass({ ...deps, now: () => NOW + 122 });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 9 });
+    deps.db.close();
+  });
+
+  it("skips an overlength line and still indexes the following valid line", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/long.jsonl", ["x".repeat(1024 * 1024 + 10), claudeLine("msg-after-long")]);
+    await runNativeUsagePass(deps);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "claude")?.warnings).toContain("line-too-long");
+    deps.db.close();
+  });
+
+  it("isolates a per-file read failure while the healthy source and file still advance", async () => {
+    const deps = makeDeps();
+    const good = writeClaude(deps, "p/good.jsonl", [claudeLine("msg-good")]);
+    writeClaude(deps, "p/bad.jsonl", [claudeLine("msg-bad")]);
+    const failingFs: NativeFs = {
+      ...nativeFs,
+      openSync: (path) => {
+        if (path.endsWith("bad.jsonl")) throw new Error("EACCES");
+        return openSync(path, "r");
+      },
+    };
+    deps.fs = failingFs;
+    await runNativeUsagePass(deps);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.warnings).toContain("read-failed");
+    expect(status?.state).toBe("indexing");
+    void good;
+    deps.db.close();
+  });
+
+  it("does not touch any native root when the source is disabled", async () => {
+    const deps = makeDeps({ enabled: { claude: false, codex: false, opencode: false } });
+    const spy: NativeFs = {
+      ...nativeFs,
+      statSync: () => { throw new Error("must not stat"); },
+      realpathSync: () => { throw new Error("must not realpath"); },
+      readdirSync: () => { throw new Error("must not readdir"); },
+    };
+    deps.fs = spy;
+    await runNativeUsagePass(deps);
+    expect(getSourceStatuses(deps.db).map((s) => s.state)).toEqual(["disabled", "disabled", "disabled"]);
+    deps.db.close();
+  });
+
+  it("reports an unreadable settings source as unavailable, never disabled", async () => {
+    const deps = makeDeps({ settings: () => ({ ok: false, error: "settings-unreadable" }) });
+    await runNativeUsagePass(deps);
+    const statuses = getSourceStatuses(deps.db);
+    expect(statuses.every((s) => s.state === "unavailable" && s.warnings.includes("settings-error"))).toBe(true);
+    deps.db.close();
+  });
+});
+
+describe("Codex discovery", () => {
+  it("accepts only the sessions/YYYY/MM/DD rollout layout", () => {
+    const deps = makeDeps();
+    const dir = join(deps.roots.codex, "2026", "11", "17");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "rollout-2026-11-17.jsonl"), codexLine("r1"));
+    writeFileSync(join(dir, "not-a-rollout.jsonl"), codexLine("r2"));
+    const found = discoverJsonlFiles(nativeFs, "codex", deps.roots.codex);
+    expect(found.files.map((f) => f.identity)).toEqual(["2026/11/17/rollout-2026-11-17.jsonl"]);
+    expect(found.warnings).toContain("unsupported-layout");
+    deps.db.close();
+  });
+
+  it("collects a Codex rollout and resolves its model from a turn context", async () => {
+    const deps = makeDeps();
+    const dir = join(deps.roots.codex, "2026", "11", "17");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "rollout-x.jsonl"), [
+      JSON.stringify({ type: "turn_context", timestamp: "2026-11-17T09:00:00Z", payload: { turn_id: "turn-1", root_turn_id: "turn-1", model: "gpt-5.6-luna" } }),
+      codexLine("r1"),
+    ].join("\n") + "\n");
+    await runNativeUsagePass(deps);
+    const snap = queryNativeUsage(deps.db, { period: 30, now: NOW });
+    expect(snap.totalTokens).toBe(10);
+    expect(snap.byModel.map((m) => m.name)).toEqual(["gpt-5.6-luna"]);
+    deps.db.close();
+  });
+});
+
+function runHelper(dbPath: string, state: unknown): { reply: Record<string, unknown>; opts: Record<string, unknown> } {
+  let stdout = "";
+  let opts: Record<string, unknown> = {};
+  class ShimDatabase {
+    db: BetterSqlite3.Database;
+    constructor(path: string, o: { readonly?: boolean; strict?: boolean }) {
+      opts = o as Record<string, unknown>;
+      this.db = new BetterSqlite3(path, { readonly: o.readonly === true, fileMustExist: true });
+    }
+    prepare(sql: string) {
+      return this.db.prepare(sql);
+    }
+  }
+  const sandbox = {
+    process: {
+      argv: ["bun", "--no-env-file", "x", "-e", OPENCODE_HELPER_SOURCE, dbPath, JSON.stringify(state)],
+      stdout: { write: (chunk: string) => { stdout += chunk; } },
+      exit: () => { throw new Error("__exit__"); },
+      versions: { bun: "1.3.14" },
+    },
+    require: (name: string) => {
+      if (name === "bun:sqlite") return { Database: ShimDatabase };
+      throw new Error("unexpected require");
+    },
+    Buffer,
+    JSON,
+    isFinite,
+    Error,
+  };
+  try {
+    runInNewContext(OPENCODE_HELPER_SOURCE, sandbox);
+  } catch (error) {
+    if ((error as Error).message !== "__exit__") throw error;
+  }
+  return { reply: JSON.parse(stdout) as Record<string, unknown>, opts };
+}
+
+function nativeOpenCodeDb(base: string, rows = 300): string {
+  const path = join(base, "opencode.db");
+  const db = new BetterSqlite3(path);
+  db.exec(`
+    CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT);
+    CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER, time_updated INTEGER, data TEXT);
+    CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+    CREATE TABLE migration (id INTEGER PRIMARY KEY);
+  `);
+  db.prepare("INSERT INTO session (id, parent_id) VALUES ('ses-1', 'ses-parent')").run();
+  const insertV1 = db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, 'ses-1', ?, ?, ?)");
+  for (let i = 1; i <= rows; i += 1) {
+    insertV1.run(`m${i}`, 1_794_909_600_000, 1_794_909_700_000, JSON.stringify({
+      role: "assistant", modelID: "model-x", providerID: "provider-x", agent: "build",
+      created: 1_794_909_600_000, cost: 1.5,
+      tokens: { input: 100, output: 30, reasoning: 7, read: 11, write: 5 },
+      content: "SENTINEL_SECRET_TEXT",
+    }));
+  }
+  db.prepare("INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES ('v2-1', 'ses-1', 'assistant', 1, ?, ?, ?)").run(
+    1_794_909_600_000, 1_794_909_800_000,
+    JSON.stringify({
+      type: "assistant", agent: "build", model: { id: "model-y", providerID: "provider-y" },
+      time: { created: 1_794_909_600_000, completed: 1_794_909_700_000 }, cost: 2.5,
+      tokens: { input: 100, output: 30, reasoning: 7, cache: { read: 11, write: 5 } },
+      content: "SENTINEL_SECRET_TEXT",
+    }),
+  );
+  db.close();
+  return path;
+}
+
+const freshCursor = { v: 1, v1: { after: 0, ceiling: 0, done: false }, v2: { after: 0, ceiling: 0, done: false } };
+
+describe("fixed OpenCode helper (NodeVM with a bun:sqlite shim)", () => {
+  it("pages both projections by rowid, stays readonly and emits no message text", () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-"));
+    const path = nativeOpenCodeDb(base);
+    const first = runHelper(path, freshCursor);
+    expect(first.opts).toEqual({ readonly: true, strict: true });
+    const reply = first.reply as {
+      ok: boolean; rows: { projection: string }[]; next: { v1: { after: number; done: boolean }; v2: { done: boolean } };
+      warnings: Record<string, number>;
+    };
+    expect(reply.ok).toBe(true);
+    expect(reply.rows.filter((r) => r.projection === "v1")).toHaveLength(256);
+    expect(reply.rows.filter((r) => r.projection === "v2")).toHaveLength(1);
+    expect(reply.next.v1.done).toBe(false);
+    expect(reply.next.v2.done).toBe(true);
+    expect(JSON.stringify(reply)).not.toContain("SENTINEL_SECRET_TEXT");
+
+    const second = runHelper(path, { v: 1, v1: reply.next.v1, v2: reply.next.v2 });
+    const secondReply = second.reply as { rows: { projection: string }[]; next: { v1: { done: boolean } } };
+    expect(secondReply.rows.filter((r) => r.projection === "v1")).toHaveLength(44);
+    expect(secondReply.next.v1.done).toBe(true);
+
+    const readonly = new BetterSqlite3(path, { readonly: true, fileMustExist: true });
+    expect(() => readonly.prepare("CREATE TABLE nope (x)").run()).toThrow();
+    readonly.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it("fails closed on a missing table, bad state and unsupported schema", () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-"));
+    const path = join(base, "empty.db");
+    const empty = new BetterSqlite3(path);
+    empty.exec("CREATE TABLE migration (id INTEGER PRIMARY KEY);");
+    empty.close();
+    expect(runHelper(path, freshCursor).reply).toEqual({ v: 1, ok: false, error: "schema-fail-closed" });
+    expect(runHelper(path, { v: 2 }).reply).toEqual({ v: 1, ok: false, error: "bad-state" });
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it("advances a malformed row's cursor while excluding its content", () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-"));
+    const path = nativeOpenCodeDb(base, 1);
+    const db = new BetterSqlite3(path);
+    db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('bad', 'ses-1', 1, 1, '{not-json')").run();
+    db.close();
+    const reply = runHelper(path, freshCursor).reply as { warnings: Record<string, number>; next: { v1: { after: number } } };
+    expect(reply.warnings.malformed).toBe(1);
+    expect(reply.next.v1.after).toBeGreaterThan(0);
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe("OpenCode source pass through the injected executor", () => {
+  const v2Row = {
+    projection: "v2", session_id: "ses-1", message_id: "msg-1", parent_session_id: null,
+    model_id: "model-x", provider_id: "provider-x", agent: "build",
+    created: 1_794_909_600_000, updated: 1_794_909_800_000,
+    cost: 12.5, input: 100, output: 30, reasoning: 7, cache_read: 11, cache_write: 5,
+  };
+  const reply = JSON.stringify({
+    v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows: [v2Row],
+    next: { v1: { after: 0, ceiling: 0, done: true }, v2: { after: 1, ceiling: 1, done: true } },
+    warnings: {},
+  });
+
+  function withDbFile(opts: MakeDepsOptions = {}): NativeCollectorDeps {
+    const deps = makeDeps(opts);
+    writeFileSync(deps.roots.opencodeDb, "");
+    return deps;
+  }
+
+  it("passes the exact fixed argv, cwd and narrow environment, and persists real usage", async () => {
+    let seen: { file: string; args: string[]; opts: { cwd: string; env: Record<string, string> } } | null = null;
+    const deps = withDbFile({
+      exec: async (file, args, execOpts) => {
+        seen = { file, args, opts: execOpts };
+        return { stdout: reply };
+      },
+    });
+    await runNativeUsagePass(deps);
+    expect(seen).not.toBeNull();
+    const call = seen as unknown as { file: string; args: string[]; opts: { cwd: string; env: Record<string, string> } };
+    expect(call.file).toBe(deps.opencode.executable);
+    expect(call.args[0]).toBe("--no-env-file");
+    expect(call.args[1]).toBe(`--config=${deps.opencode.configPath}`);
+    expect(call.args[2]).toBe(`--cwd=${deps.opencode.cwd}`);
+    expect(call.args[3]).toBe("-e");
+    expect(call.args[4]).toBe(OPENCODE_HELPER_SOURCE);
+    expect(call.args[5]).toBe(fsRealpathSync(deps.roots.opencodeDb));
+    expect(JSON.parse(call.args[6])).toEqual(freshCursor);
+    expect(call.opts.cwd).toBe(deps.opencode.cwd);
+    expect(call.opts.env).toEqual({ BUN_BE_BUN: "1", XDG_CONFIG_HOME: deps.opencode.xdgConfigHome });
+    const snap = queryNativeUsage(deps.db, { period: 30, now: NOW });
+    expect(snap.totalTokens).toBe(153);
+    expect(snap.sources.find((s) => s.source === "opencode")?.state).toBe("available");
+    deps.db.close();
+  });
+
+  it("treats a changed executable identity with a mismatched hash as incompatible, retaining last-good rows", async () => {
+    let calls = 0;
+    let hashCalls = 0;
+    let size = 100;
+    const deps = withDbFile({
+      exec: async () => { calls += 1; return { stdout: reply }; },
+      stat: () => ({
+        dev: 1, ino: 1, size, mtimeMs: Date.parse("2026-11-18T10:00:00Z"),
+        isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
+      }),
+      hash: () => { hashCalls += 1; return size === 100 ? OPENCODE_EXECUTABLE_SHA256 : "deadbeef"; },
+    });
+    await runNativeUsagePass(deps);
+    expect(calls).toBe(1);
+    expect(hashCalls).toBe(1);
+    size = 101;
+    await runNativeUsagePass({ ...deps, now: () => Math.floor((Date.parse("2026-11-18T13:00:00Z")) / 1000) });
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "opencode");
+    expect(status?.state).toBe("incompatible");
+    expect(status?.warnings).toContain("executable-mismatch");
+    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).totalTokens).toBe(153);
+    deps.db.close();
+  });
+
+  it("isolates helper schema failure as incompatible and does not throw", async () => {
+    const deps = withDbFile({
+      exec: async () => ({ stdout: JSON.stringify({ v: 1, ok: false, error: "schema-fail-closed" }) }),
+    });
+    await runNativeUsagePass(deps);
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "opencode");
+    expect(status).toMatchObject({ state: "incompatible" });
+    expect(status?.warnings).toContain("schema-fail-closed");
+    deps.db.close();
+  });
+
+  it("skips a completed source until its 60s refresh cadence elapses", async () => {
+    let calls = 0;
+    const deps = withDbFile({ exec: async () => { calls += 1; return { stdout: reply }; } });
+    await runNativeUsagePass(deps);
+    const later = { ...deps, now: () => Math.floor(Date.parse("2026-11-18T12:00:30Z") / 1000) };
+    await runNativeUsagePass(later);
+    expect(calls).toBe(1);
+    const afterMinute = { ...deps, now: () => Math.floor(Date.parse("2026-11-18T12:01:01Z") / 1000) };
+    await runNativeUsagePass(afterMinute);
+    expect(calls).toBe(2);
+    deps.db.close();
+  });
+
+  it("does not let a malformed reply advance or delete last-good state", async () => {
+    const deps = withDbFile({ exec: async () => ({ stdout: "not-json" }) });
+    await runNativeUsagePass(deps);
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "opencode");
+    expect(status?.state).toBe("unavailable");
+    expect(status?.warnings).toContain("malformed-reply");
+    deps.db.close();
+  });
+});

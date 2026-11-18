@@ -196,9 +196,27 @@ function recordSessionFact(db: Database.Database, item: NativeUsageItem): void {
   ).run(item.sessionId, item.projection ?? "", item.updatedTs);
 }
 
+function resolveCodexModel(db: Database.Database, item: NativeUsageItem): NativeUsageItem {
+  if (
+    item.harness !== "codex" || item.model !== null ||
+    !item.fileIdentity || !item.turnId || !item.rootTurnId
+  ) return item;
+  const context = db
+    .prepare(
+      "SELECT model, conflict FROM native_usage_contexts WHERE file_identity = ? AND turn_id = ? AND root_turn_id = ?",
+    )
+    .get(item.fileIdentity, item.turnId, item.rootTurnId) as
+    | { model: string | null; conflict: number }
+    | undefined;
+  if (!context) return item;
+  if (context.conflict === 1) return { ...item, modelConflict: true };
+  return context.model === null ? item : { ...item, model: context.model };
+}
+
 export function upsertNativeUsageItem(db: Database.Database, item: NativeUsageItem): "inserted" | "updated" {
-  const existing = getItemRow(db, item.harness, item.itemId);
-  const merged = existing ? mergeNativeItem(rowToItem(existing), item) : item;
+  const resolved = resolveCodexModel(db, item);
+  const existing = getItemRow(db, resolved.harness, resolved.itemId);
+  const merged = existing ? mergeNativeItem(rowToItem(existing), resolved) : resolved;
   writeItem(db, merged);
   recordSessionFact(db, merged);
   return existing ? "updated" : "inserted";
@@ -348,6 +366,69 @@ export function applyFileBatch(
 }
 
 export type SourceStatus = SourceCoverage;
+
+export type OpenCodeTableCursor = { after: number; ceiling: number; done: boolean };
+export type OpenCodeCursorState = { v: 1; v1: OpenCodeTableCursor; v2: OpenCodeTableCursor };
+
+const FRESH_CURSOR = (): OpenCodeCursorState => ({
+  v: 1,
+  v1: { after: 0, ceiling: 0, done: false },
+  v2: { after: 0, ceiling: 0, done: false },
+});
+
+function parseCursorState(raw: unknown): OpenCodeCursorState {
+  const out = FRESH_CURSOR();
+  if (typeof raw !== "object" || raw === null) return out;
+  const state = raw as Record<string, unknown>;
+  if (state.v !== 1) return out;
+  for (const key of ["v1", "v2"] as const) {
+    const table = state[key];
+    if (typeof table !== "object" || table === null) continue;
+    const t = table as Record<string, unknown>;
+    const after = t.after;
+    const ceiling = t.ceiling;
+    if (typeof after === "number" && Number.isSafeInteger(after) && after >= 0) out[key].after = after;
+    if (typeof ceiling === "number" && Number.isSafeInteger(ceiling) && ceiling >= 0) out[key].ceiling = ceiling;
+    out[key].done = t.done === true;
+  }
+  return out;
+}
+
+export function getOpenCodeCursor(db: Database.Database): OpenCodeCursorState {
+  const row = db
+    .prepare("SELECT progress FROM native_usage_sources WHERE source = 'opencode'")
+    .get() as { progress: string } | undefined;
+  if (!row) return FRESH_CURSOR();
+  try {
+    return parseCursorState(JSON.parse(row.progress));
+  } catch {
+    return FRESH_CURSOR();
+  }
+}
+
+export function setOpenCodeCursor(
+  db: Database.Database,
+  state: OpenCodeCursorState,
+  now: number,
+): void {
+  db.prepare(
+    `INSERT INTO native_usage_sources (source, state, last_refresh, warnings, files_done, files_total, progress, updated_at)
+     VALUES ('opencode', 'indexing', NULL, '[]', 0, 0, ?, ?)
+     ON CONFLICT (source) DO UPDATE SET progress = excluded.progress, updated_at = excluded.updated_at`,
+  ).run(JSON.stringify(state), now);
+}
+
+export function persistOpenCodeBatch(
+  db: Database.Database,
+  items: NativeUsageItem[],
+  state: OpenCodeCursorState,
+  now: number,
+): void {
+  db.transaction(() => {
+    for (const item of items) upsertNativeUsageItem(db, item);
+    setOpenCodeCursor(db, state, now);
+  })();
+}
 
 export function setSourceStatus(
   db: Database.Database,

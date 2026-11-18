@@ -1,3 +1,24 @@
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync as nodeStat, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, sep } from "node:path";
+import { promisify } from "node:util";
+import type Database from "better-sqlite3";
+import {
+  applyFileBatch,
+  getFileCheckpoint,
+  getOpenCodeCursor,
+  getSourceStatuses,
+  persistOpenCodeBatch,
+  setSourceStatus,
+  type FileCheckpoint,
+  type NativeContextRow,
+  type OpenCodeCursorState,
+} from "../db/native-usage";
+import { readGeneralSettings, type SettingsResult } from "../settings";
+import { jaxosHome } from "../env";
+
 export const HARNESSES = ["claude", "codex", "opencode"] as const;
 export type Harness = (typeof HARNESSES)[number];
 
@@ -386,4 +407,901 @@ export function accountingSummary(items: NativeUsageItem[]): {
     allOutput += item.allOutput;
   }
   return { allInput, allOutput, headline: allInput + allOutput };
+}
+
+// ---------------------------------------------------------------------------
+// Bounded native discovery and incremental collection.
+// System access is injected: tests never read real transcript roots or run the
+// installed OpenCode binary.
+
+export const OPENCODE_EXECUTABLE = "/home/rafa/.opencode/bin/opencode";
+export const OPENCODE_EXECUTABLE_SHA256 =
+  "9ca0b9953d49997601655e54f846a3efa464f237e47c6f1b04716d0f2e64c4c2";
+export const OPENCODE_SCHEMA_VERSION = "1.18.34";
+
+const JSONL_BUDGET = {
+  maxFilesPerPass: 6,
+  maxBytesPerSource: 16 * 1024 * 1024,
+  stepBytes: 2 * 1024 * 1024,
+  chunkBytes: 32 * 1024,
+  softDeadlineMs: 200,
+  wallDeadlineMs: 1200,
+  maxLineBytes: 1024 * 1024,
+  maxDiscoveryEntries: 64,
+};
+const OPENCODE_BUDGET = { timeoutMs: 2000, maxReplyBytes: 256 * 1024, refreshMs: 60_000 };
+
+export type StatLike = {
+  dev: number | bigint;
+  ino: number | bigint;
+  size: number;
+  mtimeMs: number;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+};
+export type DirEntryLike = {
+  name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+};
+export type NativeFs = {
+  statSync(path: string): StatLike;
+  realpathSync(path: string): string;
+  readdirSync(path: string): DirEntryLike[];
+  openSync(path: string): number;
+  readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number): number;
+  closeSync(fd: number): void;
+};
+export type NativeExecResult = { stdout: string };
+export type NativeExec = (
+  file: string,
+  args: string[],
+  opts: { cwd: string; env: Record<string, string>; timeout: number; maxBuffer: number },
+) => Promise<NativeExecResult>;
+
+export type NativeCollectorDeps = {
+  db: Database.Database;
+  now: () => number;
+  nowMs: () => number;
+  settings: () => SettingsResult;
+  fs: NativeFs;
+  roots: { claude: string; codex: string; opencodeDataRoot: string; opencodeDb: string };
+  opencode: {
+    executable: string;
+    cwd: string;
+    configPath: string;
+    xdgConfigHome: string;
+    exec: NativeExec;
+    stat: (path: string) => StatLike | null;
+    hash: (path: string) => string | null;
+  };
+};
+
+export type DiscoveryCandidate = {
+  identity: string;
+  path: string;
+  child: boolean;
+  mtimeMs: number;
+};
+
+const base = (p: string) => (p.endsWith(sep) ? p : p + sep);
+
+function insideRealRoot(fs: NativeFs, root: string, path: string): string | null {
+  try {
+    const realRoot = fs.realpathSync(root);
+    const real = fs.realpathSync(path);
+    return real === realRoot || real.startsWith(base(realRoot)) ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+function dirEntries(fs: NativeFs, path: string): DirEntryLike[] {
+  try {
+    return fs.readdirSync(path).sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return [];
+  }
+}
+
+function warningBag(): { add(code: string): void; values: string[] } {
+  const set = new Set<string>();
+  return {
+    add: (code) => set.add(code),
+    get values() {
+      return [...set].sort();
+    },
+  };
+}
+
+export function discoverJsonlFiles(
+  fs: NativeFs,
+  source: "claude" | "codex",
+  root: string,
+): { files: DiscoveryCandidate[]; warnings: string[]; truncated: boolean } {
+  const warnings = warningBag();
+  const files: DiscoveryCandidate[] = [];
+  let visited = 0;
+  const stat = (path: string) => {
+    try {
+      return fs.statSync(path);
+    } catch {
+      return null;
+    }
+  };
+  const push = (path: string, identity: string, child: boolean) => {
+    const info = stat(path);
+    if (!info || !info.isFile()) {
+      warnings.add("unsupported-layout");
+      return;
+    }
+    files.push({ path, identity, child, mtimeMs: info.mtimeMs });
+  };
+
+  if (source === "claude") {
+    for (const project of dirEntries(fs, root)) {
+      if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
+      visited += 1;
+      const projectPath = join(root, project.name);
+      if (!project.isDirectory() || !insideRealRoot(fs, root, projectPath)) {
+        warnings.add("unsupported-layout");
+        continue;
+      }
+      for (const entry of dirEntries(fs, projectPath)) {
+        if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
+        visited += 1;
+        const entryPath = join(projectPath, entry.name);
+        if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".jsonl")) {
+          const real = insideRealRoot(fs, root, entryPath);
+          if (!real) warnings.add("symlink-escape");
+          else push(real, `${project.name}/${entry.name}`, false);
+        } else if (entry.isDirectory()) {
+          const subagents = join(entryPath, "subagents");
+          if (!insideRealRoot(fs, root, subagents)) {
+            warnings.add("unsupported-layout");
+            continue;
+          }
+          for (const child of dirEntries(fs, subagents)) {
+            if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
+            visited += 1;
+            if ((!child.isFile() && !child.isSymbolicLink()) || !child.name.endsWith(".jsonl")) {
+              warnings.add("unsupported-layout");
+              continue;
+            }
+            const childPath = join(subagents, child.name);
+            const real = insideRealRoot(fs, root, childPath);
+            if (!real) warnings.add("symlink-escape");
+            else push(real, `${project.name}/${entry.name}/subagents/${child.name}`, true);
+          }
+        } else {
+          warnings.add("unsupported-layout");
+        }
+      }
+    }
+  } else {
+    const queue: { path: string; depth: number }[] = [{ path: root, depth: 0 }];
+    while (queue.length > 0 && visited < JSONL_BUDGET.maxDiscoveryEntries) {
+      const current = queue.shift()!;
+      for (const entry of dirEntries(fs, current.path)) {
+        if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
+        visited += 1;
+        const entryPath = join(current.path, entry.name);
+        if (current.depth < 3 && entry.isDirectory()) {
+          queue.push({ path: entryPath, depth: current.depth + 1 });
+          continue;
+        }
+        if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+          const real = insideRealRoot(fs, root, entryPath);
+          if (!real) warnings.add("symlink-escape");
+          else push(real, real.slice(base(fs.realpathSync(root)).length), false);
+        } else {
+          warnings.add("unsupported-layout");
+        }
+      }
+    }
+  }
+  return {
+    files,
+    warnings: warnings.values,
+    truncated: visited >= JSONL_BUDGET.maxDiscoveryEntries,
+  };
+}
+
+type ParsedJsonl = {
+  items: NativeUsageItem[];
+  contexts: NativeContextRow[];
+  warnings: string[];
+  lineCount: number;
+};
+
+function parseJsonlContent(
+  content: string,
+  source: "claude" | "codex",
+  opts: { child: boolean; fileIdentity: string; now: number },
+): ParsedJsonl {
+  const warnings = warningBag();
+  const items: NativeUsageItem[] = [];
+  const contexts: NativeContextRow[] = [];
+  let lineCount = 0;
+  for (const line of content.split("\n")) {
+    if (line.trim() === "") continue;
+    lineCount += 1;
+    if (source === "claude") {
+      const out = parseClaudeLine(line, { child: opts.child, now: opts.now });
+      if ("item" in out) items.push(out.item);
+      else if (out.skip !== "not-assistant") warnings.add(out.skip);
+    } else {
+      const out = parseCodexLine(line, { fileIdentity: opts.fileIdentity, now: opts.now });
+      if ("item" in out) items.push(out.item);
+      else if ("context" in out) contexts.push(out.context);
+      else warnings.add(out.skip);
+    }
+  }
+  return { items, contexts, warnings: warnings.values, lineCount };
+}
+
+export type JsonlPassResult = {
+  items: number;
+  filesProcessed: number;
+  filesTotal: number;
+  filesDone: number;
+  warnings: string[];
+  indexing: boolean;
+};
+
+export function runJsonlSourcePass(
+  deps: NativeCollectorDeps,
+  source: "claude" | "codex",
+): JsonlPassResult {
+  const root = source === "claude" ? deps.roots.claude : deps.roots.codex;
+  const warnings = warningBag();
+  const discovery = discoverJsonlFiles(deps.fs, source, root);
+  for (const warning of discovery.warnings) warnings.add(warning);
+  if (discovery.truncated) warnings.add("discovery-truncated");
+
+  const known = new Map<string, DiscoveryCandidate>();
+  for (const candidate of discovery.files) known.set(candidate.identity, candidate);
+  for (const checkpoint of (deps.db.prepare("SELECT identity FROM native_usage_files WHERE source = ?").all(source) as { identity: string }[])) {
+    if (known.has(checkpoint.identity)) continue;
+    const path = join(root, checkpoint.identity);
+    const real = insideRealRoot(deps.fs, root, path);
+    if (!real) {
+      warnings.add("missing-file");
+      continue;
+    }
+    try {
+      const info = deps.fs.statSync(real);
+      if (info.isFile()) known.set(checkpoint.identity, { identity: checkpoint.identity, path: real, child: false, mtimeMs: info.mtimeMs });
+    } catch {
+      warnings.add("missing-file");
+    }
+  }
+
+  const today = utcDay(deps.now());
+  const todayStart = Date.parse(`${today}T00:00:00Z`);
+  const evaluated = [...known.values()].map((candidate) => {
+    const cp = getFileCheckpoint(deps.db, source, candidate.identity);
+    const info = deps.fs.statSync(candidate.path);
+    const current =
+      cp !== undefined && cp.generation === `${info.dev}:${info.ino}` && cp.done &&
+      cp.size === info.size && cp.mtime === Math.floor(info.mtimeMs / 1000);
+    return { candidate, cp, info, current, processedAt: cp?.processedAt ?? 0 };
+  });
+  const pending = evaluated
+    .filter((entry) => !entry.current)
+    .sort((a, b) => {
+      const at = a.candidate.mtimeMs >= todayStart ? 1 : 0;
+      const bt = b.candidate.mtimeMs >= todayStart ? 1 : 0;
+      if (at !== bt) return bt - at;
+      return a.processedAt - b.processedAt;
+    });
+
+  const wallStart = deps.nowMs();
+  let bytes = 0;
+  let filesProcessed = 0;
+  let itemCount = 0;
+  const maxFiles = JSONL_BUDGET.maxFilesPerPass;
+  for (const { candidate, cp, info } of pending) {
+    if (filesProcessed >= maxFiles) break;
+    if (bytes >= JSONL_BUDGET.maxBytesPerSource) break;
+    if (deps.nowMs() - wallStart >= JSONL_BUDGET.wallDeadlineMs) break;
+    const generation = `${info.dev}:${info.ino}`;
+    const sameGeneration = cp !== undefined && cp.generation === generation;
+    const startOffset = sameGeneration && cp.offset <= info.size ? cp.offset : 0;
+    let offset = startOffset;
+    let lineStart = startOffset;
+    let carry = Buffer.alloc(0);
+    let carryStart = startOffset;
+    let done = false;
+    let discarding = false;
+    let deadlineHit = false;
+    let readFailed = false;
+    let fileBytes = 0;
+    let fd: number | null = null;
+    const items: NativeUsageItem[] = [];
+    const contexts: NativeContextRow[] = [];
+    try {
+      fd = deps.fs.openSync(candidate.path);
+      while (fileBytes < JSONL_BUDGET.stepBytes && bytes < JSONL_BUDGET.maxBytesPerSource) {
+        const size = Math.min(
+          JSONL_BUDGET.chunkBytes,
+          JSONL_BUDGET.stepBytes - fileBytes,
+          JSONL_BUDGET.maxBytesPerSource - bytes,
+        );
+        if (size <= 0) break;
+        const chunk = Buffer.alloc(size);
+        const read = deps.fs.readSync(fd, chunk, 0, size, offset);
+        if (read <= 0) {
+          done = true;
+          break;
+        }
+        const chunkStart = offset;
+        offset += read;
+        fileBytes += read;
+        bytes += read;
+        if (carry.length === 0) carryStart = chunkStart;
+        carry = Buffer.concat([carry, chunk.subarray(0, read)]);
+        for (;;) {
+          const newline = carry.indexOf(10);
+          if (newline < 0) {
+            if (carry.length > JSONL_BUDGET.maxLineBytes) {
+              warnings.add("line-too-long");
+              carry = Buffer.alloc(0);
+              carryStart = offset;
+              discarding = true;
+            }
+            break;
+          }
+          const nextLineStart = carryStart + newline + 1;
+          if (discarding) {
+            discarding = false;
+            carry = carry.subarray(newline + 1);
+            carryStart = nextLineStart;
+            lineStart = nextLineStart;
+            continue;
+          }
+          const lineBytes = carry.subarray(0, newline);
+          carry = carry.subarray(newline + 1);
+          lineStart = nextLineStart;
+          carryStart = nextLineStart;
+          if (lineBytes.length > JSONL_BUDGET.maxLineBytes) {
+            warnings.add("line-too-long");
+          } else {
+            const parsed = parseJsonlContent(lineBytes.toString("utf8"), source, {
+              child: candidate.child,
+              fileIdentity: candidate.identity,
+              now: deps.now(),
+            });
+            items.push(...parsed.items);
+            contexts.push(...parsed.contexts);
+            for (const warning of parsed.warnings) warnings.add(warning);
+          }
+          if (deps.nowMs() - wallStart > JSONL_BUDGET.softDeadlineMs) {
+            deadlineHit = true;
+            break;
+          }
+        }
+        if (deadlineHit) break;
+        if (deps.nowMs() - wallStart >= JSONL_BUDGET.wallDeadlineMs) break;
+      }
+    } catch {
+      warnings.add("read-failed");
+      readFailed = true;
+    } finally {
+      if (fd !== null) {
+        try {
+          deps.fs.closeSync(fd);
+        } catch {
+          /* released by the process exit path */
+        }
+      }
+    }
+    if (readFailed) continue;
+    const consumed = done ? offset : lineStart;
+    const checkpoint: FileCheckpoint = {
+      source,
+      identity: candidate.identity,
+      generation,
+      dev: String(info.dev),
+      ino: String(info.ino),
+      size: info.size,
+      mtime: Math.floor(info.mtimeMs / 1000),
+      offset: consumed,
+      done,
+      processedAt: deps.now(),
+    };
+    try {
+      applyFileBatch(deps.db, {
+        checkpoint,
+        expectedOffset: sameGeneration ? cp!.offset : null,
+        items,
+        contexts,
+        now: deps.now(),
+      });
+    } catch {
+      warnings.add("checkpoint-conflict");
+      continue;
+    }
+    filesProcessed += 1;
+    itemCount += items.length;
+  }
+
+  const indexing = pending.length - filesProcessed > 0 || discovery.truncated;
+  return {
+    items: itemCount,
+    filesProcessed,
+    filesTotal: evaluated.length,
+    filesDone: evaluated.length - pending.length + filesProcessed,
+    warnings: warnings.values,
+    indexing,
+  };
+}
+
+export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
+  function emit(value){ process.stdout.write(JSON.stringify(value)); }
+  function fail(code){ emit({v:1,ok:false,error:code}); return; }
+  var argv = process.argv || [];
+  if (argv.length < 2) { fail("bad-argv"); return; }
+  var dbPath = argv[argv.length - 2];
+  var stateRaw = argv[argv.length - 1];
+  if (typeof dbPath !== "string" || dbPath.indexOf("\u0000") !== -1 || Buffer.byteLength(dbPath, "utf8") > 4096) { fail("bad-path"); return; }
+  var state;
+  try { state = JSON.parse(stateRaw); } catch (e) { fail("bad-state"); return; }
+  if (!state || state.v !== 1 || typeof state.v1 !== "object" || typeof state.v2 !== "object") { fail("bad-state"); return; }
+  var Database;
+  try { Database = require("bun:sqlite").Database; } catch (e) { fail("runtime-fail"); return; }
+  var db;
+  try { db = new Database(dbPath, { readonly: true, strict: true }); } catch (e) { fail("open-failed"); return; }
+  var tables;
+  try { tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(function(r){ return r.name; }); }
+  catch (e) { fail("schema-fail-closed"); return; }
+  var required = ["message", "migration", "session", "session_message"];
+  for (var ti = 0; ti < required.length; ti += 1) { if (tables.indexOf(required[ti]) < 0) { fail("schema-fail-closed"); return; } }
+  var need = {
+    session: ["id", "parent_id"],
+    message: ["id", "session_id", "time_created", "time_updated", "data"],
+    session_message: ["id", "session_id", "type", "time_created", "time_updated", "data"]
+  };
+  for (var nt in need) {
+    var cols;
+    try { cols = db.prepare("PRAGMA table_info(" + nt + ")").all().map(function(r){ return r.name; }); }
+    catch (e) { fail("schema-fail-closed"); return; }
+    for (var ci = 0; ci < need[nt].length; ci += 1) { if (cols.indexOf(need[nt][ci]) < 0) { fail("schema-fail-closed"); return; } }
+  }
+  var MAX_ROWS = 256, PAGE_BYTES = 245760, TOTAL_CAP = 262144, MAX_ID = 256, MAX_ROW = 8192;
+  function safeCount(v){ return typeof v === "number" && isFinite(v) && Math.floor(v) === v && v >= 0 && v <= 9007199254740991 ? v : null; }
+  function idOk(v){ if (typeof v !== "string" || v.length === 0) return false; var n = 0; for (var i = 0; i < v.length; i += 1) { var c = v.charCodeAt(i); if (c >= 0xD800 && c <= 0xDBFF && i + 1 < v.length) { var d = v.charCodeAt(i + 1); if (d >= 0xDC00 && d <= 0xDFFF) i += 1; } n += 1; if (n > MAX_ID) return false; } return n > 0; }
+  function obj(v){ return v && typeof v === "object" && !Array.isArray(v) ? v : null; }
+  function num(v){ return typeof v === "number" && isFinite(v) && v >= 0 ? v : null; }
+  var warnings = { malformed: 0, overlength: 0, unsupported: 0, budget: 0 };
+  var rows = [];
+  var rids = [];
+  var bytesOut = 0;
+  function project(projection, row){
+    var data;
+    try { data = JSON.parse(row.data); } catch (e) { warnings.malformed += 1; return null; }
+    if (!obj(data)) { warnings.malformed += 1; return null; }
+    var modelId = null, providerId = null, agent = null, cost = null, tokens = null, created = null;
+    if (projection === "v2") {
+      var model = obj(data.model); tokens = obj(data.tokens); var time = obj(data.time);
+      modelId = model && typeof model.id === "string" ? model.id : null;
+      providerId = model && typeof model.providerID === "string" ? model.providerID : null;
+      agent = typeof data.agent === "string" ? data.agent : null;
+      cost = num(data.cost);
+      created = time && typeof time.created === "number" ? time.created : row.time_created;
+    } else {
+      if (data.role !== "assistant") return null;
+      tokens = obj(data.tokens);
+      modelId = typeof data.modelID === "string" ? data.modelID : null;
+      providerId = typeof data.providerID === "string" ? data.providerID : null;
+      agent = typeof data.agent === "string" ? data.agent : null;
+      cost = num(data.cost);
+      created = typeof data.created === "number" ? data.created : row.time_created;
+    }
+    if (!idOk(row.id) || !idOk(row.session_id)) { warnings.overlength += 1; return null; }
+    if (!tokens) { warnings.unsupported += 1; return null; }
+    var input, output, reasoning, cacheRead, cacheWrite;
+    if (projection === "v2") {
+      var cache = obj(tokens.cache) || {};
+      input = safeCount(tokens.input); output = safeCount(tokens.output);
+      reasoning = tokens.reasoning === undefined ? 0 : safeCount(tokens.reasoning);
+      cacheRead = cache.read === undefined ? 0 : safeCount(cache.read);
+      cacheWrite = cache.write === undefined ? 0 : safeCount(cache.write);
+    } else {
+      input = safeCount(tokens.input); output = safeCount(tokens.output);
+      reasoning = tokens.reasoning === undefined ? 0 : safeCount(tokens.reasoning);
+      cacheRead = tokens.read === undefined ? 0 : safeCount(tokens.read);
+      cacheWrite = tokens.write === undefined ? 0 : safeCount(tokens.write);
+    }
+    if (input === null || output === null || reasoning === null || cacheRead === null || cacheWrite === null) { warnings.unsupported += 1; return null; }
+    if (typeof created !== "number" || !isFinite(created) || created <= 0) { warnings.unsupported += 1; return null; }
+    return {
+      projection: projection,
+      session_id: row.session_id,
+      message_id: row.id,
+      parent_session_id: row.parent_id === undefined ? null : row.parent_id,
+      model_id: modelId,
+      provider_id: providerId,
+      agent: agent,
+      created: created,
+      updated: typeof row.time_updated === "number" ? row.time_updated : created,
+      cost: cost,
+      input: input,
+      output: output,
+      reasoning: reasoning,
+      cache_read: cacheRead,
+      cache_write: cacheWrite
+    };
+  }
+  function ceilingOf(tableName){
+    try { var row = db.prepare("SELECT MAX(rowid) AS c FROM " + tableName).get(); return row && typeof row.c === "number" ? row.c : 0; }
+    catch (e) { return 0; }
+  }
+  function pageOnce(projection, tableName, cursor){
+    var next = { after: cursor.after, ceiling: cursor.ceiling, done: cursor.done };
+    if (!next.ceiling) next.ceiling = ceilingOf(tableName);
+    if (next.done) { return next; }
+    var sql = projection === "v2"
+      ? "SELECT m.rowid AS rid, m.id AS id, m.session_id AS session_id, m.time_created AS time_created, m.time_updated AS time_updated, m.data AS data, s.parent_id AS parent_id FROM session_message m LEFT JOIN session s ON s.id = m.session_id WHERE m.type = 'assistant' AND m.rowid > ? AND m.rowid <= ? ORDER BY m.rowid LIMIT 256"
+      : "SELECT m.rowid AS rid, m.id AS id, m.session_id AS session_id, m.time_created AS time_created, m.time_updated AS time_updated, m.data AS data, s.parent_id AS parent_id FROM message m LEFT JOIN session s ON s.id = m.session_id WHERE m.rowid > ? AND m.rowid <= ? ORDER BY m.rowid LIMIT 256";
+    var page;
+    try { page = db.prepare(sql).all(cursor.after, next.ceiling); }
+    catch (e) { throw new Error("query-failed"); }
+    if (!page || page.length === 0) { next.done = true; return next; }
+    for (var i = 0; i < page.length; i += 1) {
+      var row = page[i];
+      var projected = project(projection, row);
+      if (projected) {
+        var encoded = JSON.stringify(projected);
+        var size = Buffer.byteLength(encoded, "utf8");
+        if (size > MAX_ROW) { warnings.unsupported += 1; }
+        else if (bytesOut + size > PAGE_BYTES) { warnings.budget += 1; return next; }
+        else { rows.push(projected); rids.push({ projection: projection, rid: row.rid }); bytesOut += size; }
+      }
+      next.after = row.rid;
+    }
+    if (next.after >= next.ceiling) next.done = true;
+    return next;
+  }
+  var nextState;
+  try {
+    nextState = { v1: pageOnce("v1", "message", state.v1), v2: pageOnce("v2", "session_message", state.v2) };
+  } catch (e) { fail("query-failed"); return; }
+  var reply = {
+    v: 1,
+    ok: true,
+    runtime: process.versions && process.versions.bun ? "Bun " + process.versions.bun : "unknown",
+    schema: "1.18.34",
+    rows: rows,
+    next: nextState,
+    warnings: warnings
+  };
+  var encodedReply = JSON.stringify(reply);
+  while (Buffer.byteLength(encodedReply, "utf8") > TOTAL_CAP && reply.rows.length > 0) {
+    var dropped = rids.pop();
+    reply.rows.pop();
+    if (dropped) {
+      var last = 0;
+      for (var ri = 0; ri < rids.length; ri += 1) { if (rids[ri].projection === dropped.projection) last = rids[ri].rid; }
+      nextState[dropped.projection].after = last;
+      nextState[dropped.projection].done = false;
+    }
+    encodedReply = JSON.stringify(reply);
+  }
+  if (Buffer.byteLength(encodedReply, "utf8") > TOTAL_CAP) { fail("output-overflow"); return; }
+  emit(reply);
+})();`;
+
+const executableIdentityCache = new Map<string, string>();
+
+function openCodeExecutableState(
+  deps: NativeCollectorDeps,
+): { ok: true } | { ok: false; state: SourceState; warning: string } {
+  let info: StatLike | null;
+  try {
+    info = deps.opencode.stat(deps.opencode.executable);
+  } catch {
+    info = null;
+  }
+  if (!info || !info.isFile()) return { ok: false, state: "unavailable", warning: "executable-missing" };
+  const identity = `${deps.opencode.executable}:${info.dev}:${info.ino}:${info.size}:${Math.floor(info.mtimeMs)}`;
+  let hash = executableIdentityCache.get(identity);
+  if (!hash) {
+    hash = deps.opencode.hash(deps.opencode.executable) ?? "";
+    executableIdentityCache.set(identity, hash);
+  }
+  if (hash !== OPENCODE_EXECUTABLE_SHA256) {
+    return { ok: false, state: "incompatible", warning: "executable-mismatch" };
+  }
+  return { ok: true };
+}
+
+type OpenCodeReply = {
+  v: 1;
+  ok: true;
+  runtime: string;
+  schema: string;
+  rows: unknown[];
+  next: { v1: OpenCodeCursorState["v1"]; v2: OpenCodeCursorState["v2"] };
+  warnings: Record<string, number>;
+};
+
+function parseOpenCodeReply(stdout: string): OpenCodeReply | null {
+  if (Buffer.byteLength(stdout, "utf8") > OPENCODE_BUDGET.maxReplyBytes) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+  if (!isObj(raw) || raw.v !== 1 || raw.ok !== true || !Array.isArray(raw.rows)) return null;
+  const next = raw.next;
+  if (!isObj(next) || !isObj(next.v1) || !isObj(next.v2)) return null;
+  const sanitize = (cursor: Record<string, unknown>): OpenCodeCursorState["v1"] | null => {
+    const { after, ceiling, done } = cursor;
+    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) return null;
+    if (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 0) return null;
+    return { after, ceiling, done: done === true };
+  };
+  const v1 = sanitize(next.v1);
+  const v2 = sanitize(next.v2);
+  if (!v1 || !v2) return null;
+  const warnings: Record<string, number> = {};
+  if (isObj(raw.warnings)) {
+    for (const [key, value] of Object.entries(raw.warnings)) {
+      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) warnings[key] = value;
+    }
+  }
+  return { v: 1, ok: true, runtime: typeof raw.runtime === "string" ? raw.runtime : "", schema: typeof raw.schema === "string" ? raw.schema : "", rows: raw.rows, next: { v1, v2 }, warnings };
+}
+
+export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<{
+  items: number;
+  warnings: string[];
+  state: SourceState;
+  lastRefresh: number;
+  progress: { filesDone: number; filesTotal: number } | null;
+}> {
+  const executable = openCodeExecutableState(deps);
+  if (!executable.ok) {
+    return { items: 0, warnings: [executable.warning], state: executable.state, lastRefresh: 0, progress: null };
+  }
+  const dbPath = deps.roots.opencodeDb;
+  if (dbPath.includes("\u0000") || Buffer.byteLength(dbPath, "utf8") > 4096) {
+    return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
+  }
+  const real = insideRealRoot(deps.fs, deps.roots.opencodeDataRoot, dbPath);
+  if (!real) return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
+  try {
+    const info = deps.fs.statSync(real);
+    if (!info.isFile()) throw new Error("not-file");
+  } catch {
+    return { items: 0, warnings: ["db-missing"], state: "unavailable", lastRefresh: 0, progress: null };
+  }
+
+  const cursor = getOpenCodeCursor(deps.db);
+  const argv = [
+    "--no-env-file",
+    `--config=${deps.opencode.configPath}`,
+    `--cwd=${deps.opencode.cwd}`,
+    "-e",
+    OPENCODE_HELPER_SOURCE,
+    real,
+    JSON.stringify(cursor),
+  ];
+  let stdout: string;
+  try {
+    const result = await deps.opencode.exec(deps.opencode.executable, argv, {
+      cwd: deps.opencode.cwd,
+      env: { BUN_BE_BUN: "1", XDG_CONFIG_HOME: deps.opencode.xdgConfigHome },
+      timeout: OPENCODE_BUDGET.timeoutMs,
+      maxBuffer: OPENCODE_BUDGET.maxReplyBytes,
+    });
+    stdout = result.stdout;
+  } catch {
+    return { items: 0, warnings: ["exec-failed"], state: "unavailable", lastRefresh: 0, progress: null };
+  }
+
+  let parsedRaw: unknown;
+  try {
+    parsedRaw = JSON.parse(stdout.trim());
+  } catch {
+    parsedRaw = null;
+  }
+  if (isObj(parsedRaw) && parsedRaw.ok === false) {
+    const error = typeof parsedRaw.error === "string" ? parsedRaw.error : "helper-failed";
+    const state: SourceState = error === "schema-fail-closed" || error === "runtime-fail" ? "incompatible" : "unavailable";
+    return { items: 0, warnings: [error], state, lastRefresh: 0, progress: null };
+  }
+  const reply = parseOpenCodeReply(stdout);
+  if (!reply) {
+    return { items: 0, warnings: ["malformed-reply"], state: "unavailable", lastRefresh: 0, progress: null };
+  }
+
+  const items: NativeUsageItem[] = [];
+  const warnings = warningBag();
+  for (const row of reply.rows) {
+    const out = parseOpenCodeRow(row, { now: deps.now() });
+    if ("item" in out) items.push(out.item);
+    else warnings.add(out.skip);
+  }
+  for (const [key, count] of Object.entries(reply.warnings)) {
+    if (count > 0) warnings.add(key);
+  }
+  const next: OpenCodeCursorState = { v: 1, v1: reply.next.v1, v2: reply.next.v2 };
+  const complete = next.v1.done && next.v2.done;
+  persistOpenCodeBatch(deps.db, items, complete ? { v: 1, v1: { after: 0, ceiling: 0, done: false }, v2: { after: 0, ceiling: 0, done: false } } : next, deps.now());
+  const doneRows = next.v1.after + next.v2.after;
+  const totalRows = next.v1.ceiling + next.v2.ceiling;
+  return {
+    items: items.length,
+    warnings: warnings.values,
+    state: complete ? "available" : "indexing",
+    lastRefresh: deps.now(),
+    progress: totalRows > 0 ? { filesDone: doneRows, filesTotal: totalRows } : null,
+  };
+}
+
+const inFlight = new WeakMap<Database.Database, Map<Harness, Promise<void>>>();
+
+function settingsSources(settings: SettingsResult): Record<Harness, boolean> | null {
+  if (!settings.ok) return null;
+  const agents = settings.data.integrations.agents;
+  return { claude: agents.claude, codex: agents.codex, opencode: agents.opencode };
+}
+
+async function runOneSource(deps: NativeCollectorDeps, source: Harness, enabled: boolean): Promise<void> {
+  const now = deps.now();
+  const statuses = getSourceStatuses(deps.db);
+  const previous = statuses.find((s) => s.source === source);
+  if (!enabled) {
+    setSourceStatus(deps.db, { source, state: "disabled", lastRefresh: previous?.lastRefresh ?? null, progress: null, warnings: [] }, now);
+    return;
+  }
+  if (
+    previous &&
+    previous.state === "available" &&
+    previous.lastRefresh !== null &&
+    now - previous.lastRefresh < OPENCODE_BUDGET.refreshMs / 1000
+  ) {
+    return;
+  }
+  if (source === "opencode") {
+    const result = await runOpenCodeSourcePass(deps);
+    setSourceStatus(
+      deps.db,
+      {
+        source,
+        state: result.state,
+        lastRefresh: result.lastRefresh || previous?.lastRefresh || null,
+        progress: result.progress,
+        warnings: result.warnings,
+      },
+      deps.now(),
+    );
+    return;
+  }
+  try {
+    const result = runJsonlSourcePass(deps, source);
+    const state: SourceState =
+      result.indexing
+        ? "indexing"
+        : result.filesTotal === 0
+          ? "empty"
+          : "available";
+    setSourceStatus(
+      deps.db,
+      {
+        source,
+        state,
+        lastRefresh: now,
+        progress: { filesDone: result.filesDone, filesTotal: result.filesTotal },
+        warnings: result.warnings,
+      },
+      deps.now(),
+    );
+  } catch {
+    setSourceStatus(
+      deps.db,
+      {
+        source,
+        state: "unavailable",
+        lastRefresh: previous?.lastRefresh ?? null,
+        progress: previous?.progress ?? null,
+        warnings: ["pass-failed"],
+      },
+      deps.now(),
+    );
+  }
+}
+
+export async function runNativeUsagePass(deps: NativeCollectorDeps): Promise<void> {
+  let map = inFlight.get(deps.db);
+  if (!map) {
+    map = new Map();
+    inFlight.set(deps.db, map);
+  }
+  const settings = deps.settings();
+  const enabled = settingsSources(settings);
+  if (enabled === null) {
+    for (const source of HARNESSES) {
+      setSourceStatus(deps.db, { source, state: "unavailable", lastRefresh: null, progress: null, warnings: ["settings-error"] }, deps.now());
+    }
+    return;
+  }
+  await Promise.all(
+    HARNESSES.map(async (source) => {
+      const running = map!.get(source);
+      if (running) return running;
+      const pass = runOneSource(deps, source, enabled[source]).finally(() => map!.delete(source));
+      map!.set(source, pass);
+      return pass;
+    }),
+  );
+}
+
+export function defaultNativeCollectorDeps(db: Database.Database): NativeCollectorDeps {
+  const home = homedir();
+  const dataRoot = process.env.XDG_DATA_HOME || join(home, ".local", "share");
+  const adapterRoot = join(jaxosHome(), "native-opencode");
+  const cwd = join(adapterRoot, "cwd");
+  const configPath = join(adapterRoot, "empty.toml");
+  const xdgConfigHome = join(adapterRoot, "config");
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(xdgConfigHome, { recursive: true });
+  if (!existsSync(configPath)) writeFileSync(configPath, "", "utf8");
+  const pExecFile = promisify(execFile);
+  const fs: NativeFs = {
+    statSync: (path) => nodeStat(path),
+    realpathSync: (path) => realpathSync(path),
+    readdirSync: (path) => readdirSync(path, { withFileTypes: true }) as DirEntryLike[],
+    openSync: (path) => openSync(path, "r"),
+    readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
+    closeSync: (fd) => closeSync(fd),
+  };
+  return {
+    db,
+    now: () => Math.floor(Date.now() / 1000),
+    nowMs: () => Date.now(),
+    settings: readGeneralSettings,
+    fs,
+    roots: {
+      claude: join(home, ".claude", "projects"),
+      codex: join(home, ".codex", "sessions"),
+      opencodeDataRoot: join(dataRoot, "opencode"),
+      opencodeDb: join(dataRoot, "opencode", "opencode.db"),
+    },
+    opencode: {
+      executable: OPENCODE_EXECUTABLE,
+      cwd,
+      configPath,
+      xdgConfigHome,
+      exec: async (file, args, opts) => {
+        const { stdout } = await pExecFile(file, args, {
+          cwd: opts.cwd,
+          env: opts.env as NodeJS.ProcessEnv,
+          timeout: opts.timeout,
+          maxBuffer: opts.maxBuffer,
+          encoding: "utf8",
+        });
+        return { stdout: String(stdout) };
+      },
+      stat: (path) => {
+        try {
+          return nodeStat(path);
+        } catch {
+          return null;
+        }
+      },
+      hash: (path) => {
+        try {
+          return createHash("sha256").update(readFileSync(path)).digest("hex");
+        } catch {
+          return null;
+        }
+      },
+    },
+  };
 }

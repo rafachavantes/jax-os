@@ -312,6 +312,7 @@ export const MIGRATIONS: readonly string[] = [
     warnings    TEXT NOT NULL DEFAULT '[]',
     files_done  INTEGER NOT NULL DEFAULT 0,
     files_total INTEGER NOT NULL DEFAULT 0,
+    progress    TEXT NOT NULL DEFAULT '{}',
     updated_at  INTEGER NOT NULL
   );`,
 ];
