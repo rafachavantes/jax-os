@@ -91,7 +91,7 @@ describe("inspectExecutionRows", () => {
        VALUES ('2026-11-18T11:59:50.000Z', ?, ?, 'builder', 'run-started', 'deterministic', 'wrapper', ?, 'local')`,
     ).run(RUN, DEST, JSON.stringify({ kind: "build", session: "jax-alpha-build" }));
     const rows = await inspectExecutionRows(db, [{ destination: DEST, runId: RUN, startEventId: startId }], {
-      reposRoot: root, now: () => NOW, lastGood: new Map(),
+      reposRoot: root, now: () => NOW, lastGood: new Map(), tmux: async () => "",
     });
     expect(rows[0].refreshNeeded).toBe(true);
     expect(rows[0].observation).toEqual({ status: "not-checked" });
@@ -103,6 +103,7 @@ describe("inspectExecutionRows", () => {
       reposRoot: join(tmpdir(), "jaxos-does-not-exist-xyz"),
       now: () => NOW,
       lastGood: new Map(),
+      tmux: async () => "",
     });
     expect(rows[0].branch).toBeNull();
     expect(rows[0].warnings).toContain("root-unavailable");
