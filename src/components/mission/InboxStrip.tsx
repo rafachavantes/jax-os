@@ -162,10 +162,10 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
     ) : null;
     if (row.transport === "tmux") {
       return (
-        <div className="flex items-center gap-2.5 text-[13px]">
+        <div className="flex flex-wrap items-center gap-2.5 text-[13px]">
           <RowIcon kind="attention" />
-          <span className="truncate font-semibold text-ink">{row.name}</span>
-          <span className="text-body-ink">{t(row.status === "blocked" ? "blocked" : "needsInput")}</span>
+          <span className="min-w-0 max-w-full truncate font-semibold text-ink">{row.name}</span>
+          <span className="flex-none whitespace-nowrap text-body-ink">{t(row.status === "blocked" ? "blocked" : "needsInput")}</span>
           {respond}
           <span className="ml-auto flex-none font-mono text-[11px] text-muted">{row.pane}</span>
           <a href="/tmux" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
@@ -175,10 +175,10 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
       );
     }
     return (
-      <div className="flex items-center gap-2.5 text-[13px]">
+      <div className="flex flex-wrap items-center gap-2.5 text-[13px]">
         <RowIcon kind="attention" />
-        <span className="truncate font-semibold text-ink">{row.name}</span>
-        <span className="text-body-ink">{t("needsInput")}</span>
+        <span className="min-w-0 max-w-full truncate font-semibold text-ink">{row.name}</span>
+        <span className="flex-none whitespace-nowrap text-body-ink">{t("needsInput")}</span>
         {respond}
         <span className="ml-auto flex-none font-mono text-[11px] text-muted" title={row.threadId}>{t("codexSession")}</span>
       </div>
