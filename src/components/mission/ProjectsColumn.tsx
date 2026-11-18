@@ -111,8 +111,15 @@ export function announceDrop(
   target: string,
   t: (key: string, values?: Record<string, unknown>) => string,
 ): { next: OrganizeState; announcement: string | null } {
+  const before = state.draft;
+  if (before === null) return { next: state, announcement: null };
   const next = draftDrop(state, dragged, target);
-  if (next.draft === null || next.draft === state.draft) return { next: state, announcement: null };
+  if (next.draft === null || next.draft === before) return { next: state, announcement: null };
+  // A drop can produce a fresh array with the SAME order (dragging an entry onto the one right
+  // after it): still a no-op, so announce nothing.
+  if (next.draft.length === before.length && next.draft.every((e, i) => e.project === before[i].project)) {
+    return { next: state, announcement: null };
+  }
   const position = next.draft.findIndex((e) => e.project === dragged);
   if (position < 0) return { next: state, announcement: null };
   const name = cards.find((c) => c.dir === dragged)?.name ?? dragged;

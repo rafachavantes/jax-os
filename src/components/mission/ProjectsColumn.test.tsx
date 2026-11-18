@@ -441,6 +441,14 @@ describe("announceDrop — pointer drop uses the same live-region announcement a
     expect(next).toBe(state);
   });
 
+  it("dropping an entry onto the one immediately after it changes nothing and announces nothing", () => {
+    const state = organize();
+    const { next, announcement } = announceDrop(state, cards, "a", "b", t);
+    expect(announcement).toBeNull();
+    expect(next).toBe(state);
+    expect(state.draft?.map((e) => e.project)).toEqual(["a", "b", "c"]);
+  });
+
   it("an unknown identity and a missing draft are rejected before announcing", () => {
     const state = organize();
     expect(announceDrop(state, cards, "unknown", "a", t)).toEqual({ next: state, announcement: null });
