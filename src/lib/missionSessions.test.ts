@@ -420,7 +420,7 @@ describe("standalone single-session card (MOA-533)", () => {
       },
       {
         projects: [mkProject({ dir: "p", name: "Project P", builder: "codex", branch: "stale-branch", stage: "test", now: "stale-now" })],
-        prs: { p: { ok: true, truncated: false, prs: [{ number: 7, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
+        prs: { p: { ok: true, truncated: false, prs: [{ number: 7, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
       },
     );
   }

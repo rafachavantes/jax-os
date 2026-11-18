@@ -111,7 +111,7 @@ export type MissionCardPr =
   | { status: "disabled" }
   | { status: "loading" }
   | { status: "error"; error: string }
-  | { status: "ok"; count: number; ci: CiState; truncated: boolean; newest: { number: number; ci: CiState } | null };
+  | { status: "ok"; count: number; ci: CiState; truncated: boolean; newest: { number: number; ci: CiState; author?: string; reviewDecision?: string; isDraft?: boolean; mergeStateStatus?: string } | null };
 
 export type MissionActiveRun = HubActiveRun & {
   stage: "build" | "review" | null;
@@ -397,7 +397,6 @@ export type MissionReadiness =
 export type Mission = { readiness: MissionReadiness; model: MissionModel };
 
 const FRESHNESS_WARNING_THRESHOLD = 20;
-const INBOX_PR_CAP = 5;
 const EMPTY_SCAN: ProjectScan = { projects: [], skipped: 0, reposRoot: "" }; // spec §7.3's own pinned empty value
 
 // Same formula as evaluateStaleness (src/server/db/workflows.ts): declaredAt + max(2min, 20% of
@@ -874,7 +873,7 @@ function sortEpochMs(c: MissionCard): number {
 // Item 12 (round 3): the footer's single "most relevant" PR — newest updatedAt wins, ties
 // broken by the higher number; if NO pr in the list has a finite updatedAt, the highest
 // number wins instead (never null unless the list itself is empty).
-export function newestPr(prs: Pr[]): { number: number; ci: CiState } | null {
+export function newestPr(prs: Pr[]): { number: number; ci: CiState; author: string; reviewDecision: string; isDraft: boolean } | null {
   if (prs.length === 0) return null;
   const withDates = prs.filter((pr) => Number.isFinite(Date.parse(pr.updatedAt)));
   const pool = withDates.length > 0 ? withDates : prs;
@@ -886,7 +885,7 @@ export function newestPr(prs: Pr[]): { number: number; ci: CiState } | null {
     }
     return a.number > b.number ? a : b;
   });
-  return { number: best.number, ci: best.ciState };
+  return { number: best.number, ci: best.ciState, author: best.author, reviewDecision: best.reviewDecision, isDraft: best.isDraft };
 }
 
 // The join, over whatever IS known. `hub`/`prs` being undefined or failed never prevents a
@@ -1107,21 +1106,10 @@ function buildModel(
     c.pendingQuestions.map((q) => ({ kind: "question" as const, dir: c.dir, name: c.name, pane: q.pane, eventId: q.eventId, question: q.questions[0]?.question ?? "", ...(q.answerable === false ? { answerable: false as const } : {}) })),
   );
 
-  const mergeReady: { dir: string; name: string; pr: Pr }[] = [];
-  if (prs !== undefined && prs.ok) {
-    for (const card of inboxCards) {
-      const result = prs.data[card.dir];
-      if (!result || !result.ok) continue;
-      for (const pr of result.prs) {
-        if (pr.mergeReady) mergeReady.push({ dir: card.dir, name: card.name, pr });
-      }
-    }
-  }
-  mergeReady.sort((a, b) => a.dir.localeCompare(b.dir) || a.pr.number - b.pr.number);
-  const prRows: InboxRow[] = mergeReady
-    .slice(0, INBOX_PR_CAP)
-    .map((x) => ({ kind: "pr" as const, dir: x.dir, name: x.name, number: x.pr.number, url: x.pr.url, ci: x.pr.ciState }));
-  const inboxPrRemainder = Math.max(0, mergeReady.length - INBOX_PR_CAP);
+  // M2 strict attention: ordinary PRs (even green/no-CI "merge-ready" ones) are informational
+  // Activity, never a Waiting for You request. The count, preview and full set all agree because
+  // they are this same gate/question/attention dataset.
+  const inboxPrRemainder = 0;
   const prTruncatedAny = cards.some((c) => c.pr.status === "ok" && c.pr.truncated);
   const hiddenCount = hiddenBoardCards(cards).length;
   const autoHiddenCount = cards.filter((c) => c.visibility === "autoHidden").length;
@@ -1132,8 +1120,8 @@ function buildModel(
     uncardedProjectNames,
     historicalTruncated,
     skipped: projects.skipped,
-    inbox: [...gateRows, ...questionRows, ...visibleAttentionRows, ...prRows],
-    inboxTotalCount: gateRows.length + questionRows.length + visibleAttentionRows.length + mergeReady.length,
+    inbox: [...gateRows, ...questionRows, ...visibleAttentionRows],
+    inboxTotalCount: gateRows.length + questionRows.length + visibleAttentionRows.length,
     inboxPrRemainder,
     prTruncatedAny,
     codexSource: hubMapCodexSource,
@@ -1455,7 +1443,7 @@ const TICKER_CAP = 30;
 export type TickerItem =
   | ({ source: "event"; dir: string; name: string } & MissionTimelineEntry)
   | { source: "commit"; dir: string; name: string; ts: string; author: string; message: string; hash: string }
-  | { source: "pr"; dir: string; name: string; ts: string; number: number; url: string; ci: CiState; title: string };
+  | { source: "pr"; dir: string; name: string; ts: string; number: number; url: string; ci: CiState; title: string; author?: string; reviewDecision?: string; isDraft?: boolean };
 
 // ---- Ticker sentence (spec §9, Decisions 19/21) — a pure key lookup, EventTicker-only. -------
 // TimelineEntryText (ProjectCard.tsx's own expanded timeline) is untouched — it renders raw
@@ -1516,11 +1504,20 @@ export function buildTicker(
     items.push({ source: "commit", dir: commit.repo, name: commit.repo, ts: new Date(commit.epoch * 1000).toISOString(),
       author: commit.author, message: commit.message, hash: commit.hash });
   }
+  // One result feeds every Activity row (spec "Relevant PR scope"): dedupe the same provider
+  // item before totals/ticker so a repeated project mapping can never double-count it.
+  const seenPrs = new Set<string>();
   for (const c of cards) {
     const result = prsByProject[c.dir];
     if (!result || !result.ok) continue;
     for (const pr of result.prs) {
-      items.push({ source: "pr", dir: c.dir, name: c.name, ts: pr.updatedAt, number: pr.number, url: pr.url, ci: pr.ciState, title: pr.title });
+      const identity = `${c.dir}#${pr.number}`;
+      if (seenPrs.has(identity)) continue;
+      seenPrs.add(identity);
+      items.push({
+        source: "pr", dir: c.dir, name: c.name, ts: pr.updatedAt, number: pr.number, url: pr.url,
+        ci: pr.ciState, title: pr.title, author: pr.author, reviewDecision: pr.reviewDecision, isDraft: pr.isDraft,
+      });
     }
   }
   // Cutoff applied BEFORE sort/cap: an invalid `ts` (NaN) is dropped, never sorted as "current".

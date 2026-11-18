@@ -4,6 +4,7 @@ import {
   initialOrganizeState, reloadOrganize, saveConflicted, saveFailed, saveSucceeded,
 } from "./cockpitPrefsQuery";
 import type { CockpitSnapshot, LayoutEntry } from "./cockpitLayout";
+import { missionQueryKey } from "./useMission";
 
 const rev1: CockpitSnapshot = {
   revision: 1, prScope: "mine",
@@ -91,5 +92,14 @@ describe("Organize draft survives polling (plan Task 2)", () => {
     expect(draftWidth(initialOrganizeState, "A", "full")).toBe(initialOrganizeState);
     expect(initialOrganizeState.draft).toBeNull();
     expect(entry.width).toBe("third");
+  });
+});
+
+
+describe("PR scope cache isolation (plan Task 2)", () => {
+  it("Mine and All are different cache keys so one scope never flashes as another", () => {
+    expect(missionQueryKey("prs", "scope=mine")).not.toEqual(missionQueryKey("prs", "scope=all"));
+    expect(missionQueryKey("prs", "scope=mine")).toEqual(["mission", "prs", "scope=mine"]);
+    expect(missionQueryKey("projects")).toEqual(["mission", "projects", null]);
   });
 });

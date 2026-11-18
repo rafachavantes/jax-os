@@ -34,7 +34,7 @@ vi.mock("@tanstack/react-query", () => ({
 import type { MissionCard, MissionPane, MissionPendingQuestion } from "@/lib/mission";
 import { dispatchBodyFor, gateWaitingLine, heartbeatPath, statusPillSuffix, stuckLine, worstFinding } from "@/lib/mission";
 import {
-  actionEventId, bareCapsuleStatus, bucketPrefsPatch, CancelDialog, pendingUiAction, PendingActionButtons, PrefsMenu, ProjectCard, dispatchValid, handleCancelDialogClose,
+  actionEventId, bareCapsuleStatus, bucketPrefsPatch, CancelDialog, pendingUiAction, PendingActionButtons, PrefsMenu, PrSummary, ProjectCard, dispatchValid, handleCancelDialogClose,
 } from "./ProjectCard";
 import { LIMITS } from "@/lib/workflow";
 
@@ -1331,5 +1331,29 @@ describe("ProjectCard — dispatch form: one row + collapsed extras (spec item 8
   it("submit still produces the exact same request body shape dispatchValid already validates (review, default option)", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: { ...base, headline: "idle" as const } }));
     expect(html).toContain('<button type="button"');
+  });
+});
+
+
+describe("PrSummary — M2 factual provider fields (spec AC10)", () => {
+  const base = { number: 12, ci: "green" as const, author: "rafa", reviewDecision: "APPROVED", isDraft: false, mergeStateStatus: "CLEAN" };
+  const render = (newest: Record<string, unknown> | null) => renderToStaticMarkup(createElement(PrSummary, {
+    pr: { status: "ok", count: 1, ci: "green" as const, truncated: false, newest: newest as never }, githubEnabled: true,
+  }));
+
+  it("shows author, review and merge facts for a known PR", () => {
+    const html = render(base);
+    expect(html).toContain("@rafa");
+    expect(html).toContain("prFields.reviewApproved");
+    expect(html).toContain("prFields.mergeCLEAN");
+    expect(html).not.toContain("prFields.draft");
+  });
+
+  it("an unknown author and an unknown review get explicit copy, and a draft is named", () => {
+    const html = render({ ...base, author: "unknown author", reviewDecision: "unknown/not reported", mergeStateStatus: "unknown", isDraft: true });
+    expect(html).toContain("prFields.authorUnknown");
+    expect(html).toContain("prFields.reviewUnknown");
+    expect(html).toContain("prFields.draft");
+    expect(html).not.toContain("prFields.mergeUNKNOWN"); // the bare "unknown" sentinel is not presented as a known state
   });
 });

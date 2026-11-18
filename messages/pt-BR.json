@@ -362,7 +362,8 @@
         "buildFailed": "build falhou",
         "runFinishedNoResult": "sem resultado",
         "mergeApproved": "merge aprovado"
-      }
+      },
+      "prDraft": "rascunho"
     },
     "codexSession": "Sessão Codex",
     "board": {
@@ -383,6 +384,22 @@
       "unlinkedUnknownTitle": "Algumas execuções com dono não confirmado",
       "unlinkedUnknownHint": "Uma fonte de agentes falhou ou a correspondência é ambígua — parte destas execuções não pode ser ligada a uma sessão aberta.",
       "ownershipUnknown": "dono não confirmado"
+    },
+    "prFields": {
+      "draft": "rascunho",
+      "authorUnknown": "autor desconhecido",
+      "reviewApproved": "revisão aprovada",
+      "reviewChanges": "mudanças pedidas",
+      "reviewRequired": "revisão pendente",
+      "reviewUnknown": "revisão não informada",
+      "mergeCLEAN": "merge limpo",
+      "mergeBLOCKED": "merge bloqueado",
+      "mergeBEHIND": "atrás da base",
+      "mergeDIRTY": "conflitos",
+      "mergeDRAFT": "rascunho",
+      "mergeHAS_HOOKS": "hooks pendentes",
+      "mergeUNSTABLE": "checks instáveis",
+      "mergeUNKNOWN": "estado de merge desconhecido"
     }
   },
   "missionBlock": {

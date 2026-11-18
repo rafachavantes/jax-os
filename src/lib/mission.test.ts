@@ -279,19 +279,20 @@ describe("buildMission — freshness warning threshold (spec §4.4, test 6)", ()
   });
 });
 
-describe("buildMission — inbox PR cap and remainder (spec §7.4, test 11)", () => {
-  it("caps merge-ready PR rows at 5 and reports the remainder", () => {
+describe("buildMission — strict attention: ordinary PRs never enter Waiting for You (M2 spec)", () => {
+  it("merge-ready PRs stay Activity-only; count, preview and full list agree on the empty attention set", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject() });
-    const mkPr = (n: number) => ({ number: n, title: `pr ${n}`, isDraft: false, url: `u${n}`, ciState: "green" as const, mergeReady: true, updatedAt: "2026-09-01T00:00:00.000Z" });
+    const mkPr = (n: number) => ({ number: n, title: `pr ${n}`, isDraft: false, url: `u${n}`, ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-01T00:00:00.000Z" });
     const { model } = buildMission(
       scan,
       hub,
       { ok: true, data: { p1: { ok: true, prs: [1, 2, 3, 4, 5, 6, 7].map(mkPr), truncated: false } } },
       NOW,
     );
-    expect(model.inbox.filter((r) => r.kind === "pr")).toHaveLength(5);
-    expect(model.inboxPrRemainder).toBe(2);
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+    expect(model.inboxPrRemainder).toBe(0);
     expect(model.prTruncatedAny).toBe(false);
   });
 });
@@ -1368,14 +1369,14 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
     const gated = { ...projectBase, gate: "awaiting-approval" as const, statusMtime: "2026-09-19T11:30:00.000Z" };
     const pane = { pane: "%1", tmuxIncarnation: "i1", capsule: { status: "blocked" as const, ts: "2026-09-01T00:00:00.000Z" }, state: "idle" as const };
     const hp = { ...HUB_BASE, panes: [pane as unknown as HubProject["panes"][number]], pendingQuestion: { pane: "%1", eventId: 7, questions: [{ question: "Q?" }] } as unknown as HubProject["pendingQuestion"] };
-    const prs = { ok: true as const, data: { p1: { ok: true as const, prs: [{ number: 1, title: "pr", isDraft: false, url: "u", ciState: "green" as const, mergeReady: true, updatedAt: "2026-09-01T00:00:00.000Z" }], truncated: false } } };
+    const prs = { ok: true as const, data: { p1: { ok: true as const, prs: [{ number: 1, title: "pr", isDraft: false, url: "u", ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-01T00:00:00.000Z" }], truncated: false } } };
     const hidden = buildMission(scan([gated]), hub({ p1: hp }, hiddenPrefs), prs, NOW5);
     expect(hidden.model.cards[0].visibility).toBe("hidden");
     expect(hidden.model.inbox).toEqual([]);
     expect(hidden.model.inboxTotalCount).toBe(0);
     const shown = buildMission(scan([gated]), hub({ p1: hp }), prs, NOW5);
     expect(shown.model.inbox.map((r) => r.kind)).toContain("gate");
-    expect(shown.model.inbox.map((r) => r.kind)).toContain("pr");
+    expect(shown.model.inbox.map((r) => r.kind)).not.toContain("pr");
   });
 
   it("an awaiting-approval gate follows the tech lead: working pane → working card and no gate row; stopped pane → needs-you and a gate row", () => {
@@ -1439,7 +1440,7 @@ describe("Phase 3 — buildTicker (spec §9, Decisions 12/13)", () => {
     ];
     const cards = [{ dir: "p1", name: "P1", timeline }];
     const commits = [{ repo: "p1", hash: "abc", author: "rafa", message: "fix: x", epoch: Date.parse("2026-09-19T11:00:00.000Z") / 1000 }];
-    const prs = { p1: { ok: true as const, truncated: false, prs: [{ number: 1, title: "T", isDraft: false, url: "https://x", ciState: "green" as const, mergeReady: true, updatedAt: "2026-09-19T08:00:00.000Z" }] } };
+    const prs = { p1: { ok: true as const, truncated: false, prs: [{ number: 1, title: "T", isDraft: false, url: "https://x", ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-19T08:00:00.000Z" }] } };
     const items = buildTicker(cards, commits, prs, FIXTURE_NOW);
     expect(items.map((i) => i.source)).toEqual(["commit", "event", "pr"]);
     expect(items[0]).toMatchObject({ source: "commit", ts: "2026-09-19T11:00:00.000Z" });
@@ -1738,7 +1739,7 @@ describe("buildMission — capsuleMinutes/capsuleDeclaredAt projected onto Missi
 describe("buildMission — MissionCardPr.newest (spec item 12, round 3)", () => {
   const prResult = (prs: import("../server/collectors/github").Pr[]) => ({ p1: { ok: true as const, prs, truncated: false } });
   const pr = (n: number, updatedAt: string, ciState: import("../server/collectors/github").CiState = "green") =>
-    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, updatedAt });
+    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt });
   it("picks the PR with the latest valid updatedAt as newest", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject() });
@@ -1746,7 +1747,7 @@ describe("buildMission — MissionCardPr.newest (spec item 12, round 3)", () => 
     const mission = buildMission(scan, hub, prs, Date.now());
     const card = mission.model.cards[0].pr;
     if (card.status !== "ok") throw new Error("expected ok");
-    expect(card.newest).toEqual({ number: 2, ci: "green" });
+    expect(card.newest).toMatchObject({ number: 2, ci: "green" });
   });
   it("ties on updatedAt break toward the higher PR number", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
@@ -1782,9 +1783,9 @@ describe("newestPr (direct, spec item 12 — Global Constraints: every pure help
   // above only covers the anchors this task edits in mission.ts itself — this is a one-name
   // addition to the existing `import { ... } from "./mission"` line already at the top of this file).
   const pr = (n: number, updatedAt: string, ciState: import("../server/collectors/github").CiState = "green") =>
-    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, updatedAt });
+    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt });
   it("picks the PR with the latest valid updatedAt", () => {
-    expect(newestPr([pr(1, "2026-09-19T00:00:00.000Z"), pr(2, "2026-09-20T00:00:00.000Z")])).toEqual({ number: 2, ci: "green" });
+    expect(newestPr([pr(1, "2026-09-19T00:00:00.000Z"), pr(2, "2026-09-20T00:00:00.000Z")])).toMatchObject({ number: 2, ci: "green" });
   });
   it("a tie on updatedAt breaks toward the higher number", () => {
     expect(newestPr([pr(5, "2026-09-20T00:00:00.000Z"), pr(3, "2026-09-20T00:00:00.000Z")])?.number).toBe(5);
@@ -1992,5 +1993,15 @@ describe("liveSessions", () => {
       { transport: "codex", threadId: "t2", state: "unknown" } as never,
     ]);
     expect(out.map((s) => (s.transport === "tmux" ? `${s.session}:${s.panes.map((p) => p.pane).join(",")}` : "codex"))).toEqual(["jax-os:%1", "codex"]);
+  });
+});
+
+
+describe("buildTicker — M2 scoped PR dedupe (plan Task 4)", () => {
+  it("one provider identity (project + number) appears once even if the card list repeats it", () => {
+    const pr = { number: 5, title: "T", isDraft: false, url: "u", ciState: "green" as const, mergeReady: false, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-19T08:00:00.000Z" };
+    const card = { dir: "p1", name: "P1", timeline: [] as MissionTimelineEntry[] };
+    const items = buildTicker([card, card], [], { p1: { ok: true, prs: [pr], truncated: false } }, NOW);
+    expect(items.filter((i) => i.source === "pr")).toHaveLength(1);
   });
 });

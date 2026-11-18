@@ -362,7 +362,8 @@
         "buildFailed": "build failed",
         "runFinishedNoResult": "no result",
         "mergeApproved": "merge approved"
-      }
+      },
+      "prDraft": "draft"
     },
     "codexSession": "Codex session",
     "board": {
@@ -383,6 +384,22 @@
       "unlinkedUnknownTitle": "Some runs with unconfirmed ownership",
       "unlinkedUnknownHint": "An agent source failed or the match is ambiguous — some of these runs cannot be linked to an open session.",
       "ownershipUnknown": "ownership unconfirmed"
+    },
+    "prFields": {
+      "draft": "draft",
+      "authorUnknown": "unknown author",
+      "reviewApproved": "review approved",
+      "reviewChanges": "changes requested",
+      "reviewRequired": "review required",
+      "reviewUnknown": "review not reported",
+      "mergeCLEAN": "merge state clean",
+      "mergeBLOCKED": "merge blocked",
+      "mergeBEHIND": "behind base",
+      "mergeDIRTY": "conflicts",
+      "mergeDRAFT": "draft",
+      "mergeHAS_HOOKS": "hooks pending",
+      "mergeUNSTABLE": "checks unstable",
+      "mergeUNKNOWN": "merge state unknown"
     }
   },
   "missionBlock": {
