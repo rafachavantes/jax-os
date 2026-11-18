@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectArtifacts, type ArtifactDeps } from "./execution-artifacts";
+import { BudgetError, InspectionBudget, inspectArtifacts, type ArtifactDeps } from "./execution-artifacts";
 import type { GitProbe } from "./projects";
 
 const RUN = "0123456789ab";
@@ -151,6 +151,41 @@ describe("inspectArtifacts — roots and links", () => {
     expect(facts[2].warnings).toContain("manifest-invalid");
   });
 
+  it("keeps branch provenance: target is a branch only for native build/diff manifests", async () => {
+    const root = tempRoot();
+    const specs = ".local/docs/specs/x.md";
+    const cases: { name: string; manifest: Record<string, unknown> }[] = [
+      { name: "build", manifest: manifestFor(join(root, "build"), { branch: undefined, target: "feat/branch-target" }) },
+      { name: "diff", manifest: manifestFor(join(root, "diff"), { kind: "diff", role: "reviewer", branch: undefined, target: "feat/branch-target" }) },
+      { name: "spec", manifest: manifestFor(join(root, "spec"), { kind: "spec", role: "reviewer", branch: undefined, target: specs }) },
+      { name: "plan", manifest: manifestFor(join(root, "plan"), { kind: "plan", role: "reviewer", branch: undefined, target: specs }) },
+    ];
+    for (const item of cases) project(root, item.name, { manifest: item.manifest });
+    const facts = await inspectArtifacts(cases.map((item) => ({ destination: item.name, runId: RUN })), deps(root));
+    expect(facts[0]).toMatchObject({ branch: "feat/branch-target", branchSource: "manifest" });
+    expect(facts[1]).toMatchObject({ branch: "feat/branch-target", branchSource: "manifest" });
+    expect(facts[2]).toMatchObject({ branch: null, branchSource: null });
+    expect(facts[3]).toMatchObject({ branch: null, branchSource: null });
+  });
+
+  it("prefers the recorded branch over a target fallback", async () => {
+    const root = tempRoot();
+    project(root, "alpha", { manifest: manifestFor(join(root, "alpha"), { branch: "feat/recorded", target: "feat/fallback" }) });
+    const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root));
+    expect(facts.branch).toBe("feat/recorded");
+    expect(facts.branchSource).toBe("manifest");
+  });
+
+  it("never fabricates a branch from a missing or deleted manifest", async () => {
+    const root = tempRoot();
+    const abs = project(root, "alpha", { manifest: manifestFor(join(root, "alpha")) });
+    rmSync(join(abs, ".local", "runs", RUN, "manifest.json"));
+    const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root));
+    expect(facts.branch).toBeNull();
+    expect(facts.branchSource).toBeNull();
+    expect(facts.warnings).toContain("manifest-missing");
+  });
+
   it("rejects report symlinks, including an escaping target", async () => {
     const root = tempRoot();
     const abs = project(root, "alpha", { manifest: manifestFor(join(root, "alpha")) });
@@ -197,5 +232,137 @@ describe("inspectArtifacts — bounds", () => {
     symlinkSync(elsewhere, join(abs, ".local", "reports"));
     const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root));
     expect(facts.report).toBeNull();
+  });
+
+  it("refuses a report-directory symlink that stays inside the same repository", async () => {
+    const root = tempRoot();
+    const abs = project(root, "alpha", { manifest: manifestFor(join(root, "alpha")) });
+    rmSync(join(abs, ".local", "reports"), { recursive: true, force: true });
+    mkdirSync(join(abs, "elsewhere"));
+    writeFileSync(join(abs, "elsewhere", `${RUN}.md`), "same-repo");
+    symlinkSync(join(abs, "elsewhere"), join(abs, ".local", "reports"));
+    const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root));
+    expect(facts.report).toBeNull();
+    expect(facts.warnings).toContain("report-missing");
+  });
+
+  it("refuses a file symlink whose target is another file of the same repository", async () => {
+    const root = tempRoot();
+    const abs = project(root, "alpha", { manifest: manifestFor(join(root, "alpha")) });
+    writeFileSync(join(abs, ".local", "other.md"), "same-repo target");
+    symlinkSync(join(abs, ".local", "other.md"), join(abs, ".local", "reports", `${RUN}.md`));
+    const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root));
+    expect(facts.report).toBeNull();
+  });
+
+  it("treats an incomplete nested scan as unavailable and never caches it", async () => {
+    const root = tempRoot();
+    project(root, "group/alpha", { report: "r" });
+    const listing = async (dir: string) => readdirSync(dir, { withFileTypes: true }).map((entry) => ({
+      name: entry.name, isDirectory: entry.isDirectory(), isSymbolicLink: entry.isSymbolicLink(),
+    }));
+    const incomplete = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root, {
+      listDir: async (dir) => {
+        if (dir === join(root, "group")) throw new Error("injected filesystem failure");
+        return listing(dir);
+      },
+    }));
+    expect(incomplete[0].warnings).toEqual(["root-unavailable"]);
+
+    const complete = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root, { listDir: listing }));
+    expect(complete[0].warnings).not.toContain("root-unavailable");
+    expect(complete[0].report?.rel).toBe(`group/alpha/.local/reports/${RUN}.md`);
+  });
+
+  it("resolves one owned destination despite an unowned nested folder of the same basename", async () => {
+    const root = tempRoot();
+    project(root, "alpha", { report: "r" });
+    mkdirSync(join(root, "group", "alpha"), { recursive: true });
+    const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root));
+    expect(facts.warnings).not.toContain("root-unavailable");
+    expect(facts.report?.rel).toBe(`alpha/.local/reports/${RUN}.md`);
+  });
+
+  it("stops new native reads at the earliest applicable deadline", async () => {
+    const root = tempRoot();
+    project(root, "alpha", { report: "x" });
+    let now = 0;
+    let calls = 0;
+    const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root, {
+      budget: new InspectionBudget(4, 100, () => now),
+      realpath: async (path) => {
+        calls++;
+        if (path === root) now = 200;
+        return path;
+      },
+    }));
+    expect(facts.warnings).toEqual(["root-unavailable"]);
+    expect(calls).toBe(1);
+  });
+});
+
+describe("InspectionBudget", () => {
+  function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => { resolve = res; });
+    return { promise, resolve };
+  }
+
+  it("never starts queued work that wakes after the deadline", async () => {
+    let now = 0;
+    const budget = new InspectionBudget(1, 50, () => now);
+    let starts = 0;
+    const gate = deferred<void>();
+    const first = budget.run(async () => { starts++; await gate.promise; return 1; }, 10_000);
+    await Promise.resolve();
+    const queued = budget.run(async () => { starts++; return 2; }, 10_000);
+    now = 100;
+    gate.resolve();
+    await expect(first).resolves.toBe(1);
+    await expect(queued).rejects.toBeInstanceOf(BudgetError);
+    expect(starts).toBe(1);
+  });
+
+  it("keeps a timed-out hung native operation's slot until it actually settles", async () => {
+    let now = 0;
+    const budget = new InspectionBudget(1, 50, () => now);
+    let starts = 0;
+    const gate = deferred<void>();
+    const first = await budget.run(async () => { starts++; await gate.promise; return "first"; }, 10).catch((e) => e);
+    expect(first).toBeInstanceOf(BudgetError);
+    const second = await budget.run(async () => { starts++; return "second"; }, 10).catch((e) => e);
+    expect(second).toBeInstanceOf(BudgetError);
+    expect(starts).toBe(1);
+    gate.resolve();
+    await budget.settled();
+    await expect(budget.run(async () => { starts++; return "third"; }, 10)).resolves.toBe("third");
+    expect(starts).toBe(2);
+  });
+
+  it("runs up to four operations and releases slots on settlement", async () => {
+    const budget = new InspectionBudget(4, 10_000, () => 0);
+    let starts = 0;
+    const gates = Array.from({ length: 4 }, () => deferred<void>());
+    const runs = gates.map((gate) => budget.run(async () => { starts++; await gate.promise; }, 10_000));
+    await Promise.resolve();
+    const fifthGate = deferred<void>();
+    const fifth = budget.run(async () => { starts++; await fifthGate.promise; }, 10_000);
+    await Promise.resolve();
+    expect(starts).toBe(4);
+    gates[0].resolve();
+    await runs[0];
+    await Promise.resolve();
+    expect(starts).toBe(5);
+    gates.slice(1).forEach((gate) => gate.resolve());
+    fifthGate.resolve();
+    await Promise.all([...runs, fifth]);
+    await expect(budget.settled()).resolves.toBeUndefined();
+  });
+
+  it("does not leak a slot when the native function throws synchronously", async () => {
+    const budget = new InspectionBudget(1, 10_000, () => 0);
+    await expect(budget.run((() => { throw new Error("sync"); }) as unknown as () => Promise<void>, 10))
+      .rejects.toThrow("sync");
+    await expect(budget.run(async () => "ok", 10)).resolves.toBe("ok");
   });
 });
