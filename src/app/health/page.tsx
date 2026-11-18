@@ -12,6 +12,7 @@ import type { HealthPayload, HealthRange } from "@/server/db/metrics"; // type-o
 import { LineChart, Sparkline } from "@/components/health/Charts";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
+import { ServerAlerts } from "@/components/mission/ServerPanel";
 
 const RANGES: HealthRange[] = ["1h", "24h", "7d", "90d"];
 const STALE_S = 180;
@@ -97,9 +98,9 @@ function HealthPageInner() {
         </span>
       </div>
 
-      <div className={`grid grid-cols-2 gap-4 xl:grid-cols-4 ${stale ? "opacity-60" : ""}`}>
+      <div id="resources" className={`grid scroll-mt-24 grid-cols-2 gap-4 xl:grid-cols-4 ${stale ? "opacity-60" : ""}`}>
         {tiles.map((tile) => (
-          <div key={tile.key} className="flex flex-col gap-2 rounded-lg border border-line bg-surface px-5 py-[18px]">
+          <div key={tile.key} id={tile.key} className="flex scroll-mt-24 flex-col gap-2 rounded-lg border border-line bg-surface px-5 py-[18px]">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-muted">{t(`tiles.${tile.key}`)}</span>
               <tile.icon className="h-4 w-4 text-muted" />
@@ -141,6 +142,7 @@ function HealthPageInner() {
         </div>
       </div>
 
+      <ServerAlerts />
       {data.services ? (
         <div className="rounded-lg border border-line bg-surface p-4">
           <span className="text-xs font-medium text-muted">{t("services")}</span>

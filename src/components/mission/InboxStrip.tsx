@@ -205,10 +205,16 @@ function inboxRowKey(row: InboxRow): string {
   return `gate-${row.dir}`;
 }
 
+const PREVIEW_CAP = 3;
+
 export function InboxStrip({ mission, onExpand }: Props) {
   const t = useTranslations("mission.inbox");
   const tSource = useTranslations("mission.source");
   const { readiness, model } = mission;
+  // Several requests get a bounded preview and access to the full set; the count above always
+  // describes the exact same dataset, never a sample (M2 plan Task 5).
+  const [showAll, setShowAll] = useState(false);
+  const shownInbox = showAll ? model.inbox : model.inbox.slice(0, PREVIEW_CAP);
 
   // Title AND the source-warning/skeleton branch below are both decided by the pure
   // `stripPresentation` helper (mission.ts, Finding 8) — every `readiness.kind` except `ready`
@@ -268,8 +274,13 @@ export function InboxStrip({ mission, onExpand }: Props) {
             // comment sits before the map call rather than inside its returned JSX, since a JSX
             // comment can't be a bare sibling next to <InboxLine> inside a parenthesized (not
             // fragment-wrapped) arrow body (cold review Finding 4).
-            model.inbox.map((row) => <InboxLine key={inboxRowKey(row)} row={row} card={cardsByDir.get(row.dir)} onExpand={onExpand} />)
+            shownInbox.map((row) => <InboxLine key={inboxRowKey(row)} row={row} card={cardsByDir.get(row.dir)} onExpand={onExpand} />)
           }
+          {model.inbox.length > PREVIEW_CAP ? (
+            <button type="button" className="self-start text-[11px] font-semibold text-body-ink underline" onClick={() => setShowAll((s) => !s)}>
+              {showAll ? t("showLess") : t("showAll", { count: model.inbox.length })}
+            </button>
+          ) : null}
           {model.inboxPrRemainder > 0 ? (
             // Finding 5 (branch review, MEDIUM): the remainder is counted from each project's own
             // fetched PR sample — if any contributing project's fetch was itself truncated

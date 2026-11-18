@@ -224,7 +224,9 @@
         "failing": "CI failing",
         "none": "no CI"
       },
-      "codexSession": "codex session"
+      "codexSession": "codex session",
+      "showAll": "show all ({count})",
+      "showLess": "show less"
     },
     "source": {
       "projects": "Projects",
@@ -400,6 +402,11 @@
       "mergeHAS_HOOKS": "hooks pending",
       "mergeUNSTABLE": "checks unstable",
       "mergeUNKNOWN": "merge state unknown"
+    },
+    "views": {
+      "label": "Home views",
+      "projects": "Projects",
+      "activity": "Activity"
     }
   },
   "missionBlock": {

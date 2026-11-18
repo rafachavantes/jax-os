@@ -218,3 +218,18 @@ describe("InboxStrip — direct handler tests, no jsdom (round-2 F4)", () => {
     expect(setConfirming).toHaveBeenCalledExactlyOnceWith(false);
   });
 });
+
+describe("InboxStrip — M2 bounded preview (spec AC2)", () => {
+  it("shows the first three requests, hides the rest behind Show all, and keeps the count on the full set", () => {
+    const rows: InboxRow[] = Array.from({ length: 5 }, (_, i) => ({
+      kind: "gate", dir: `p${i}`, name: `Project ${i}`, gate: "awaiting-approval" as const, updated: "2026-11-18T00:00:00.000Z",
+    }));
+    const html = renderToStaticMarkup(createElement(InboxStrip, { mission: missionOf(rows), onExpand: () => {} }));
+    expect(html).toContain("Project 0");
+    expect(html).toContain("Project 2");
+    expect(html).not.toContain("Project 3");
+    expect(html).not.toContain("Project 4");
+    expect(html).toContain("showAll");
+    expect(html).toContain("title"); // the count-bearing title still describes all five
+  });
+});
