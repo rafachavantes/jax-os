@@ -3,6 +3,7 @@
     "mission": "Mission Control",
     "kanban": "Linear",
     "sessions": "Sessions",
+    "executions": "Executions",
     "files": "Files",
     "tokens": "Tokens",
     "server": "Server",
@@ -13,6 +14,7 @@
     "mission": "Mission Control",
     "kanban": "Linear",
     "sessions": "Sessions",
+    "executions": "Executions",
     "files": "Files",
     "tokens": "Token Intelligence",
     "server": "Server Health",
@@ -23,6 +25,7 @@
     "mission": "Everything running, at a glance",
     "kanban": "Issues synced from Linear",
     "sessions": "Live tmux — watch your agents work",
+    "executions": "Build and review history, from the event ledger",
     "files": "Browse & edit — repos + obsidian-vault",
     "tokens": "Where your tokens go",
     "server": "jax-server vitals",
@@ -43,6 +46,7 @@
     "hide": "Hide"
   },
   "mission": {
+    "executionsLink": "Executions",
     "rings": {
       "unavailable": "unavailable",
       "resetInMinutes": "in {minutes} min",
@@ -1192,5 +1196,102 @@
     "unreadable": "settings.json could not be read — using defaults",
     "noAgents": "No agent is on: jaxflow will not run without at least one agent configured. Turn one on in Settings -> General.",
     "noReviewer": "jaxflow review will not run: a review needs Claude Code or Codex, and neither is on (builds still work). Turn one on in Settings -> General."
+  },
+  "executions": {
+    "title": "Executions",
+    "subtitle": "Build and review history from the event ledger",
+    "invalidUrl": "Invalid filter selection",
+    "unavailable": "Execution history unavailable",
+    "inspectionUnavailable": "Live inspection unavailable — durable history stays visible",
+    "empty": "No executions in this scope.",
+    "older": "Older",
+    "refresh": "Refresh",
+    "unknown": "unknown",
+    "durationUnknown": "unknown",
+    "runContext": "Run context: {destination} / {run}",
+    "firstDispatch": "First dispatch",
+    "duration": "Duration",
+    "details": "Details",
+    "hideDetails": "Hide details",
+    "phase": "Phase",
+    "target": "Target",
+    "caller": "Caller",
+    "branch": "Branch",
+    "report": "Open report",
+    "tests": "Open test output",
+    "reportUnavailable": "Retained report unavailable",
+    "testsUnavailable": "Test output unavailable",
+    "warnings": "Warnings",
+    "filters": {
+      "project": "Destination",
+      "projectPlaceholder": "All projects",
+      "kind": "Kind",
+      "state": "State",
+      "period": "Period",
+      "apply": "Apply",
+      "reset": "Reset",
+      "kinds": {
+        "all": "All kinds",
+        "build": "Builds",
+        "review": "Reviews",
+        "spec": "Spec reviews",
+        "plan": "Plan reviews",
+        "diff": "Diff reviews"
+      },
+      "states": {
+        "all": "All states",
+        "open": "Open",
+        "finished": "Finished",
+        "success": "Success",
+        "failure": "Failure",
+        "blocked": "Blocked",
+        "cancelled": "Cancelled",
+        "interrupted": "Interrupted",
+        "approve": "Approved",
+        "approve-with-changes": "Approved with changes",
+        "reject": "Rejected",
+        "unknown": "Unknown"
+      },
+      "periods": {
+        "7d": "7d",
+        "30d": "30d",
+        "all": "All"
+      }
+    },
+    "kind": {
+      "build": "Build",
+      "review": "Review",
+      "unknown": "Execution"
+    },
+    "subtype": {
+      "spec": "spec",
+      "plan": "plan",
+      "diff": "diff"
+    },
+    "outcome": {
+      "open": "Open",
+      "success": "Success",
+      "failure": "Failure",
+      "blocked": "Blocked",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted",
+      "approve": "Approved",
+      "approve-with-changes": "Approved with changes",
+      "reject": "Rejected",
+      "unknown": "Unknown"
+    },
+    "executor": {
+      "label": "Executor",
+      "unknown": "unknown"
+    },
+    "worker": {
+      "observed": "Worker observed",
+      "awaiting": "Awaiting worker confirmation",
+      "absent": "No worker observed",
+      "unknown": "Current activity unknown",
+      "notChecked": "Not checked",
+      "refresh": "Updated — refresh needed",
+      "lastGood": "last observed"
+    }
   }
 }

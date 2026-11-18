@@ -179,6 +179,9 @@ function HomeCockpit() {
           <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
             <div className="min-w-0 lg:col-span-2">
               <EventTicker items={ticker} />
+              <a href="/executions" className="mt-2 inline-block text-[12px] text-muted hover:text-body-ink">
+                {tNav("executions")} →
+              </a>
             </div>
           </div>
         </div>

@@ -24,7 +24,7 @@ describe("NavList — hidden nav items (round-1 F9)", () => {
     const expanded = renderToStaticMarkup(createElement(NavList, { mode: "expanded" }));
     expect(expanded).not.toContain('href="/health"');
     expect(expanded).not.toContain('href="/audit"');
-    for (const href of ["/", "/kanban", "/tmux", "/files", "/tokens", "/settings"]) expect(expanded).toContain(`href="${href}"`);
+    for (const href of ["/", "/kanban", "/tmux", "/executions", "/files", "/tokens", "/settings"]) expect(expanded).toContain(`href="${href}"`);
 
     const collapsed = renderToStaticMarkup(createElement(NavList, { mode: "collapsed" }));
     expect(collapsed).not.toContain('href="/health"');
