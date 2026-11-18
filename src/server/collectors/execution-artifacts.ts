@@ -213,7 +213,7 @@ function contained(base: string, candidate: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-async function lstatKind(path: string, budget: InspectionBudget, timeoutMs: number): Promise<"present" | "absent" | "unknown"> {
+async function lstatKind(path: string, budget: BudgetLike, timeoutMs: number): Promise<"present" | "absent" | "unknown"> {
   try {
     return await budget.run(async () => {
       await lstat(path);
@@ -227,7 +227,7 @@ async function lstatKind(path: string, budget: InspectionBudget, timeoutMs: numb
 }
 
 async function readCapped(
-  path: string, cap: number, rootCanonical: string, budget: InspectionBudget, timeoutMs: number,
+  path: string, cap: number, rootCanonical: string, budget: BudgetLike, timeoutMs: number,
   canonicalize: Canonicalize,
 ): Promise<{ ok: true; text: string } | { ok: false; reason: "missing" | "unsafe" | "too-large" | "failed" }> {
   try {
@@ -262,7 +262,7 @@ async function readCapped(
 }
 
 async function regularFileInside(
-  path: string, rootCanonical: string, budget: InspectionBudget, timeoutMs: number, canonicalize: Canonicalize,
+  path: string, rootCanonical: string, budget: BudgetLike, timeoutMs: number, canonicalize: Canonicalize,
 ): Promise<boolean> {
   try {
     return await budget.run(async () => {
@@ -287,7 +287,7 @@ async function regularFileInside(
 }
 
 async function isLinkedWorktreeDir(
-  checkout: string, budget: InspectionBudget, timeoutMs: number, canonicalize: Canonicalize, limit = 256 * 1024,
+  checkout: string, budget: BudgetLike, timeoutMs: number, canonicalize: Canonicalize, limit = 256 * 1024,
 ): Promise<boolean> {
   const gitFile = await readCapped(join(checkout, ".git"), limit, checkout, budget, timeoutMs, canonicalize);
   if (!gitFile.ok) return false;
@@ -318,7 +318,7 @@ async function isLinkedWorktreeDir(
 
 // A bounded real directory iterator. The entry limit and deadline are checked between entries,
 // so one huge directory cannot keep the native promise running past the scan budget.
-function defaultListDir(limits: ScanLimits, budget: InspectionBudget): (dir: string) => Promise<DirEntry[]> {
+function defaultListDir(limits: ScanLimits, budget: BudgetLike): (dir: string) => Promise<DirEntry[]> {
   let entries = 0;
   return async (dir) => {
     const handle = await opendir(dir);
@@ -340,7 +340,7 @@ function defaultListDir(limits: ScanLimits, budget: InspectionBudget): (dir: str
 // Completed two-level scans only. Any timeout/budget exhaustion OR an incomplete nested scan
 // returns no cache and the caller marks every destination unavailable — never a guessed root.
 async function discoverRoots(
-  root: string, budget: InspectionBudget, limits: ScanLimits, timeoutMs: number,
+  root: string, budget: BudgetLike, limits: ScanLimits, timeoutMs: number,
   canonicalize: Canonicalize, listDir: (dir: string) => Promise<DirEntry[]>,
 ): Promise<{ ok: true; roots: Map<string, DiscoveredRoot[]> } | { ok: false }> {
   try {
@@ -627,11 +627,15 @@ export async function inspectArtifactsDetailed(
   const limits = { ...DEFAULT_SCAN_LIMITS, ...deps.scanLimits };
   const gitProbe = deps.gitProbe ?? defaultGitProbe;
   const canonicalize = deps.realpath ?? realpath;
-  const listDir = deps.listDir ?? defaultListDir(limits, budget);
+  // Discovery has its own absolute subdeadline over the shared capacity pool: once it is
+  // exhausted, no later listing/lstat/realpath/Git-ownership read starts, while per-row
+  // inspection keeps the remaining overall budget.
+  const discoveryBudget = budget.scope(discoveryMs);
+  const listDir = deps.listDir ?? defaultListDir(limits, discoveryBudget);
 
   let reposCanonical: string;
   try {
-    reposCanonical = await budget.run(() => canonicalize(repos), discoveryMs);
+    reposCanonical = await discoveryBudget.run(() => canonicalize(repos), fsMs);
   } catch {
     return {
       facts: rows.map((row) => ({
@@ -641,7 +645,7 @@ export async function inspectArtifactsDetailed(
       internal: new Map(rows.map((row) => [artifactKey(row.destination, row.runId), { manifestPath: null, repo: null }])),
     };
   }
-  const discovered = await discoverRoots(reposCanonical, budget, limits, discoveryMs, canonicalize, listDir);
+  const discovered = await discoverRoots(reposCanonical, discoveryBudget, limits, fsMs, canonicalize, listDir);
   if (!discovered.ok) {
     return {
       facts: rows.map((row) => ({

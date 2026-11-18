@@ -283,6 +283,28 @@ describe("inspectArtifacts — bounds", () => {
     expect(facts.report?.rel).toBe(`alpha/.local/reports/${RUN}.md`);
   });
 
+  it("stops discovery at its own deadline while the overall budget still has capacity", async () => {
+    const root = tempRoot();
+    project(root, "alpha", { report: "r" });
+    let now = 0;
+    const budget = new InspectionBudget(4, 10_000, () => now);
+    let listings = 0;
+    const [facts] = await inspectArtifacts([{ destination: "alpha", runId: RUN }], deps(root, {
+      budget,
+      discoveryMs: 100,
+      listDir: async (dir) => {
+        listings++;
+        now = 200;
+        return readdirSync(dir, { withFileTypes: true }).map((entry) => ({
+          name: entry.name, isDirectory: entry.isDirectory(), isSymbolicLink: entry.isSymbolicLink(),
+        }));
+      },
+    }));
+    expect(facts.warnings).toEqual(["root-unavailable"]);
+    expect(listings).toBe(1);
+    await expect(budget.run(async () => "still-available", 50)).resolves.toBe("still-available");
+  });
+
   it("stops new native reads at the earliest applicable deadline", async () => {
     const root = tempRoot();
     project(root, "alpha", { report: "x" });
