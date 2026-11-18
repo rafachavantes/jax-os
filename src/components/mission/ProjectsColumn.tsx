@@ -6,7 +6,7 @@ import { applySavedOrder, layoutMap, type PrScope } from "@/lib/cockpitLayout";
 import {
   beginSave, cancelOrganize, draftDrop, draftMove, draftWidth, enterOrganize,
   initialOrganizeState, reloadOrganize, saveConflicted, saveFailed, saveSucceeded,
-  useCockpitSnapshot, useCockpitWrites,
+  useCockpitSnapshot, useCockpitWrites, type OrganizeState,
 } from "@/lib/cockpitPrefsQuery";
 import { boardEntries, cardKey, hiddenBoardCards, sessionDisplay, type Mission, type MissionBucket, type MissionBucketSummary, type MissionCard } from "@/lib/mission";
 import { PrefsButtons, ProjectCard } from "./ProjectCard";
@@ -49,6 +49,18 @@ export function hiddenAutoHiddenSummary(
 // Round-1 F9: pulled out of the component so the toggled-open branch has a direct, non-rendering test.
 export function disclosureVisibleCards(showAuto: boolean, showHidden: boolean, autoHiddenCards: MissionCard[], hiddenCards: MissionCard[]): { auto: MissionCard[]; hidden: MissionCard[] } {
   return { auto: showAuto ? autoHiddenCards : [], hidden: showHidden ? hiddenCards : [] };
+}
+
+// Plan Task 3: a rejected move (pending save, unknown project, edge position) returns null, so the
+// caller can never announce a movement that did not happen.
+export function planProjectMove(
+  state: OrganizeState, dir: string, delta: -1 | 1, name: string,
+): { state: OrganizeState; announcement: { name: string; position: number } } | null {
+  if (state.draft === null || state.status === "saving") return null;
+  const index = state.draft.findIndex((e) => e.project === dir);
+  const next = index + delta;
+  if (index < 0 || next < 0 || next >= state.draft.length) return null;
+  return { state: draftMove(state, dir, delta), announcement: { name, position: next + 1 } };
 }
 
 // Decision 17: one summary line with two local disclosure toggles; the per-project rows
@@ -128,13 +140,11 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
   }
 
   function moveProject(dir: string, delta: -1 | 1) {
-    if (organize.draft === null) return;
-    const index = organize.draft.findIndex((e) => e.project === dir);
-    const next = index + delta;
-    if (index < 0 || next < 0 || next >= organize.draft.length) return;
     const name = model.cards.find((c) => c.dir === dir)?.name ?? dir;
-    setAnnouncement(t("organize.moved", { name, position: next + 1 }));
-    setOrganize((state) => draftMove(state, dir, delta));
+    const plan = planProjectMove(organize, dir, delta, name);
+    if (!plan) return;
+    setAnnouncement(t("organize.moved", plan.announcement));
+    setOrganize(plan.state);
   }
 
   async function persistLayout() {
