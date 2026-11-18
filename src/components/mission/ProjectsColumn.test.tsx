@@ -323,16 +323,72 @@ describe("ProjectsColumn — saved 12-column spans (M2 plan Task 3, spec AC4)", 
     expect((html.match(/data-card-dir="p1"/g) ?? []).length).toBe(1);
   });
 
-  it("the compact Projects controls carry the status filter pills", () => {
+  it("the compact Projects controls carry a folded status filter disclosure (F2)", () => {
     const mission = missionWithVisibility([{ ...cardBase, dir: "p1" }]);
     const html = renderToStaticMarkup(createElement(ProjectsColumn, {
       reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {},
       bucketSummary: { counts: { "needs-you": 1, stuck: 0, working: 2, idle: 0 }, worst: "needs-you" },
       onToggleFilter: () => {},
     }));
-    expect(html).toContain("states.needs-you");
-    expect(html).toContain("states.working");
+    // Folded by default, semantic native disclosure whose summary carries the active label.
+    expect(html).not.toMatch(/<details[^>]*\bopen\b/);
+    const summary = html.match(/<summary[^>]*>([\s\S]*?)<\/summary>/)?.[1] ?? "";
+    expect(summary).toContain("controls.filter");
+    expect(summary).toContain("controls.filterAll");
+    // The existing bucket pills (counts and pressed semantics) live inside the folded disclosure.
+    const details = html.match(/<details[^>]*>([\s\S]*?)<\/details>/)?.[1] ?? "";
+    expect(details).toContain("states.needs-you");
+    expect(details).toContain("states.working");
+    expect(details).toContain('aria-pressed="false"');
+    expect(html).not.toContain("controls.filterClear"); // nothing selected: no clear action
     expect(html).not.toContain("pitHint"); // compact: the hint line does not come back
+  });
+
+  it("a selected filter shows the bucket in the folded summary plus an independently visible clear action (F2)", () => {
+    const mission = missionWithVisibility([{ ...cardBase, dir: "p1", headline: "working" }]);
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, {
+      reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {}, filter: "working",
+      bucketSummary: { counts: { "needs-you": 0, stuck: 0, working: 1, idle: 0 }, worst: "working" },
+      onToggleFilter: () => {},
+    }));
+    const summary = html.match(/<summary[^>]*>([\s\S]*?)<\/summary>/)?.[1] ?? "";
+    expect(summary).toContain("states.working");
+    // The clear button is a sibling of the disclosure summary, not inside its interactive content.
+    const details = html.match(/<details[^>]*>([\s\S]*?)<\/details>/)?.[1] ?? "";
+    expect(details).not.toContain("controls.filterClear");
+    expect(html).toContain("controls.filterClear");
+    expect(html).toContain('aria-pressed="true"'); // the selected pill keeps its pressed semantics
+    expect(html).toContain('data-card-dir="p1"');
+  });
+
+  it("the clear action stays visible and usable when the bucket counts are unknown (F2)", () => {
+    const mission = missionWithVisibility([{ ...cardBase, dir: "p1" }]);
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, {
+      reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {}, filter: "stuck",
+      bucketSummary: { counts: null, worst: null },
+      onToggleFilter: () => {},
+    }));
+    expect(html).toContain("controls.filterClear");
+    expect(html).not.toContain("states.needs-you"); // no pill set to render (counts unknown)
+    const summary = html.match(/<summary[^>]*>([\s\S]*?)<\/summary>/)?.[1] ?? "";
+    expect(summary).toContain("states.stuck");
+  });
+
+  it("hidden/auto-hidden recovery stays outside the filter disclosure (F2)", () => {
+    const mission = missionWithVisibility(
+      [{ ...cardBase, dir: "h", visibility: "hidden" as const, prefs: { pinned: false, hiddenAt: "2026-09-19T00:00:00.000Z" } }],
+      { hiddenCount: 1 },
+    );
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, {
+      reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {},
+      bucketSummary: { counts: { "needs-you": 0, stuck: 0, working: 0, idle: 1 }, worst: "idle" },
+      onToggleFilter: () => {},
+    }));
+    const details = html.match(/<details[^>]*>([\s\S]*?)<\/details>/)?.[1] ?? "";
+    expect(details).not.toContain("hiddenBar");
+    expect(details).not.toContain("actions.manage");
+    expect(html).toContain("hiddenBar");
+    expect(html).toContain("actions.manage");
   });
 });
 

@@ -89,7 +89,10 @@
         "scopeError": "Falha ao salvar o escopo de PRs — a escolha anterior foi mantida.",
         "prScope": "PRs:",
         "mine": "Meus",
-        "all": "Todos"
+        "all": "Todos",
+        "filter": "Filtro",
+        "filterAll": "Todos os status",
+        "filterClear": "Limpar filtro"
       },
       "organize": {
         "drag": "Mover {name}",

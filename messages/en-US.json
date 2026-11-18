@@ -89,7 +89,10 @@
         "scopeError": "Could not save the PR scope — the previous choice was kept.",
         "prScope": "PRs:",
         "mine": "Mine",
-        "all": "All"
+        "all": "All",
+        "filter": "Filter",
+        "filterAll": "All statuses",
+        "filterClear": "Clear filter"
       },
       "organize": {
         "drag": "Move {name}",

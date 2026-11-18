@@ -101,6 +101,7 @@ function ProjectVisibilityDisclosure({
 
 export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expandedDir, onToggleExpand, bucketSummary = null, onToggleFilter }: Props) {
   const t = useTranslations("mission.projects");
+  const tMission = useTranslations("mission");
   const tSource = useTranslations("mission.source");
   const { readiness, model } = mission;
 
@@ -281,15 +282,35 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
         onScope={(scope) => void chooseScope(scope)}
       />
       <span aria-live="polite" className="sr-only">{announcement}</span>
-      {bucketSummary?.counts && onToggleFilter ? (
-        <PitCounts
-          counts={bucketSummary.counts}
-          active={filter}
-          onToggle={onToggleFilter}
-          hiddenCount={model.hiddenCount}
-          autoHiddenCount={model.autoHiddenCount}
-          compact
-        />
+      {bucketSummary && onToggleFilter && (bucketSummary.counts || filter !== null) ? (
+        // M2 plan F2: the permanent four-pill row is one compact native disclosure, folded by
+        // default. The pills (same PitCounts state/callback/counts/pressed semantics) live inside;
+        // the clear action is a sibling of the summary, visible while folded and independent of
+        // bucket-count availability, so it still clears a selected status whose counts are unknown.
+        <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-muted">
+          <details className="min-w-0">
+            <summary className="cursor-pointer list-none font-semibold text-body-ink [&::-webkit-details-marker]:hidden">
+              {t("controls.filter")}: {filter !== null ? tMission(`states.${filter}`) : t("controls.filterAll")}
+            </summary>
+            {bucketSummary.counts ? (
+              <div className="mt-1.5">
+                <PitCounts
+                  counts={bucketSummary.counts}
+                  active={filter}
+                  onToggle={onToggleFilter}
+                  hiddenCount={model.hiddenCount}
+                  autoHiddenCount={model.autoHiddenCount}
+                  compact
+                />
+              </div>
+            ) : null}
+          </details>
+          {filter !== null ? (
+            <button type="button" className="rounded border border-line px-1.5 py-0.5 font-semibold text-body-ink" onClick={() => onToggleFilter(filter)}>
+              {t("controls.filterClear")}
+            </button>
+          ) : null}
+        </div>
       ) : null}
       {(() => {
         const summary = hiddenAutoHiddenSummary(hiddenCards.length, autoHiddenCards.length, t as (key: string, values?: Record<string, unknown>) => string);
