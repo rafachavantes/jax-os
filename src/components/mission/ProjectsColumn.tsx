@@ -152,7 +152,11 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
 
   async function resetLayoutOverride() {
     if (organize.status === "saving") return;
-    const revision = snapshot?.revision ?? organize.baseRevision;
+    // Diff review F4: a draft is bound to the revision it was built from (enterOrganize). Reset
+    // while Organize is open must submit THAT revision — sending a newer polled revision would
+    // silently overwrite the polled change instead of surfacing the expected conflict. Outside
+    // Organize there is no draft, so the current snapshot revision is the correct base.
+    const revision = organize.draft !== null ? organize.baseRevision : snapshot?.revision ?? null;
     if (revision === null) return;
     const started: typeof organize = organize.draft !== null ? beginSave(organize) : { ...organize, status: "saving" };
     setOrganize(started);
