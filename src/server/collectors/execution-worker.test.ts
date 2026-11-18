@@ -71,6 +71,7 @@ function deps(nodes: Record<number, Node>, extra: Partial<Parameters<typeof insp
     now: () => NOW,
     budget: new InspectionBudget(4, 1_000, () => NOW),
     cache: new Map<string, { at: number; observedAt: string }>(),
+    launcherPath: "/opt/jax-os/scripts/jaxflow.py",
     ...extra,
   };
 }
@@ -109,18 +110,27 @@ describe("inspectWorkers — positive identity", () => {
     expect(result.get(workerKey(target()))).toMatchObject({ status: "observed", pid: 102 });
   });
 
-  it("rejects a wrong manifest, cwd, interpreter or executable", async () => {
+  it("rejects a wrong manifest, cwd, interpreter, executable or same-basename launcher", async () => {
     const cases: Record<number, Node>[] = [
       { 100: wrapperNode({ argv: ["/usr/bin/python3.14", "/opt/jax-os/scripts/jaxflow.py", "--run-worker", "/other/manifest.json"] }) },
       { 100: wrapperNode({ cwd: "/repos/alpha-wt" }) },
       { 100: wrapperNode({ argv: ["/usr/bin/node", "/opt/jax-os/scripts/jaxflow.py", "--run-worker", MANIFEST] }) },
       { 100: wrapperNode({ argv: ["/usr/bin/python3.14", "/opt/jax-os/scripts/other.py", "--run-worker", MANIFEST] }) },
       { 100: wrapperNode({ exe: "/usr/bin/other-python" }) },
+      { 100: wrapperNode({ argv: ["/usr/bin/python3.14", "/tmp/scripts/jaxflow.py", "--run-worker", MANIFEST] }) },
     ];
     for (const nodes of cases) {
       const result = await observe(nodes);
       expect(result.get(workerKey(target()))?.status).not.toBe("observed");
     }
+  });
+
+  it("marks the control launcher unverifiable instead of guessing", async () => {
+    const result = await inspectWorkers([target()], {
+      ...deps({ 100: wrapperNode() }),
+      realpath: async (p: string) => { if (p === "/opt/jax-os/scripts/jaxflow.py") throw new Error("missing"); return p; },
+    });
+    expect(result.get(workerKey(target()))).toEqual({ status: "unknown", warning: "launcher-unverified" });
   });
 
   it("rejects PID replacement between identity reads", async () => {
@@ -168,11 +178,36 @@ describe("inspectWorkers — absence, failure and cache", () => {
   it("a tmux source failure is unknown, never a healthy absence", async () => {
     const result = await inspectWorkers([target()], { ...deps({}), tmux: async () => { throw new Error("permission denied"); } });
     expect(result.get(workerKey(target()))).toEqual({ status: "unknown", warning: "tmux-unavailable" });
+    const refused = await inspectWorkers([target()], { ...deps({}), tmux: async () => { throw new Error("error connecting to /tmp/tmux-1000/default (Connection refused)"); } });
+    expect(refused.get(workerKey(target()))).toEqual({ status: "unknown", warning: "tmux-unavailable" });
+    const denied = await inspectWorkers([target()], { ...deps({}), tmux: async () => { throw new Error("error connecting to /tmp/tmux-1000/default (Permission denied)"); } });
+    expect(denied.get(workerKey(target()))).toEqual({ status: "unknown", warning: "tmux-unavailable" });
   });
 
-  it("a missing tmux server is a healthy empty snapshot", async () => {
+  it("a missing tmux server or socket is a healthy empty snapshot", async () => {
     const result = await inspectWorkers([target()], { ...deps({}), tmux: async () => { throw new Error("no server running on /tmp/tmux-1000/default"); } });
     expect(result.get(workerKey(target()))).toEqual({ status: "awaiting-confirmation" });
+    const noSocket = await inspectWorkers([target()], { ...deps({}), tmux: async () => { throw new Error("error connecting to /tmp/tmux-1000/default (No such file or directory)"); } });
+    expect(noSocket.get(workerKey(target()))).toEqual({ status: "awaiting-confirmation" });
+  });
+
+  it("does not snapshot tmux when there is no eligible open row", async () => {
+    let calls = 0;
+    const result = await inspectWorkers([], { ...deps({}), tmux: async () => { calls++; return ""; } });
+    expect(result.size).toBe(0);
+    expect(calls).toBe(0);
+  });
+
+  it("stops worker reads at its own subdeadline inside a longer shared budget", async () => {
+    let now = 0;
+    const budget = new InspectionBudget(4, 2_000, () => now);
+    const result = await inspectWorkers([target()], {
+      ...deps({ 100: wrapperNode() }),
+      budget,
+      workerMs: 1_000,
+      tmux: async () => { now = 1_500; return `%1 100 ${target().session}\n`; },
+    });
+    expect(result.get(workerKey(target()))).toEqual({ status: "unknown", warning: "observation-timeout" });
   });
 
   it("a timeout produces unknown with a last-good timestamp", async () => {

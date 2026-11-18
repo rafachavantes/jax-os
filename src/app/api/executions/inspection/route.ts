@@ -33,7 +33,10 @@ export function parseInspectionSearch(search: string): { ok: true; selectors: In
     if (!PROJECT_LABEL.test(destination) || !RUN_ID_RE.test(runId)) return { ok: false, error: "invalid selector" };
     const rawStart = parts[2];
     if (rawStart !== "" && !/^[1-9][0-9]{0,15}$/.test(rawStart)) return { ok: false, error: "invalid selector" };
-    selectors.push({ destination, runId, startEventId: rawStart === "" ? null : Number(rawStart) });
+    const startEventId = rawStart === "" ? null : Number(rawStart);
+    // Reject an overflow before any DB access: only positive safe integers resolve a selector.
+    if (startEventId !== null && !Number.isSafeInteger(startEventId)) return { ok: false, error: "invalid selector" };
+    selectors.push({ destination, runId, startEventId });
   }
   return { ok: true, selectors };
 }

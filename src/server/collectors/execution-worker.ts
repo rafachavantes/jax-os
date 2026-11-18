@@ -3,7 +3,8 @@ import { open, readlink, realpath } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { basename, dirname } from "node:path";
-import { BudgetError, InspectionBudget } from "./execution-artifacts";
+import { BudgetError, InspectionBudget, type BudgetLike } from "./execution-artifacts";
+import { JAXFLOW_SCRIPT } from "./workflow-spawn";
 import type { ExecutionRow } from "../../lib/executions";
 import type { CurrentExecutionState } from "../db/workflows";
 
@@ -15,6 +16,7 @@ export const WORKER_WARNINGS = [
   "tmux-unavailable",
   "session-unknown",
   "manifest-unverified",
+  "launcher-unverified",
   "observation-timeout",
   "observation-ambiguous",
   "timestamp-unknown",
@@ -141,7 +143,11 @@ export async function defaultTmuxSnapshot(): Promise<string> {
   return stdout;
 }
 
-const NO_SERVER_RE = /no server running|error connecting/i;
+const NO_SERVER_RE = /no server running/i;
+// ENOENT/no-socket is a demonstrated "nothing running" condition. Permission and connection
+// failures are real source errors and stay unknown.
+const NO_SOCKET_RE = /error connecting to .*(?:no such file or directory|enoent)/i;
+const WORKER_DEADLINE_MS = 1_000;
 
 export type WorkerDeps = {
   tmux?: () => Promise<string>;
@@ -151,6 +157,8 @@ export type WorkerDeps = {
   budget?: InspectionBudget;
   perReadMs?: number;
   maxRuns?: number;
+  workerMs?: number;
+  launcherPath?: string;
   // Volatile process-memory last-good observations; injectable for tests, bounded regardless.
   cache?: Map<string, { at: number; observedAt: string }>;
 };
@@ -221,7 +229,7 @@ async function readStable(proc: ProcReader, pid: number): Promise<Identity | nul
 }
 
 async function collectCandidates(
-  rootPid: number, proc: ProcReader, readTimeout: number, budget: InspectionBudget,
+  rootPid: number, proc: ProcReader, readTimeout: number, budget: BudgetLike,
 ): Promise<number[]> {
   const rootStat = await budget.run(() => readStable(proc, rootPid), readTimeout);
   if (!rootStat) return [];
@@ -247,11 +255,14 @@ async function collectCandidates(
   return out;
 }
 
-async function canonicalOrNull(realpath: (p: string) => Promise<string>, path: string | null): Promise<string | null> {
+async function canonicalOrNull(
+  canonicalize: (p: string) => Promise<string>, path: string | null, budget: BudgetLike, timeoutMs: number,
+): Promise<string | null> {
   if (path === null) return null;
   try {
-    return await realpath(path);
-  } catch {
+    return await budget.run(() => canonicalize(path), timeoutMs);
+  } catch (e) {
+    if (e instanceof BudgetError) throw e;
     return null;
   }
 }
@@ -260,13 +271,18 @@ function isPythonInterpreter(path: string): boolean {
   return /^python[0-9]*(?:\.[0-9]+)?$/.test(basename(path));
 }
 
-type WrapperIdentity = { manifestPath: string; manifestCanonical: string; repoCanonical: string };
+type WrapperIdentity = {
+  manifestCanonical: string;
+  repoCanonical: string;
+  launcherCanonical: string;
+};
 
-// The actual four-argument launcher tuple: interpreter, canonical scripts/jaxflow.py,
-// --run-worker, exact manifest. Command/session names alone never prove a worker.
+// The actual four-argument launcher tuple: interpreter, the exact canonical installed control-app
+// scripts/jaxflow.py, --run-worker, exact manifest. Command/session names, a same-basename script
+// elsewhere, or any other four-argument Python invocation never prove a worker.
 async function matchWrapper(
   pid: number, identity: WrapperIdentity, proc: ProcReader, realpath: (p: string) => Promise<string>,
-  budget: InspectionBudget, readTimeout: number,
+  budget: BudgetLike, readTimeout: number,
 ): Promise<Identity | "no" | "ambiguous"> {
   const before = await budget.run(() => readStable(proc, pid), readTimeout);
   if (!before) return "no";
@@ -276,16 +292,16 @@ async function matchWrapper(
   if (argv.length !== 4 || flag !== "--run-worker") return "no";
   if (basename(script) !== "jaxflow.py" || basename(dirname(script)) !== "scripts") return "no";
   if (!isPythonInterpreter(interpreter)) return "no";
-  const scriptCanonical = await canonicalOrNull(realpath, script);
-  if (scriptCanonical === null || basename(scriptCanonical) !== "jaxflow.py" || basename(dirname(scriptCanonical)) !== "scripts") return "no";
-  const manifestCanonical = await canonicalOrNull(realpath, manifest);
+  const scriptCanonical = await canonicalOrNull(realpath, script, budget, readTimeout);
+  if (scriptCanonical === null || scriptCanonical !== identity.launcherCanonical) return "no";
+  const manifestCanonical = await canonicalOrNull(realpath, manifest, budget, readTimeout);
   if (manifestCanonical === null || manifestCanonical !== identity.manifestCanonical) return "no";
   const exe = await budget.run(() => proc.exe(pid), readTimeout);
-  const exeCanonical = await canonicalOrNull(realpath, exe);
-  const interpreterCanonical = await canonicalOrNull(realpath, interpreter);
+  const exeCanonical = await canonicalOrNull(realpath, exe, budget, readTimeout);
+  const interpreterCanonical = await canonicalOrNull(realpath, interpreter, budget, readTimeout);
   if (exeCanonical === null || interpreterCanonical === null || exeCanonical !== interpreterCanonical) return "no";
   const cwd = await budget.run(() => proc.cwd(pid), readTimeout);
-  const cwdCanonical = await canonicalOrNull(realpath, cwd);
+  const cwdCanonical = await canonicalOrNull(realpath, cwd, budget, readTimeout);
   if (cwdCanonical === null || cwdCanonical !== identity.repoCanonical) return "no";
   const after = await budget.run(() => readStable(proc, pid), readTimeout);
   if (!after || after.startTicks !== before.startTicks) return "no";
@@ -293,36 +309,42 @@ async function matchWrapper(
 }
 
 async function observeTarget(
-  target: WorkerTarget, panes: PaneInfo[], deps: Required<Pick<WorkerDeps, "proc" | "realpath" | "now">> & {
-    budget: InspectionBudget; perReadMs: number; cache: Map<string, LastGood>;
+  target: WorkerTarget, panes: PaneInfo[], deps: Required<Pick<WorkerDeps, "proc" | "realpath" | "now" | "launcherPath">> & {
+    budget: BudgetLike; perReadMs: number; cache: Map<string, LastGood>;
   },
 ): Promise<WorkerObservation> {
   const key = workerKey(target);
   const nowMs = deps.now();
   if (target.session === null) return { status: "unknown", warning: "session-unknown" };
   if (target.manifestPath === null || target.repo === null) return { status: "unknown", warning: "manifest-unverified" };
-  const manifestCanonical = await canonicalOrNull(deps.realpath, target.manifestPath);
-  const repoCanonical = await canonicalOrNull(deps.realpath, target.repo);
-  if (manifestCanonical === null || repoCanonical === null) return { status: "unknown", warning: "manifest-unverified" };
-
-  const sessionPanes = panes.filter((p) => p.session === target.session);
-  if (sessionPanes.length === 0) {
-    const previous = priorObservation(deps.cache, key, nowMs);
-    if (previous) return { status: "no-worker-observed", lastGoodAt: previous.observedAt };
-    const started = target.startTs === null ? NaN : Date.parse(target.startTs);
-    if (!Number.isFinite(started)) return { status: "unknown", warning: "timestamp-unknown" };
-    return started >= nowMs - 60_000
-      ? { status: "awaiting-confirmation" }
-      : { status: "no-worker-observed" };
-  }
-  if (sessionPanes.length > 1) return { status: "unknown", warning: "observation-ambiguous" };
 
   try {
-    const pids = await collectCandidates(sessionPanes[0].panePid, deps.proc, deps.perReadMs, deps.budget);
+    const budget = deps.budget;
+    const manifestCanonical = await canonicalOrNull(deps.realpath, target.manifestPath, budget, deps.perReadMs);
+    const repoCanonical = await canonicalOrNull(deps.realpath, target.repo, budget, deps.perReadMs);
+    const launcherCanonical = await canonicalOrNull(deps.realpath, deps.launcherPath, budget, deps.perReadMs);
+    if (launcherCanonical === null) return { status: "unknown", warning: "launcher-unverified" };
+    if (manifestCanonical === null || repoCanonical === null) return { status: "unknown", warning: "manifest-unverified" };
+
+    const sessionPanes = panes.filter((p) => p.session === target.session);
+    if (sessionPanes.length === 0) {
+      const previous = priorObservation(deps.cache, key, nowMs);
+      if (previous) return { status: "no-worker-observed", lastGoodAt: previous.observedAt };
+      const started = target.startTs === null ? NaN : Date.parse(target.startTs);
+      if (!Number.isFinite(started)) return { status: "unknown", warning: "timestamp-unknown" };
+      return started >= nowMs - 60_000
+        ? { status: "awaiting-confirmation" }
+        : { status: "no-worker-observed" };
+    }
+    if (sessionPanes.length > 1) return { status: "unknown", warning: "observation-ambiguous" };
+
+    const pids = await collectCandidates(sessionPanes[0].panePid, deps.proc, deps.perReadMs, budget);
     if (pids.length === 0) return { status: "unknown", warning: "observation-timeout" };
     const matches: Identity[] = [];
     for (const pid of pids) {
-      const result = await matchWrapper(pid, { manifestPath: target.manifestPath, manifestCanonical, repoCanonical }, deps.proc, deps.realpath, deps.budget, deps.perReadMs);
+      const result = await matchWrapper(
+        pid, { manifestCanonical, repoCanonical, launcherCanonical }, deps.proc, deps.realpath, budget, deps.perReadMs,
+      );
       if (result === "ambiguous") return { status: "unknown", warning: "observation-ambiguous" };
       if (result !== "no") matches.push(result);
     }
@@ -349,36 +371,41 @@ async function observeTarget(
 }
 
 // Bounded pass: at most 12 open displayed runs are checked; the rest are not-checked, never
-// fabricated active. One fixed tmux snapshot per pass, single-flight.
+// fabricated active. One fixed tmux snapshot per pass, single-flight. The worker subdeadline is
+// 1s inside the shared 2s pass budget; no second capacity pool is created.
 export async function inspectWorkers(
   targets: readonly WorkerTarget[], deps: WorkerDeps = {},
 ): Promise<Map<string, WorkerObservation>> {
   const now = deps.now ?? Date.now;
-  const budget = deps.budget ?? new InspectionBudget(4, 1_000, now);
+  const shared = deps.budget ?? new InspectionBudget(4, WORKER_DEADLINE_MS, now);
+  const budget = shared.scope(deps.workerMs ?? WORKER_DEADLINE_MS);
   const proc = deps.proc ?? defaultProcReader;
   const canonical = deps.realpath ?? realpath;
   const tmux = deps.tmux ?? defaultTmuxSnapshot;
   const perReadMs = deps.perReadMs ?? 100;
   const maxRuns = deps.maxRuns ?? 12;
   const cache = deps.cache ?? lastGood;
+  const launcherPath = deps.launcherPath ?? JAXFLOW_SCRIPT;
   const checked = targets.slice(0, maxRuns);
   const result = new Map<string, WorkerObservation>();
   for (const target of targets.slice(maxRuns)) result.set(workerKey(target), { status: "not-checked" });
+  // No eligible open row means no process scan at all.
+  if (checked.length === 0) return result;
 
   let panes: PaneInfo[];
   try {
     panes = parsePaneSnapshot(await budget.run(() => snapshotTmux(tmux), 500));
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (e instanceof BudgetError || !NO_SERVER_RE.test(message)) {
+    if (e instanceof BudgetError || !(NO_SERVER_RE.test(message) || NO_SOCKET_RE.test(message))) {
       for (const target of checked) result.set(workerKey(target), { status: "unknown", warning: "tmux-unavailable" });
       return result;
     }
-    panes = []; // no tmux server: a healthy empty snapshot, never a source failure
+    panes = []; // demonstrated no-server/no-socket: a healthy empty snapshot, never a source failure
   }
 
   const observations = await Promise.all(checked.map((target) =>
-    observeTarget(target, panes, { proc, realpath: canonical, now, budget, perReadMs, cache })));
+    observeTarget(target, panes, { proc, realpath: canonical, now, budget, perReadMs, cache, launcherPath })));
   checked.forEach((target, index) => result.set(workerKey(target), observations[index]));
   return result;
 }

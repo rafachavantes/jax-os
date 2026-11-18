@@ -137,11 +137,39 @@ export class InspectionBudget {
     while (this.pending.size > 0) await Promise.allSettled([...this.pending]);
   }
 
+  // A view over the same native capacity pool with an earlier subdeadline. It never resets the
+  // in-flight maximum, so a composed collector cannot gain extra concurrency.
+  scope(totalMs: number): BudgetLike {
+    const parent = this;
+    const deadline = parent.clock() + totalMs;
+    const remaining = (): number => Math.max(0, Math.min(deadline - parent.clock(), parent.remainingMs));
+    return {
+      get expired() { return parent.clock() >= deadline || parent.expired; },
+      get remainingMs() { return remaining(); },
+      async run<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T> {
+        if (parent.clock() >= deadline) throw new BudgetError("deadline");
+        return parent.run(fn, Math.min(timeoutMs, remaining()));
+      },
+      async check(): Promise<void> {
+        if (parent.clock() >= deadline || parent.expired) throw new BudgetError("deadline");
+      },
+      settled: () => parent.settled(),
+    };
+  }
+
   // Starts nothing after the deadline for work that is cheaply checkable before starting.
   async check(): Promise<void> {
     if (this.expired) throw new BudgetError("deadline");
   }
 }
+
+export type BudgetLike = {
+  readonly expired: boolean;
+  readonly remainingMs: number;
+  run<T>(fn: () => Promise<T>, timeoutMs: number): Promise<T>;
+  check(): Promise<void>;
+  settled(): Promise<void>;
+};
 
 const execFileAsync = promisify(execFile);
 const defaultGitProbe: GitProbe = async (args, cwd) => {

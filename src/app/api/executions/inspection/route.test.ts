@@ -38,6 +38,8 @@ describe("parseInspectionSearch", () => {
       `?r=${encodeURIComponent("../etc|${RUN}|1")}`,
       `?r=${encodeURIComponent(`jax-os|${RUN}|0`)}`,
       `?r=${encodeURIComponent(`jax-os|${RUN}|nope`)}`,
+      `?r=${encodeURIComponent(`jax-os|${RUN}|9999999999999999`)}`,
+      `?r=${encodeURIComponent(`jax-os|${RUN}|9007199254740993`)}`,
       `?r=${encodeURIComponent(`jax-os|${RUN}|1`)}&limit=30`,
     ]) {
       expect(parseInspectionSearch(qs).ok, qs).toBe(false);

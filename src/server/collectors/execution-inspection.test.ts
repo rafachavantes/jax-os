@@ -58,6 +58,7 @@ describe("inspectExecutionRows", () => {
       tmux: async () => `%1 100 jax-alpha-build\n`,
       proc: proc(abs),
       realpath: async (p: string) => p,
+      launcherPath: "/opt/jax-os/scripts/jaxflow.py",
       lastGood: new Map(),
     });
     expect(rows).toHaveLength(1);
@@ -115,5 +116,87 @@ describe("inspectExecutionRows", () => {
     });
     expect(rows[0].current).toBeNull();
     expect(rows[0].observation).toEqual({ status: "not-checked" });
+  });
+});
+
+describe("inspectExecutionRows — fresh observation and single flight", () => {
+  function selector(startId: number) {
+    return { destination: DEST, runId: RUN, startEventId: startId };
+  }
+
+  function insertFinish(db: ReturnType<typeof openDb>): void {
+    db.prepare(
+      `INSERT INTO workflow_events (ts, run_id, project, role, type, source, emitter, payload, delivery)
+       VALUES ('2026-11-18T11:59:40.000Z', ?, ?, 'builder', 'run-finished', 'deterministic', 'wrapper', ?, 'local')`,
+    ).run(RUN, DEST, JSON.stringify({ result: "failure" }));
+  }
+
+  function insertStart(db: ReturnType<typeof openDb>): void {
+    db.prepare(
+      `INSERT INTO workflow_events (ts, run_id, project, role, type, source, emitter, payload, delivery)
+       VALUES ('2026-11-18T11:59:50.000Z', ?, ?, 'builder', 'run-started', 'deterministic', 'wrapper', ?, 'local')`,
+    ).run(RUN, DEST, JSON.stringify({ kind: "build", session: "jax-alpha-build" }));
+  }
+
+  it("lets a finish inserted during the process snapshot win", async () => {
+    const { root, db, startId } = fixture();
+    const rows = await inspectExecutionRows(db, [selector(startId)], {
+      reposRoot: root, now: () => NOW, lastGood: new Map(),
+      tmux: async () => { insertFinish(db); return `%1 100 jax-alpha-build\n`; },
+    });
+    expect(rows[0].current).toMatchObject({ terminal: true, outcome: "failure", contractStatus: "invalid" });
+    expect(rows[0].current?.warnings).toContain("contract-invalid");
+    expect(rows[0].observation).toEqual({ status: "not-checked" });
+  });
+
+  it("marks a newer start inserted during the snapshot refresh-needed", async () => {
+    const { root, db, startId } = fixture();
+    const rows = await inspectExecutionRows(db, [selector(startId)], {
+      reposRoot: root, now: () => NOW, lastGood: new Map(),
+      tmux: async () => { insertStart(db); return `%1 100 jax-alpha-build\n`; },
+    });
+    expect(rows[0].refreshNeeded).toBe(true);
+    expect(rows[0].observation).toEqual({ status: "not-checked" });
+  });
+
+  it("shares one native pass and starts a new one only after settlement", async () => {
+    const { root, db, startId } = fixture();
+    let tmuxCalls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const deps = {
+      reposRoot: join(root, "missing"),
+      now: () => NOW,
+      lastGood: new Map(),
+      tmux: async () => { tmuxCalls++; await gate; return ""; },
+    };
+    const first = inspectExecutionRows(db, [selector(startId)], deps);
+    while (tmuxCalls === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+    const same = inspectExecutionRows(db, [selector(startId)], deps);
+    const differing = await inspectExecutionRows(db, [selector(startId + 1)], deps);
+    expect(differing[0]).toMatchObject({ observation: { status: "not-checked" }, refreshNeeded: true });
+    expect(differing[0].current).toMatchObject({ outcome: "open", terminal: false });
+    expect(tmuxCalls).toBe(1);
+
+    release();
+    const firstRows = await first;
+    expect(await same).toBe(firstRows);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const next = await inspectExecutionRows(db, [selector(startId)], deps);
+    expect(tmuxCalls).toBe(2);
+    expect(next[0].observation).not.toEqual({ status: "not-checked" });
+  });
+
+  it("does not scan tmux when the resolved rows have no open attempt", async () => {
+    const { root, db, startId } = fixture();
+    insertFinish(db);
+    let calls = 0;
+    const rows = await inspectExecutionRows(db, [selector(startId)], {
+      reposRoot: root, now: () => NOW, lastGood: new Map(),
+      tmux: async () => { calls++; return ""; },
+    });
+    expect(rows[0].current?.terminal).toBe(true);
+    expect(calls).toBe(0);
   });
 });
