@@ -13,12 +13,12 @@ function mutationKinds(db: Database.Database): string[] {
 }
 
 describe("cockpit prefs migration (plan Task 1)", () => {
-  it("migrates a previous-version db to 13 with an empty singleton and defaults", () => {
+  it("migrates a version12 db to the current schema with cockpit defaults", () => {
     const db = new Database(":memory:");
     for (const sql of MIGRATIONS.slice(0, 12)) db.exec(sql);
     db.pragma("user_version = 12");
     migrate(db);
-    expect(db.pragma("user_version", { simple: true })).toBe(13);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATIONS.length);
     const cols = (db.prepare("PRAGMA table_info(cockpit_prefs)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toEqual(["id", "layout_revision", "layout", "pr_scope"]);
     expect(db.prepare("SELECT COUNT(*) AS n FROM cockpit_prefs").get()).toEqual({ n: 0 });

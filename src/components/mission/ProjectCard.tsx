@@ -497,7 +497,14 @@ export function OwnershipUnknownBadge() {
 // reviews), rendered next to the tmux/codex session rows in both SessionLines (compact) and
 // the expanded sessions section: stage · runtime · running · elapsed minutes. Shared so the
 // two never drift on format.
-function ActiveRunLine({ run }: { run: MissionActiveRunSummary }) {
+// M3a: every recorded in-flight/finished run context opens the matching history scope.
+function ExecutionHistoryLink({ runId, destination }: { runId: string; destination: string }) {
+  const t = useTranslations("mission");
+  const params = new URLSearchParams({ project: destination, run: runId, period: "all" });
+  return <a href={`/executions?${params.toString()}`} className="font-semibold text-brand">{t("executionsLink")}</a>;
+}
+
+function ActiveRunLine({ run, destination }: { run: MissionActiveRunSummary; destination: string }) {
   const t = useTranslations("mission");
   const minutes = run.startedAt ? elapsedMinutesSince(run.startedAt, Date.now()) : null;
   return (
@@ -506,11 +513,12 @@ function ActiveRunLine({ run }: { run: MissionActiveRunSummary }) {
       {minutes !== null ? t("pill.elapsed", { minutes }) : null}
       {run.destinationProject ? <> · {t("board.destination", { project: run.destinationProject })}</> : null}
       {run.ownershipUnknown ? <> · <OwnershipUnknownBadge /></> : null}
+      {destination ? <> · <ExecutionHistoryLink runId={run.runId} destination={destination} /></> : null}
     </div>
   );
 }
 
-function SessionLines({ sessions, activeRuns, builder }: { sessions: MissionCard["sessions"]; activeRuns: MissionCard["activeRuns"]; builder: string }) {
+function SessionLines({ sessions, activeRuns, builder, destination }: { sessions: MissionCard["sessions"]; activeRuns: MissionCard["activeRuns"]; builder: string; destination: string }) {
   const t = useTranslations("mission");
   const runs = activeRuns ?? [];
   if (sessions.length === 0 && runs.length === 0) return null;
@@ -545,7 +553,7 @@ function SessionLines({ sessions, activeRuns, builder }: { sessions: MissionCard
           </div>
         );
       })}
-      {runs.map((run) => <ActiveRunLine key={run.runId} run={run} />)}
+      {runs.map((run) => <ActiveRunLine key={run.runId} run={run} destination={run.destinationProject ?? destination} />)}
       {hidden > 0 ? <span className="text-[11px] text-muted">+{hidden}</span> : null}
     </div>
   );
@@ -800,12 +808,12 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
       <div className="flex flex-col gap-1.5">
         {!scoped ? (
           <>
-            <SessionLines sessions={liveSessions(card.sessions)} activeRuns={card.activeRuns} builder={card.builder} />
+            <SessionLines sessions={liveSessions(card.sessions)} activeRuns={card.activeRuns} builder={card.builder} destination={card.dir} />
             <LastLine card={card} />
           </>
         ) : null}
         {scoped && card.lastRun ? <LastRunLine card={card} /> : null}
-        {unlinkedScope ? (card.activeRuns ?? []).map((run) => <ActiveRunLine key={run.runId} run={run} />) : null}
+        {unlinkedScope ? (card.activeRuns ?? []).map((run) => <ActiveRunLine key={run.runId} run={run} destination={run.destinationProject ?? card.dir} />) : null}
       </div>
 
       {!scoped ? (<div className="flex flex-wrap items-center gap-4 border-t border-line-subtle pt-[13px] text-xs text-muted">
@@ -1042,6 +1050,7 @@ function LastRunLine({ card, run = card.lastRun }: { card: MissionCard; run?: Mi
           {t("expanded.openDocument")}
         </a>
       ) : null}
+      {lastRun.runId ? <ExecutionHistoryLink runId={lastRun.runId} destination={lastRun.destinationProject ?? card.dir} /> : null}
     </div>
   );
 }
@@ -1133,7 +1142,7 @@ function ExpandedCard({
             </div>
             );
           })}
-          {(card.activeRuns ?? []).map((run) => <ActiveRunLine key={run.runId} run={run} />)}
+          {(card.activeRuns ?? []).map((run) => <ActiveRunLine key={run.runId} run={run} destination={run.destinationProject ?? card.dir} />)}
           </>
         )}
       </section>

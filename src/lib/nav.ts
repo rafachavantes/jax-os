@@ -2,6 +2,7 @@ import {
   Blocks,
   Coins,
   FolderGit2,
+  History,
   Kanban,
   LayoutDashboard,
   ScrollText,
@@ -13,7 +14,7 @@ import {
 export type SidebarMode = "expanded" | "collapsed" | "hidden";
 
 export type NavItem = {
-  key: "mission" | "kanban" | "sessions" | "files" | "tokens" | "server" | "audit" | "tools";
+  key: "mission" | "kanban" | "sessions" | "executions" | "files" | "tokens" | "server" | "audit" | "tools";
   href: string;
   icon: LucideIcon;
   phase: number;
@@ -27,6 +28,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "mission", href: "/", icon: LayoutDashboard, phase: 2 },
   { key: "kanban", href: "/kanban", icon: Kanban, phase: 4 },
   { key: "sessions", href: "/tmux", icon: SquareTerminal, phase: 3 },
+  { key: "executions", href: "/executions", icon: History, phase: 10 },
   { key: "files", href: "/files", icon: FolderGit2, phase: 5 },
   { key: "tokens", href: "/tokens", icon: Coins, phase: 6 },
   { key: "server", href: "/health", icon: Server, phase: 7, hidden: true },

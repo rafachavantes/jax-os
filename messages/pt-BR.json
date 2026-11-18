@@ -3,6 +3,7 @@
     "mission": "Mission Control",
     "kanban": "Linear",
     "sessions": "Sessões",
+    "executions": "Execuções",
     "files": "Arquivos",
     "tokens": "Tokens",
     "server": "Servidor",
@@ -13,6 +14,7 @@
     "mission": "Mission Control",
     "kanban": "Linear",
     "sessions": "Sessões",
+    "executions": "Execuções",
     "files": "Arquivos",
     "tokens": "Token Intelligence",
     "server": "Saúde do Servidor",
@@ -23,6 +25,7 @@
     "mission": "Tudo rodando, à vista",
     "kanban": "Issues sincronizadas do Linear",
     "sessions": "Tmux ao vivo — veja seus agentes trabalhando",
+    "executions": "Histórico de builds e revisões, do ledger de eventos",
     "files": "Navegue e edite — repos + obsidian-vault",
     "tokens": "Para onde seus tokens vão",
     "server": "Sinais vitais do jax-server",
@@ -43,6 +46,7 @@
     "hide": "Ocultar"
   },
   "mission": {
+    "executionsLink": "Execuções",
     "rings": {
       "unavailable": "indisponível",
       "resetInMinutes": "em {minutes} min",
@@ -1192,5 +1196,102 @@
     "unreadable": "settings.json não pôde ser lido — usando padrões",
     "noAgents": "Nenhum agente ligado: o jaxflow não roda sem pelo menos um agente configurado. Ligue um em Configurações -> Geral.",
     "noReviewer": "O jaxflow review não vai rodar: uma revisão precisa do Claude Code ou do Codex, e nenhum está ligado (os builds continuam funcionando). Ligue um em Configurações -> Geral."
+  },
+  "executions": {
+    "title": "Execuções",
+    "subtitle": "Histórico de builds e revisões a partir do ledger de eventos",
+    "invalidUrl": "Seleção de filtros inválida",
+    "unavailable": "Histórico de execuções indisponível",
+    "inspectionUnavailable": "Inspeção ao vivo indisponível — o histórico durável continua visível",
+    "empty": "Nenhuma execução neste escopo.",
+    "older": "Mais antigas",
+    "refresh": "Atualizar",
+    "unknown": "desconhecido",
+    "durationUnknown": "desconhecida",
+    "runContext": "Contexto da execução: {destination} / {run}",
+    "firstDispatch": "Primeiro despacho",
+    "duration": "Duração",
+    "details": "Detalhes",
+    "hideDetails": "Ocultar detalhes",
+    "phase": "Fase",
+    "target": "Alvo",
+    "caller": "Chamador",
+    "branch": "Branch",
+    "report": "Abrir relatório",
+    "tests": "Abrir saída dos testes",
+    "reportUnavailable": "Relatório retido indisponível",
+    "testsUnavailable": "Saída dos testes indisponível",
+    "warnings": "Avisos",
+    "filters": {
+      "project": "Destino",
+      "projectPlaceholder": "Todos os projetos",
+      "kind": "Tipo",
+      "state": "Estado",
+      "period": "Período",
+      "apply": "Aplicar",
+      "reset": "Limpar",
+      "kinds": {
+        "all": "Todos os tipos",
+        "build": "Builds",
+        "review": "Revisões",
+        "spec": "Revisões de spec",
+        "plan": "Revisões de plano",
+        "diff": "Revisões de diff"
+      },
+      "states": {
+        "all": "Todos os estados",
+        "open": "Aberta",
+        "finished": "Concluída",
+        "success": "Sucesso",
+        "failure": "Falha",
+        "blocked": "Bloqueada",
+        "cancelled": "Cancelada",
+        "interrupted": "Interrompida",
+        "approve": "Aprovada",
+        "approve-with-changes": "Aprovada com ajustes",
+        "reject": "Rejeitada",
+        "unknown": "Desconhecido"
+      },
+      "periods": {
+        "7d": "7d",
+        "30d": "30d",
+        "all": "Tudo"
+      }
+    },
+    "kind": {
+      "build": "Build",
+      "review": "Revisão",
+      "unknown": "Execução"
+    },
+    "subtype": {
+      "spec": "spec",
+      "plan": "plano",
+      "diff": "diff"
+    },
+    "outcome": {
+      "open": "Aberta",
+      "success": "Sucesso",
+      "failure": "Falha",
+      "blocked": "Bloqueada",
+      "cancelled": "Cancelada",
+      "interrupted": "Interrompida",
+      "approve": "Aprovada",
+      "approve-with-changes": "Aprovada com ajustes",
+      "reject": "Rejeitada",
+      "unknown": "Desconhecido"
+    },
+    "executor": {
+      "label": "Executor",
+      "unknown": "desconhecido"
+    },
+    "worker": {
+      "observed": "Worker observado",
+      "awaiting": "Aguardando confirmação do worker",
+      "absent": "Nenhum worker observado",
+      "unknown": "Atividade atual desconhecida",
+      "notChecked": "Não verificada",
+      "refresh": "Atualizado — recarregue",
+      "lastGood": "visto por último"
+    }
   }
 }
