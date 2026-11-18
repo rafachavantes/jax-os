@@ -233,6 +233,87 @@ export const MIGRATIONS: readonly string[] = [
   -- Non-run events (the overwhelming majority) are not indexed at all.
   CREATE INDEX workflow_events_executions ON workflow_events (project, run_id, id DESC)
     WHERE run_id IS NOT NULL AND type IN ('run-started', 'run-finished');`,
+  `-- MOA-536 (migration 15): native agent-usage accounting. Numeric facts only: no prompts,
+  -- messages, tool output, raw lines or native JSON. Item identity is global per harness
+  -- (Claude message.id, Codex thread_id|response_id, OpenCode session|message|projection);
+  -- item upsert and file-offset advance share the caller's immediate transaction.
+  CREATE TABLE native_usage_items (
+    id              INTEGER PRIMARY KEY,
+    harness         TEXT NOT NULL CHECK (harness IN ('claude', 'codex', 'opencode')),
+    item_id         TEXT NOT NULL,
+    session_id      TEXT NOT NULL,
+    child_id        TEXT NOT NULL DEFAULT '',
+    parent_id       TEXT,
+    is_child        INTEGER NOT NULL DEFAULT 0,
+    provenance      TEXT NOT NULL,
+    agent           TEXT NOT NULL,
+    model           TEXT,
+    model_conflict  INTEGER NOT NULL DEFAULT 0,
+    ts              INTEGER NOT NULL,
+    updated_ts      INTEGER NOT NULL,
+    day             TEXT NOT NULL,
+    all_input       INTEGER NOT NULL CHECK (all_input >= 0),
+    all_output      INTEGER NOT NULL CHECK (all_output >= 0),
+    input_tokens    INTEGER,
+    output_tokens   INTEGER,
+    cache_read      INTEGER,
+    cache_write     INTEGER,
+    reasoning       INTEGER,
+    cost_amount     REAL,
+    cost_provenance TEXT,
+    cost_currency   TEXT,
+    projection      TEXT,
+    file_identity   TEXT,
+    turn_id         TEXT,
+    root_turn_id    TEXT,
+    UNIQUE (harness, item_id)
+  );
+  CREATE INDEX native_usage_items_day ON native_usage_items (day, harness);
+  CREATE INDEX native_usage_items_session ON native_usage_items (harness, session_id);
+  CREATE INDEX native_usage_items_model ON native_usage_items (model);
+
+  CREATE TABLE native_usage_files (
+    source       TEXT NOT NULL,
+    identity     TEXT NOT NULL,
+    generation   TEXT NOT NULL,
+    dev          TEXT,
+    ino          TEXT,
+    size         INTEGER,
+    mtime        INTEGER,
+    offset       INTEGER NOT NULL DEFAULT 0,
+    done         INTEGER NOT NULL DEFAULT 0,
+    processed_at INTEGER,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (source, identity)
+  );
+
+  CREATE TABLE native_usage_contexts (
+    file_identity TEXT NOT NULL,
+    turn_id       TEXT NOT NULL,
+    root_turn_id  TEXT NOT NULL,
+    model         TEXT,
+    conflict      INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (file_identity, turn_id, root_turn_id)
+  );
+
+  CREATE TABLE native_usage_session_facts (
+    harness      TEXT NOT NULL,
+    session_id   TEXT NOT NULL,
+    projection   TEXT NOT NULL,
+    time_updated INTEGER NOT NULL,
+    PRIMARY KEY (harness, session_id, projection)
+  );
+
+  CREATE TABLE native_usage_sources (
+    source      TEXT PRIMARY KEY,
+    state       TEXT NOT NULL,
+    last_refresh INTEGER,
+    warnings    TEXT NOT NULL DEFAULT '[]',
+    files_done  INTEGER NOT NULL DEFAULT 0,
+    files_total INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL
+  );`,
 ];
 
 export function migrate(db: Database.Database): void {
