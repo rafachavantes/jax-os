@@ -6,7 +6,7 @@ import { applySavedOrder, layoutMap, type PrScope } from "@/lib/cockpitLayout";
 import {
   beginSave, cancelOrganize, draftDrop, draftMove, draftWidth, enterOrganize,
   initialOrganizeState, reloadOrganize, saveConflicted, saveFailed, saveSucceeded,
-  useCockpitSnapshot, useCockpitWrites,
+  useCockpitSnapshot, useCockpitWrites, type OrganizeState,
 } from "@/lib/cockpitPrefsQuery";
 import { boardEntries, cardKey, hiddenBoardCards, sessionDisplay, type Mission, type MissionBucket, type MissionBucketSummary, type MissionCard } from "@/lib/mission";
 import { PrefsButtons, ProjectCard } from "./ProjectCard";
@@ -99,6 +99,26 @@ function ProjectVisibilityDisclosure({
   );
 }
 
+// Diff review F5: a pointer drop that actually changes order announces exactly what a
+// keyboard/button move announces, at the resulting actual position. Reuses `draftDrop` (no
+// duplicated insertion math); no-op drops, unknown identities, an absent draft or a pending save
+// all leave state and live region untouched. Exported because it is the component's own drop
+// decision and the only seam a DOM-less test can drive.
+export function announceDrop(
+  state: OrganizeState,
+  cards: { dir: string; name: string }[],
+  dragged: string,
+  target: string,
+  t: (key: string, values?: Record<string, unknown>) => string,
+): { next: OrganizeState; announcement: string | null } {
+  const next = draftDrop(state, dragged, target);
+  if (next.draft === null || next.draft === state.draft) return { next: state, announcement: null };
+  const position = next.draft.findIndex((e) => e.project === dragged);
+  if (position < 0) return { next: state, announcement: null };
+  const name = cards.find((c) => c.dir === dragged)?.name ?? dragged;
+  return { next, announcement: t("organize.moved", { name, position: position + 1 }) };
+}
+
 export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expandedDir, onToggleExpand, bucketSummary = null, onToggleFilter }: Props) {
   const t = useTranslations("mission.projects");
   const tMission = useTranslations("mission");
@@ -135,6 +155,15 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
     const name = model.cards.find((c) => c.dir === dir)?.name ?? dir;
     setAnnouncement(t("organize.moved", { name, position: next + 1 }));
     setOrganize((state) => draftMove(state, dir, delta));
+  }
+
+  function dropProject(dragged: string, target: string) {
+    const { next, announcement: message } = announceDrop(
+      organize, model.cards, dragged, target, t as (key: string, values?: Record<string, unknown>) => string,
+    );
+    if (message === null) return;
+    setAnnouncement(message);
+    setOrganize(next);
   }
 
   async function persistLayout() {
@@ -251,7 +280,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
             disabled: organize.status === "saving",
             onMove: moveProject,
             onWidth: (dir, width) => setOrganize((state) => draftWidth(state, dir, width)),
-            onDrop: (dragged, target) => setOrganize((state) => draftDrop(state, dragged, target)),
+            onDrop: dropProject,
           } : undefined,
         }))}
       </div>

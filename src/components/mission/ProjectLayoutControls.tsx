@@ -23,10 +23,7 @@ export function ProjectOrganizeHandle({
     <div data-testid="organize-handle-row" className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-dashed border-line-strong bg-surface-2 px-2 py-1">
       <span
         draggable={!disabled}
-        role="button"
-        tabIndex={0}
-        aria-label={t("drag", { name })}
-        aria-disabled={disabled || undefined}
+        aria-hidden="true"
         data-project-dir={dir}
         onDragStart={(e) => {
           if (disabled) { e.preventDefault(); return; }
@@ -35,7 +32,7 @@ export function ProjectOrganizeHandle({
           e.dataTransfer.setData("text/plain", dir);
           e.dataTransfer.effectAllowed = "move";
         }}
-        className="flex cursor-grab items-center rounded px-1 text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"
+        className="flex cursor-grab items-center rounded px-1 text-muted"
       >
         <GripVertical className="h-4 w-4" aria-hidden />
       </span>

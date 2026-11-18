@@ -64,13 +64,23 @@ describe("Organize controls (spec AC3, plan Task 3)", () => {
 });
 
 describe("per-project handle (dedicated drag handle + keyboard/button alternative)", () => {
-  it("renders a draggable handle carrying the project MIME payload, a width select (third/half/full) and disabled boundary buttons", () => {
+  const gripTag = (html: string) => html.match(/<span[^>]*data-project-dir="Alpha"[^>]*>/)?.[0] ?? "";
+
+  it("renders a presentational pointer grip, a width select (third/half/full) and disabled boundary buttons", () => {
     const html = renderToStaticMarkup(createElement(ProjectOrganizeHandle, {
       dir: "Alpha", name: "Alpha", width: "half", index: 0, count: 2,
       onMove: () => {}, onWidth: () => {},
     }));
-    expect(html).toContain(`data-project-dir="Alpha"`);
-    expect(html).toContain("draggable");
+    const grip = gripTag(html);
+    expect(grip).toContain(`data-project-dir="Alpha"`);
+    expect(grip).toContain('draggable="true"');
+    // F5: pointer-only affordance — hidden from the accessibility tree; the labeled width select
+    // and move buttons below are the real keyboard controls.
+    expect(grip).toContain('aria-hidden="true"');
+    expect(grip).not.toContain("role=");
+    expect(grip).not.toContain("tabindex");
+    expect(grip).not.toContain("aria-label");
+    expect(grip).not.toContain("aria-disabled");
     // The namespace-less next-intl mock renders the bare keys.
     expect(html).toContain("width");
     expect(html).toContain(">third<");
@@ -99,17 +109,20 @@ describe("pending save disables the organize controls (plan Task 3)", () => {
     onMove: () => {}, onWidth: () => {}, disabled,
   }));
 
-  it("disables the drag handle, width select and both move buttons while saving", () => {
+  it("disables the pointer drag and the real keyboard controls while saving", () => {
     const html = handle(true);
-    expect(html).toContain('draggable="false"');
-    expect(html).toContain('aria-disabled="true"');
+    const grip = html.match(/<span[^>]*data-project-dir="Alpha"[^>]*>/)?.[0] ?? "";
+    expect(grip).toContain('draggable="false"');
+    expect(grip).toContain('aria-hidden="true"');
+    expect(grip).not.toContain("aria-disabled");
     expect((html.match(/disabled=""/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 
   it("keeps the controls enabled when no write is pending", () => {
     const html = handle(false);
-    expect(html).toContain('draggable="true"');
-    expect(html).not.toContain('aria-disabled="true"');
+    const grip = html.match(/<span[^>]*data-project-dir="Alpha"[^>]*>/)?.[0] ?? "";
+    expect(grip).toContain('draggable="true"');
+    expect(grip).not.toContain("aria-disabled");
   });
 
   it("reads only the project MIME and validates against bounded normalized draft identities", () => {

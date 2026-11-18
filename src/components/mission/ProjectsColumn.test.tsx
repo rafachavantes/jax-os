@@ -36,7 +36,9 @@ vi.mock("./SourceWarning", () => ({
 }));
 
 import type { Mission, MissionCard } from "@/lib/mission";
-import { disclosureVisibleCards, hiddenAutoHiddenSummary, ProjectsColumn } from "./ProjectsColumn";
+import type { CockpitSnapshot } from "@/lib/cockpitLayout";
+import { enterOrganize } from "@/lib/cockpitPrefsQuery";
+import { announceDrop, disclosureVisibleCards, hiddenAutoHiddenSummary, ProjectsColumn } from "./ProjectsColumn";
 
 // Any fixed string: the component renders whatever reposRoot the server passes it.
 const REPOS_ROOT_DISPLAY = "/home/rafa/repos";
@@ -417,5 +419,37 @@ describe("ProjectsColumn — grouped projects (multi-session cards spec §5, §1
     expect(html).not.toContain('data-testid="group-header"');
     expect(html).not.toContain("p1#session:A");
     expect(html).toContain("hiddenBar");
+  });
+});
+
+describe("announceDrop — pointer drop uses the same live-region announcement as button moves (F5)", () => {
+  const snapshot: CockpitSnapshot = { revision: 7, prScope: "mine", layout: null };
+  const cards = [{ dir: "a", name: "Alpha" }, { dir: "b", name: "Beta" }, { dir: "c", name: "Charlie" }];
+  const t = (key: string, values?: Record<string, unknown>) => `${key}:${JSON.stringify(values)}`;
+  const organize = () => enterOrganize(snapshot, cards);
+
+  it("a valid drop announces the dragged project at its actual resulting position", () => {
+    const { next, announcement } = announceDrop(organize(), cards, "c", "a", t);
+    expect(next.draft?.map((e) => e.project)).toEqual(["c", "a", "b"]);
+    expect(announcement).toBe('organize.moved:{"name":"Charlie","position":1}');
+  });
+
+  it("a no-op drop (same project) announces nothing and keeps the draft", () => {
+    const state = organize();
+    const { next, announcement } = announceDrop(state, cards, "b", "b", t);
+    expect(announcement).toBeNull();
+    expect(next).toBe(state);
+  });
+
+  it("an unknown identity and a missing draft are rejected before announcing", () => {
+    const state = organize();
+    expect(announceDrop(state, cards, "unknown", "a", t)).toEqual({ next: state, announcement: null });
+    const noDraft = { ...state, draft: null };
+    expect(announceDrop(noDraft, cards, "c", "a", t)).toEqual({ next: noDraft, announcement: null });
+  });
+
+  it("a drop during a pending save is rejected before announcing", () => {
+    const saving = { ...organize(), status: "saving" as const };
+    expect(announceDrop(saving, cards, "c", "a", t)).toEqual({ next: saving, announcement: null });
   });
 });

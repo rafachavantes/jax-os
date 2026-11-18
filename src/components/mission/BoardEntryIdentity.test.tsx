@@ -112,15 +112,31 @@ describe("group grid: two cards per row, an odd last card takes the whole row", 
     expect(tag).toContain("project-span");
   });
 });
-describe("a pending layout write rejects drops (plan Task 3)", () => {
-  it("a drop begun before Save is rejected while the save is in flight", () => {
+describe("drop dispatch: only a valid project MIME reaches the drop callback (plan Task 3/F5)", () => {
+  const drop = (disabled: boolean, getData: (t: string) => string) => {
     const onDrop = vi.fn();
     const el = renderBoardEntry(plain, {
       ...opts,
-      organize: { draft: [{ project: "p", width: "third" as const }], onMove: () => {}, onWidth: () => {}, onDrop, disabled: true },
+      organize: { draft: [{ project: "p", width: "third" as const }], onMove: () => {}, onWidth: () => {}, onDrop, disabled },
     }) as El & { props: { onDrop: (e: unknown) => void } };
     const preventDefault = vi.fn();
-    el.props.onDrop({ preventDefault, dataTransfer: { getData: (t: string) => (t === "application/x-jax-project" ? "p" : "") } });
+    el.props.onDrop({ preventDefault, dataTransfer: { getData } });
+    return { preventDefault, onDrop };
+  };
+
+  it("a valid project-MIME drop dispatches the dragged identity and target", () => {
+    const { preventDefault, onDrop } = drop(false, (t) => (t === "application/x-jax-project" ? "p" : ""));
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onDrop).toHaveBeenCalledExactlyOnceWith("p", "p");
+  });
+
+  it("an external/invalid MIME is rejected before dispatch", () => {
+    const { onDrop } = drop(false, (t) => (t === "text/plain" ? "p" : ""));
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+
+  it("a drop begun before Save is rejected while the save is in flight", () => {
+    const { preventDefault, onDrop } = drop(true, (t) => (t === "application/x-jax-project" ? "p" : ""));
     expect(preventDefault).toHaveBeenCalled();
     expect(onDrop).not.toHaveBeenCalled();
   });
