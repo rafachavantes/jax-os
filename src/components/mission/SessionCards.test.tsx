@@ -295,7 +295,7 @@ describe("group frame render (spec §7.1–§7.3, §13)", () => {
         }),
       },
       {
-        prs: { Alpha: { ok: true, truncated: false, prs: [{ number: 12, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
+        prs: { Alpha: { ok: true, truncated: false, prs: [{ number: 12, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
         worktrees: { Alpha: { ok: true, count: 1, oldestAgeDays: 1, sessions: [{ session: null, count: 1 }] } },
       },
     );

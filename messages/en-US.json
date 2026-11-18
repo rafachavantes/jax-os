@@ -75,7 +75,36 @@
       "tmuxUnavailable": "tmux runtime unavailable",
       "hiddenBar": "{count, plural, one {# hidden} other {# hidden}}",
       "autoHiddenBar": "{count, plural, one {# collapsed} other {# collapsed}}",
-      "autoHiddenShow": "show"
+      "autoHiddenShow": "show",
+      "controls": {
+        "organize": "Organize",
+        "save": "Save",
+        "cancel": "Cancel",
+        "reset": "Reset layout",
+        "saving": "Saving…",
+        "reload": "Reload",
+        "unavailable": "Layout preferences unavailable — using the default order and width.",
+        "saveError": "Save failed: {error}",
+        "conflict": "Another change was saved first.",
+        "scopeError": "Could not save the PR scope — the previous choice was kept.",
+        "prScope": "PRs:",
+        "mine": "Mine",
+        "all": "All",
+        "filter": "Filter",
+        "filterAll": "All statuses",
+        "filterClear": "Clear filter"
+      },
+      "organize": {
+        "drag": "Move {name}",
+        "widthLabel": "Width",
+        "width": "Width of {name}",
+        "third": "1/3",
+        "half": "1/2",
+        "full": "Full",
+        "moveEarlier": "Move {name} earlier",
+        "moveLater": "Move {name} later",
+        "moved": "{name} moved to position {position}"
+      }
     },
     "stages": {
       "spec": "Spec",
@@ -175,7 +204,13 @@
       "packagesEmpty": "No pending updates.",
       "security": "security",
       "copy": "copy",
-      "copyCaption": "copy, never runs"
+      "copyCaption": "copy, never runs",
+      "temp": "/tmp",
+      "tempUnavailable": "unavailable",
+      "alertsCount": "{count, plural, one {# alert} other {# alerts}}",
+      "alertsTitle": "Server alerts",
+      "zombieChildren": "{count, plural, one {# child} other {# children}}",
+      "readOnlyNote": "Read only"
     },
     "inbox": {
       "title": "WAITING ON YOU · {count}",
@@ -198,7 +233,9 @@
         "failing": "CI failing",
         "none": "no CI"
       },
-      "codexSession": "codex session"
+      "codexSession": "codex session",
+      "showAll": "show all ({count})",
+      "showLess": "show less"
     },
     "source": {
       "projects": "Projects",
@@ -336,7 +373,8 @@
         "buildFailed": "build failed",
         "runFinishedNoResult": "no result",
         "mergeApproved": "merge approved"
-      }
+      },
+      "prDraft": "draft"
     },
     "codexSession": "Codex session",
     "board": {
@@ -357,6 +395,27 @@
       "unlinkedUnknownTitle": "Some runs with unconfirmed ownership",
       "unlinkedUnknownHint": "An agent source failed or the match is ambiguous — some of these runs cannot be linked to an open session.",
       "ownershipUnknown": "ownership unconfirmed"
+    },
+    "prFields": {
+      "draft": "draft",
+      "authorUnknown": "unknown author",
+      "reviewApproved": "review approved",
+      "reviewChanges": "changes requested",
+      "reviewRequired": "review required",
+      "reviewUnknown": "review not reported",
+      "mergeCLEAN": "merge state clean",
+      "mergeBLOCKED": "merge blocked",
+      "mergeBEHIND": "behind base",
+      "mergeDIRTY": "conflicts",
+      "mergeDRAFT": "draft",
+      "mergeHAS_HOOKS": "hooks pending",
+      "mergeUNSTABLE": "checks unstable",
+      "mergeUNKNOWN": "merge state unknown"
+    },
+    "views": {
+      "label": "Home views",
+      "projects": "Projects",
+      "activity": "Activity"
     }
   },
   "missionBlock": {

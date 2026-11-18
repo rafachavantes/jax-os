@@ -73,11 +73,13 @@ describe("renderBoardEntry keeps a session card's React identity across plain an
     expect((pc as El).type).toBe((gc as El).type);
   });
 
-  it("plain markup keeps the wrapper attributes and basis classes", () => {
+  it("plain markup keeps the wrapper attributes and the M2 span classes", () => {
     const html = renderToStaticMarkup(p);
     expect(html).toContain('data-card-dir="p"');
     expect(html).toContain('data-card-key="p#session:A"');
-    expect(html).toContain("basis-full sm:basis-[45%] lg:basis-[30%]");
+    expect(html).toContain('data-width="third"');
+    expect(html).toContain("project-span");
+    expect(html).not.toContain("basis-full");
   });
 });
 
@@ -89,15 +91,53 @@ describe("group grid: two cards per row, an odd last card takes the whole row", 
     return { grid: grid.props.className, spans };
   };
 
-  it("uses two columns", () => {
-    expect(layout([A, B]).grid).toContain("sm:grid-cols-2");
+  it("uses the container-query group grid", () => {
+    expect(layout([A, B]).grid).toContain("group-sessions");
   });
 
   it("two cards share one row", () => {
     expect(layout([A, B]).spans).toEqual(["", ""]);
   });
 
-  it("the third card stretches across its row", () => {
-    expect(layout([A, B, C]).spans).toEqual(["", "", "sm:col-span-full"]);
+  it("the third card spans its row inside the group container", () => {
+    expect(layout([A, B, C]).spans).toEqual(["", "", "group-session-full"]);
+  });
+
+  it("expansion never changes the project span; the width preset comes from saved layout", () => {
+    const html = renderToStaticMarkup(renderBoardEntry({ ...group, cards: [A, B] } as BoardEntry, {
+      ...opts, expandedDir: "p#session:A", widths: new Map([["p", "half"]]),
+    }) as El);
+    const tag = html.match(/<div[^>]*data-card-dir="p"[^>]*>/)?.[0] ?? "";
+    expect(tag).toContain('data-width="half"');
+    expect(tag).toContain("project-span");
+  });
+});
+describe("drop dispatch: only a valid project MIME reaches the drop callback (plan Task 3/F5)", () => {
+  const drop = (disabled: boolean, getData: (t: string) => string) => {
+    const onDrop = vi.fn();
+    const el = renderBoardEntry(plain, {
+      ...opts,
+      organize: { draft: [{ project: "p", width: "third" as const }], onMove: () => {}, onWidth: () => {}, onDrop, disabled },
+    }) as El & { props: { onDrop: (e: unknown) => void } };
+    const preventDefault = vi.fn();
+    el.props.onDrop({ preventDefault, dataTransfer: { getData } });
+    return { preventDefault, onDrop };
+  };
+
+  it("a valid project-MIME drop dispatches the dragged identity and target", () => {
+    const { preventDefault, onDrop } = drop(false, (t) => (t === "application/x-jax-project" ? "p" : ""));
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onDrop).toHaveBeenCalledExactlyOnceWith("p", "p");
+  });
+
+  it("an external/invalid MIME is rejected before dispatch", () => {
+    const { onDrop } = drop(false, (t) => (t === "text/plain" ? "p" : ""));
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+
+  it("a drop begun before Save is rejected while the save is in flight", () => {
+    const { preventDefault, onDrop } = drop(true, (t) => (t === "application/x-jax-project" ? "p" : ""));
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onDrop).not.toHaveBeenCalled();
   });
 });

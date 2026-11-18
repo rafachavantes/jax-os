@@ -171,9 +171,163 @@ describe("parsePrListJson — StatusContext rollup members (§5.1, test 18)", ()
   });
 });
 
+describe("M2 factual provider fields (plan F3 / Task 4)", () => {
+  const base = { number: 1, title: "t", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-11-18T00:00:00Z" };
+
+  it("keeps known author/review/merge states exactly as GitHub reports them", () => {
+    const { prs } = parsePrListJson(JSON.stringify([{
+      ...base, author: { login: "rafa" }, reviewDecision: "APPROVED", mergeStateStatus: "CLEAN",
+    }]));
+    expect(prs[0]).toMatchObject({ author: "rafa", reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" });
+  });
+
+  it("covers every known review and merge state as factual", () => {
+    for (const review of ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"]) {
+      expect(parsePrListJson(JSON.stringify([{ ...base, reviewDecision: review }])).prs[0].reviewDecision).toBe(review);
+    }
+    for (const state of ["BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"]) {
+      expect(parsePrListJson(JSON.stringify([{ ...base, mergeStateStatus: state }])).prs[0].mergeStateStatus).toBe(state);
+    }
+  });
+
+  it("missing, empty and unrecognised optional values become the explicit unknown labels", () => {
+    const { prs } = parsePrListJson(JSON.stringify([{ ...base, author: null, reviewDecision: "", mergeStateStatus: "SOMETHING_NEW" }]));
+    expect(prs[0]).toMatchObject({ author: "unknown author", reviewDecision: "unknown/not reported", mergeStateStatus: "unknown" });
+    const empty = parsePrListJson(JSON.stringify([base])).prs[0];
+    expect(empty).toMatchObject({ author: "unknown author", reviewDecision: "unknown/not reported", mergeStateStatus: "unknown" });
+    expect(parsePrListJson(JSON.stringify([{ ...base, author: { login: "   " } }])).prs[0].author).toBe("unknown author");
+    expect(parsePrListJson(JSON.stringify([{ ...base, author: "not a login\u0000" }])).prs[0].author).toBe("unknown author");
+  });
+
+  it("an empty rollup and CLEAN merge state stay factual, never an implied permission to merge", () => {
+    const { prs } = parsePrListJson(JSON.stringify([{ ...base, mergeStateStatus: "CLEAN", reviewDecision: "APPROVED" }]));
+    expect(prs[0]).toMatchObject({ ciState: "none", mergeStateStatus: "CLEAN", reviewDecision: "APPROVED" });
+    // mergeReady remains the old informational flag; no consumer treats it as an owner action.
+    expect(prs[0].mergeReady).toBe(true);
+  });
+});
+
+describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
+  it("Mine resolves the viewer once and applies --author before --limit", async () => {
+    const calls: { file: string; args: string[] }[] = [];
+    const run = async (file: string, args: string[]): Promise<string> => {
+      calls.push({ file, args });
+      if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
+      if (args[0] === "api") return "rafa\n";
+      return JSON.stringify([{ number: 3, title: "mine", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-11-18T00:00:00Z", author: { login: "rafa" }, reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" }]);
+    };
+    const out = await getPrsForProjects(["a", "b"], "/home/rafa/repos", run, "mine");
+    expect(out["a"]).toMatchObject({ ok: true, prs: [{ number: 3, author: "rafa" }] });
+    expect(out["b"]).toMatchObject({ ok: true });
+    // Viewer resolved exactly once for the whole collection (two projects).
+    expect(calls.filter((c) => c.file === "gh" && c.args[0] === "api")).toHaveLength(1);
+    const listCalls = calls.filter((c) => c.file === "gh" && c.args[0] === "pr");
+    expect(listCalls).toHaveLength(2);
+    for (const call of listCalls) {
+      const authorIdx = call.args.indexOf("--author");
+      expect(call.args[authorIdx + 1]).toBe("rafa");
+      expect(authorIdx).toBeLessThan(call.args.indexOf("--limit"));
+    }
+  });
+
+  it("more than 50 other-author PRs never matter: the provider-filtered response is what Mine returns", async () => {
+    const run = async (file: string, args: string[]): Promise<string> => {
+      if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
+      if (args[0] === "api") return "rafa\n";
+      // A Mine-filtered provider answers with ONLY the viewer's PRs (the --author flag is the
+      // filter that makes this true upstream); assert we do not locally re-filter it away.
+      return JSON.stringify([{ number: 7, title: "my pr", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-11-18T00:00:00Z", author: { login: "rafa" } }]);
+    };
+    const out = await getPrsForProjects(["jax-os"], "/home/rafa/repos", run, "mine");
+    expect(out["jax-os"]).toMatchObject({ ok: true, prs: [{ number: 7 }] });
+  });
+
+  it("a failing viewer lookup marks only GitHub-backed projects unavailable; local/non-GitHub stay quiet empty (diff review F3)", async () => {
+    const calls: { file: string; args: string[] }[] = [];
+    const run = async (file: string, args: string[]): Promise<string> => {
+      calls.push({ file, args });
+      if (file === "git") {
+        const dir = args[1].split("/").pop();
+        if (dir === "local") throw Object.assign(new Error("fatal: No such remote 'origin'"), { code: 2 });
+        if (dir === "other") return "git@gitlab.com:someone/other.git\n";
+        return `git@github.com:octo-owner/${dir}.git\n`;
+      }
+      if (args[0] === "api") throw new Error("gh: To use GitHub CLI, set GH_TOKEN");
+      return JSON.stringify([]);
+    };
+    const out = await getPrsForProjects(["local", "other", "gh-a", "gh-b"], "/home/rafa/repos", run, "mine");
+    // No remote / non-GitHub are resolved, successful, quiet-empty outcomes — not identity failures.
+    expect(out["local"]).toEqual({ ok: true, prs: [], truncated: false });
+    expect(out["other"]).toEqual({ ok: true, prs: [], truncated: false });
+    // Only the GitHub-backed projects cannot answer Mine without the viewer identity.
+    expect(out["gh-a"]).toEqual({ ok: false, error: "github identity unavailable" });
+    expect(out["gh-b"]).toEqual({ ok: false, error: "github identity unavailable" });
+    // The viewer is resolved lazily, after a validated GitHub remote exists, and memoized once.
+    expect(calls.filter((c) => c.file === "gh" && c.args[0] === "api")).toHaveLength(1);
+  });
+
+  it("no GitHub projects means zero viewer queries in Mine", async () => {
+    const calls: { file: string; args: string[] }[] = [];
+    const run = async (file: string, args: string[]): Promise<string> => {
+      calls.push({ file, args });
+      if (file === "git") {
+        const dir = args[1].split("/").pop();
+        if (dir === "local") throw Object.assign(new Error("fatal: No such remote 'origin'"), { code: 2 });
+        return "git@gitlab.com:someone/other.git\n";
+      }
+      return JSON.stringify([]);
+    };
+    const out = await getPrsForProjects(["local", "other"], "/home/rafa/repos", run, "mine");
+    expect(out["local"]).toEqual({ ok: true, prs: [], truncated: false });
+    expect(out["other"]).toEqual({ ok: true, prs: [], truncated: false });
+    expect(calls.some((c) => c.args[0] === "api")).toBe(false);
+  });
+
+  it("All omits --author and never asks for the viewer", async () => {
+    const calls: { file: string; args: string[] }[] = [];
+    const run = async (file: string, args: string[]): Promise<string> => {
+      calls.push({ file, args });
+      if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
+      return JSON.stringify([]);
+    };
+    await getPrsForProjects(["jax-os"], "/home/rafa/repos", run, "all");
+    expect(calls.some((c) => c.args[0] === "api")).toBe(false);
+    expect(calls.some((c) => c.args.includes("--author"))).toBe(false);
+  });
+
+  it("a root viewer auth failure is source-unavailable for every project, never All and never a fake zero", async () => {
+    const run = async (file: string, args: string[]): Promise<string> => {
+      if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
+      if (args[0] === "api") throw new Error("gh: To use GitHub CLI, set GH_TOKEN (secret-value)");
+      return JSON.stringify([]);
+    };
+    const out = await getPrsForProjects(["a", "b"], "/home/rafa/repos", run, "mine");
+    expect(out["a"]).toEqual({ ok: false, error: "github identity unavailable" });
+    expect(out["b"]).toEqual({ ok: false, error: "github identity unavailable" });
+  });
+
+  it("an invalid viewer login is a source failure, never used as a filter", async () => {
+    const run = async (file: string, args: string[]): Promise<string> => {
+      if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
+      if (args[0] === "api") return "not a login\n";
+      return JSON.stringify([]);
+    };
+    expect(await getPrsForProjects(["a"], "/home/rafa/repos", run, "mine")).toMatchObject({
+      a: { ok: false, error: "github identity unavailable" },
+    });
+  });
+
+  it("disabled integration is the route's quiet empty path; no-origin/non-GitHub stays a successful empty per repo", async () => {
+    const noOrigin = async (): Promise<string> => {
+      throw Object.assign(new Error("fatal: No such remote 'origin'"), { code: 2 });
+    };
+    expect(await fetchProjectPrs("x", "/home/rafa/repos", noOrigin, { scope: "all" })).toEqual({ ok: true, prs: [], truncated: false });
+  });
+});
+
 describe("summarizePrState — worst state wins (§5, test 11)", () => {
   const pr = (ciState: Pr["ciState"]): Pr => ({
-    number: 1, title: "x", isDraft: false, url: "u", ciState, mergeReady: ciState !== "failing" && ciState !== "pending",
+    number: 1, title: "x", isDraft: false, url: "u", ciState, mergeReady: ciState !== "failing" && ciState !== "pending", author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const,
     updatedAt: "2026-09-19T00:00:00Z",
   });
 
@@ -218,7 +372,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       file: "gh",
       args: [
         "pr", "list", "-R", "octo-owner/jax-os", "--state", "open", "--limit", "50",
-        "--json", "number,title,isDraft,url,statusCheckRollup,updatedAt",
+        "--json", "number,title,isDraft,url,statusCheckRollup,updatedAt,author,reviewDecision,mergeStateStatus",
       ],
     });
     expect(result).toMatchObject({ ok: true, truncated: false });

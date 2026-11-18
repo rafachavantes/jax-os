@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerEventId, artifactRel, bucketOf, buildMission, buildTicker, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
+import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
 import { parseIndexedReply } from "./workflow";
 import type { Envelope } from "./api";
 import type { Project, ProjectScan } from "../server/collectors/projects";
@@ -63,6 +63,7 @@ function mkPane(overrides: Partial<HubPane> & { pane: string }): HubPane {
     lastEventTs: overrides.lastEventTs ?? new Date(NOW - 1_000).toISOString(),
     subagentCount: overrides.subagentCount ?? 0,
     runtime: overrides.runtime ?? "claude",
+    ...("questionAnswerable" in overrides ? { questionAnswerable: overrides.questionAnswerable } : {}),
   };
 }
 
@@ -279,19 +280,20 @@ describe("buildMission — freshness warning threshold (spec §4.4, test 6)", ()
   });
 });
 
-describe("buildMission — inbox PR cap and remainder (spec §7.4, test 11)", () => {
-  it("caps merge-ready PR rows at 5 and reports the remainder", () => {
+describe("buildMission — strict attention: ordinary PRs never enter Waiting for You (M2 spec)", () => {
+  it("merge-ready PRs stay Activity-only; count, preview and full list agree on the empty attention set", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject() });
-    const mkPr = (n: number) => ({ number: n, title: `pr ${n}`, isDraft: false, url: `u${n}`, ciState: "green" as const, mergeReady: true, updatedAt: "2026-09-01T00:00:00.000Z" });
+    const mkPr = (n: number) => ({ number: n, title: `pr ${n}`, isDraft: false, url: `u${n}`, ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-01T00:00:00.000Z" });
     const { model } = buildMission(
       scan,
       hub,
       { ok: true, data: { p1: { ok: true, prs: [1, 2, 3, 4, 5, 6, 7].map(mkPr), truncated: false } } },
       NOW,
     );
-    expect(model.inbox.filter((r) => r.kind === "pr")).toHaveLength(5);
-    expect(model.inboxPrRemainder).toBe(2);
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+    expect(model.inboxPrRemainder).toBe(0);
     expect(model.prTruncatedAny).toBe(false);
   });
 });
@@ -318,10 +320,10 @@ describe("buildMission — prTruncatedAny (branch review, Finding 5)", () => {
 
 // Simplification (recurrence ledger R3, threshold crossed a third time — cold review round 3
 // Findings 3/5/8): one page-level join, one contract. `readiness` is a small discriminated union
-// about CONFIDENCE (loading/failed/degraded/ready) with no "empty" variant in it at all — the empty title
-// is a two-clause check the CALLER makes against ordinary data (readiness.kind === "ready" &&
-// model.inboxTotalCount === 0, InboxStrip's job, Task 8), not a type-level guarantee this module
-// claims to enforce (TypeScript is structural; it cannot make a variant "unconstructible").
+// about CONFIDENCE (loading/failed/degraded/ready) with no "empty" variant in it at all.
+// `readiness` keeps describing the whole page; `stripPresentation` derives the ATTENTION strip's
+// own confidence from the sources that produce attention (projects and hub — M2 plan F1), so this
+// suite asserts readiness itself and the strip decision separately.
 describe("buildMission — readiness (design change: one join, Findings 3/5/8)", () => {
   it("a still-pending source is reported as kind:'loading', and the model is still built from what IS known", () => {
     // Zero gates, zero pending questions, prs still pending — the model must still carry the one
@@ -359,34 +361,39 @@ describe("buildMission — readiness (design change: one join, Findings 3/5/8)",
     expect(model.cards).toEqual([]); // buildModel falls back to EMPTY_SCAN — cards are unknown, not "confirmed empty"
   });
 
-  it("a failed prs source NEVER elevates readiness to kind:'failed', and known gate/question rows survive it — it degrades instead of going ready (cold review round 3, Finding 5; round 4, Finding 2)", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os", gate: "blocked" })]);
-    const hub = mkHub({ "jax-os": mkHubProject() });
+  it("a failed prs source NEVER elevates readiness to kind:'failed', and known actionable question rows survive it — it degrades instead of going ready (cold review round 3, Finding 5; round 4, Finding 2)", () => {
+    const scan = scanOf([mkProject({ dir: "jax-os" })]);
+    const pendingQuestion: PendingQuestion = {
+      eventId: 9, pane: "%1", tmuxIncarnation: "100:1000",
+      payload: { questions: [{ question: "q?", options: [{ label: "a" }] }] },
+    };
+    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion })] }) });
     const { readiness, model } = buildMission(scan, hub, { ok: false, error: "gh: rate limited" }, NOW);
     expect(readiness).toEqual({ kind: "degraded", degraded: ["prs"] }); // projects + hub resolved clean, prs failed — not "failed", and not a confident "ready" either
-    expect(model.inbox.some((r) => r.kind === "gate")).toBe(true); // the known gate row survives the prs failure
+    expect(model.inbox.some((r) => r.kind === "question" && r.eventId === 9)).toBe(true); // the known question row survives the prs failure
     expect(model.cards[0].pr).toEqual({ status: "error", error: "gh: rate limited" }); // scoped to the card's own PR line
   });
 
-  it("a failed prs source with an EMPTY inbox never blesses a confident ready — titleEmpty (InboxStrip, Task 8) stays unreachable (cold review round 4, Finding 2 — R3's fifth recurrence: the blocked-gate test above can't catch this, since its inboxTotalCount is non-zero regardless of readiness.kind)", () => {
+  it("a failed prs source with an EMPTY inbox reports degraded readiness; the attention strip stays confident (M2 plan F1 supersedes the old titleEmpty block)", () => {
     const scan = scanOf([mkProject({ dir: "jax-os" })]);
     const hub = mkHub({ "jax-os": mkHubProject() });
     const { readiness, model } = buildMission(scan, hub, { ok: false, error: "gh: rate limited" }, NOW);
     expect(readiness).toEqual({ kind: "degraded", degraded: ["prs"] });
-    expect(model.inboxTotalCount).toBe(0); // empty inbox AND readiness.kind !== "ready" — titleEmpty can never render here
+    expect(model.inboxTotalCount).toBe(0); // the strip's empty title is allowed: PRs do not determine attention membership
   });
 
-  it("a per-project PR failure inside an otherwise-ok prs envelope also degrades, never a confident ready (post-merge cold review, Finding 1)", () => {
+  it("a per-project PR failure inside an otherwise-ok prs envelope still degrades readiness (post-merge cold review, Finding 1)", () => {
     // prs envelope itself is {ok:true} — only this ONE project's own PrResult is {ok:false}. The
     // old code only checked `!prs.ok` (the whole-envelope case), so this degraded to a confident
-    // titleEmpty even though the card's own pr line reads an error.
+    // titleEmpty even though the card's own pr line reads an error. Readiness stays degraded; the
+    // attention strip ignores a PR-only degradation (M2 plan F1).
     const scan = scanOf([mkProject({ dir: "jax-os" })]);
     const hub = mkHub({ "jax-os": mkHubProject() });
     const { readiness, model } = buildMission(
       scan, hub, { ok: true, data: { "jax-os": { ok: false, error: "gh: rate limited" } } }, NOW,
     );
     expect(readiness).toEqual({ kind: "degraded", degraded: ["prs"] });
-    expect(model.inboxTotalCount).toBe(0); // no gate/question/attention/PR rows — titleEmpty must still be unreachable
+    expect(model.inboxTotalCount).toBe(0);
     expect(model.cards[0].pr).toEqual({ status: "error", error: "gh: rate limited" });
   });
 
@@ -400,54 +407,131 @@ describe("buildMission — readiness (design change: one join, Findings 3/5/8)",
     expect(model.inboxTotalCount).toBe(0);
   });
 
-  it("all three resolved with a gate open is kind:'ready' and the model carries it", () => {
+  it("all three resolved with a bare gate open keeps the card's gate/status context without inventing a Waiting-for-You request", () => {
     const scan = scanOf([mkProject({ dir: "jax-os", gate: "blocked" })]);
     const hub = mkHub({ "jax-os": mkHubProject() });
     const { readiness, model } = buildMission(
       scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
     );
     expect(readiness).toEqual({ kind: "ready" });
-    expect(model.inboxTotalCount).toBe(1);
+    expect(model.cards[0].gate).toBe("blocked");
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inboxTotalCount).toBe(0);
   });
 });
 
-describe("buildMission — a resolved blocked/needs_input capsule produces an inbox row (cold review round 3, Finding 3)", () => {
-  it("a pane whose last capsule is blocked, with no pending question, is an 'attention' row, and readiness cannot be a confident empty", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os" })]);
-    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
-    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", capsule: blockedCapsule })] }) });
-    const { readiness, model } = buildMission(
-      scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
-    );
+describe("buildMission — M2 genuine attention dataset (plan Task 1)", () => {
+  const RESOLVED: Envelope<Record<string, PrResult>> = { ok: true, data: { p: { ok: true, prs: [], truncated: false } } };
+  const missionOfProject = (hubProject: HubProject, gate: Project["gate"] = null) =>
+    buildMission(scanOf([mkProject({ dir: "p", gate })]), mkHub({ p: hubProject }), RESOLVED, NOW);
+  const capsule = (over: Partial<Capsule> = {}): Capsule => ({
+    status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(),
+    mergeAsk: null, question: null, ...over,
+  });
+  const structured = (eventId = 9, question = "q?"): PendingQuestion => ({
+    eventId, pane: "%1", tmuxIncarnation: "100:1000",
+    payload: { questions: [{ question, options: [{ label: "a" }] }] },
+  });
+
+  it("a bare blocked status gate stays on the card with its status bucket, never in Waiting for You", () => {
+    const { readiness, model } = missionOfProject(mkHubProject(), "blocked");
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 });
+    expect(model.cards[0].gate).toBe("blocked");
+    expect(summarizeBuckets(readiness, boardCards(model.cards))).toEqual({
+      counts: { "needs-you": 1, stuck: 0, working: 0, idle: 0 }, worst: "needs-you",
+    });
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+  });
+
+  it("a bare awaiting-approval status gate is informational too — no fabricated approval request", () => {
+    const { model } = missionOfProject(mkHubProject(), "awaiting-approval");
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+  });
+
+  it("ordinary completion/idle carries no request", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1" })] }));
+    expect(model.cards[0].headline).toBe("idle");
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a blocked/needs_input capsule with neither a question nor an explicit merge request stays off the inbox", () => {
+    for (const status of ["blocked", "needs_input"] as const) {
+      const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status }) })] }));
+      expect(model.cards[0].headline).toBe("needs-you"); // the card keeps its status context
+      expect(model.inbox).toEqual([]);
+      expect(model.inboxTotalCount).toBe(0);
+    }
+  });
+
+  it("a native Codex attention flag without an event holder is not an actionable request", () => {
+    const { model } = missionOfProject(mkHubProject({ codexSessions: [{
+      threadId: "0191f0aa-1234-7000-8000-000000000001", status: "idle", activeFlags: ["waitingOnUserInput"],
+      sourceOk: true, working: false, attention: true, pendingAttention: false, runInFlight: false,
+      capsule: null, lastEventTs: null, subagentCount: 0,
+    }] }));
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a malformed or empty structured question creates no row but remains on the card", () => {
+    const emptyText: PendingQuestion = { eventId: 9, pane: "%1", tmuxIncarnation: "100:1000", payload: { questions: [{ question: "   ", options: [] }] } };
+    const noQuestions: PendingQuestion = { eventId: 10, pane: "%1", tmuxIncarnation: "100:1000", payload: {} };
+    for (const pendingQuestion of [emptyText, noQuestions]) {
+      const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion })] }));
+      expect(model.cards[0].headline).toBe("needs-you");
+      expect(model.cards[0].pendingQuestions).toHaveLength(1);
+      expect(model.inbox).toEqual([]);
+      expect(model.inboxTotalCount).toBe(0);
+    }
+  });
+
+  it("a replaced-conversation question (answerable:false) is card context, never a request", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion: structured(9), questionAnswerable: false })] }));
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.cards[0].pendingQuestions[0]).toMatchObject({ eventId: 9, answerable: false });
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+  });
+
+  it("an unanswerable capsule question is context only", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status: "needs_input", question: "deploy?" , answerable: false }) })] }));
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a valid unresolved structured question is one question row", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion: structured(9, "ship it?") })] }));
+    expect(model.inbox).toEqual([{ kind: "question", dir: "p", name: "p", pane: "%1", eventId: 9, question: "ship it?" }]);
     expect(model.inboxTotalCount).toBe(1);
-    expect(readiness).toEqual({ kind: "ready" }); // a needs-you card is never swallowed by the empty predicate
   });
 
-  it("needs_input behaves the same way", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os" })]);
-    const needsInputCapsule: Capsule = { status: "needs_input", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
-    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", capsule: needsInputCapsule })] }) });
-    const { model } = buildMission(
-      scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
-    );
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "needs_input", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 });
+  it("a real freeform capsule question with an answerable event holder is an attention row", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status: "needs_input", question: "deploy now?" }) })] }));
+    expect(model.inbox).toEqual([{ kind: "attention", dir: "p", name: "p", status: "needs_input", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 }]);
+    expect(model.inboxTotalCount).toBe(1);
   });
 
-  it("a pane with a pending question does NOT also get a duplicate attention row — the question row already covers it", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os" })]);
-    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
-    const pendingQuestion: PendingQuestion = {
-      eventId: 9, pane: "%1", tmuxIncarnation: "100:1000",
-      payload: { questions: [{ question: "q?", options: [{ label: "a" }] }] },
-    };
-    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", capsule: blockedCapsule, pendingQuestion })] }) });
-    const { model } = buildMission(
-      scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
-    );
-    expect(model.inbox.filter((r) => r.kind === "attention" || r.kind === "question")).toHaveLength(1);
-    expect(model.inbox[0].kind).toBe("question");
+  it("an eligible explicit merge approval is an attention row without fabricated question text", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status: "needs_input", mergeAsk: 1, mergeBranch: "feat/x" }) })] }));
+    expect(model.inbox.filter((r) => r.kind === "attention")).toHaveLength(1);
+    expect(model.inboxTotalCount).toBe(1);
+  });
+
+  it("a structured question plus a capsule request on the same pane is represented once", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion: structured(9), capsule: capsule({ status: "needs_input", question: "freeform?" }) })] }));
+    expect(model.inbox).toEqual([{ kind: "question", dir: "p", name: "p", pane: "%1", eventId: 9, question: "q?" }]);
+    expect(model.inboxTotalCount).toBe(1);
+  });
+
+  it("more than one genuine request yields one row per event and an agreeing total", () => {
+    const { model } = missionOfProject(mkHubProject({
+      panes: [mkPane({ pane: "%1", pendingQuestion: structured(9) }), mkPane({ pane: "%2", capsule: capsule({ status: "needs_input", question: "which?" }) })],
+    }));
+    expect(model.inbox.map((r) => r.kind)).toEqual(["question", "attention"]);
+    expect(model.inboxTotalCount).toBe(model.inbox.length);
   });
 });
 
@@ -555,7 +639,7 @@ describe("buildMission — sortEpochMs compares real instants, not raw strings (
   });
 });
 
-describe("stripPresentation — pure title/warning decision (branch review, Finding 8)", () => {
+describe("stripPresentation — pure title/warning decision (branch review, Finding 8; M2 plan F1)", () => {
   it("ready with an empty inbox is the empty title with no warning", () => {
     const { title, warning } = stripPresentation({ kind: "ready" }, { ...EMPTY_MODEL, inboxTotalCount: 0 });
     expect(title).toEqual({ kind: "empty" });
@@ -575,26 +659,50 @@ describe("stripPresentation — pure title/warning decision (branch review, Find
     expect(warning).toEqual({ kind: "source", sources: ["hub"] });
   });
 
-  it("degraded with zero cards shows the source warning (Finding 3 — nothing else can carry it)", () => {
-    const readiness: MissionReadiness = { kind: "degraded", degraded: ["prs"] };
-    const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [] });
-    expect(warning).toEqual({ kind: "source", sources: ["prs"] });
-  });
-
-  it("degraded with at least one card stays inline-only — no page-level warning here", () => {
-    const readiness: MissionReadiness = { kind: "degraded", degraded: ["prs"] };
-    const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [{ dir: "x" } as never] });
+  it("a pending PR source alone never makes a known-empty attention strip uncertain (F1): empty title, no skeleton", () => {
+    const readiness: MissionReadiness = { kind: "loading", pending: ["prs"] };
+    const { title, warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [] });
+    expect(title).toEqual({ kind: "empty" });
     expect(warning).toEqual({ kind: "none" });
   });
 
-  it("loading with an empty inbox shows the skeleton", () => {
+  it("a nonempty board with zero known requests stays confidently empty while only the PR source is pending", () => {
     const readiness: MissionReadiness = { kind: "loading", pending: ["prs"] };
-    const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [] });
+    const { title, warning } = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [{ dir: "x" } as never] });
+    expect(title).toEqual({ kind: "empty" });
+    expect(warning).toEqual({ kind: "none" });
+  });
+
+  it("a degraded PR-only source is attention-ready: no PR-only warning, and an empty inbox reads empty", () => {
+    // Supersedes the old zero-card degraded warning: PRs no longer determine attention membership.
+    const readiness: MissionReadiness = { kind: "degraded", degraded: ["prs"] };
+    const zeroBoard = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [] });
+    expect(zeroBoard).toEqual({ title: { kind: "empty" }, warning: { kind: "none" } });
+    const withCards = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [{ dir: "x" } as never] });
+    expect(withCards).toEqual({ title: { kind: "empty" }, warning: { kind: "none" } });
+  });
+
+  it("a valid counted request keeps its title under pending and failed PR sources, PR-only uncertainty never hides it", () => {
+    const model = { ...EMPTY_MODEL, inbox: [{ kind: "question" } as never], inboxTotalCount: 1 };
+    for (const readiness of [
+      { kind: "loading", pending: ["prs"] },
+      { kind: "degraded", degraded: ["prs"] },
+    ] as MissionReadiness[]) {
+      const { title, warning } = stripPresentation(readiness, model);
+      expect(title).toEqual({ kind: "count", count: 1 });
+      expect(warning).toEqual({ kind: "none" });
+    }
+  });
+
+  it("a pending projects/hub source keeps the attention strip uncertain: unknown title and the skeleton", () => {
+    const readiness: MissionReadiness = { kind: "loading", pending: ["hub", "prs"] };
+    const { title, warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [] });
+    expect(title).toEqual({ kind: "unknown" });
     expect(warning).toEqual({ kind: "skeleton" });
   });
 
-  it("loading with a non-empty inbox shows no skeleton — known rows already render", () => {
-    const readiness: MissionReadiness = { kind: "loading", pending: ["prs"] };
+  it("loading with known rows already in the inbox shows no skeleton — only an unresolved attention source hides them", () => {
+    const readiness: MissionReadiness = { kind: "loading", pending: ["projects"] };
     const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [{ kind: "gate" } as never] });
     expect(warning).toEqual({ kind: "none" });
   });
@@ -845,12 +953,19 @@ describe("buildMission — native Codex sessions (MOA-469 §4)", () => {
     expect(JSON.stringify(codex)).not.toContain('"pane"');
   });
 
-  it("attention flags make a native session needs-you with a codex inbox row", () => {
+  it("attention flags make a native session needs-you but add no row without an event holder", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "active", activeFlags: ["waitingOnUserInput"], attention: true })] }) });
     const { model } = buildMission(scan, hub, { ok: true, data: { p1: { ok: true, prs: [], truncated: false } } }, NOW);
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: null });
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a native Codex freeform capsule question is an actionable attention row", () => {
+    const scan = scanOf([mkProject({ dir: "p1" })]);
+    const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "active", capsule: { status: "needs_input", eventId: 41, minutes: null, declaredAt: new Date(NOW).toISOString(), mergeAsk: null, question: "continue?" } })] }) });
+    const { model } = buildMission(scan, hub, { ok: true, data: { p1: { ok: true, prs: [], truncated: false } } }, NOW);
+    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: 41 });
   });
 
   it("a Codex source failure warning never hides a genuinely working Claude pane", () => {
@@ -964,9 +1079,9 @@ describe("buildMission — MOA-469 live corrections: dead panes and unavailable 
     expect(tmuxSession).toBeDefined(); // the pane still renders as a session display row
   });
 
-  it("a dead needs_input pane plus a LIVE blocked pane: headline needs-you from the live pane, and only the live pane contributes an inbox row", () => {
+  it("a dead needs_input pane plus a LIVE blocked pane: headline needs-you from the live pane, and only the live pane's real question contributes an inbox row", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
-    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
+    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: "unblock?" };
     const hub = mkHub({ p1: mkHubProject({
       panes: [
         mkPane({ pane: "%1", live: false, capsule: needsInputCapsule }),
@@ -991,12 +1106,12 @@ describe("buildMission — MOA-469 live corrections: dead panes and unavailable 
     expect(model.inbox.filter((r) => r.kind === "attention" || r.kind === "question")).toHaveLength(0);
   });
 
-  it("a genuinely live native session's pending attention still reads needs-you", () => {
+  it("a genuinely live native session's pending attention reads needs-you; a capsule question with a holder is the row", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "idle", pendingAttention: true })] }) });
     const { model } = buildMission(scan, hub, RESOLVED, NOW);
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: null });
+    expect(model.inbox).toEqual([]); // pending attention alone has no answerable event
   });
 });
 
@@ -1362,32 +1477,32 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
     expect(result.model.cards[0].visibility).toBe("hidden");
   });
 
-  it("a hidden project feeds no inbox row (gate, question, attention, PR) — hiding a card hides its strip rows too", () => {
+  it("a hidden project feeds no inbox row (question, attention, PR) — hiding a card hides its strip rows too", () => {
     // Fresh statusMtime keeps the control case out of the auto-hide ladder; hiddenAt is later than it.
     const hiddenPrefs = { p1: { pinned: false, hiddenAt: "2026-09-19T11:45:00.000Z" } };
     const gated = { ...projectBase, gate: "awaiting-approval" as const, statusMtime: "2026-09-19T11:30:00.000Z" };
-    const pane = { pane: "%1", tmuxIncarnation: "i1", capsule: { status: "blocked" as const, ts: "2026-09-01T00:00:00.000Z" }, state: "idle" as const };
-    const hp = { ...HUB_BASE, panes: [pane as unknown as HubProject["panes"][number]], pendingQuestion: { pane: "%1", eventId: 7, questions: [{ question: "Q?" }] } as unknown as HubProject["pendingQuestion"] };
-    const prs = { ok: true as const, data: { p1: { ok: true as const, prs: [{ number: 1, title: "pr", isDraft: false, url: "u", ciState: "green" as const, mergeReady: true, updatedAt: "2026-09-01T00:00:00.000Z" }], truncated: false } } };
+    const pane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: false, capsule: { status: "needs_input" as const, minutes: null, declaredAt: "2026-09-19T11:59:00.000Z", eventId: 8, mergeAsk: null, question: "deploy?" }, pendingQuestion: null, subagentCount: 0, lastEventTs: "2026-09-19T11:59:00.000Z" };
+    const hp = { ...HUB_BASE, panes: [pane as unknown as HubProject["panes"][number]] };
+    const prs = { ok: true as const, data: { p1: { ok: true as const, prs: [{ number: 1, title: "pr", isDraft: false, url: "u", ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-01T00:00:00.000Z" }], truncated: false } } };
     const hidden = buildMission(scan([gated]), hub({ p1: hp }, hiddenPrefs), prs, NOW5);
     expect(hidden.model.cards[0].visibility).toBe("hidden");
     expect(hidden.model.inbox).toEqual([]);
     expect(hidden.model.inboxTotalCount).toBe(0);
     const shown = buildMission(scan([gated]), hub({ p1: hp }), prs, NOW5);
-    expect(shown.model.inbox.map((r) => r.kind)).toContain("gate");
-    expect(shown.model.inbox.map((r) => r.kind)).toContain("pr");
+    expect(shown.model.inbox.map((r) => r.kind)).toContain("attention");
+    expect(shown.model.inbox.map((r) => r.kind)).not.toContain("pr");
   });
 
-  it("an awaiting-approval gate follows the tech lead: working pane → working card and no gate row; stopped pane → needs-you and a gate row", () => {
+  it("an awaiting-approval gate follows the tech lead: working pane → working card; stopped pane → needs-you with no fabricated request row", () => {
     const gated = { ...projectBase, gate: "awaiting-approval" as const, statusMtime: "2026-09-19T11:30:00.000Z" };
     const livePane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: true, capsule: null, pendingQuestion: null, subagentCount: 0, lastEventTs: "2026-09-19T11:59:00.000Z" };
     const working = buildMission(scan([gated]), hub({ p1: { ...HUB_BASE, panes: [livePane as unknown as HubProject["panes"][number]] } }), undefined, NOW5);
     expect(working.model.cards[0].headline).toBe("working");
-    expect(working.model.inbox.map((r) => r.kind)).not.toContain("gate");
+    expect(working.model.inbox).toEqual([]);
     const stoppedPane = { ...livePane, working: false, capsule: { status: "needs_input", minutes: null, declaredAt: "2026-09-19T11:59:00.000Z", eventId: 9 } };
     const stopped = buildMission(scan([gated]), hub({ p1: { ...HUB_BASE, panes: [stoppedPane as unknown as HubProject["panes"][number]] } }), undefined, NOW5);
     expect(stopped.model.cards[0].headline).toBe("needs-you");
-    expect(stopped.model.inbox.map((r) => r.kind)).toContain("gate");
+    expect(stopped.model.inbox).toEqual([]); // the gate and an unqualified capsule are status context, not a request
   });
 
   it("an awaiting-approval gate does not claim Rafa while the tech lead waits on its own run (2026-09-24, arc)", () => {
@@ -1439,7 +1554,7 @@ describe("Phase 3 — buildTicker (spec §9, Decisions 12/13)", () => {
     ];
     const cards = [{ dir: "p1", name: "P1", timeline }];
     const commits = [{ repo: "p1", hash: "abc", author: "rafa", message: "fix: x", epoch: Date.parse("2026-09-19T11:00:00.000Z") / 1000 }];
-    const prs = { p1: { ok: true as const, truncated: false, prs: [{ number: 1, title: "T", isDraft: false, url: "https://x", ciState: "green" as const, mergeReady: true, updatedAt: "2026-09-19T08:00:00.000Z" }] } };
+    const prs = { p1: { ok: true as const, truncated: false, prs: [{ number: 1, title: "T", isDraft: false, url: "https://x", ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-19T08:00:00.000Z" }] } };
     const items = buildTicker(cards, commits, prs, FIXTURE_NOW);
     expect(items.map((i) => i.source)).toEqual(["commit", "event", "pr"]);
     expect(items[0]).toMatchObject({ source: "commit", ts: "2026-09-19T11:00:00.000Z" });
@@ -1738,15 +1853,18 @@ describe("buildMission — capsuleMinutes/capsuleDeclaredAt projected onto Missi
 describe("buildMission — MissionCardPr.newest (spec item 12, round 3)", () => {
   const prResult = (prs: import("../server/collectors/github").Pr[]) => ({ p1: { ok: true as const, prs, truncated: false } });
   const pr = (n: number, updatedAt: string, ciState: import("../server/collectors/github").CiState = "green") =>
-    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, updatedAt });
-  it("picks the PR with the latest valid updatedAt as newest", () => {
+    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt });
+  it("picks the PR with the latest valid updatedAt as newest and carries its merge state", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject() });
-    const prs: Envelope<Record<string, PrResult>> = { ok: true, data: prResult([pr(1, "2026-09-19T00:00:00.000Z"), pr(2, "2026-09-20T00:00:00.000Z")]) };
+    const prs: Envelope<Record<string, PrResult>> = { ok: true, data: prResult([
+      { ...pr(1, "2026-09-19T00:00:00.000Z"), mergeStateStatus: "BLOCKED" },
+      { ...pr(2, "2026-09-20T00:00:00.000Z"), mergeStateStatus: "CLEAN" },
+    ]) };
     const mission = buildMission(scan, hub, prs, Date.now());
     const card = mission.model.cards[0].pr;
     if (card.status !== "ok") throw new Error("expected ok");
-    expect(card.newest).toEqual({ number: 2, ci: "green" });
+    expect(card.newest).toMatchObject({ number: 2, ci: "green", mergeStateStatus: "CLEAN" });
   });
   it("ties on updatedAt break toward the higher PR number", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
@@ -1782,9 +1900,9 @@ describe("newestPr (direct, spec item 12 — Global Constraints: every pure help
   // above only covers the anchors this task edits in mission.ts itself — this is a one-name
   // addition to the existing `import { ... } from "./mission"` line already at the top of this file).
   const pr = (n: number, updatedAt: string, ciState: import("../server/collectors/github").CiState = "green") =>
-    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, updatedAt });
+    ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt });
   it("picks the PR with the latest valid updatedAt", () => {
-    expect(newestPr([pr(1, "2026-09-19T00:00:00.000Z"), pr(2, "2026-09-20T00:00:00.000Z")])).toEqual({ number: 2, ci: "green" });
+    expect(newestPr([pr(1, "2026-09-19T00:00:00.000Z"), pr(2, "2026-09-20T00:00:00.000Z")])).toMatchObject({ number: 2, ci: "green" });
   });
   it("a tie on updatedAt breaks toward the higher number", () => {
     expect(newestPr([pr(5, "2026-09-20T00:00:00.000Z"), pr(3, "2026-09-20T00:00:00.000Z")])?.number).toBe(5);
@@ -1794,6 +1912,9 @@ describe("newestPr (direct, spec item 12 — Global Constraints: every pure help
   });
   it("an empty list returns null", () => {
     expect(newestPr([])).toBeNull();
+  });
+  it("preserves the newest PR's normalized merge state", () => {
+    expect(newestPr([{ ...pr(2, "2026-09-20T00:00:00.000Z"), mergeStateStatus: "CLEAN" }])).toMatchObject({ number: 2, mergeStateStatus: "CLEAN" });
   });
 });
 
@@ -1992,5 +2113,39 @@ describe("liveSessions", () => {
       { transport: "codex", threadId: "t2", state: "unknown" } as never,
     ]);
     expect(out.map((s) => (s.transport === "tmux" ? `${s.session}:${s.panes.map((p) => p.pane).join(",")}` : "codex"))).toEqual(["jax-os:%1", "codex"]);
+  });
+});
+
+
+describe("buildTicker — PR dedupe by provider identity (plan Task 4)", () => {
+  const pr = (n: number, url: string) => ({ number: n, title: `PR ${n}`, isDraft: false, url, ciState: "green" as const, mergeReady: false, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-19T08:00:00.000Z" });
+  const card = (dir: string) => ({ dir, name: dir, timeline: [] as MissionTimelineEntry[] });
+
+  it("one provider item appears once even if the card list repeats it", () => {
+    const p = pr(5, "https://github.com/acme/app/pull/5");
+    const cards = [card("p1")];
+    const items = buildTicker([...cards, ...cards], [], { p1: { ok: true, prs: [p], truncated: false } }, NOW);
+    expect(items.filter((i) => i.source === "pr")).toHaveLength(1);
+  });
+
+  it("the same GitHub PR reachable from two project/worktree dirs is ONE Activity row", () => {
+    const p = pr(5, "https://github.com/acme/app/pull/5");
+    const items = buildTicker([card("app-main"), card("app-feature")], [], {
+      "app-main": { ok: true, prs: [p], truncated: false },
+      "app-feature": { ok: true, prs: [p], truncated: false },
+    }, NOW);
+    expect(items.filter((i) => i.source === "pr")).toHaveLength(1);
+  });
+
+  it("different repositories with the same PR number remain two distinct rows", () => {
+    const a = pr(5, "https://github.com/acme/one/pull/5");
+    const b = pr(5, "https://github.com/acme/two/pull/5");
+    const items = buildTicker([card("one"), card("two")], [], {
+      one: { ok: true, prs: [a], truncated: false },
+      two: { ok: true, prs: [b], truncated: false },
+    }, NOW);
+    const prRows = items.filter((i) => i.source === "pr");
+    expect(prRows).toHaveLength(2);
+    expect(new Set(prRows.map((r) => (r.source === "pr" ? r.url : ""))).size).toBe(2);
   });
 });

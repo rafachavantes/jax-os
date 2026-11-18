@@ -217,6 +217,17 @@ export const MIGRATIONS: readonly string[] = [
   `-- MOA-508 (migration 12): missions.autonomous -- the owner's opt-in to the autonomous mission
   -- mode (spec §6 #1). One bit; existing rows read 0 (normal mission).
   ALTER TABLE missions ADD COLUMN autonomous INTEGER NOT NULL DEFAULT 0;`,
+  `-- MOA-529 (migration 13): singleton cockpit preferences. layout_revision gates optimistic
+  -- saves (a stale expected revision conflicts without writing); layout is a bounded ordered
+  -- JSON list of {project,width} or NULL for "no override" (automatic urgency/time/dir ranking).
+  -- pr_scope persists the Mine/All selection without bumping the layout revision. No seed row:
+  -- an absent row IS the documented default (revision 1, no layout, mine).
+  CREATE TABLE cockpit_prefs (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    layout_revision INTEGER NOT NULL DEFAULT 1,
+    layout          TEXT NULL,
+    pr_scope        TEXT NOT NULL DEFAULT 'mine' CHECK (pr_scope IN ('mine', 'all'))
+  );`,
 ];
 
 export function migrate(db: Database.Database): void {

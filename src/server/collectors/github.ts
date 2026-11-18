@@ -16,16 +16,32 @@ async function systemExec(file: string, args: string[]): Promise<string> {
 
 export type CiState = "green" | "pending" | "failing" | "none";
 
+// M2 (plan F3): only these review values are factual; anything else is explicitly unknown.
+export type PrReviewState = "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "unknown/not reported";
+export type PrMergeStateStatus =
+  | "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE" | "unknown";
+
+const REVIEW_STATES: readonly string[] = ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"];
+const MERGE_STATES: readonly string[] = ["BEHIND", "BLOCKED", "CLEAN", "DIRTY", "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"];
+
 export type Pr = {
   number: number;
   title: string;
   isDraft: boolean;
   url: string;
   ciState: CiState;
+  // Informational only: never treated as an owner action ("merge-ready" is not mergeability).
   mergeReady: boolean;
   // Phase 3 §9 (Decision 13): the ticker's timestamp for an open PR line.
   updatedAt: string;
+  // M2 provider facts (plan Task 4 / spec "Relevant PR scope").
+  author: string;
+  reviewDecision: PrReviewState;
+  mergeStateStatus: PrMergeStateStatus;
 };
+
+// A real GitHub login, bounded; used ONLY to validate the viewer identity read from gh.
+const GH_LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
 export type PrResult = { ok: true; prs: Pr[]; truncated: boolean } | { ok: false; error: string };
 
@@ -124,7 +140,10 @@ function rollupCiState(rollup: unknown[]): CiState {
   return "green";
 }
 
-type RawPr = { number: number; title: string; isDraft: boolean; url: string; statusCheckRollup: unknown[]; updatedAt: string };
+type RawPr = {
+  number: number; title: string; isDraft: boolean; url: string; statusCheckRollup: unknown[]; updatedAt: string;
+  author: unknown; reviewDecision: unknown; mergeStateStatus: unknown;
+};
 
 // Fail closed (cold review Finding 13, then round 3's Finding 6): a row missing ANY of these
 // fields, or carrying the wrong type for one, is a response shape we don't recognise, not "no CI
@@ -153,6 +172,27 @@ function validateRawPr(item: unknown): RawPr {
   return o as RawPr;
 }
 
+// Missing/null/empty/unrecognised author becomes the explicit unknown label (plan F3). A bot's
+// "[bot]" suffix is a real display value, so this check is bounded rather than user-name strict.
+function authorOf(raw: unknown): string {
+  const login = typeof raw === "string"
+    ? raw
+    : raw !== null && typeof raw === "object" && typeof (raw as Record<string, unknown>).login === "string"
+      ? (raw as Record<string, string>).login
+      : "";
+  const trimmed = login.trim();
+  if (trimmed.length === 0 || trimmed.length > 100 || /[\u0000-\u001f\u007f]/.test(trimmed)) return "unknown author";
+  return trimmed;
+}
+
+function reviewOf(raw: unknown): PrReviewState {
+  return typeof raw === "string" && REVIEW_STATES.includes(raw) ? raw as PrReviewState : "unknown/not reported";
+}
+
+function mergeStateOf(raw: unknown): PrMergeStateStatus {
+  return typeof raw === "string" && MERGE_STATES.includes(raw) ? raw as PrMergeStateStatus : "unknown";
+}
+
 // Pure parse of `gh pr list --json number,title,isDraft,url,statusCheckRollup` output. The
 // --limit is always 50 (§5.1); a response at that count cannot be distinguished from "exactly
 // 50 open PRs" and is reported truncated rather than as a precise count.
@@ -170,6 +210,9 @@ export function parsePrListJson(json: string): { prs: Pr[]; truncated: boolean }
       ciState,
       mergeReady: !r.isDraft && (ciState === "green" || ciState === "none"),
       updatedAt: r.updatedAt,
+      author: authorOf(r.author),
+      reviewDecision: reviewOf(r.reviewDecision),
+      mergeStateStatus: mergeStateOf(r.mergeStateStatus),
     };
   });
   return { prs, truncated: raw.length >= 50 };
@@ -198,10 +241,21 @@ export function summarizePrState(prs: Pr[]): CiState {
 // from a gh command failing (that path returns {ok:false}, still present in the result map) and
 // from the project being altogether absent from the result map (reserved for "not in this
 // snapshot yet" — see buildMission's join in Task 7).
+// Resolves the authenticated viewer once per Mine collection through the existing gh session;
+// only a bounded login is ever returned (no token/auth output can leak through this seam).
+export async function resolveViewerLogin(run: ExecFile = systemExec): Promise<string> {
+  const login = (await run("gh", ["api", "user", "--jq", ".login"])).trim();
+  if (!GH_LOGIN_RE.test(login)) throw new Error("gh api user: invalid login");
+  return login;
+}
+
+export type ViewerResolver = () => Promise<string>;
+
 export async function fetchProjectPrs(
   dir: string,
   reposRoot: string,
   run: ExecFile = systemExec,
+  options: { scope?: "mine" | "all"; viewer?: string; viewerResolver?: ViewerResolver } = {},
 ): Promise<PrResult> {
   const repoPath = join(reposRoot, dir);
   let remoteUrl: string;
@@ -224,13 +278,27 @@ export async function fetchProjectPrs(
   }
   const parsed = parseGitHubRemote(remoteUrl);
   if (!parsed) return { ok: true, prs: [], truncated: false };
+  const scope = options.scope ?? "all";
+  // Diff review F3: resolve the viewer only AFTER this project proves it is GitHub-backed. A
+  // no-remote/non-GitHub project is a quiet empty outcome even when the viewer is unavailable;
+  // a resolver is supplied by getPrsForProjects so one failure is shared by the whole collection.
+  let viewer = options.viewer;
+  if (scope === "mine" && !viewer) {
+    if (!options.viewerResolver) return { ok: false, error: "github identity unavailable" };
+    try {
+      viewer = await options.viewerResolver();
+    } catch {
+      return { ok: false, error: "github identity unavailable" };
+    }
+  }
   try {
     const json = await run("gh", [
       "pr", "list",
       "-R", `${parsed.owner}/${parsed.repo}`,
       "--state", "open",
+      ...(scope === "mine" ? ["--author", viewer!] : []),
       "--limit", "50",
-      "--json", "number,title,isDraft,url,statusCheckRollup,updatedAt",
+      "--json", "number,title,isDraft,url,statusCheckRollup,updatedAt,author,reviewDecision,mergeStateStatus",
     ]);
     const { prs, truncated } = parsePrListJson(json);
     return { ok: true, prs, truncated };
@@ -248,13 +316,21 @@ export async function getPrsForProjects(
   dirs: string[],
   reposRoot: string,
   run: ExecFile = systemExec,
+  scope: "mine" | "all" = "all",
 ): Promise<Record<string, PrResult>> {
   // Object.create(null): `dirs` are externally sourced directory names — a plain {} would let a
   // dir literally named "__proto__" silently change the object's prototype instead of becoming an
   // enumerable entry, dropping that project from the JSON envelope (Finding 6).
   const out: Record<string, PrResult> = Object.create(null);
+  // Identity/auth failure is a source failure for the GitHub-backed projects that need it — never
+  // a quiet empty set and never an automatic fallback to All (spec AC9). Resolved lazily (diff
+  // review F3): projects with no origin or a non-GitHub origin never trigger it, and one success
+  // OR failure is memoized for the whole collection.
+  let viewer: Promise<string> | null = null;
+  const viewerResolver: ViewerResolver | undefined =
+    scope === "mine" ? () => (viewer ??= resolveViewerLogin(run)) : undefined;
   for (const dir of dirs) {
-    out[dir] = await fetchProjectPrs(dir, reposRoot, run);
+    out[dir] = await fetchProjectPrs(dir, reposRoot, run, { scope, viewerResolver });
   }
   return out;
 }

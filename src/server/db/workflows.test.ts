@@ -2271,9 +2271,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, laterAt);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toEqual([
-      expect.objectContaining({ kind: "attention", status: "needs_input", pane: "%1" }),
-    ]);
+    expect(model.inbox).toEqual([]); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, first, firstOriginal, "needs_input", "classified");
     expectPreserved(db, later, laterOriginal, "needs_input", "classified");
     db.close();
@@ -2291,9 +2289,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toEqual([
-      expect.objectContaining({ kind: "attention", status: "needs_input" }),
-    ]);
+    expect(model.inbox).toEqual([]); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "classified");
     db.close();
   });
@@ -2306,7 +2302,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toHaveLength(1);
+    expect(model.inbox).toHaveLength(0); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "classified");
     db.close();
   });
@@ -2324,7 +2320,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toHaveLength(1);
+    expect(model.inbox).toHaveLength(0); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "classified");
     db.close();
   });
@@ -2337,7 +2333,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toHaveLength(1);
+    expect(model.inbox).toHaveLength(0); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "classified");
     db.close();
   });
@@ -2411,7 +2407,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox.some((r) => r.kind === "attention")).toBe(true);
+    expect(model.inbox.some((r) => r.kind === "attention")).toBe(false); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "classified");
     db.close();
   });
@@ -2447,7 +2443,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toHaveLength(1);
+    expect(model.inbox).toHaveLength(0); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "tag");
     db.close();
   });
@@ -2466,7 +2462,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox.some((r) => r.kind === "attention")).toBe(true);
+    expect(model.inbox.some((r) => r.kind === "attention")).toBe(false); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "question_open");
     db.close();
   });
@@ -2489,9 +2485,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "blocked" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toEqual([
-      expect.objectContaining({ kind: "attention", status: "blocked" }),
-    ]);
+    expect(model.inbox).toEqual([]); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "blocked", "attention");
     db.close();
   });
@@ -2512,7 +2506,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toHaveLength(1);
+    expect(model.inbox).toHaveLength(0); // M2 strict attention: the capsule is card context, not a request
     expect(db.prepare("SELECT payload FROM workflow_events WHERE id = ?").get(stop.id)).toEqual(original);
     expect(getProjectTimeline(db, "p1").find((e) => e.id === stop.id)?.payload)
       .toMatchObject({ capsule_status: "needs_input" });
@@ -2535,7 +2529,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" });
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toHaveLength(1);
+    expect(model.inbox).toHaveLength(0); // M2 strict attention: the capsule is card context, not a request
     expectPreserved(db, stop, original, "needs_input", "legacy_unknown");
     db.close();
   });

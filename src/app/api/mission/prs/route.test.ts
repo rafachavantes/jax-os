@@ -63,7 +63,7 @@ describe("GET /api/mission/prs (§9 test 15 — gh failure isolation)", () => {
       getPrsForProjects: getPrsForProjects as unknown as PrsRouteDeps["getPrsForProjects"],
     };
     const body = await (await handlePrsGet(deps)).json();
-    expect(getPrsForProjects).toHaveBeenCalledWith(["good-a", "company/nested"], expect.any(String));
+    expect(getPrsForProjects).toHaveBeenCalledWith(["good-a", "company/nested"], expect.any(String), undefined, "mine");
     expect(Object.keys(body.data).sort()).toEqual(["good-a", "nested"]);
     expect(body.data["nested"]).toEqual({ ok: true, prs: [], truncated: false });
   });
@@ -78,7 +78,9 @@ describe("GET /api/mission/prs (§9 test 15 — gh failure isolation)", () => {
       const run = vi.fn(async (file: string, args: string[]) => {
         if (file === "git") return execFileSync(file, args, { encoding: "utf8" });
         expect(file).toBe("gh");
+        if (args[0] === "api") return "rafa\n";
         expect(args).toEqual(expect.arrayContaining(["-R", "acme/remote-repo"]));
+        expect(args).toEqual(expect.arrayContaining(["--author", "rafa"]));
         return JSON.stringify([{ number: 27, title: "Nested PR", isDraft: false,
           url: "https://github.com/acme/remote-repo/pull/27", statusCheckRollup: [],
           updatedAt: "2026-10-29T00:00:00Z" }]);
@@ -87,7 +89,7 @@ describe("GET /api/mission/prs (§9 test 15 — gh failure isolation)", () => {
         readGeneralSettings: () => githubEnabled,
         getProjects: () => ({ projects: [{ dir: "nested", path: "company/nested" }],
           skipped: 0, reposRoot: root }) as unknown as ReturnType<PrsRouteDeps["getProjects"]>,
-        getPrsForProjects: (locations) => getPrsForProjects(locations, root, run),
+        getPrsForProjects: (locations, _reposRoot, _run, scope) => getPrsForProjects(locations, root, run, scope),
       })).json();
       expect(run).toHaveBeenCalledWith("git", ["-C", repo, "remote", "get-url", "origin"]);
       expect(body.ok).toBe(true);
@@ -96,6 +98,21 @@ describe("GET /api/mission/prs (§9 test 15 — gh failure isolation)", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("threads the requested scope through to the collector (Mine default, explicit All)", async () => {
+    const scopes: string[] = [];
+    const deps: PrsRouteDeps = {
+      readGeneralSettings: () => githubEnabled,
+      getProjects: () => ({ projects: [{ dir: "p" }], skipped: 0 }) as unknown as ReturnType<PrsRouteDeps["getProjects"]>,
+      getPrsForProjects: (async (dirs: string[], _root: string, _run: unknown, scope: string) => {
+        scopes.push(scope);
+        return { p: { ok: true as const, prs: [], truncated: false } } as unknown as Record<string, never>;
+      }) as unknown as PrsRouteDeps["getPrsForProjects"],
+    };
+    await handlePrsGet(deps);
+    await handlePrsGet(deps, "all");
+    expect(scopes).toEqual(["mine", "all"]);
   });
 
   it("refuses with a quiet empty map when github is disabled, never calls getPrsForProjects", async () => {

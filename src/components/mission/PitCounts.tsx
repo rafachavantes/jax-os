@@ -19,13 +19,15 @@ const BUCKET_DOT: Record<MissionBucket, string> = {
 // idle pill's hidden/autoHidden suffix, and the pit-hint line underneath — all one component,
 // no separate "topbar pill" exists to change (see the plan's Global Constraints note).
 export function PitCounts({
-  counts, active, onToggle, hiddenCount, autoHiddenCount,
+  counts, active, onToggle, hiddenCount, autoHiddenCount, compact = false,
 }: {
   counts: MissionCounts;
   active: MissionBucket | null;
   onToggle: (bucket: MissionBucket) => void;
   hiddenCount: number;
   autoHiddenCount: number;
+  // M2: the home row is gone; the same pills render inside the compact Projects controls.
+  compact?: boolean;
 }) {
   const t = useTranslations("mission");
   const hidden = hiddenCount + autoHiddenCount;
@@ -48,7 +50,7 @@ export function PitCounts({
           </button>
         ))}
       </div>
-      <span className="text-[11px] text-muted">{t("pitHint", { workingCount: counts.working })}</span>
+      {compact ? null : <span className="text-[11px] text-muted">{t("pitHint", { workingCount: counts.working })}</span>}
     </div>
   );
 }

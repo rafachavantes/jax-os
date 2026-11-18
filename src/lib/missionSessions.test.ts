@@ -279,7 +279,7 @@ describe("session card scope", () => {
 describe("ownership of pane questions and capsules", () => {
   const question = { eventId: 5, pane: "%1", tmuxIncarnation: "1:1", payload: { questions: [{ question: "Pick", options: [{ label: "a" }] }] } };
 
-  it("a question recorded by another conversation is on no card but stays in the inbox", () => {
+  it("a question recorded by another conversation is on no card and is not an actionable inbox row", () => {
     const split = mkSplit({ seats: [seat(B, "%1"), seat(X, "%2")] });
     const m = missionOf({
       p: mkHubProject({
@@ -292,7 +292,8 @@ describe("ownership of pane questions and capsules", () => {
     });
     for (const card of boardCards(m.model.cards)) expect(card.pendingQuestions).toEqual([]);
     expect(boardCardKeyFor(m.model.cards[0], 5)).toBeNull();
-    expect(m.model.inbox.some((r) => r.kind === "question" && r.eventId === 5)).toBe(true);
+    expect(m.model.inbox.some((r) => r.kind === "question" && r.eventId === 5)).toBe(false);
+    expect(m.model.inboxTotalCount).toBe(0);
   });
 
   it("a legacy question with no recorded session stays with the seat holding the pane, plain or grouped", () => {
@@ -420,7 +421,7 @@ describe("standalone single-session card (MOA-533)", () => {
       },
       {
         projects: [mkProject({ dir: "p", name: "Project P", builder: "codex", branch: "stale-branch", stage: "test", now: "stale-now" })],
-        prs: { p: { ok: true, truncated: false, prs: [{ number: 7, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
+        prs: { p: { ok: true, truncated: false, prs: [{ number: 7, title: "t", isDraft: false, url: "https://x", ciState: "green", mergeReady: false, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-11-12T10:00:00.000Z" }] } },
       },
     );
   }
@@ -581,7 +582,7 @@ describe("M1 review corrections (F2/F4/F5)", () => {
 });
 
 describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
-  it("a grouped project emits no gate row; the identical plain project keeps it", () => {
+  it("a blocked capsule without a question is status context on both a grouped and a plain project — never a gate or attention row", () => {
     const blocked = { status: "blocked" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 3, mergeAsk: null, question: null };
     const grouped = missionOf({
       p: mkHubProject({
@@ -589,15 +590,16 @@ describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
         split: mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")] }),
       }),
     }, { projects: [mkProject({ dir: "p", gate: "awaiting-approval" })] });
-    expect(grouped.model.inbox.some((r) => r.kind === "gate")).toBe(false);
+    expect(grouped.model.inbox).toEqual([]);
 
     const plain = missionOf({
       p: mkHubProject({ panes: [pane("%1", { capsule: blocked })] }),
     }, { projects: [mkProject({ dir: "p", gate: "awaiting-approval" })] });
-    expect(plain.model.inbox.some((r) => r.kind === "gate")).toBe(true);
+    expect(plain.model.cards[0].headline).toBe("needs-you");
+    expect(plain.model.inbox).toEqual([]);
   });
 
-  it("one question row per event, answerability copied", () => {
+  it("one question row per event; a replaced-conversation question stays card context", () => {
     const q11 = { eventId: 11, pane: "%1", tmuxIncarnation: "1:1", payload: { questions: [{ question: "a?", options: [{ label: "x" }] }] } };
     const q12 = { eventId: 12, pane: "%2", tmuxIncarnation: "1:1", payload: { questions: [{ question: "b?", options: [{ label: "y" }] }] } };
     const m = missionOf({
@@ -605,13 +607,13 @@ describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
       p2: mkHubProject({ panes: [pane("%2", { pendingQuestion: q12, questionAnswerable: false })] }),
     });
     const rows = m.model.inbox.filter((r) => r.kind === "question");
-    expect(rows.map((r) => (r.kind === "question" ? r.eventId : 0))).toEqual([11, 12]);
-    expect(rows[1]).toMatchObject({ answerable: false });
+    expect(rows.map((r) => (r.kind === "question" ? r.eventId : 0))).toEqual([11]);
+    expect(m.model.cards.find((c) => c.dir === "p2")!.pendingQuestions[0]).toMatchObject({ eventId: 12, answerable: false });
   });
 
-  it("attention rows carry the capsule event id in both transports, null when absent", () => {
-    const tmuxCapsule = { status: "needs_input" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 31, mergeAsk: null, question: null };
-    const codexCapsule = { status: "needs_input" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 41, mergeAsk: null, question: null };
+  it("attention rows require an actionable capsule question or approval and a real event holder", () => {
+    const tmuxCapsule = { status: "needs_input" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 31, mergeAsk: null, question: "tmux question?" };
+    const codexCapsule = { status: "needs_input" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 41, mergeAsk: 1, mergeBranch: "feat/x", question: null };
     const m = missionOf({
       t: mkHubProject({ panes: [pane("%1", { capsule: tmuxCapsule })] }),
       c: mkHubProject({ codexSessions: [{ threadId: U("c"), status: "idle", activeFlags: [], sourceOk: true, working: false, attention: true, pendingAttention: false, runInFlight: false, capsule: codexCapsule, lastEventTs: null, subagentCount: 0 }] }),
@@ -620,7 +622,7 @@ describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
     const rows = m.model.inbox.filter((r) => r.kind === "attention");
     expect(rows).toContainEqual(expect.objectContaining({ transport: "tmux", capsuleEventId: 31 }));
     expect(rows).toContainEqual(expect.objectContaining({ transport: "codex", threadId: U("c"), capsuleEventId: 41 }));
-    expect(rows).toContainEqual(expect.objectContaining({ transport: "codex", threadId: U("n"), capsuleEventId: null }));
+    expect(rows).toHaveLength(2); // the null-holder native session stays context only
   });
 
   it("the stuck rail lists session cards, not project cards", () => {
@@ -656,5 +658,43 @@ describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
     });
     const ticker = buildTicker(m.model.cards, [], {}, NOW);
     expect(ticker.filter((i) => i.source === "event")).toHaveLength(2);
+  });
+});
+
+describe("M2 attention requires a visible board target", () => {
+  const q = (paneId: string, eventId: number) => ({
+    eventId, pane: paneId, tmuxIncarnation: "1:1",
+    payload: { questions: [{ question: `q${eventId}?`, options: [] }] },
+  });
+
+  it("a grouped project's question row belongs to the seat card that holds the exact event", () => {
+    const split = mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")] });
+    const m = missionOf({
+      p: mkHubProject({
+        panes: [pane("%1", { pendingQuestion: q("%1", 5) }), pane("%2", { harnessSession: B })],
+        split,
+      }),
+    });
+    expect(m.model.inbox).toEqual([{ kind: "question", dir: "p", name: "p", pane: "%1", eventId: 5, question: "q5?" }]);
+    expect(boardCardKeyFor(m.model.cards[0], 5)).toBe(`p#session:${A}`);
+  });
+
+  it("a hidden seat's request is card context only; the visible seat's request remains actionable", () => {
+    const split = mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")] });
+    const m = missionOf({
+      p: mkHubProject({
+        panes: [pane("%1", { pendingQuestion: q("%1", 5) }), pane("%2", { harnessSession: B, pendingQuestion: q("%2", 6) })],
+        split,
+      }),
+    }, { prefs: { [`p#session:${B}`]: { pinned: false, hiddenAt: "2026-11-12T11:30:00.000Z" } } });
+    expect(cardOf(m, `p#session:${B}`).visibility).toBe("hidden");
+    expect(m.model.inbox.map((r) => (r.kind === "question" ? r.eventId : 0))).toEqual([5]);
+    expect(m.model.inboxTotalCount).toBe(1);
+  });
+
+  it("the Projects status filter never narrows the strip", () => {
+    const m = missionOf({ p: mkHubProject({ panes: [pane("%1", { pendingQuestion: q("%1", 5) })] }) });
+    expect(boardEntries(m.model.cards, "idle")).toEqual([]); // the needs-you card is filtered off the board…
+    expect(m.model.inbox.map((r) => (r.kind === "question" ? r.eventId : 0))).toEqual([5]); // …but the request stays
   });
 });

@@ -12,8 +12,9 @@ export type PrsRouteDeps = {
 
 const systemDeps: PrsRouteDeps = { getProjects, getPrsForProjects, readGeneralSettings };
 
-// Only carded projects (§5) — the same set mission/projects returns.
-export async function handlePrsGet(deps: PrsRouteDeps = systemDeps) {
+// Only carded projects (§5) — the same set mission/projects returns. Scope defaults to Mine for
+// callers without a query (spec: Mine is the initial scope); the route validates the query.
+export async function handlePrsGet(deps: PrsRouteDeps = systemDeps, scope: "mine" | "all" = "mine") {
   const settings = deps.readGeneralSettings();
   if (!(settings.ok && settings.data.integrations.github)) {
     // Quiet empty (per-integration table) — the SAME shape a real "no PRs anywhere" response
@@ -27,7 +28,7 @@ export async function handlePrsGet(deps: PrsRouteDeps = systemDeps) {
     // The collector resolves a repository from its own path; nested projects therefore pass
     // their discovered location and the returned keys are remapped to the basename identity.
     const locations = projects.map((p) => p.path ?? p.dir);
-    const fetched = await deps.getPrsForProjects(locations, REPOS_ROOT);
+    const fetched = await deps.getPrsForProjects(locations, REPOS_ROOT, undefined, scope);
     const out: Record<string, PrResult> = Object.create(null);
     projects.forEach((p, i) => { out[p.dir] = fetched[locations[i]]; });
     return out;

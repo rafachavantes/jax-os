@@ -36,7 +36,7 @@ function TickerPage({ items, t }: { items: TickerItem[]; t: ReturnType<typeof us
             <span className="min-w-0 flex-1 truncate text-body-ink">
               <strong className="font-semibold text-ink">{item.name}</strong> ·{" "}
               {item.source === "commit" ? `${item.author} — ${item.message}` : null}
-              {item.source === "pr" ? `#${item.number} ${item.title} · ${t(`ci.${item.ci}`)}` : null}
+              {item.source === "pr" ? `#${item.number} ${item.title} · ${t(`ci.${item.ci}`)}${item.isDraft ? ` · ${t("prDraft")}` : ""}${item.author && item.author !== "unknown author" ? ` · @${item.author}` : ""}` : null}
               {item.source === "event" ? (() => {
                 const sentence = tickerSentence(item);
                 return <>{t(sentence.key, sentence.values)}{item.diagnostic ? ` — ${item.diagnostic}` : ""}</>;

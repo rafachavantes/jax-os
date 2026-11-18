@@ -562,15 +562,46 @@ function RuntimeAvatar({ builder }: { builder: string }) {
   return <span className={`flex h-4 w-4 flex-none items-center justify-center rounded-sm text-[9px] font-bold text-ink ${entry.cls}`}>{entry.letter}</span>;
 }
 
+// M2 factual labels only: known GitHub review/merge states are shown as facts; the unknown
+// sentinels get explicit copy, never an implied approval or merge permission.
+export function prReviewLabel(t: (key: string) => string, value: string | undefined): string | null {
+  if (value === "APPROVED") return t("prFields.reviewApproved");
+  if (value === "CHANGES_REQUESTED") return t("prFields.reviewChanges");
+  if (value === "REVIEW_REQUIRED") return t("prFields.reviewRequired");
+  if (value === "unknown/not reported") return t("prFields.reviewUnknown");
+  return null;
+}
+
+export function prMergeLabel(t: (key: string) => string, value: string | undefined): string | null {
+  switch (value) {
+    case "CLEAN": return t("prFields.mergeCLEAN");
+    case "BLOCKED": return t("prFields.mergeBLOCKED");
+    case "BEHIND": return t("prFields.mergeBEHIND");
+    case "DIRTY": return t("prFields.mergeDIRTY");
+    case "DRAFT": return t("prFields.mergeDRAFT");
+    case "HAS_HOOKS": return t("prFields.mergeHAS_HOOKS");
+    case "UNSTABLE": return t("prFields.mergeUNSTABLE");
+    case "UNKNOWN":
+    case "unknown": return t("prFields.mergeUNKNOWN");
+    default: return null;
+  }
+}
+
 // The PR + CI line, shared by the plain card footer and the group header (spec §7.1, §12).
 export function PrSummary({ pr, githubEnabled }: { pr: MissionCardPr; githubEnabled: boolean }) {
   const t = useTranslations("mission");
   if (!githubEnabled) return null;
   if (pr.status === "ok" && pr.newest) {
+    const review = prReviewLabel((key) => t(key), pr.newest.reviewDecision);
+    const merge = prMergeLabel((key) => t(key), pr.newest.mergeStateStatus);
     return (
-      <span className="flex items-center gap-1.5">
-        <GitPullRequest className="h-3.5 w-3.5" />
+      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <GitPullRequest className="h-3.5 w-3.5 flex-none" />
         PR #{pr.newest.number} · {t(`card.ci.${pr.newest.ci}`)}
+        {pr.newest.isDraft ? <> · {t("prFields.draft")}</> : null}
+        {pr.newest.author ? <> · {pr.newest.author === "unknown author" ? t("prFields.authorUnknown") : `@${pr.newest.author}`}</> : null}
+        {review ? <> · {review}</> : null}
+        {merge ? <> · {merge}</> : null}
         {pr.count > 1 ? ` ${t(pr.truncated ? "prMoreTruncated" : "prMore", { count: pr.count - 1 })}` : ""}
       </span>
     );

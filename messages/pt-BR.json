@@ -75,7 +75,36 @@
       "tmuxUnavailable": "Runtime tmux indisponível",
       "hiddenBar": "{count, plural, one {# oculto} other {# ocultos}}",
       "autoHiddenBar": "{count, plural, one {# recolhido} other {# recolhidos}}",
-      "autoHiddenShow": "mostrar"
+      "autoHiddenShow": "mostrar",
+      "controls": {
+        "organize": "Organizar",
+        "save": "Salvar",
+        "cancel": "Cancelar",
+        "reset": "Restaurar padrão",
+        "saving": "Salvando…",
+        "reload": "Recarregar",
+        "unavailable": "Preferências de layout indisponíveis — usando a ordem e a largura padrão.",
+        "saveError": "Falha ao salvar: {error}",
+        "conflict": "Outra alteração foi salva primeiro.",
+        "scopeError": "Falha ao salvar o escopo de PRs — a escolha anterior foi mantida.",
+        "prScope": "PRs:",
+        "mine": "Meus",
+        "all": "Todos",
+        "filter": "Filtro",
+        "filterAll": "Todos os status",
+        "filterClear": "Limpar filtro"
+      },
+      "organize": {
+        "drag": "Mover {name}",
+        "widthLabel": "Largura",
+        "width": "Largura de {name}",
+        "third": "1/3",
+        "half": "1/2",
+        "full": "Cheia",
+        "moveEarlier": "Mover {name} para antes",
+        "moveLater": "Mover {name} para depois",
+        "moved": "{name} movido para a posição {position}"
+      }
     },
     "stages": {
       "spec": "Spec",
@@ -175,7 +204,13 @@
       "packagesEmpty": "Nenhuma atualização pendente.",
       "security": "segurança",
       "copy": "copiar",
-      "copyCaption": "copiar, não executar"
+      "copyCaption": "copiar, não executar",
+      "temp": "/tmp",
+      "tempUnavailable": "indisponível",
+      "alertsCount": "{count, plural, one {# alerta} other {# alertas}}",
+      "alertsTitle": "Alertas do servidor",
+      "zombieChildren": "{count, plural, one {# filho} other {# filhos}}",
+      "readOnlyNote": "Somente leitura"
     },
     "inbox": {
       "title": "ESPERANDO POR VOCÊ · {count}",
@@ -198,7 +233,9 @@
         "failing": "CI falhando",
         "none": "sem CI"
       },
-      "codexSession": "sessão codex"
+      "codexSession": "sessão codex",
+      "showAll": "ver todos ({count})",
+      "showLess": "mostrar menos"
     },
     "source": {
       "projects": "Projetos",
@@ -336,7 +373,8 @@
         "buildFailed": "build falhou",
         "runFinishedNoResult": "sem resultado",
         "mergeApproved": "merge aprovado"
-      }
+      },
+      "prDraft": "rascunho"
     },
     "codexSession": "Sessão Codex",
     "board": {
@@ -357,6 +395,27 @@
       "unlinkedUnknownTitle": "Algumas execuções com dono não confirmado",
       "unlinkedUnknownHint": "Uma fonte de agentes falhou ou a correspondência é ambígua — parte destas execuções não pode ser ligada a uma sessão aberta.",
       "ownershipUnknown": "dono não confirmado"
+    },
+    "prFields": {
+      "draft": "rascunho",
+      "authorUnknown": "autor desconhecido",
+      "reviewApproved": "revisão aprovada",
+      "reviewChanges": "mudanças pedidas",
+      "reviewRequired": "revisão pendente",
+      "reviewUnknown": "revisão não informada",
+      "mergeCLEAN": "merge limpo",
+      "mergeBLOCKED": "merge bloqueado",
+      "mergeBEHIND": "atrás da base",
+      "mergeDIRTY": "conflitos",
+      "mergeDRAFT": "rascunho",
+      "mergeHAS_HOOKS": "hooks pendentes",
+      "mergeUNSTABLE": "checks instáveis",
+      "mergeUNKNOWN": "estado de merge desconhecido"
+    },
+    "views": {
+      "label": "Visões da home",
+      "projects": "Projetos",
+      "activity": "Atividade"
     }
   },
   "missionBlock": {

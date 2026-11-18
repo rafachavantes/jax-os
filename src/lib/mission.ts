@@ -111,7 +111,7 @@ export type MissionCardPr =
   | { status: "disabled" }
   | { status: "loading" }
   | { status: "error"; error: string }
-  | { status: "ok"; count: number; ci: CiState; truncated: boolean; newest: { number: number; ci: CiState } | null };
+  | { status: "ok"; count: number; ci: CiState; truncated: boolean; newest: { number: number; ci: CiState; author?: string; reviewDecision?: string; isDraft?: boolean; mergeStateStatus?: string } | null };
 
 export type MissionActiveRun = HubActiveRun & {
   stage: "build" | "review" | null;
@@ -397,7 +397,6 @@ export type MissionReadiness =
 export type Mission = { readiness: MissionReadiness; model: MissionModel };
 
 const FRESHNESS_WARNING_THRESHOLD = 20;
-const INBOX_PR_CAP = 5;
 const EMPTY_SCAN: ProjectScan = { projects: [], skipped: 0, reposRoot: "" }; // spec §7.3's own pinned empty value
 
 // Same formula as evaluateStaleness (src/server/db/workflows.ts): declaredAt + max(2min, 20% of
@@ -874,7 +873,7 @@ function sortEpochMs(c: MissionCard): number {
 // Item 12 (round 3): the footer's single "most relevant" PR — newest updatedAt wins, ties
 // broken by the higher number; if NO pr in the list has a finite updatedAt, the highest
 // number wins instead (never null unless the list itself is empty).
-export function newestPr(prs: Pr[]): { number: number; ci: CiState } | null {
+export function newestPr(prs: Pr[]): { number: number; ci: CiState; author: string; reviewDecision: string; isDraft: boolean; mergeStateStatus: string } | null {
   if (prs.length === 0) return null;
   const withDates = prs.filter((pr) => Number.isFinite(Date.parse(pr.updatedAt)));
   const pool = withDates.length > 0 ? withDates : prs;
@@ -886,7 +885,10 @@ export function newestPr(prs: Pr[]): { number: number; ci: CiState } | null {
     }
     return a.number > b.number ? a : b;
   });
-  return { number: best.number, ci: best.ciState };
+  return {
+    number: best.number, ci: best.ciState, author: best.author, reviewDecision: best.reviewDecision,
+    isDraft: best.isDraft, mergeStateStatus: best.mergeStateStatus,
+  };
 }
 
 // The join, over whatever IS known. `hub`/`prs` being undefined or failed never prevents a
@@ -918,13 +920,10 @@ function buildModel(
   const locations = new Map<string, string>();
   for (const p of projects.projects) if (locationCounts.get(p.dir) === 1) locations.set(p.dir, p.path ?? p.dir);
 
-  // Finding 3 (cold review round 3): spec §4.1's needs-you condition includes "any pane's last
-  // capsule is blocked or needs_input" as its OWN trigger, independent of a pending question. The
-  // inbox used to be built only from gate + question + merge-ready-PR rows, so a pane that was
-  // needs-you purely by capsule produced a needs-you CARD with nothing in the strip. Collected
-  // alongside pendingQuestions in the same per-pane loop below, and skipped when the pane already
-  // has a pending question (that row already covers it — no double-count).
-  const attentionRows: InboxRow[] = [];
+  // Finding 3 (cold review round 3) established that a blocked/needs_input capsule alone used to
+  // need its own row. M2's genuine-attention rule supersedes that: a status is not a request. Rows
+  // are derived AFTER the board is built (below), from visible board cards only, so each row's
+  // exact event has a real answerable target.
 
   const cards: MissionCard[] = projects.projects.map((project) => {
     const hp = hubMap[project.dir];
@@ -939,22 +938,12 @@ function buildModel(
       // pane's stale capsule/question stays on its session display row below, never on the inbox.
       if (p.live) {
         const pendingQuestion = paneQuestion(p);
-        if (pendingQuestion) {
-          pendingQuestions.push(pendingQuestion);
-        } else if (p.capsule?.status === "blocked" || p.capsule?.status === "needs_input") {
-          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: p.capsule.status, transport: "tmux", pane: p.pane, tmuxIncarnation: p.tmuxIncarnation, capsuleEventId: p.capsule?.eventId ?? null });
-        }
+        if (pendingQuestion) pendingQuestions.push(pendingQuestion);
       }
     }
     const sessions: MissionSession[] = [
       ...groupTmuxPanes(panes, nowMs),
-      ...codexSessions.map((s) => {
-        const session = toMissionCodexSession(s, nowMs);
-        if (session.state === "needs-you") {
-          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: "needs_input", transport: "codex", threadId: s.threadId, capsuleEventId: session.capsuleEventId });
-        }
-        return session;
-      }),
+      ...codexSessions.map((s) => toMissionCodexSession(s, nowMs)),
     ];
 
     // freshnessCount/newestEventTs are already computed server-side (Task 4), already exclude
@@ -1091,37 +1080,44 @@ function buildModel(
   const uncardedProjectNames =
     projectsReady && hubReady ? Object.keys(hubMap).filter((dir) => !cardedDirs.has(dir)).sort() : [];
 
-  // MOA-486: only visible cards feed the strip — hiding a card hides its rows too. Nothing new is
-  // lost: any activity after `hiddenAt` already flips the card back to "visible" (ladder above).
-  const inboxCards = cards.filter((c) => c.visibility === "visible");
-  const inboxDirs = new Set(inboxCards.map((c) => c.dir));
-  const visibleAttentionRows = attentionRows.filter((r) => inboxDirs.has(r.dir));
-
-  const gateRows: InboxRow[] = inboxCards
-    // Same rule as headlineFor: a working or waiting tech lead owes nothing yet. A grouped
-    // project emits no gate row — the session's own merge question covers it (spec §8.4).
-    .filter((c) => c.gate !== null && c.headline === "needs-you" && c.group === undefined)
-    .map((c) => ({ kind: "gate" as const, dir: c.dir, name: c.name, gate: c.gate as "awaiting-approval" | "blocked", updated: c.updated }));
-
-  const questionRows: InboxRow[] = inboxCards.flatMap((c) =>
-    c.pendingQuestions.map((q) => ({ kind: "question" as const, dir: c.dir, name: c.name, pane: q.pane, eventId: q.eventId, question: q.questions[0]?.question ?? "", ...(q.answerable === false ? { answerable: false as const } : {}) })),
+  // M2 strict attention: a Waiting-for-You row needs a visible board target holding that exact
+  // event plus an actual unresolved question or explicit approval — never a status.md gate, a bare
+  // capsule status, an unanswerable request or an event no card hosts. The status classifier and
+  // every card/bucket count stay unchanged; only this request dataset is narrowed. Count, preview
+  // and expanded list all read this same array.
+  const visibleBoardCards = boardCards(cards).filter((c) => c.visibility === "visible");
+  const questionRows: InboxRow[] = visibleBoardCards.flatMap((c) =>
+    c.pendingQuestions.flatMap((q): InboxRow[] => {
+      if (q.answerable === false || !hasQuestionText({ pendingQuestions: [q] })) return [];
+      return [{ kind: "question", dir: c.dir, name: c.name, pane: q.pane, eventId: q.eventId, question: q.questions[0].question }];
+    }),
   );
-
-  const mergeReady: { dir: string; name: string; pr: Pr }[] = [];
-  if (prs !== undefined && prs.ok) {
-    for (const card of inboxCards) {
-      const result = prs.data[card.dir];
-      if (!result || !result.ok) continue;
-      for (const pr of result.prs) {
-        if (pr.mergeReady) mergeReady.push({ dir: card.dir, name: card.name, pr });
-      }
+  // A capsule's freeform question or eligible merge ask is a real request only when the pane or
+  // native session holds an event and the answer route can still deliver to it.
+  const capsuleRequest = (s: {
+    capsuleStatus: "needs_input" | "blocked" | null; capsuleEventId: number | null;
+    capsuleQuestion?: string | null; capsuleMergeAsk?: number | null; capsuleMergeBranch?: string;
+    capsuleAnswerable?: boolean;
+  }): boolean =>
+    s.capsuleStatus !== null && s.capsuleEventId !== null && s.capsuleAnswerable !== false
+    && ((typeof s.capsuleQuestion === "string" && s.capsuleQuestion.trim().length > 0)
+      || isMergeAskEligible(s.capsuleMergeAsk ?? null, s.capsuleMergeBranch));
+  const attentionRows: InboxRow[] = visibleBoardCards.flatMap((c) => c.sessions.flatMap((s): InboxRow[] => {
+    if (s.transport === "tmux") {
+      return s.panes.flatMap((p): InboxRow[] => {
+        if (!p.live || (p.pendingQuestion && hasQuestionText({ pendingQuestions: [p.pendingQuestion] }))) return [];
+        if (!capsuleRequest(p)) return [];
+        return [{ kind: "attention", dir: c.dir, name: c.name, status: p.capsuleStatus!, transport: "tmux", pane: p.pane, tmuxIncarnation: p.tmuxIncarnation, capsuleEventId: p.capsuleEventId }];
+      });
     }
-  }
-  mergeReady.sort((a, b) => a.dir.localeCompare(b.dir) || a.pr.number - b.pr.number);
-  const prRows: InboxRow[] = mergeReady
-    .slice(0, INBOX_PR_CAP)
-    .map((x) => ({ kind: "pr" as const, dir: x.dir, name: x.name, number: x.pr.number, url: x.pr.url, ci: x.pr.ciState }));
-  const inboxPrRemainder = Math.max(0, mergeReady.length - INBOX_PR_CAP);
+    if (s.state !== "needs-you" || !capsuleRequest(s)) return [];
+    return [{ kind: "attention", dir: c.dir, name: c.name, status: "needs_input", transport: "codex", threadId: s.threadId, capsuleEventId: s.capsuleEventId }];
+  }));
+  const inboxRows: InboxRow[] = [...questionRows, ...attentionRows];
+
+  // M2 strict attention: ordinary PRs (even green/no-CI "merge-ready" ones) are informational
+  // Activity, never a Waiting for You request.
+  const inboxPrRemainder = 0;
   const prTruncatedAny = cards.some((c) => c.pr.status === "ok" && c.pr.truncated);
   const hiddenCount = hiddenBoardCards(cards).length;
   const autoHiddenCount = cards.filter((c) => c.visibility === "autoHidden").length;
@@ -1132,8 +1128,8 @@ function buildModel(
     uncardedProjectNames,
     historicalTruncated,
     skipped: projects.skipped,
-    inbox: [...gateRows, ...questionRows, ...visibleAttentionRows, ...prRows],
-    inboxTotalCount: gateRows.length + questionRows.length + visibleAttentionRows.length + mergeReady.length,
+    inbox: inboxRows,
+    inboxTotalCount: inboxRows.length,
     inboxPrRemainder,
     prTruncatedAny,
     codexSource: hubMapCodexSource,
@@ -1236,33 +1232,34 @@ export type StripPresentation = { title: StripTitle; warning: StripWarning };
 // Finding 8 (branch review, LOW): the title/warning branch was inline JSX in InboxStrip, so a
 // mistake there could only be caught by rendering the component — the repo has no react-testing
 // infra and adding one is out of scope for a LOW finding. Pulled the decision into this pure
-// function instead so the adversarial readiness/model combinations (including Finding 3's
-// zero-card degraded case below) are tested directly, the same way buildMission's own branches
-// are.
+// function instead so the adversarial readiness/model combinations are tested directly, the same
+// way buildMission's own branches are.
+//
+// M2 plan F1: attention membership comes only from projects/hub (queries + panes), never from
+// PRs. `readiness` still describes the whole page (buildMission is unchanged — per-card PR
+// unavailable/partial/error stays visible, and a true projects/hub failure stays visible here),
+// but a PR-only pending/degraded source must not make a fully known attention set look
+// uncertain: a non-empty board with zero known requests is allowed the confident empty title,
+// and a genuinely empty board too. This supersedes the historical rule that PR pending/failed
+// must prevent a confident empty attention strip, including branch F3's zero-card PR-only
+// warning: only projects/hub failures get a warning here now.
 export function stripPresentation(readiness: MissionReadiness, model: MissionModel): StripPresentation {
+  // `prs` is the one source that no longer produces attention; every other pending/failed source
+  // (projects, hub) still leaves membership genuinely unknown.
+  const attentionPending = readiness.kind === "loading" && readiness.pending.some((s) => s !== "prs");
   const title: StripTitle =
-    readiness.kind === "ready"
-      ? model.inboxTotalCount === 0
+    readiness.kind === "failed" || attentionPending
+      ? { kind: "unknown" }
+      : model.inboxTotalCount === 0
         ? { kind: "empty" }
-        : { kind: "count", count: model.inboxTotalCount }
-      : { kind: "unknown" };
+        : { kind: "count", count: model.inboxTotalCount };
 
-  // Finding 3 (branch review, MEDIUM): a degraded `prs` source has nowhere to show its inline
-  // warning (a card's own `pr.status === "error"` line) when there are zero cards at all — the
-  // strip used to render only the neutral `titleUnknown` with no visible warning anywhere on the
-  // page. `model.cards.length === 0` is the exact case where no card can carry that inline
-  // warning: whenever at least one card exists, a `degraded` "prs" reading always means either the
-  // whole envelope failed (every card reads `pr.status === "error"`) or one project's own PR fetch
-  // failed (that one card reads it) — degraded is never reachable with cards present and none of
-  // them showing the error inline.
   const warning: StripWarning =
     readiness.kind === "failed"
       ? { kind: "source", sources: readiness.failed }
-      : readiness.kind === "degraded" && model.cards.length === 0
-        ? { kind: "source", sources: readiness.degraded }
-        : readiness.kind === "loading" && model.inbox.length === 0
-          ? { kind: "skeleton" }
-          : { kind: "none" };
+      : attentionPending && model.inbox.length === 0
+        ? { kind: "skeleton" }
+        : { kind: "none" };
 
   return { title, warning };
 }
@@ -1455,7 +1452,7 @@ const TICKER_CAP = 30;
 export type TickerItem =
   | ({ source: "event"; dir: string; name: string } & MissionTimelineEntry)
   | { source: "commit"; dir: string; name: string; ts: string; author: string; message: string; hash: string }
-  | { source: "pr"; dir: string; name: string; ts: string; number: number; url: string; ci: CiState; title: string };
+  | { source: "pr"; dir: string; name: string; ts: string; number: number; url: string; ci: CiState; title: string; author?: string; reviewDecision?: string; isDraft?: boolean };
 
 // ---- Ticker sentence (spec §9, Decisions 19/21) — a pure key lookup, EventTicker-only. -------
 // TimelineEntryText (ProjectCard.tsx's own expanded timeline) is untouched — it renders raw
@@ -1516,11 +1513,22 @@ export function buildTicker(
     items.push({ source: "commit", dir: commit.repo, name: commit.repo, ts: new Date(commit.epoch * 1000).toISOString(),
       author: commit.author, message: commit.message, hash: commit.hash });
   }
+  // One result feeds every Activity row (spec "Relevant PR scope"): dedupe the same provider
+  // item before totals/ticker so a repeated project mapping can never double-count it.
+  const seenPrs = new Set<string>();
   for (const c of cards) {
     const result = prsByProject[c.dir];
     if (!result || !result.ok) continue;
     for (const pr of result.prs) {
-      items.push({ source: "pr", dir: c.dir, name: c.name, ts: pr.updatedAt, number: pr.number, url: pr.url, ci: pr.ciState, title: pr.title });
+      // Provider identity, not a local directory: the same GitHub PR reached through two
+      // worktrees must be one Activity row, while two repos sharing a number stay distinct.
+      const identity = pr.url !== "" ? pr.url : `${c.dir}#${pr.number}`;
+      if (seenPrs.has(identity)) continue;
+      seenPrs.add(identity);
+      items.push({
+        source: "pr", dir: c.dir, name: c.name, ts: pr.updatedAt, number: pr.number, url: pr.url,
+        ci: pr.ciState, title: pr.title, author: pr.author, reviewDecision: pr.reviewDecision, isDraft: pr.isDraft,
+      });
     }
   }
   // Cutoff applied BEFORE sort/cap: an invalid `ts` (NaN) is dropped, never sorted as "current".
