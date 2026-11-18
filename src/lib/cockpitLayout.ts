@@ -97,10 +97,6 @@ export function layoutMap(layout: LayoutEntry[] | null): Map<string, ProjectWidt
   return new Map((layout ?? []).map((e) => [e.project, e.width]));
 }
 
-export function widthOf(map: Map<string, ProjectWidth>, dir: string): ProjectWidth {
-  return map.get(dir) ?? DEFAULT_WIDTH;
-}
-
 // Saved order applies before display filters. Unknown cards follow the saved portion in stable
 // dir-ascending order; without an override the existing automatic ranking is untouched.
 export function applySavedOrder<T extends { dir: string }>(cards: T[], layout: LayoutEntry[] | null): T[] {
