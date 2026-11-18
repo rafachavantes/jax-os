@@ -32,7 +32,7 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 import type { MissionCard, MissionPane, MissionPendingQuestion } from "@/lib/mission";
-import { dispatchBodyFor, gateWaitingLine, heartbeatPath, statusPillSuffix, stuckLine, worstFinding } from "@/lib/mission";
+import { buildMission, dispatchBodyFor, gateWaitingLine, heartbeatPath, statusPillSuffix, stuckLine, worstFinding } from "@/lib/mission";
 import {
   actionEventId, bareCapsuleStatus, bucketPrefsPatch, CancelDialog, pendingUiAction, PendingActionButtons, PrefsMenu, PrSummary, ProjectCard, dispatchValid, handleCancelDialogClose,
 } from "./ProjectCard";
@@ -1350,10 +1350,42 @@ describe("PrSummary — M2 factual provider fields (spec AC10)", () => {
   });
 
   it("an unknown author and an unknown review get explicit copy, and a draft is named", () => {
-    const html = render({ ...base, author: "unknown author", reviewDecision: "unknown/not reported", mergeStateStatus: "unknown", isDraft: true });
+    const html = render({ ...base, author: "unknown author", reviewDecision: "unknown/not reported", mergeStateStatus: "UNKNOWN", isDraft: true });
     expect(html).toContain("prFields.authorUnknown");
     expect(html).toContain("prFields.reviewUnknown");
     expect(html).toContain("prFields.draft");
-    expect(html).not.toContain("prFields.mergeUNKNOWN"); // the bare "unknown" sentinel is not presented as a known state
+    expect(html).toContain("prFields.mergeUNKNOWN");
+  });
+
+  it("the normalized lowercase unknown sentinel reads as the same localized unknown state", () => {
+    const html = render({ ...base, mergeStateStatus: "unknown" });
+    expect(html).toContain("prFields.mergeUNKNOWN");
+  });
+
+  it("the model's newest PR carries its merge state through to the footer", () => {
+    const mission = buildMission(
+      { ok: true, data: { projects: [{
+        dir: "p1", name: "p1", stage: "build", gate: null, legacyGateField: false, builder: "claude-code",
+        branch: "main", updated: "2026-11-18T10:00:00.000Z", now: "", residuals: [],
+        statusMtime: "2026-11-18T10:00:00.000Z", archived: false,
+      }], skipped: 0, reposRoot: "" } },
+      { ok: true, data: {
+        byProject: { p1: {
+          panes: [], codexSessions: [], codexUntracked: false, pendingQuestion: null, freshnessCount: 0,
+          newestEventTs: null, timeline: [], heartbeat: new Array(60).fill(0), lastAction: null,
+          activeRun: undefined, activeRuns: [], lastRun: null,
+        } },
+        historicalTruncated: false, codexSource: "ok", tmuxSource: "ok", prefs: {}, settings: { archiveAfterDays: 14 },
+      } },
+      { ok: true, data: { p1: { ok: true, truncated: false, prs: [{
+        number: 7, title: "T", isDraft: false, url: "https://github.com/acme/app/pull/7",
+        ciState: "green", mergeReady: true, author: "a", reviewDecision: "APPROVED",
+        mergeStateStatus: "CLEAN", updatedAt: "2026-11-18T11:00:00.000Z",
+      }] } } },
+      Date.parse("2026-11-18T12:00:00.000Z"),
+    );
+    const html = renderToStaticMarkup(createElement(PrSummary, { pr: mission.model.cards[0].pr, githubEnabled: true }));
+    expect(html).toContain("prFields.mergeCLEAN");
+    expect(html).toContain("prFields.reviewApproved");
   });
 });

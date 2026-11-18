@@ -581,7 +581,8 @@ export function prMergeLabel(t: (key: string) => string, value: string | undefin
     case "DRAFT": return t("prFields.mergeDRAFT");
     case "HAS_HOOKS": return t("prFields.mergeHAS_HOOKS");
     case "UNSTABLE": return t("prFields.mergeUNSTABLE");
-    case "UNKNOWN": return t("prFields.mergeUNKNOWN");
+    case "UNKNOWN":
+    case "unknown": return t("prFields.mergeUNKNOWN");
     default: return null;
   }
 }

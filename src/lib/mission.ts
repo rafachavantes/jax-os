@@ -873,7 +873,7 @@ function sortEpochMs(c: MissionCard): number {
 // Item 12 (round 3): the footer's single "most relevant" PR — newest updatedAt wins, ties
 // broken by the higher number; if NO pr in the list has a finite updatedAt, the highest
 // number wins instead (never null unless the list itself is empty).
-export function newestPr(prs: Pr[]): { number: number; ci: CiState; author: string; reviewDecision: string; isDraft: boolean } | null {
+export function newestPr(prs: Pr[]): { number: number; ci: CiState; author: string; reviewDecision: string; isDraft: boolean; mergeStateStatus: string } | null {
   if (prs.length === 0) return null;
   const withDates = prs.filter((pr) => Number.isFinite(Date.parse(pr.updatedAt)));
   const pool = withDates.length > 0 ? withDates : prs;
@@ -885,7 +885,10 @@ export function newestPr(prs: Pr[]): { number: number; ci: CiState; author: stri
     }
     return a.number > b.number ? a : b;
   });
-  return { number: best.number, ci: best.ciState, author: best.author, reviewDecision: best.reviewDecision, isDraft: best.isDraft };
+  return {
+    number: best.number, ci: best.ciState, author: best.author, reviewDecision: best.reviewDecision,
+    isDraft: best.isDraft, mergeStateStatus: best.mergeStateStatus,
+  };
 }
 
 // The join, over whatever IS known. `hub`/`prs` being undefined or failed never prevents a
@@ -1516,7 +1519,9 @@ export function buildTicker(
     const result = prsByProject[c.dir];
     if (!result || !result.ok) continue;
     for (const pr of result.prs) {
-      const identity = `${c.dir}#${pr.number}`;
+      // Provider identity, not a local directory: the same GitHub PR reached through two
+      // worktrees must be one Activity row, while two repos sharing a number stay distinct.
+      const identity = pr.url !== "" ? pr.url : `${c.dir}#${pr.number}`;
       if (seenPrs.has(identity)) continue;
       seenPrs.add(identity);
       items.push({

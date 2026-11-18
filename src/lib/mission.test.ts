@@ -1829,14 +1829,17 @@ describe("buildMission — MissionCardPr.newest (spec item 12, round 3)", () => 
   const prResult = (prs: import("../server/collectors/github").Pr[]) => ({ p1: { ok: true as const, prs, truncated: false } });
   const pr = (n: number, updatedAt: string, ciState: import("../server/collectors/github").CiState = "green") =>
     ({ number: n, title: `PR ${n}`, url: `https://x/${n}`, isDraft: false, ciState, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt });
-  it("picks the PR with the latest valid updatedAt as newest", () => {
+  it("picks the PR with the latest valid updatedAt as newest and carries its merge state", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject() });
-    const prs: Envelope<Record<string, PrResult>> = { ok: true, data: prResult([pr(1, "2026-09-19T00:00:00.000Z"), pr(2, "2026-09-20T00:00:00.000Z")]) };
+    const prs: Envelope<Record<string, PrResult>> = { ok: true, data: prResult([
+      { ...pr(1, "2026-09-19T00:00:00.000Z"), mergeStateStatus: "BLOCKED" },
+      { ...pr(2, "2026-09-20T00:00:00.000Z"), mergeStateStatus: "CLEAN" },
+    ]) };
     const mission = buildMission(scan, hub, prs, Date.now());
     const card = mission.model.cards[0].pr;
     if (card.status !== "ok") throw new Error("expected ok");
-    expect(card.newest).toMatchObject({ number: 2, ci: "green" });
+    expect(card.newest).toMatchObject({ number: 2, ci: "green", mergeStateStatus: "CLEAN" });
   });
   it("ties on updatedAt break toward the higher PR number", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
@@ -1884,6 +1887,9 @@ describe("newestPr (direct, spec item 12 — Global Constraints: every pure help
   });
   it("an empty list returns null", () => {
     expect(newestPr([])).toBeNull();
+  });
+  it("preserves the newest PR's normalized merge state", () => {
+    expect(newestPr([{ ...pr(2, "2026-09-20T00:00:00.000Z"), mergeStateStatus: "CLEAN" }])).toMatchObject({ number: 2, mergeStateStatus: "CLEAN" });
   });
 });
 
@@ -2086,11 +2092,35 @@ describe("liveSessions", () => {
 });
 
 
-describe("buildTicker — M2 scoped PR dedupe (plan Task 4)", () => {
-  it("one provider identity (project + number) appears once even if the card list repeats it", () => {
-    const pr = { number: 5, title: "T", isDraft: false, url: "u", ciState: "green" as const, mergeReady: false, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-19T08:00:00.000Z" };
-    const card = { dir: "p1", name: "P1", timeline: [] as MissionTimelineEntry[] };
-    const items = buildTicker([card, card], [], { p1: { ok: true, prs: [pr], truncated: false } }, NOW);
+describe("buildTicker — PR dedupe by provider identity (plan Task 4)", () => {
+  const pr = (n: number, url: string) => ({ number: n, title: `PR ${n}`, isDraft: false, url, ciState: "green" as const, mergeReady: false, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-19T08:00:00.000Z" });
+  const card = (dir: string) => ({ dir, name: dir, timeline: [] as MissionTimelineEntry[] });
+
+  it("one provider item appears once even if the card list repeats it", () => {
+    const p = pr(5, "https://github.com/acme/app/pull/5");
+    const cards = [card("p1")];
+    const items = buildTicker([...cards, ...cards], [], { p1: { ok: true, prs: [p], truncated: false } }, NOW);
     expect(items.filter((i) => i.source === "pr")).toHaveLength(1);
+  });
+
+  it("the same GitHub PR reachable from two project/worktree dirs is ONE Activity row", () => {
+    const p = pr(5, "https://github.com/acme/app/pull/5");
+    const items = buildTicker([card("app-main"), card("app-feature")], [], {
+      "app-main": { ok: true, prs: [p], truncated: false },
+      "app-feature": { ok: true, prs: [p], truncated: false },
+    }, NOW);
+    expect(items.filter((i) => i.source === "pr")).toHaveLength(1);
+  });
+
+  it("different repositories with the same PR number remain two distinct rows", () => {
+    const a = pr(5, "https://github.com/acme/one/pull/5");
+    const b = pr(5, "https://github.com/acme/two/pull/5");
+    const items = buildTicker([card("one"), card("two")], [], {
+      one: { ok: true, prs: [a], truncated: false },
+      two: { ok: true, prs: [b], truncated: false },
+    }, NOW);
+    const prRows = items.filter((i) => i.source === "pr");
+    expect(prRows).toHaveLength(2);
+    expect(new Set(prRows.map((r) => (r.source === "pr" ? r.url : ""))).size).toBe(2);
   });
 });
