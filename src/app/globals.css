@@ -234,3 +234,36 @@ dialog::backdrop {
     stroke-dashoffset: 0;
   }
 }
+
+/* M2 saved project layout (plan Task 3). Container queries read the ACTUAL project-area and
+   grouped-card widths — never the viewport. Thirds/halves go 12 -> 6 -> 4/6; full stays 12;
+   plain spans keep incomplete-row gaps instead of growing to fill (the old flex-basis behavior).
+   Readable minimum: 624px / 2 - 16px gap = 304px, 944px / 3 - 2*16px = 304px. */
+.project-grid {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.project-span {
+  grid-column: span 12 / span 12;
+  min-width: 0;
+}
+@container (min-width: 624px) {
+  .project-span[data-width="third"],
+  .project-span[data-width="half"] { grid-column: span 6 / span 6; }
+}
+@container (min-width: 944px) {
+  .project-span[data-width="third"] { grid-column: span 4 / span 4; }
+}
+.group-card { container-type: inline-size; }
+.group-sessions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+@container (min-width: 624px) {
+  .group-sessions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.group-session-full { grid-column: 1 / -1; }

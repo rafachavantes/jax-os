@@ -75,7 +75,33 @@
       "tmuxUnavailable": "Runtime tmux indisponível",
       "hiddenBar": "{count, plural, one {# oculto} other {# ocultos}}",
       "autoHiddenBar": "{count, plural, one {# recolhido} other {# recolhidos}}",
-      "autoHiddenShow": "mostrar"
+      "autoHiddenShow": "mostrar",
+      "controls": {
+        "organize": "Organizar",
+        "save": "Salvar",
+        "cancel": "Cancelar",
+        "reset": "Restaurar padrão",
+        "saving": "Salvando…",
+        "reload": "Recarregar",
+        "unavailable": "Preferências de layout indisponíveis — usando a ordem e a largura padrão.",
+        "saveError": "Falha ao salvar: {error}",
+        "conflict": "Outra alteração foi salva primeiro.",
+        "scopeError": "Falha ao salvar o escopo de PRs — a escolha anterior foi mantida.",
+        "prScope": "PRs:",
+        "mine": "Meus",
+        "all": "Todos"
+      },
+      "organize": {
+        "drag": "Mover {name}",
+        "widthLabel": "Largura",
+        "width": "Largura de {name}",
+        "third": "1/3",
+        "half": "1/2",
+        "full": "Cheia",
+        "moveEarlier": "Mover {name} para antes",
+        "moveLater": "Mover {name} para depois",
+        "moved": "{name} movido para a posição {position}"
+      }
     },
     "stages": {
       "spec": "Spec",

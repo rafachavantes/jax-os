@@ -2,9 +2,17 @@
 
 import { useTranslations } from "next-intl";
 import { useState } from "react";
-import { boardEntries, cardKey, hiddenBoardCards, sessionDisplay, type Mission, type MissionBucket, type MissionCard } from "@/lib/mission";
+import { applySavedOrder, layoutMap, type PrScope } from "@/lib/cockpitLayout";
+import {
+  beginSave, cancelOrganize, draftDrop, draftMove, draftWidth, enterOrganize,
+  initialOrganizeState, reloadOrganize, saveConflicted, saveFailed, saveSucceeded,
+  useCockpitSnapshot, useCockpitWrites,
+} from "@/lib/cockpitPrefsQuery";
+import { boardEntries, cardKey, hiddenBoardCards, sessionDisplay, type Mission, type MissionBucket, type MissionBucketSummary, type MissionCard } from "@/lib/mission";
 import { PrefsButtons, ProjectCard } from "./ProjectCard";
 import { renderBoardEntry } from "./boardEntry";
+import { PitCounts } from "./PitCounts";
+import { ProjectLayoutControls } from "./ProjectLayoutControls";
 import { SourceWarning } from "./SourceWarning";
 
 type Props = {
@@ -16,6 +24,9 @@ type Props = {
   filter?: MissionBucket | null;
   expandedDir: string | null;
   onToggleExpand: (dir: string) => void;
+  // M2 compact Projects controls: the removed PitCounts row's counts/filter live here now.
+  bucketSummary?: MissionBucketSummary | null;
+  onToggleFilter?: (bucket: MissionBucket) => void;
 };
 
 // Decision 17: the two summary segments' TEXT only — the "mostrar"/"gerenciar" disclosure
@@ -88,10 +99,99 @@ function ProjectVisibilityDisclosure({
   );
 }
 
-export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expandedDir, onToggleExpand }: Props) {
+export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expandedDir, onToggleExpand, bucketSummary = null, onToggleFilter }: Props) {
   const t = useTranslations("mission.projects");
   const tSource = useTranslations("mission.source");
   const { readiness, model } = mission;
+
+  // One polling preference snapshot (10s, shared with the page's PR query gate) plus the
+  // Organize draft, which a poll never overwrites. Unavailable prefs leave the default
+  // urgency/time/dir order and third widths in force, with Save/Reset disabled (plan F2).
+  const snapshotQuery = useCockpitSnapshot();
+  const writes = useCockpitWrites();
+  const snapshot = snapshotQuery.data?.data ?? null;
+  const preferencesUnavailable = snapshotQuery.isError && snapshot === null;
+  const [organize, setOrganize] = useState(initialOrganizeState);
+  const [scopeBusy, setScopeBusy] = useState(false);
+  const [pendingScope, setPendingScope] = useState<PrScope | null>(null);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
+  const layout = organize.draft ?? snapshot?.layout ?? null;
+  const orderedCards = applySavedOrder(model.cards, layout);
+  const widths = layoutMap(layout);
+  const prScope: PrScope = pendingScope ?? snapshot?.prScope ?? "mine";
+
+  function startOrganize() {
+    if (!snapshot) return;
+    setOrganize(enterOrganize(snapshot, model.cards.filter((c) => c.visibility === "visible")));
+    setAnnouncement("");
+  }
+
+  function moveProject(dir: string, delta: -1 | 1) {
+    if (organize.draft === null) return;
+    const index = organize.draft.findIndex((e) => e.project === dir);
+    const next = index + delta;
+    if (index < 0 || next < 0 || next >= organize.draft.length) return;
+    const name = model.cards.find((c) => c.dir === dir)?.name ?? dir;
+    setAnnouncement(t("organize.moved", { name, position: next + 1 }));
+    setOrganize((state) => draftMove(state, dir, delta));
+  }
+
+  async function persistLayout() {
+    if (organize.draft === null || organize.baseRevision === null) return;
+    const started = beginSave(organize);
+    setOrganize(started);
+    try {
+      const result = await writes.saveLayout(started.baseRevision!, started.draft!);
+      writes.apply(result.snapshot);
+      setOrganize(result.conflict ? saveConflicted(started, result.snapshot) : saveSucceeded(result.snapshot));
+    } catch (e) {
+      setOrganize(saveFailed(started, e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  async function resetLayoutOverride() {
+    const revision = snapshot?.revision ?? organize.baseRevision;
+    if (revision === null) return;
+    const started: typeof organize = organize.draft !== null ? beginSave(organize) : { ...organize, status: "saving" };
+    setOrganize(started);
+    try {
+      const result = await writes.resetLayout(revision);
+      writes.apply(result.snapshot);
+      setOrganize(result.conflict ? saveConflicted(started, result.snapshot) : saveSucceeded(result.snapshot));
+    } catch (e) {
+      setOrganize(saveFailed(started, e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  function cancelEditing() {
+    const latest = snapshot ?? organize.baseline;
+    if (latest) setOrganize(cancelOrganize(latest));
+  }
+
+  function reloadFromServer() {
+    const latest = snapshot ?? organize.baseline;
+    if (!latest) return;
+    writes.apply(latest);
+    setOrganize(reloadOrganize(latest, model.cards.filter((c) => c.visibility === "visible")));
+  }
+
+  async function chooseScope(scope: PrScope) {
+    if (scope === prScope || scopeBusy) return;
+    setScopeBusy(true);
+    setScopeError(null);
+    setPendingScope(scope);
+    try {
+      const next = await writes.savePrScope(scope);
+      writes.apply(next);
+      setPendingScope(null);
+    } catch (e) {
+      setPendingScope(null);
+      setScopeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setScopeBusy(false);
+    }
+  }
 
   // `projects` is the one source that gates whether `model.cards` means anything at all (Task 7's
   // buildModel falls back to an empty scan when `projects` hasn't resolved) — `hub`/`prs` failing
@@ -136,13 +236,21 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
     // bucketOf() already applies to the count pills — so the filtered grid always matches the
     // pill's own count (spec §7). Groups (spec §5) show only matching cards and disappear when
     // none match; boardEntries owns both rules.
-    const entries = boardEntries(model.cards, filter);
+    const entries = boardEntries(orderedCards, filter);
     body = entries.length > 0 ? (
       // Rafa 2026-09-20: flex-wrap instead of the 1→2→3→4 column grid — at most 3 cards per row
       // (30% basis + gaps), and a partial row's cards grow to fill the line (2 cards = half each,
       // 1 = full). Tablet 2 per row, phone 1. The expanded card takes a 2-of-3 basis.
-      <div className="flex flex-wrap gap-4">
-        {entries.map((entry) => renderBoardEntry(entry, { expandedDir, onToggleExpand, counts }))}
+      <div className="project-grid">
+        {entries.map((entry) => renderBoardEntry(entry, {
+          expandedDir, onToggleExpand, counts, widths,
+          organize: organize.draft !== null ? {
+            draft: organize.draft,
+            onMove: moveProject,
+            onWidth: (dir, width) => setOrganize((state) => draftWidth(state, dir, width)),
+            onDrop: (dragged, target) => setOrganize((state) => draftDrop(state, dragged, target)),
+          } : undefined,
+        }))}
       </div>
     ) : (
       // ponytail: reuses the same "empty" copy as the zero-projects case above rather
@@ -157,10 +265,41 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
 
   return (
     <div className="flex min-w-0 flex-col gap-3.5">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-bold text-ink">{t("title")}</span>
         <span className="font-mono text-[11px] text-muted">{reposRoot}</span>
       </div>
+      <ProjectLayoutControls
+        unavailable={preferencesUnavailable}
+        organize={organize}
+        onEnter={startOrganize}
+        onSave={() => void persistLayout()}
+        onCancel={cancelEditing}
+        onReset={() => void resetLayoutOverride()}
+        onReload={reloadFromServer}
+        prScope={prScope}
+        scopeBusy={scopeBusy}
+        scopeError={scopeError}
+        onScope={(scope) => void chooseScope(scope)}
+      />
+      <span aria-live="polite" className="sr-only">{announcement}</span>
+      {bucketSummary?.counts && onToggleFilter ? (
+        <PitCounts
+          counts={bucketSummary.counts}
+          active={filter}
+          onToggle={onToggleFilter}
+          hiddenCount={model.hiddenCount}
+          autoHiddenCount={model.autoHiddenCount}
+          compact
+        />
+      ) : null}
+      {(() => {
+        const summary = hiddenAutoHiddenSummary(hiddenCards.length, autoHiddenCards.length, t as (key: string, values?: Record<string, unknown>) => string);
+        if (!summary.hidden && !summary.autoHidden) return null;
+        return (
+          <ProjectVisibilityDisclosure autoHiddenText={summary.autoHidden} hiddenText={summary.hidden} autoHiddenCards={autoHiddenCards} hiddenCards={hiddenCards} />
+        );
+      })()}
       {/* MOA-469 §4 / C4: the two live sources warn independently — a failed tmux collector is a
           visible source warning (never a quiet healthy zero-agents board), and a failed Codex
           collector must not hide the (fully known) tmux/projects state. */}
@@ -173,15 +312,6 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
         <span className="text-[11px] text-muted">{t("codexTruncated")}</span>
       ) : null}
       {body}
-      {(() => {
-        // next-intl's Translator key union is narrower than hiddenAutoHiddenSummary's plain
-        // framework-free function signature (Part 1) — cast at this one call site.
-        const summary = hiddenAutoHiddenSummary(hiddenCards.length, autoHiddenCards.length, t as (key: string, values?: Record<string, unknown>) => string);
-        if (!summary.hidden && !summary.autoHidden) return null;
-        return (
-          <ProjectVisibilityDisclosure autoHiddenText={summary.autoHidden} hiddenText={summary.hidden} autoHiddenCards={autoHiddenCards} hiddenCards={hiddenCards} />
-        );
-      })()}
       {model.skipped > 0 ? (
         <span className="text-[11px] text-muted">{t("skipped", { count: model.skipped })}</span>
       ) : null}

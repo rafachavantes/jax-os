@@ -75,7 +75,33 @@
       "tmuxUnavailable": "tmux runtime unavailable",
       "hiddenBar": "{count, plural, one {# hidden} other {# hidden}}",
       "autoHiddenBar": "{count, plural, one {# collapsed} other {# collapsed}}",
-      "autoHiddenShow": "show"
+      "autoHiddenShow": "show",
+      "controls": {
+        "organize": "Organize",
+        "save": "Save",
+        "cancel": "Cancel",
+        "reset": "Reset layout",
+        "saving": "Saving…",
+        "reload": "Reload",
+        "unavailable": "Layout preferences unavailable — using the default order and width.",
+        "saveError": "Save failed: {error}",
+        "conflict": "Another change was saved first.",
+        "scopeError": "Could not save the PR scope — the previous choice was kept.",
+        "prScope": "PRs:",
+        "mine": "Mine",
+        "all": "All"
+      },
+      "organize": {
+        "drag": "Move {name}",
+        "widthLabel": "Width",
+        "width": "Width of {name}",
+        "third": "1/3",
+        "half": "1/2",
+        "full": "Full",
+        "moveEarlier": "Move {name} earlier",
+        "moveLater": "Move {name} later",
+        "moved": "{name} moved to position {position}"
+      }
     },
     "stages": {
       "spec": "Spec",

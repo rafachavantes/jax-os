@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
@@ -8,7 +8,15 @@ vi.mock("next-intl", () => ({
 }));
 // PrefsButtons (item 2) reads a QueryClient via useQueryClient — no provider exists in these
 // static-markup renders, same stand-in AfkToggle.test.tsx already uses for the same hook.
-vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({}), useQuery: () => ({ data: undefined }) }));
+// M2: the cockpit-prefs query is configurable so saved order/widths and unavailable-prefs
+// behavior can be rendered (the default is "no snapshot yet").
+const cockpitHarness = vi.hoisted(() => ({ data: undefined as unknown, isError: false }));
+vi.mock("@tanstack/react-query", () => ({
+  useQueryClient: () => ({}),
+  useQuery: (opts: { queryKey: unknown[] }) => opts.queryKey[1] === "cockpit-prefs"
+    ? { data: cockpitHarness.data, isError: cockpitHarness.isError }
+    : { data: undefined },
+}));
 // The real module's PrefsButtons is kept (spread from the actual module) so the hidden/
 // autoHidden management rows under test render the real control, not a stand-in; only
 // ProjectCard itself is replaced by the lightweight data-card marker this file already used.
@@ -272,22 +280,59 @@ describe("ProjectsColumn — hidden/auto-hidden disclosure (spec §8, Decision 1
   });
 });
 
-describe("ProjectsColumn — flex-wrap rows, max 3 per row, partial rows stretch (Rafa 2026-09-20)", () => {
-  it("cards are growing flex items with a 1/2/3-per-row basis; the expanded card takes a 2-of-3 basis", () => {
+describe("ProjectsColumn — saved 12-column spans (M2 plan Task 3, spec AC4)", () => {
+  const resetHarness = () => { cockpitHarness.data = undefined; cockpitHarness.isError = false; };
+  afterEach(resetHarness);
+
+  it("uses a plain 12-column container grid with no grow/fill/dense classes", () => {
     const mission = missionWithVisibility([{ ...cardBase, dir: "p1" }, { ...cardBase, dir: "p2" }]);
     const html = renderToStaticMarkup(createElement(ProjectsColumn, { reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: "p2", onToggleExpand: () => {} }));
+    expect(html).toContain("project-grid");
+    expect(html).not.toContain("flex flex-wrap gap-4");
+    expect(html).not.toContain("dense");
+    expect(html).not.toContain("grow basis");
     const p1Tag = html.match(/<div[^>]*data-card-dir="p1"[^>]*>/)?.[0] ?? "";
     const p2Tag = html.match(/<div[^>]*data-card-dir="p2"[^>]*>/)?.[0] ?? "";
-    expect(html).toContain("flex flex-wrap gap-4");
-    expect(html).not.toContain("grid-cols");
     for (const tag of [p1Tag, p2Tag]) {
-      expect(tag).toContain("grow");
-      expect(tag).toContain("basis-full");
-      expect(tag).toContain("sm:basis-[45%]");
+      expect(tag).toContain("project-span");
+      expect(tag).toContain('data-width="third"');
+      expect(tag).not.toContain("basis-");
     }
-    expect(p1Tag).toContain("lg:basis-[30%]");
-    expect(p2Tag).toContain("lg:basis-[63%]");
-    expect(p2Tag).not.toContain("lg:basis-[30%]");
+  });
+
+  it("applies saved order before filters and saved widths without changing expansion", () => {
+    cockpitHarness.data = { ok: true, data: { revision: 3, prScope: "mine", layout: [
+      { project: "p2", width: "full" }, { project: "p1", width: "half" },
+    ] } };
+    const mission = missionWithVisibility([{ ...cardBase, dir: "p1" }, { ...cardBase, dir: "p2" }]);
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, { reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: "p1", onToggleExpand: () => {} }));
+    const p1Tag = html.match(/<div[^>]*data-card-dir="p1"[^>]*>/)?.[0] ?? "";
+    const p2Tag = html.match(/<div[^>]*data-card-dir="p2"[^>]*>/)?.[0] ?? "";
+    expect(html.indexOf("data-card-dir=\"p2\"")).toBeLessThan(html.indexOf("data-card-dir=\"p1\""));
+    expect(p2Tag).toContain('data-width="full"');
+    expect(p1Tag).toContain('data-width="half"');
+    expect(p1Tag).not.toContain("lg:basis");
+  });
+
+  it("an unavailable preference source shows a warning, controls disabled, and the default order", () => {
+    cockpitHarness.isError = true;
+    const mission = missionWithVisibility([{ ...cardBase, dir: "p1" }, { ...cardBase, dir: "p2" }]);
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, { reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {} }));
+    expect(html).toContain("controls.unavailable");
+    expect(html).toContain('data-width="third"');
+    expect((html.match(/data-card-dir="p1"/g) ?? []).length).toBe(1);
+  });
+
+  it("the compact Projects controls carry the status filter pills", () => {
+    const mission = missionWithVisibility([{ ...cardBase, dir: "p1" }]);
+    const html = renderToStaticMarkup(createElement(ProjectsColumn, {
+      reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {},
+      bucketSummary: { counts: { "needs-you": 1, stuck: 0, working: 2, idle: 0 }, worst: "needs-you" },
+      onToggleFilter: () => {},
+    }));
+    expect(html).toContain("states.needs-you");
+    expect(html).toContain("states.working");
+    expect(html).not.toContain("pitHint"); // compact: the hint line does not come back
   });
 });
 
