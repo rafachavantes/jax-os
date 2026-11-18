@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerEventId, artifactRel, bucketOf, buildMission, buildTicker, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
+import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
 import { parseIndexedReply } from "./workflow";
 import type { Envelope } from "./api";
 import type { Project, ProjectScan } from "../server/collectors/projects";
@@ -63,6 +63,7 @@ function mkPane(overrides: Partial<HubPane> & { pane: string }): HubPane {
     lastEventTs: overrides.lastEventTs ?? new Date(NOW - 1_000).toISOString(),
     subagentCount: overrides.subagentCount ?? 0,
     runtime: overrides.runtime ?? "claude",
+    ...("questionAnswerable" in overrides ? { questionAnswerable: overrides.questionAnswerable } : {}),
   };
 }
 
@@ -360,12 +361,16 @@ describe("buildMission — readiness (design change: one join, Findings 3/5/8)",
     expect(model.cards).toEqual([]); // buildModel falls back to EMPTY_SCAN — cards are unknown, not "confirmed empty"
   });
 
-  it("a failed prs source NEVER elevates readiness to kind:'failed', and known gate/question rows survive it — it degrades instead of going ready (cold review round 3, Finding 5; round 4, Finding 2)", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os", gate: "blocked" })]);
-    const hub = mkHub({ "jax-os": mkHubProject() });
+  it("a failed prs source NEVER elevates readiness to kind:'failed', and known actionable question rows survive it — it degrades instead of going ready (cold review round 3, Finding 5; round 4, Finding 2)", () => {
+    const scan = scanOf([mkProject({ dir: "jax-os" })]);
+    const pendingQuestion: PendingQuestion = {
+      eventId: 9, pane: "%1", tmuxIncarnation: "100:1000",
+      payload: { questions: [{ question: "q?", options: [{ label: "a" }] }] },
+    };
+    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion })] }) });
     const { readiness, model } = buildMission(scan, hub, { ok: false, error: "gh: rate limited" }, NOW);
     expect(readiness).toEqual({ kind: "degraded", degraded: ["prs"] }); // projects + hub resolved clean, prs failed — not "failed", and not a confident "ready" either
-    expect(model.inbox.some((r) => r.kind === "gate")).toBe(true); // the known gate row survives the prs failure
+    expect(model.inbox.some((r) => r.kind === "question" && r.eventId === 9)).toBe(true); // the known question row survives the prs failure
     expect(model.cards[0].pr).toEqual({ status: "error", error: "gh: rate limited" }); // scoped to the card's own PR line
   });
 
@@ -401,54 +406,131 @@ describe("buildMission — readiness (design change: one join, Findings 3/5/8)",
     expect(model.inboxTotalCount).toBe(0);
   });
 
-  it("all three resolved with a gate open is kind:'ready' and the model carries it", () => {
+  it("all three resolved with a bare gate open keeps the card's gate/status context without inventing a Waiting-for-You request", () => {
     const scan = scanOf([mkProject({ dir: "jax-os", gate: "blocked" })]);
     const hub = mkHub({ "jax-os": mkHubProject() });
     const { readiness, model } = buildMission(
       scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
     );
     expect(readiness).toEqual({ kind: "ready" });
-    expect(model.inboxTotalCount).toBe(1);
+    expect(model.cards[0].gate).toBe("blocked");
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inboxTotalCount).toBe(0);
   });
 });
 
-describe("buildMission — a resolved blocked/needs_input capsule produces an inbox row (cold review round 3, Finding 3)", () => {
-  it("a pane whose last capsule is blocked, with no pending question, is an 'attention' row, and readiness cannot be a confident empty", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os" })]);
-    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
-    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", capsule: blockedCapsule })] }) });
-    const { readiness, model } = buildMission(
-      scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
-    );
+describe("buildMission — M2 genuine attention dataset (plan Task 1)", () => {
+  const RESOLVED: Envelope<Record<string, PrResult>> = { ok: true, data: { p: { ok: true, prs: [], truncated: false } } };
+  const missionOfProject = (hubProject: HubProject, gate: Project["gate"] = null) =>
+    buildMission(scanOf([mkProject({ dir: "p", gate })]), mkHub({ p: hubProject }), RESOLVED, NOW);
+  const capsule = (over: Partial<Capsule> = {}): Capsule => ({
+    status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(),
+    mergeAsk: null, question: null, ...over,
+  });
+  const structured = (eventId = 9, question = "q?"): PendingQuestion => ({
+    eventId, pane: "%1", tmuxIncarnation: "100:1000",
+    payload: { questions: [{ question, options: [{ label: "a" }] }] },
+  });
+
+  it("a bare blocked status gate stays on the card with its status bucket, never in Waiting for You", () => {
+    const { readiness, model } = missionOfProject(mkHubProject(), "blocked");
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 });
+    expect(model.cards[0].gate).toBe("blocked");
+    expect(summarizeBuckets(readiness, boardCards(model.cards))).toEqual({
+      counts: { "needs-you": 1, stuck: 0, working: 0, idle: 0 }, worst: "needs-you",
+    });
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+  });
+
+  it("a bare awaiting-approval status gate is informational too — no fabricated approval request", () => {
+    const { model } = missionOfProject(mkHubProject(), "awaiting-approval");
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+  });
+
+  it("ordinary completion/idle carries no request", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1" })] }));
+    expect(model.cards[0].headline).toBe("idle");
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a blocked/needs_input capsule with neither a question nor an explicit merge request stays off the inbox", () => {
+    for (const status of ["blocked", "needs_input"] as const) {
+      const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status }) })] }));
+      expect(model.cards[0].headline).toBe("needs-you"); // the card keeps its status context
+      expect(model.inbox).toEqual([]);
+      expect(model.inboxTotalCount).toBe(0);
+    }
+  });
+
+  it("a native Codex attention flag without an event holder is not an actionable request", () => {
+    const { model } = missionOfProject(mkHubProject({ codexSessions: [{
+      threadId: "0191f0aa-1234-7000-8000-000000000001", status: "idle", activeFlags: ["waitingOnUserInput"],
+      sourceOk: true, working: false, attention: true, pendingAttention: false, runInFlight: false,
+      capsule: null, lastEventTs: null, subagentCount: 0,
+    }] }));
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a malformed or empty structured question creates no row but remains on the card", () => {
+    const emptyText: PendingQuestion = { eventId: 9, pane: "%1", tmuxIncarnation: "100:1000", payload: { questions: [{ question: "   ", options: [] }] } };
+    const noQuestions: PendingQuestion = { eventId: 10, pane: "%1", tmuxIncarnation: "100:1000", payload: {} };
+    for (const pendingQuestion of [emptyText, noQuestions]) {
+      const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion })] }));
+      expect(model.cards[0].headline).toBe("needs-you");
+      expect(model.cards[0].pendingQuestions).toHaveLength(1);
+      expect(model.inbox).toEqual([]);
+      expect(model.inboxTotalCount).toBe(0);
+    }
+  });
+
+  it("a replaced-conversation question (answerable:false) is card context, never a request", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion: structured(9), questionAnswerable: false })] }));
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.cards[0].pendingQuestions[0]).toMatchObject({ eventId: 9, answerable: false });
+    expect(model.inbox).toEqual([]);
+    expect(model.inboxTotalCount).toBe(0);
+  });
+
+  it("an unanswerable capsule question is context only", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status: "needs_input", question: "deploy?" , answerable: false }) })] }));
+    expect(model.cards[0].headline).toBe("needs-you");
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a valid unresolved structured question is one question row", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion: structured(9, "ship it?") })] }));
+    expect(model.inbox).toEqual([{ kind: "question", dir: "p", name: "p", pane: "%1", eventId: 9, question: "ship it?" }]);
     expect(model.inboxTotalCount).toBe(1);
-    expect(readiness).toEqual({ kind: "ready" }); // a needs-you card is never swallowed by the empty predicate
   });
 
-  it("needs_input behaves the same way", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os" })]);
-    const needsInputCapsule: Capsule = { status: "needs_input", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
-    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", capsule: needsInputCapsule })] }) });
-    const { model } = buildMission(
-      scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
-    );
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "jax-os", name: "jax-os", status: "needs_input", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 });
+  it("a real freeform capsule question with an answerable event holder is an attention row", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status: "needs_input", question: "deploy now?" }) })] }));
+    expect(model.inbox).toEqual([{ kind: "attention", dir: "p", name: "p", status: "needs_input", transport: "tmux", pane: "%1", tmuxIncarnation: "100:1000", capsuleEventId: 1 }]);
+    expect(model.inboxTotalCount).toBe(1);
   });
 
-  it("a pane with a pending question does NOT also get a duplicate attention row — the question row already covers it", () => {
-    const scan = scanOf([mkProject({ dir: "jax-os" })]);
-    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
-    const pendingQuestion: PendingQuestion = {
-      eventId: 9, pane: "%1", tmuxIncarnation: "100:1000",
-      payload: { questions: [{ question: "q?", options: [{ label: "a" }] }] },
-    };
-    const hub = mkHub({ "jax-os": mkHubProject({ panes: [mkPane({ pane: "%1", capsule: blockedCapsule, pendingQuestion })] }) });
-    const { model } = buildMission(
-      scan, hub, { ok: true, data: { "jax-os": { ok: true, prs: [], truncated: false } } }, NOW,
-    );
-    expect(model.inbox.filter((r) => r.kind === "attention" || r.kind === "question")).toHaveLength(1);
-    expect(model.inbox[0].kind).toBe("question");
+  it("an eligible explicit merge approval is an attention row without fabricated question text", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", capsule: capsule({ status: "needs_input", mergeAsk: 1, mergeBranch: "feat/x" }) })] }));
+    expect(model.inbox.filter((r) => r.kind === "attention")).toHaveLength(1);
+    expect(model.inboxTotalCount).toBe(1);
+  });
+
+  it("a structured question plus a capsule request on the same pane is represented once", () => {
+    const { model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1", pendingQuestion: structured(9), capsule: capsule({ status: "needs_input", question: "freeform?" }) })] }));
+    expect(model.inbox).toEqual([{ kind: "question", dir: "p", name: "p", pane: "%1", eventId: 9, question: "q?" }]);
+    expect(model.inboxTotalCount).toBe(1);
+  });
+
+  it("more than one genuine request yields one row per event and an agreeing total", () => {
+    const { model } = missionOfProject(mkHubProject({
+      panes: [mkPane({ pane: "%1", pendingQuestion: structured(9) }), mkPane({ pane: "%2", capsule: capsule({ status: "needs_input", question: "which?" }) })],
+    }));
+    expect(model.inbox.map((r) => r.kind)).toEqual(["question", "attention"]);
+    expect(model.inboxTotalCount).toBe(model.inbox.length);
   });
 });
 
@@ -846,12 +928,19 @@ describe("buildMission — native Codex sessions (MOA-469 §4)", () => {
     expect(JSON.stringify(codex)).not.toContain('"pane"');
   });
 
-  it("attention flags make a native session needs-you with a codex inbox row", () => {
+  it("attention flags make a native session needs-you but add no row without an event holder", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "active", activeFlags: ["waitingOnUserInput"], attention: true })] }) });
     const { model } = buildMission(scan, hub, { ok: true, data: { p1: { ok: true, prs: [], truncated: false } } }, NOW);
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: null });
+    expect(model.inbox).toEqual([]);
+  });
+
+  it("a native Codex freeform capsule question is an actionable attention row", () => {
+    const scan = scanOf([mkProject({ dir: "p1" })]);
+    const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "active", capsule: { status: "needs_input", eventId: 41, minutes: null, declaredAt: new Date(NOW).toISOString(), mergeAsk: null, question: "continue?" } })] }) });
+    const { model } = buildMission(scan, hub, { ok: true, data: { p1: { ok: true, prs: [], truncated: false } } }, NOW);
+    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: 41 });
   });
 
   it("a Codex source failure warning never hides a genuinely working Claude pane", () => {
@@ -965,9 +1054,9 @@ describe("buildMission — MOA-469 live corrections: dead panes and unavailable 
     expect(tmuxSession).toBeDefined(); // the pane still renders as a session display row
   });
 
-  it("a dead needs_input pane plus a LIVE blocked pane: headline needs-you from the live pane, and only the live pane contributes an inbox row", () => {
+  it("a dead needs_input pane plus a LIVE blocked pane: headline needs-you from the live pane, and only the live pane's real question contributes an inbox row", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
-    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: null };
+    const blockedCapsule: Capsule = { status: "blocked", eventId: 1, minutes: null, declaredAt: new Date(NOW - 1_000).toISOString(), mergeAsk: null, question: "unblock?" };
     const hub = mkHub({ p1: mkHubProject({
       panes: [
         mkPane({ pane: "%1", live: false, capsule: needsInputCapsule }),
@@ -992,12 +1081,12 @@ describe("buildMission — MOA-469 live corrections: dead panes and unavailable 
     expect(model.inbox.filter((r) => r.kind === "attention" || r.kind === "question")).toHaveLength(0);
   });
 
-  it("a genuinely live native session's pending attention still reads needs-you", () => {
+  it("a genuinely live native session's pending attention reads needs-you; a capsule question with a holder is the row", () => {
     const scan = scanOf([mkProject({ dir: "p1" })]);
     const hub = mkHub({ p1: mkHubProject({ codexSessions: [mkCodex({ status: "idle", pendingAttention: true })] }) });
     const { model } = buildMission(scan, hub, RESOLVED, NOW);
     expect(model.cards[0].headline).toBe("needs-you");
-    expect(model.inbox).toContainEqual({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "codex", threadId: mkCodex().threadId, capsuleEventId: null });
+    expect(model.inbox).toEqual([]); // pending attention alone has no answerable event
   });
 });
 
@@ -1363,32 +1452,32 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
     expect(result.model.cards[0].visibility).toBe("hidden");
   });
 
-  it("a hidden project feeds no inbox row (gate, question, attention, PR) — hiding a card hides its strip rows too", () => {
+  it("a hidden project feeds no inbox row (question, attention, PR) — hiding a card hides its strip rows too", () => {
     // Fresh statusMtime keeps the control case out of the auto-hide ladder; hiddenAt is later than it.
     const hiddenPrefs = { p1: { pinned: false, hiddenAt: "2026-09-19T11:45:00.000Z" } };
     const gated = { ...projectBase, gate: "awaiting-approval" as const, statusMtime: "2026-09-19T11:30:00.000Z" };
-    const pane = { pane: "%1", tmuxIncarnation: "i1", capsule: { status: "blocked" as const, ts: "2026-09-01T00:00:00.000Z" }, state: "idle" as const };
-    const hp = { ...HUB_BASE, panes: [pane as unknown as HubProject["panes"][number]], pendingQuestion: { pane: "%1", eventId: 7, questions: [{ question: "Q?" }] } as unknown as HubProject["pendingQuestion"] };
+    const pane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: false, capsule: { status: "needs_input" as const, minutes: null, declaredAt: "2026-09-19T11:59:00.000Z", eventId: 8, mergeAsk: null, question: "deploy?" }, pendingQuestion: null, subagentCount: 0, lastEventTs: "2026-09-19T11:59:00.000Z" };
+    const hp = { ...HUB_BASE, panes: [pane as unknown as HubProject["panes"][number]] };
     const prs = { ok: true as const, data: { p1: { ok: true as const, prs: [{ number: 1, title: "pr", isDraft: false, url: "u", ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-01T00:00:00.000Z" }], truncated: false } } };
     const hidden = buildMission(scan([gated]), hub({ p1: hp }, hiddenPrefs), prs, NOW5);
     expect(hidden.model.cards[0].visibility).toBe("hidden");
     expect(hidden.model.inbox).toEqual([]);
     expect(hidden.model.inboxTotalCount).toBe(0);
     const shown = buildMission(scan([gated]), hub({ p1: hp }), prs, NOW5);
-    expect(shown.model.inbox.map((r) => r.kind)).toContain("gate");
+    expect(shown.model.inbox.map((r) => r.kind)).toContain("attention");
     expect(shown.model.inbox.map((r) => r.kind)).not.toContain("pr");
   });
 
-  it("an awaiting-approval gate follows the tech lead: working pane → working card and no gate row; stopped pane → needs-you and a gate row", () => {
+  it("an awaiting-approval gate follows the tech lead: working pane → working card; stopped pane → needs-you with no fabricated request row", () => {
     const gated = { ...projectBase, gate: "awaiting-approval" as const, statusMtime: "2026-09-19T11:30:00.000Z" };
     const livePane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: true, capsule: null, pendingQuestion: null, subagentCount: 0, lastEventTs: "2026-09-19T11:59:00.000Z" };
     const working = buildMission(scan([gated]), hub({ p1: { ...HUB_BASE, panes: [livePane as unknown as HubProject["panes"][number]] } }), undefined, NOW5);
     expect(working.model.cards[0].headline).toBe("working");
-    expect(working.model.inbox.map((r) => r.kind)).not.toContain("gate");
+    expect(working.model.inbox).toEqual([]);
     const stoppedPane = { ...livePane, working: false, capsule: { status: "needs_input", minutes: null, declaredAt: "2026-09-19T11:59:00.000Z", eventId: 9 } };
     const stopped = buildMission(scan([gated]), hub({ p1: { ...HUB_BASE, panes: [stoppedPane as unknown as HubProject["panes"][number]] } }), undefined, NOW5);
     expect(stopped.model.cards[0].headline).toBe("needs-you");
-    expect(stopped.model.inbox.map((r) => r.kind)).toContain("gate");
+    expect(stopped.model.inbox).toEqual([]); // the gate and an unqualified capsule are status context, not a request
   });
 
   it("an awaiting-approval gate does not claim Rafa while the tech lead waits on its own run (2026-09-24, arc)", () => {

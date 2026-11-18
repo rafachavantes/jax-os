@@ -917,13 +917,10 @@ function buildModel(
   const locations = new Map<string, string>();
   for (const p of projects.projects) if (locationCounts.get(p.dir) === 1) locations.set(p.dir, p.path ?? p.dir);
 
-  // Finding 3 (cold review round 3): spec §4.1's needs-you condition includes "any pane's last
-  // capsule is blocked or needs_input" as its OWN trigger, independent of a pending question. The
-  // inbox used to be built only from gate + question + merge-ready-PR rows, so a pane that was
-  // needs-you purely by capsule produced a needs-you CARD with nothing in the strip. Collected
-  // alongside pendingQuestions in the same per-pane loop below, and skipped when the pane already
-  // has a pending question (that row already covers it — no double-count).
-  const attentionRows: InboxRow[] = [];
+  // Finding 3 (cold review round 3) established that a blocked/needs_input capsule alone used to
+  // need its own row. M2's genuine-attention rule supersedes that: a status is not a request. Rows
+  // are derived AFTER the board is built (below), from visible board cards only, so each row's
+  // exact event has a real answerable target.
 
   const cards: MissionCard[] = projects.projects.map((project) => {
     const hp = hubMap[project.dir];
@@ -938,22 +935,12 @@ function buildModel(
       // pane's stale capsule/question stays on its session display row below, never on the inbox.
       if (p.live) {
         const pendingQuestion = paneQuestion(p);
-        if (pendingQuestion) {
-          pendingQuestions.push(pendingQuestion);
-        } else if (p.capsule?.status === "blocked" || p.capsule?.status === "needs_input") {
-          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: p.capsule.status, transport: "tmux", pane: p.pane, tmuxIncarnation: p.tmuxIncarnation, capsuleEventId: p.capsule?.eventId ?? null });
-        }
+        if (pendingQuestion) pendingQuestions.push(pendingQuestion);
       }
     }
     const sessions: MissionSession[] = [
       ...groupTmuxPanes(panes, nowMs),
-      ...codexSessions.map((s) => {
-        const session = toMissionCodexSession(s, nowMs);
-        if (session.state === "needs-you") {
-          attentionRows.push({ kind: "attention", dir: project.dir, name: project.name, status: "needs_input", transport: "codex", threadId: s.threadId, capsuleEventId: session.capsuleEventId });
-        }
-        return session;
-      }),
+      ...codexSessions.map((s) => toMissionCodexSession(s, nowMs)),
     ];
 
     // freshnessCount/newestEventTs are already computed server-side (Task 4), already exclude
@@ -1090,25 +1077,43 @@ function buildModel(
   const uncardedProjectNames =
     projectsReady && hubReady ? Object.keys(hubMap).filter((dir) => !cardedDirs.has(dir)).sort() : [];
 
-  // MOA-486: only visible cards feed the strip — hiding a card hides its rows too. Nothing new is
-  // lost: any activity after `hiddenAt` already flips the card back to "visible" (ladder above).
-  const inboxCards = cards.filter((c) => c.visibility === "visible");
-  const inboxDirs = new Set(inboxCards.map((c) => c.dir));
-  const visibleAttentionRows = attentionRows.filter((r) => inboxDirs.has(r.dir));
-
-  const gateRows: InboxRow[] = inboxCards
-    // Same rule as headlineFor: a working or waiting tech lead owes nothing yet. A grouped
-    // project emits no gate row — the session's own merge question covers it (spec §8.4).
-    .filter((c) => c.gate !== null && c.headline === "needs-you" && c.group === undefined)
-    .map((c) => ({ kind: "gate" as const, dir: c.dir, name: c.name, gate: c.gate as "awaiting-approval" | "blocked", updated: c.updated }));
-
-  const questionRows: InboxRow[] = inboxCards.flatMap((c) =>
-    c.pendingQuestions.map((q) => ({ kind: "question" as const, dir: c.dir, name: c.name, pane: q.pane, eventId: q.eventId, question: q.questions[0]?.question ?? "", ...(q.answerable === false ? { answerable: false as const } : {}) })),
+  // M2 strict attention: a Waiting-for-You row needs a visible board target holding that exact
+  // event plus an actual unresolved question or explicit approval — never a status.md gate, a bare
+  // capsule status, an unanswerable request or an event no card hosts. The status classifier and
+  // every card/bucket count stay unchanged; only this request dataset is narrowed. Count, preview
+  // and expanded list all read this same array.
+  const visibleBoardCards = boardCards(cards).filter((c) => c.visibility === "visible");
+  const questionRows: InboxRow[] = visibleBoardCards.flatMap((c) =>
+    c.pendingQuestions.flatMap((q): InboxRow[] => {
+      if (q.answerable === false || !hasQuestionText({ pendingQuestions: [q] })) return [];
+      return [{ kind: "question", dir: c.dir, name: c.name, pane: q.pane, eventId: q.eventId, question: q.questions[0].question }];
+    }),
   );
+  // A capsule's freeform question or eligible merge ask is a real request only when the pane or
+  // native session holds an event and the answer route can still deliver to it.
+  const capsuleRequest = (s: {
+    capsuleStatus: "needs_input" | "blocked" | null; capsuleEventId: number | null;
+    capsuleQuestion?: string | null; capsuleMergeAsk?: number | null; capsuleMergeBranch?: string;
+    capsuleAnswerable?: boolean;
+  }): boolean =>
+    s.capsuleStatus !== null && s.capsuleEventId !== null && s.capsuleAnswerable !== false
+    && ((typeof s.capsuleQuestion === "string" && s.capsuleQuestion.trim().length > 0)
+      || isMergeAskEligible(s.capsuleMergeAsk ?? null, s.capsuleMergeBranch));
+  const attentionRows: InboxRow[] = visibleBoardCards.flatMap((c) => c.sessions.flatMap((s): InboxRow[] => {
+    if (s.transport === "tmux") {
+      return s.panes.flatMap((p): InboxRow[] => {
+        if (!p.live || (p.pendingQuestion && hasQuestionText({ pendingQuestions: [p.pendingQuestion] }))) return [];
+        if (!capsuleRequest(p)) return [];
+        return [{ kind: "attention", dir: c.dir, name: c.name, status: p.capsuleStatus!, transport: "tmux", pane: p.pane, tmuxIncarnation: p.tmuxIncarnation, capsuleEventId: p.capsuleEventId }];
+      });
+    }
+    if (s.state !== "needs-you" || !capsuleRequest(s)) return [];
+    return [{ kind: "attention", dir: c.dir, name: c.name, status: "needs_input", transport: "codex", threadId: s.threadId, capsuleEventId: s.capsuleEventId }];
+  }));
+  const inboxRows: InboxRow[] = [...questionRows, ...attentionRows];
 
   // M2 strict attention: ordinary PRs (even green/no-CI "merge-ready" ones) are informational
-  // Activity, never a Waiting for You request. The count, preview and full set all agree because
-  // they are this same gate/question/attention dataset.
+  // Activity, never a Waiting for You request.
   const inboxPrRemainder = 0;
   const prTruncatedAny = cards.some((c) => c.pr.status === "ok" && c.pr.truncated);
   const hiddenCount = hiddenBoardCards(cards).length;
@@ -1120,8 +1125,8 @@ function buildModel(
     uncardedProjectNames,
     historicalTruncated,
     skipped: projects.skipped,
-    inbox: [...gateRows, ...questionRows, ...visibleAttentionRows],
-    inboxTotalCount: gateRows.length + questionRows.length + visibleAttentionRows.length,
+    inbox: inboxRows,
+    inboxTotalCount: inboxRows.length,
     inboxPrRemainder,
     prTruncatedAny,
     codexSource: hubMapCodexSource,
