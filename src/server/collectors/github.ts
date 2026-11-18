@@ -249,11 +249,13 @@ export async function resolveViewerLogin(run: ExecFile = systemExec): Promise<st
   return login;
 }
 
+export type ViewerResolver = () => Promise<string>;
+
 export async function fetchProjectPrs(
   dir: string,
   reposRoot: string,
   run: ExecFile = systemExec,
-  options: { scope?: "mine" | "all"; viewer?: string } = {},
+  options: { scope?: "mine" | "all"; viewer?: string; viewerResolver?: ViewerResolver } = {},
 ): Promise<PrResult> {
   const repoPath = join(reposRoot, dir);
   let remoteUrl: string;
@@ -277,13 +279,24 @@ export async function fetchProjectPrs(
   const parsed = parseGitHubRemote(remoteUrl);
   if (!parsed) return { ok: true, prs: [], truncated: false };
   const scope = options.scope ?? "all";
-  if (scope === "mine" && !options.viewer) return { ok: false, error: "github identity unavailable" };
+  // Diff review F3: resolve the viewer only AFTER this project proves it is GitHub-backed. A
+  // no-remote/non-GitHub project is a quiet empty outcome even when the viewer is unavailable;
+  // a resolver is supplied by getPrsForProjects so one failure is shared by the whole collection.
+  let viewer = options.viewer;
+  if (scope === "mine" && !viewer) {
+    if (!options.viewerResolver) return { ok: false, error: "github identity unavailable" };
+    try {
+      viewer = await options.viewerResolver();
+    } catch {
+      return { ok: false, error: "github identity unavailable" };
+    }
+  }
   try {
     const json = await run("gh", [
       "pr", "list",
       "-R", `${parsed.owner}/${parsed.repo}`,
       "--state", "open",
-      ...(scope === "mine" ? ["--author", options.viewer!] : []),
+      ...(scope === "mine" ? ["--author", viewer!] : []),
       "--limit", "50",
       "--json", "number,title,isDraft,url,statusCheckRollup,updatedAt,author,reviewDecision,mergeStateStatus",
     ]);
@@ -309,19 +322,15 @@ export async function getPrsForProjects(
   // dir literally named "__proto__" silently change the object's prototype instead of becoming an
   // enumerable entry, dropping that project from the JSON envelope (Finding 6).
   const out: Record<string, PrResult> = Object.create(null);
-  // Root identity/auth failure is a source failure for every project — never a quiet empty set
-  // and never an automatic fallback to All (spec AC9).
-  let viewer: string | undefined;
-  if (scope === "mine") {
-    try {
-      viewer = await resolveViewerLogin(run);
-    } catch {
-      for (const dir of dirs) out[dir] = { ok: false, error: "github identity unavailable" };
-      return out;
-    }
-  }
+  // Identity/auth failure is a source failure for the GitHub-backed projects that need it — never
+  // a quiet empty set and never an automatic fallback to All (spec AC9). Resolved lazily (diff
+  // review F3): projects with no origin or a non-GitHub origin never trigger it, and one success
+  // OR failure is memoized for the whole collection.
+  let viewer: Promise<string> | null = null;
+  const viewerResolver: ViewerResolver | undefined =
+    scope === "mine" ? () => (viewer ??= resolveViewerLogin(run)) : undefined;
   for (const dir of dirs) {
-    out[dir] = await fetchProjectPrs(dir, reposRoot, run, { scope, viewer });
+    out[dir] = await fetchProjectPrs(dir, reposRoot, run, { scope, viewerResolver });
   }
   return out;
 }

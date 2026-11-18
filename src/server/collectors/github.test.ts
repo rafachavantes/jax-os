@@ -242,6 +242,47 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
     expect(out["jax-os"]).toMatchObject({ ok: true, prs: [{ number: 7 }] });
   });
 
+  it("a failing viewer lookup marks only GitHub-backed projects unavailable; local/non-GitHub stay quiet empty (diff review F3)", async () => {
+    const calls: { file: string; args: string[] }[] = [];
+    const run = async (file: string, args: string[]): Promise<string> => {
+      calls.push({ file, args });
+      if (file === "git") {
+        const dir = args[1].split("/").pop();
+        if (dir === "local") throw Object.assign(new Error("fatal: No such remote 'origin'"), { code: 2 });
+        if (dir === "other") return "git@gitlab.com:someone/other.git\n";
+        return `git@github.com:octo-owner/${dir}.git\n`;
+      }
+      if (args[0] === "api") throw new Error("gh: To use GitHub CLI, set GH_TOKEN");
+      return JSON.stringify([]);
+    };
+    const out = await getPrsForProjects(["local", "other", "gh-a", "gh-b"], "/home/rafa/repos", run, "mine");
+    // No remote / non-GitHub are resolved, successful, quiet-empty outcomes — not identity failures.
+    expect(out["local"]).toEqual({ ok: true, prs: [], truncated: false });
+    expect(out["other"]).toEqual({ ok: true, prs: [], truncated: false });
+    // Only the GitHub-backed projects cannot answer Mine without the viewer identity.
+    expect(out["gh-a"]).toEqual({ ok: false, error: "github identity unavailable" });
+    expect(out["gh-b"]).toEqual({ ok: false, error: "github identity unavailable" });
+    // The viewer is resolved lazily, after a validated GitHub remote exists, and memoized once.
+    expect(calls.filter((c) => c.file === "gh" && c.args[0] === "api")).toHaveLength(1);
+  });
+
+  it("no GitHub projects means zero viewer queries in Mine", async () => {
+    const calls: { file: string; args: string[] }[] = [];
+    const run = async (file: string, args: string[]): Promise<string> => {
+      calls.push({ file, args });
+      if (file === "git") {
+        const dir = args[1].split("/").pop();
+        if (dir === "local") throw Object.assign(new Error("fatal: No such remote 'origin'"), { code: 2 });
+        return "git@gitlab.com:someone/other.git\n";
+      }
+      return JSON.stringify([]);
+    };
+    const out = await getPrsForProjects(["local", "other"], "/home/rafa/repos", run, "mine");
+    expect(out["local"]).toEqual({ ok: true, prs: [], truncated: false });
+    expect(out["other"]).toEqual({ ok: true, prs: [], truncated: false });
+    expect(calls.some((c) => c.args[0] === "api")).toBe(false);
+  });
+
   it("All omits --author and never asks for the viewer", async () => {
     const calls: { file: string; args: string[] }[] = [];
     const run = async (file: string, args: string[]): Promise<string> => {
