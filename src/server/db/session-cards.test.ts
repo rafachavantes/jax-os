@@ -665,6 +665,19 @@ describe("cross-project run ownership (MOA-532)", () => {
     db.close();
   });
 
+  it("keeps both foreign owners' latest results when each run finishes", () => {
+    parentOpen();
+    insertEvent(db, claude(B, "%3", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", { result: "success", exit_code: 0, report_path: "/reports/q.md", summary: "ok", head_sha: "a".repeat(40) }, Q), at(3));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", B, "feat/q2", Q), at(4));
+    insertEvent(db, runFinished("ddddeeeeffff", "builder", { result: "success", exit_code: 0, report_path: "/reports/q2.md", summary: "ok", head_sha: "b".repeat(40) }, Q), at(5));
+    const hub = getHubData(db, { ...LIVE, paneIds: new Set(["%1", "%3"]) }, {}, CODEX, NOW);
+    expect(seatOf(hub, P, A)!.activity.lastRun?.runId).toBe(RUN);
+    expect(seatOf(hub, P, B)!.activity.lastRun?.runId).toBe("ddddeeeeffff");
+    db.close();
+  });
+
   it("suppresses the parent's older result when a later start exists in its own combined set", () => {
     parentOpen();
     insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));

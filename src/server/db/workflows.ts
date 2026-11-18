@@ -2360,17 +2360,18 @@ function buildRunBindings(
 
   for (const dest of projects) {
     const local = new Set((seatsByProject.get(dest) ?? []).flatMap((s) => (s.sessionId !== null ? [s.sessionId] : [])));
-    // Active runs plus the one finished run that could surface as this destination's last result
-    // — the same bounded rows the existing projections read, never a full-history scan.
+    // Active runs plus one finished candidate per open foreign owner/caller — bounded like the
+    // existing projections, never a full-history scan.
     const active = unfinishedRunStartedRows(db, dest).map((row) => ({ row, runId: row.run_id as string, session: row.harness_session ?? null, caller: callerOfRow(row) }));
-    const finished = db.prepare(
-      `SELECT s.harness_session AS session, s.payload AS payload, f.run_id AS runId FROM workflow_events f
-       JOIN workflow_events s ON s.id = (SELECT MAX(id) FROM workflow_events
-         WHERE project = f.project AND run_id = f.run_id AND type = 'run-started' AND emitter != 'jaxos')
-       WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL
-       ORDER BY f.id DESC LIMIT 1`,
-    ).get(dest) as { session: string | null; payload: string | null; runId: string } | undefined;
-    const rows = [...active, ...(finished ? [{ row: null, runId: finished.runId, session: finished.session, caller: callerOfRow(finished) }] : [])];
+    const finished = seats.flatMap((owner) => owner.project === dest || owner.seat.sessionId === null ? [] : owner.callers.flatMap((caller) => {
+      const result = sessionResultCandidate(db, dest, owner.seat.sessionId as string, [caller]);
+      if (!result?.run_id) return [];
+      const start = latestStartRowFor(db, dest, result.run_id as string);
+      return start && start.harness_session === owner.seat.sessionId
+        ? [{ row: start, runId: result.run_id as string, session: start.harness_session, caller: callerOfRow(start) }]
+        : [];
+    }));
+    const rows = [...active, ...finished];
 
     for (const row of rows) {
       if (row.caller === null || row.session === null || local.has(row.session)) continue;
