@@ -39,6 +39,33 @@ function executionFileName(runId: string): { report: string; tests: string } {
   return { report: `${runId}.md`, tests: `${runId}.tests.txt` };
 }
 
+export type ExecutionOverlay = {
+  outcome: ExecutionOutcome;
+  terminal: boolean;
+  durationMs: number | null;
+  warnings: string[];
+};
+
+// Small pure client mirror of execution-worker.ts's applyCurrentOverlay: a terminal fact for
+// the SAME attempt overlays the frozen row; a changed attempt only asks for refresh and never
+// mixes the newer attempt's facts into the frozen row. Warnings from every source are combined,
+// never replaced by an empty array.
+export function executionOverlay(row: ExecutionRow, inspection: InspectionRow | undefined): ExecutionOverlay {
+  const current = inspection?.current ?? null;
+  const sameAttempt = current !== null && inspection?.refreshNeeded !== true;
+  const live = sameAttempt && current.terminal ? current : null;
+  return {
+    outcome: live ? live.outcome : row.outcome,
+    terminal: live ? live.terminal : row.terminal,
+    durationMs: live ? live.durationMs : row.durationMs,
+    warnings: [...new Set([
+      ...row.warnings,
+      ...(sameAttempt && current ? current.warnings : []),
+      ...(inspection?.warnings ?? []),
+    ])],
+  };
+}
+
 export function ExecutionRows({
   rows,
   inspections = {},
@@ -56,9 +83,10 @@ export function ExecutionRows({
       {rows.map((row) => {
         const key = `${row.destination}/${row.runId}`;
         const inspection = inspections[key];
-        const terminal = inspection?.current?.terminal ?? row.terminal;
-        const outcome: ExecutionOutcome = inspection?.current?.terminal ? inspection.current.outcome : row.outcome;
-        const durationMs = inspection?.current?.terminal ? inspection.current.durationMs : row.durationMs;
+        const overlay = executionOverlay(row, inspection);
+        const terminal = overlay.terminal;
+        const outcome = overlay.outcome;
+        const durationMs = overlay.durationMs;
         const branch = inspection?.branch ?? null;
         const report = inspection?.report ?? null;
         const tests = inspection?.tests ?? null;
@@ -130,8 +158,8 @@ export function ExecutionRows({
                     </a>
                   ) : <span>{t("testsUnavailable")}</span>}
                 </div>
-                {(inspection?.warnings ?? row.warnings).length > 0 ? (
-                  <span className="min-w-0 font-mono [overflow-wrap:anywhere]">{t("warnings")}: {(inspection?.warnings ?? row.warnings).join(", ")}</span>
+                {overlay.warnings.length > 0 ? (
+                  <span className="min-w-0 font-mono [overflow-wrap:anywhere]">{t("warnings")}: {overlay.warnings.join(", ")}</span>
                 ) : null}
                 <span className="font-mono text-[10.5px]">{names.report}</span>
               </div>

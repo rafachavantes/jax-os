@@ -155,7 +155,7 @@ export function ExecutionsBody({
   );
 }
 
-function ExecutionsPageInner() {
+export function ExecutionsPageInner() {
   const t = useTranslations("executions");
   const params = useSearchParams();
   const router = useRouter();
@@ -187,10 +187,14 @@ function ExecutionsPageInner() {
   const onFilter = (next: ExecutionFilters) => {
     router.replace(searchHref(pathname, serializeExecutionSearch(new URLSearchParams(), next)), { scroll: false });
   };
+  // Explicit Refresh must run a fresh first-page query even when already on the first page; a
+  // same-URL router.replace never forces one. The cursor is still cleared for an older page.
   const onRefresh = () => {
     const next = new URLSearchParams(urlParams);
     next.delete("cursor");
-    router.replace(searchHref(pathname, next), { scroll: false });
+    if (cursor !== null) router.replace(searchHref(pathname, next), { scroll: false });
+    void page.refetch();
+    void inspection.refetch();
   };
   const onReset = () => router.replace(pathname, { scroll: false });
 

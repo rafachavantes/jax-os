@@ -82,6 +82,50 @@ describe("ExecutionRows", () => {
     expect(html).toContain("6m 0s");
   });
 
+  it("keeps a durable warning when inspection returns an empty warning list", () => {
+    const html = render([row({ warnings: ["contract-invalid"] })], {
+      [`jax-os/${RUN}`]: inspection({ warnings: [] }),
+    }, `jax-os/${RUN}`);
+    expect(html).toContain("contract-invalid");
+  });
+
+  it("combines same-attempt row, current and inspection warnings", () => {
+    const open = row({
+      outcome: "open", terminal: false, finishEventId: null, finishedAt: null,
+      contractStatus: null, durationMs: null, warnings: ["orphan"],
+    });
+    const html = render([open], {
+      [`jax-os/${RUN}`]: inspection({
+        warnings: ["report-missing"],
+        current: {
+          outcome: "failure", terminal: true, finishEventId: 9, finishedAt: "2026-11-18T10:06:00.000Z",
+          contractStatus: "invalid", durationMs: 360_000, warnings: ["contract-invalid"],
+        },
+      }),
+    }, `jax-os/${RUN}`);
+    expect(html).toContain("orphan");
+    expect(html).toContain("contract-invalid");
+    expect(html).toContain("report-missing");
+  });
+
+  it("keeps the frozen attempt's facts and warnings while a newer attempt asks for refresh", () => {
+    const html = render([row({ warnings: ["period-unknown"] })], {
+      [`jax-os/${RUN}`]: inspection({
+        refreshNeeded: true,
+        current: {
+          outcome: "failure", terminal: true, finishEventId: 99, finishedAt: "2026-11-18T11:06:00.000Z",
+          contractStatus: "ok", durationMs: 60_000, warnings: ["finish-conflict"],
+        },
+      }),
+    }, `jax-os/${RUN}`);
+    expect(html).toContain("worker.refresh");
+    expect(html).toContain("outcome.success");
+    expect(html).toContain("5m 0s");
+    expect(html).not.toContain("outcome.failure");
+    expect(html).toContain("period-unknown");
+    expect(html).not.toContain("finish-conflict");
+  });
+
   it("expands details with recorded context and retained links", () => {
     const html = render([row()], { [`jax-os/${RUN}`]: inspection() }, `jax-os/${RUN}`);
     expect(html).toContain("phase");
