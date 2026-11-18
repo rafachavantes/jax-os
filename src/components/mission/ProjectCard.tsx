@@ -482,6 +482,17 @@ function newestFiniteMs(timestamps: (string | null)[]): number | null {
   return best;
 }
 
+// M1 review F2/F6: the compact ownership-source warning shown beside an affected run/result.
+// Same warning tokens as SourceWarning, sized for a line rather than a block.
+export function OwnershipUnknownBadge() {
+  const t = useTranslations("mission");
+  return (
+    <span className="rounded border border-warning px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[.06em] text-warning">
+      {t("board.ownershipUnknown")}
+    </span>
+  );
+}
+
 // One line per in-flight headless run (builder/reviewer — e.g. several parallel Codex
 // reviews), rendered next to the tmux/codex session rows in both SessionLines (compact) and
 // the expanded sessions section: stage · runtime · running · elapsed minutes. Shared so the
@@ -494,6 +505,7 @@ function ActiveRunLine({ run }: { run: MissionActiveRunSummary }) {
       {t("expanded.sessionLineNoRole", { name: run.stage ? t(`stages.${run.stage}`) : "", runtime: run.runtime ?? "?", state: t("activity.running") })}
       {minutes !== null ? t("pill.elapsed", { minutes }) : null}
       {run.destinationProject ? <> · {t("board.destination", { project: run.destinationProject })}</> : null}
+      {run.ownershipUnknown ? <> · <OwnershipUnknownBadge /></> : null}
     </div>
   );
 }
@@ -965,6 +977,7 @@ function LastRunLine({ card, run = card.lastRun }: { card: MissionCard; run?: Mi
         <span className="font-mono text-muted">· {lastRun.headSha.slice(0, 7)}</span>
       ) : null}
       {lastRun.destinationProject ? <span className="text-muted">· {t("board.destination", { project: lastRun.destinationProject })}</span> : null}
+      {lastRun.ownershipUnknown ? <OwnershipUnknownBadge /> : null}
       {lastRun.stage || lastRun.diagnostic ? (
         <span className="text-muted">
           · {lastRun.stage ? t(`lastRun.stage.${lastRun.stage}`) : null} — {lastRun.diagnostic ?? t("lastRun.noCause")}

@@ -65,6 +65,22 @@ function runStarted(runId: string, role: "builder" | "reviewer", kind: string, c
 function runFinished(runId: string, role: "builder" | "reviewer", payload: Record<string, unknown>, project = P): WorkflowEventInput {
   return { run_id: runId, project, role, type: "run-finished", source: "deterministic", emitter: "wrapper", payload: { phase: "P1", contract_status: "ok", ...payload } };
 }
+// An explicit caller with NO caller_session: never proof of a foreign binding, so the run has to
+// stay visible in the destination's unlinked scope even while a bound owner exists there.
+function callerOnlyStarted(runId: string, caller: string, target: string, project: string): WorkflowEventInput {
+  return {
+    run_id: runId, project, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+    payload: { phase: "M1", runtime: "opencode-builder", kind: "build", target, caller },
+  };
+}
+// A legacy/dashboard-style start with no explicit caller identity at all.
+function callerlessStarted(runId: string, target: string, project: string, session: string | null = null): WorkflowEventInput {
+  return {
+    run_id: runId, project, role: "builder", type: "run-started", source: "deterministic", emitter: "wrapper",
+    ...(session !== null ? { harness_session: session } : {}),
+    payload: { phase: "M1", runtime: "opencode-builder", kind: "build", target },
+  };
+}
 // An INGRESS-VALID managed builder start (parseIngress is the real gate): 12-hex run ids,
 // requested_profile/root_build_run_id lineage, and the full transport evidence jaxflow sends.
 function builderStarted(runId: string, caller: "claude" | "codex", callerSession: string, target: string, project: string, opts: { runtime?: string; repo?: string } = {}): WorkflowEventInput {
@@ -896,6 +912,180 @@ describe("session status inputs", () => {
     insertEvent(db, claude(A, "%3", "turn-stopped", "claude-stop", { capsule_status: "done" }), at(1));
     expect("split" in hubOf(db).byProject[P]).toBe(false);
     db.close();
+  });
+});
+
+describe("M1 review corrections", () => {
+  const Q = "qproj";
+  const R = "rproj";
+  const RUN = "aaaabbbbcccc";
+  const seatOf = (hub: HubEnvelopeData, project: string, id: string) =>
+    hub.byProject[project].split?.seats.find((s) => s.sessionId === id);
+  const okResult = (path: string) => ({ result: "success", exit_code: 0, report_path: path, summary: "ok", head_sha: "a".repeat(40) });
+
+  it("F1: keeps caller-only and caller-less starts visible under a bound owner", () => {
+    insertEvent(db, claude(D, "%3", "turn-started", "claude-userprompt", {}, Q), at(1)); // Q's own open seat
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/bound", Q), at(2));
+    insertEvent(db, callerOnlyStarted("111122223333", "claude", "feat/caller-only", Q), at(3));
+    insertEvent(db, callerlessStarted("ddddeeeeffff", "feat/callerless", Q), at(4));
+    const hub = getHubData(db, { ...LIVE, paneIds: new Set(["%1", "%3"]) }, {}, CODEX, NOW);
+    const split = hub.byProject[Q].split!;
+    expect(split.unlinked.activeRuns.map((r) => r.runId).sort()).toEqual(["111122223333", "ddddeeeeffff"]);
+    expect(split.unlinked.timeline.map((e) => (e.payload as { target?: string }).target).sort())
+      .toEqual(["feat/caller-only", "feat/callerless"]);
+    expect(seatOf(hub, P, A)!.activity.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    db.close();
+  });
+
+  it("F1: never marks a caller-only or caller-less start uncertain when tmux failed", () => {
+    insertEvent(db, callerOnlyStarted("111122223333", "claude", "feat/caller-only", Q), at(1));
+    insertEvent(db, callerlessStarted("ddddeeeeffff", "feat/callerless", Q), at(2));
+    const split = getHubData(db, LIVE, {}, CODEX, NOW, false).byProject[Q].split!;
+    expect(split.unlinked.activeRuns.map((r) => r.runId).sort()).toEqual(["111122223333", "ddddeeeeffff"]);
+    expect(split.unlinkedOwnershipUnknown).toBeUndefined();
+    db.close();
+  });
+
+  it("F1: a truncated Codex source is unknown for a Codex caller", () => {
+    insertEvent(db, builderStarted("ddddeeeeffff", "codex", C, "feat/q", Q, { runtime: "codex" }), at(2));
+    const truncated: CodexSnapshot = { ...CODEX, truncated: true };
+    expect(getHubData(db, LIVE, {}, truncated, NOW).byProject[Q].split!.unlinkedOwnershipUnknown).toBe(true);
+    db.close();
+  });
+
+  it("F2: flags an unowned finished result when tmux failed, with no observed foreign seat", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", okResult("/reports/q.md"), Q), at(3));
+    const hub = getHubData(db, LIVE, {}, CODEX, NOW, false);
+    expect(hub.byProject[Q].split).toBeUndefined();
+    expect(hub.byProject[Q].lastRun).toMatchObject({ runId: RUN, ownershipUnknown: true });
+    db.close();
+  });
+
+  it("F2: flags an unowned finished Codex result when the native source failed", () => {
+    insertEvent(db, builderStarted("ddddeeeeffff", "codex", C, "feat/q", Q, { runtime: "codex" }), at(2));
+    insertEvent(db, runFinished("ddddeeeeffff", "builder", okResult("/reports/q.md"), Q), at(3));
+    expect(getHubData(db, LIVE, {}, NO_CODEX, NOW).byProject[Q].lastRun)
+      .toMatchObject({ runId: "ddddeeeeffff", ownershipUnknown: true });
+    db.close();
+  });
+
+  it("F2: never flags a caller-less dashboard result when a source failed", () => {
+    insertEvent(db, runStarted("run-dash", "builder", "build", "jaxos", "jaxos", "feat/q", Q), at(2));
+    insertEvent(db, runFinished("run-dash", "builder", okResult("/reports/q.md"), Q), at(3));
+    const lastRun = getHubData(db, LIVE, {}, CODEX, NOW, false).byProject[Q].lastRun;
+    expect(lastRun?.runId).toBe("run-dash");
+    expect(lastRun?.ownershipUnknown).toBeUndefined();
+    db.close();
+  });
+
+  it("F2/F6: flags only the unowned result, never the local owner's own result", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, claude(D, "%3", "turn-started", "claude-userprompt", {}, Q), at(1));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", D, "feat/local", Q), at(2));
+    insertEvent(db, runFinished("ddddeeeeffff", "builder", okResult("/reports/local.md"), Q), at(3));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/foreign", Q), at(4));
+    insertEvent(db, runFinished(RUN, "builder", okResult("/reports/q.md"), Q), at(5));
+    const hub = getHubData(db, { ...LIVE, paneIds: new Set(["%1", "%3"]) }, {}, CODEX, NOW, false);
+    const q = hub.byProject[Q];
+    expect(q.lastRun).toMatchObject({ runId: RUN, ownershipUnknown: true });
+    expect(q.split!.unownedLastRun).toMatchObject({ runId: RUN, ownershipUnknown: true });
+    expect(q.split!.unlinked.lastRun).toMatchObject({ runId: RUN, ownershipUnknown: true });
+    expect(seatOf(hub, Q, D)!.activity.lastRun).toMatchObject({ runId: "ddddeeeeffff" });
+    expect(seatOf(hub, Q, D)!.activity.lastRun?.ownershipUnknown).toBeUndefined();
+    db.close();
+  });
+
+  it("F2: flags the unlinked result even when the newest result belongs to a local seat", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, claude(D, "%3", "turn-started", "claude-userprompt", {}, Q), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/foreign", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", okResult("/reports/q.md"), Q), at(3));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", D, "feat/local", Q), at(4));
+    insertEvent(db, runFinished("ddddeeeeffff", "builder", okResult("/reports/local.md"), Q), at(5));
+    const hub = getHubData(db, { ...LIVE, paneIds: new Set(["%1", "%3"]) }, {}, CODEX, NOW, false);
+    const q = hub.byProject[Q];
+    expect(q.lastRun).toMatchObject({ runId: "ddddeeeeffff" });
+    expect(q.lastRun?.ownershipUnknown).toBeUndefined();
+    expect(q.split!.unownedLastRun).toBeNull();
+    expect(q.split!.unlinked.lastRun).toMatchObject({ runId: RUN, ownershipUnknown: true });
+    db.close();
+  });
+
+  it("F3: excludes active and finished bound children from every unlinked projection", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, claude(D, "%3", "turn-started", "claude-userprompt", {}, Q), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/active", Q), at(2));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", A, "feat/done", Q), at(3));
+    insertEvent(db, runFinished("ddddeeeeffff", "builder", okResult("/reports/q.md"), Q), at(4));
+    const hub = getHubData(db, { ...LIVE, paneIds: new Set(["%1", "%3"]) }, {}, CODEX, NOW);
+    const split = hub.byProject[Q].split!;
+    expect(split.unlinked.activeRuns).toEqual([]);
+    expect(split.unlinked.lastRun).toBeNull();
+    expect(split.unlinked.timeline).toEqual([]);
+    expect(split.unownedLastRun).toBeNull();
+    const parent = seatOf(hub, P, A)!.activity;
+    expect(parent.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(parent.lastRun?.runId).toBe("ddddeeeeffff");
+    // The destination keeps its own execution history.
+    expect(hub.byProject[Q].activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(hub.byProject[Q].lastRun?.runId).toBe("ddddeeeeffff");
+    expect(hub.byProject[Q].timeline.map((e) => e.type).sort()).toEqual(["run-finished", "run-started", "run-started", "turn-started"]);
+    db.close();
+  });
+
+  it("F7: never duplicates a locally owned result onto another open seat, and unbound starts never suppress", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    // R hosts the same conversation id as a Codex thread: its seat is NOT a compatible parent for
+    // a claude-called run, so Q's run still binds uniquely to P's Claude seat.
+    insertEvent(db, { run_id: null, project: R, role: "lead", type: "turn-started", source: "deterministic",
+      emitter: "codex-userprompt", payload: {}, pane: null, tmux_incarnation: null, harness_session: A }, at(1));
+    const codexWithA: CodexSnapshot = {
+      ok: true, ts: new Date(NOW).toISOString(), truncated: false,
+      threads: [{ threadId: A, cwd: "/repos/rproj", owner: R, source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+    };
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", okResult("/reports/q.md"), Q), at(3));
+    // A later caller-less start elsewhere (same session id) is unbound: it must not suppress Q's result.
+    insertEvent(db, callerlessStarted("111122223333", "feat/unbound", R, A), at(4));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", A, "feat/r", R), at(5));
+    insertEvent(db, runFinished("ddddeeeeffff", "builder", okResult("/reports/r.md"), R), at(6));
+    const hub = getHubData(db, LIVE, {}, codexWithA, NOW);
+    expect(seatOf(hub, P, A)!.activity.lastRun?.runId).toBe(RUN);
+    expect(seatOf(hub, R, A)!.activity.lastRun?.runId).toBe("ddddeeeeffff");
+    db.close();
+  });
+
+  it("F7: a newer bound start still suppresses the owner's bound result", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", okResult("/reports/q.md"), Q), at(3));
+    insertEvent(db, builderStarted("ddddeeeeffff", "claude", A, "feat/q2", Q), at(4));
+    const parent = seatOf(hubOf(db), P, A)!.activity;
+    expect(parent.lastRun).toBeNull();
+    expect(parent.activeRuns.map((r) => r.runId)).toEqual(["ddddeeeeffff"]);
+    db.close();
+  });
+
+  it("F8: uses only the destination's own finish when deciding a bound run is active", () => {
+    insertEvent(db, claude(A, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
+    insertEvent(db, runFinished(RUN, "builder", okResult("/reports/other.md"), R), at(3));
+    const hub = hubOf(db);
+    expect(seatOf(hub, P, A)!.activity.activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    expect(hub.byProject[Q].activeRuns.map((r) => r.runId)).toEqual([RUN]);
+    db.close();
+  });
+
+  it("F8: the finished-run lookup uses the destination-project index", () => {
+    const plan = db.prepare(
+      "EXPLAIN QUERY PLAN SELECT 1 FROM workflow_events WHERE project = ? AND run_id = ? AND type = 'run-finished' LIMIT 1",
+    ).all(Q, RUN) as { detail: string }[];
+    const text = plan.map((r) => r.detail).join("\n");
+    expect(text).toContain("workflow_events_project_ts");
+    expect(text).not.toMatch(/^SCAN workflow_events$/m);
   });
 });
 

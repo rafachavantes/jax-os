@@ -158,6 +158,9 @@ export type MissionLastRun = {
   // repos-root-relative base its artifact links must use. Absent for a local run.
   destinationProject?: string;
   destinationPath?: string;
+  // M1 review F2: this unlinked result's ownership could not be proven (source failed or the
+  // match is ambiguous) — render the ownership-source warning beside the result.
+  ownershipUnknown?: boolean;
 };
 
 export type MissionCard = {
@@ -805,6 +808,7 @@ function toMissionLastRun(run: HubLastRun | null | undefined, locations: Readonl
     runtimeModel: run.runtimeModel, profileName: run.profileName,
     reportRel: suppressArtifacts ? null : run.reportRel, targetRel: suppressArtifacts ? null : run.targetRel,
     ...(run.destinationProject !== undefined ? { destinationProject: run.destinationProject } : {}),
+    ...(run.ownershipUnknown ? { ownershipUnknown: true } : {}),
     ...(destinationPath !== null && destinationPath !== undefined ? { destinationPath } : {}),
   };
 }
@@ -1050,7 +1054,12 @@ function buildModel(
       // historical builder/branch. Project facts stay accessible through `projectContext`.
       card.key = seatKey(project.dir, split.seats[0]);
       const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;
-      const seat = buildSeatCard(card, hp!, split.seats[0], wr && wr.ok ? wr.sessions : undefined, nowMs, hub?.ok ? hub.data.prefs?.[card.key] : undefined, locations);
+      // M1 review F5: the project pin is the project's, never a session pin. The lone session
+      // keeps its own hiddenAt; only `pinned` comes from the project so a pinned project is not
+      // demoted by the seat-default prefs. The session record and mutation targets stay intact
+      // (the header is hide-only; projectContext.prefs keeps the project target).
+      const seatPrefs = (hub?.ok ? hub.data.prefs?.[card.key] : undefined) ?? { pinned: false, hiddenAt: null };
+      const seat = buildSeatCard(card, hp!, split.seats[0], wr && wr.ok ? wr.sessions : undefined, nowMs, { ...seatPrefs, pinned: prefs.pinned }, locations);
       seat.projectContext = { prefs, lastRun: toMissionLastRun(split.unownedLastRun, locations), ...(card.visibility === "hidden" ? { hidden: true } : {}) };
       return seat;
     }

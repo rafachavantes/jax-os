@@ -549,6 +549,59 @@ describe("standalone project context and cross-project provenance (MOA-532/533)"
     expect(html).not.toContain("claude-code");
   });
 
+  it("a pinned project shows its own unpin control on the lone session's context", () => {
+    const c = card({
+      dir: "p", name: "Alpha", scope: sessionScope, prefs: { pinned: true, hiddenAt: null },
+      projectContext: { prefs: { pinned: true, hiddenAt: null }, lastRun: null },
+    });
+    const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, expanded: false, onToggle: () => {} }));
+    expect(html).toContain("actions.unpin");
+  });
+
+  it("flags an unconfirmed-ownership result beside the project-context result", () => {
+    const c = card({ dir: "p", scope: sessionScope, lastRun: null, projectContext: { prefs: { pinned: false, hiddenAt: null }, lastRun: { ...lastRun, ownershipUnknown: true } } });
+    const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, expanded: false, onToggle: () => {} }));
+    expect(html).toContain("board.ownershipUnknown");
+  });
+
+  it("flags only the uncertain row on a mixed unlinked card and keeps the partial group copy", () => {
+    const uncertain = { ...runSummary("r1"), ownershipUnknown: true as const };
+    const known = runSummary("r2");
+    const m = missionOf({
+      Alpha: mkHubProject({
+        split: mkSplit({
+          seats: [mkSeat({ sessionId: A })],
+          unlinked: mkActivity({ activeRuns: [uncertain, known], activeRun: { ...run("r1"), ownershipUnknown: true } }),
+          unlinkedOwnershipUnknown: true,
+        }),
+      }),
+    });
+    const html = renderColumn(m);
+    const unlinked = segment(html, "Alpha#unlinked");
+    expect(unlinked).toContain("board.unlinkedUnknownTitle");
+    expect((unlinked.match(/board\.ownershipUnknown/g) ?? []).length).toBe(1);
+  });
+
+  it("flags an unconfirmed-ownership result in the group footer", () => {
+    const flaggedFooterRun = {
+      runId: "r9", role: "builder" as const, kind: "build" as const, runtime: "claude" as const, target: null,
+      finishedAt: null, outcome: "success", contractStatus: "ok" as const, stage: "build" as const, diagnostic: null,
+      headSha: null, findings: null, runtimeModel: null, profileName: null, reportRel: null, targetRel: null,
+      verifyCommand: null, buildCommand: null, ownershipUnknown: true as const,
+    };
+    const m = missionOf({
+      Alpha: mkHubProject({
+        split: mkSplit({
+          seats: [mkSeat({ sessionId: A }), mkSeat({ sessionId: B })],
+          unownedLastRun: flaggedFooterRun,
+        }),
+      }),
+    });
+    const footer = renderColumn(m);
+    expect(footer).toContain("board.footerLastRun");
+    expect(footer).toContain("board.ownershipUnknown");
+  });
+
   it("an ownerless completed result is labeled project activity, never the session's result", () => {
     const c = card({ dir: "p", scope: sessionScope, lastRun: null, projectContext: { prefs: { pinned: false, hiddenAt: null }, lastRun } });
     const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, expanded: false, onToggle: () => {} }));

@@ -354,8 +354,9 @@
       "dispatchHint": "A run started here belongs to no session and shows under “Runs without an open session”.",
       "destination": "destination: {project}",
       "projectActivity": "project activity",
-      "unlinkedUnknownTitle": "Runs with unconfirmed ownership",
-      "unlinkedUnknownHint": "An agent source failed or the match is ambiguous — these runs cannot be linked to an open session."
+      "unlinkedUnknownTitle": "Some runs with unconfirmed ownership",
+      "unlinkedUnknownHint": "An agent source failed or the match is ambiguous — some of these runs cannot be linked to an open session.",
+      "ownershipUnknown": "ownership unconfirmed"
     }
   },
   "missionBlock": {

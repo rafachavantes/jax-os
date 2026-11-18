@@ -488,6 +488,85 @@ describe("standalone single-session card (MOA-533)", () => {
   });
 });
 
+describe("M1 review corrections (F2/F4/F5)", () => {
+  const lastRun = {
+    runId: "r9", role: "builder" as const, kind: "build" as const, runtime: "claude" as const, target: "feat/x",
+    finishedAt: "2026-11-12T10:00:00.000Z", outcome: "success", contractStatus: "ok" as const, stage: "build" as const,
+    diagnostic: null, headSha: null, findings: null, runtimeModel: null, profileName: null, reportRel: null, targetRel: null,
+    verifyCommand: null, buildCommand: null,
+  };
+
+  it("F4: keeps destinationProject on the seat's activeRun and activeRuns[0]", () => {
+    const split = mkSplit({
+      seats: [seat(A, "%1", {
+        activity: mkActivity({
+          activeRun: { ...activeRun("r1"), destinationProject: "qproj" },
+          activeRuns: [runSummary("r1", { destinationProject: "qproj" })],
+        }),
+      })],
+    });
+    const m = missionOf({ p: mkHubProject({ panes: [pane("%1")], split }) });
+    const c = m.model.cards[0];
+    expect(c.activeRun?.destinationProject).toBe("qproj");
+    expect(c.activeRuns?.[0].destinationProject).toBe("qproj");
+  });
+
+  it("F5: a project-level pin drives the lone session's pin state and board position 1→2→1", () => {
+    const key = `p#session:${A}`;
+    const panes = [pane("%1"), pane("%2", { harnessSession: B })];
+    const prefs = { p: { pinned: true, hiddenAt: null }, [key]: { pinned: false, hiddenAt: null } };
+    const build = (split: HubSessionSplit, used = panes) => missionOf(
+      { p: mkHubProject({ panes: used, split }) },
+      { projects: [mkProject({ dir: "p" }), mkProject({ dir: "u" })], prefs },
+    );
+    const one = build(mkSplit({ seats: [seat(A, "%1")] }), [panes[0]]);
+    expect(one.model.cards.map((c) => c.dir)).toEqual(["p", "u"]);
+    expect(cardOf(one, key).prefs.pinned).toBe(true);
+    expect(cardOf(one, key).projectContext!.prefs.pinned).toBe(true);
+
+    const two = build(mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")] }));
+    expect(keys(two)).toEqual([`p#session:${A}`, `p#session:${B}`, "u"]);
+    expect(cardOf(two, `p#session:${B}`).prefs.pinned).toBe(false);
+
+    const oneAgain = build(mkSplit({ seats: [seat(A, "%1")] }), [panes[0]]);
+    expect(oneAgain.model.cards.map((c) => c.dir)).toEqual(["p", "u"]);
+    expect(cardOf(oneAgain, key).prefs.pinned).toBe(true);
+  });
+
+  it("F5: the project pin wins a conflicting session pin and the session hiddenAt survives", () => {
+    const key = `p#session:${A}`;
+    const unpinnedProject = missionOf(
+      { p: mkHubProject({ panes: [pane("%1")], split: mkSplit({ seats: [seat(A, "%1")] }) }) },
+      { prefs: { p: { pinned: false, hiddenAt: null }, [key]: { pinned: true, hiddenAt: null } } },
+    );
+    expect(unpinnedProject.model.cards[0].prefs.pinned).toBe(false);
+
+    const hiddenSession = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { harnessSession: A })], split: mkSplit({ seats: [seat(A, "%1")] }) }) },
+      { prefs: { p: { pinned: true, hiddenAt: null }, [key]: { pinned: false, hiddenAt: "2026-11-13T00:00:00.000Z" } } },
+    );
+    const card = hiddenSession.model.cards[0];
+    expect(card.prefs).toEqual({ pinned: true, hiddenAt: "2026-11-13T00:00:00.000Z" });
+    expect(card.visibility).toBe("hidden");
+    expect(card.projectContext!.prefs).toEqual({ pinned: true, hiddenAt: null });
+  });
+
+  it("F2: carries a flagged unowned result into the group footer and the lone-session project context", () => {
+    const flagged = { ...lastRun, ownershipUnknown: true as const };
+    const grouped = missionOf({
+      p: mkHubProject({ split: mkSplit({ seats: [seat(A, "%1"), seat(B, "%2")], unownedLastRun: flagged }) }),
+    });
+    expect(grouped.model.cards[0].group!.footer!.unownedLastRun!.ownershipUnknown).toBe(true);
+
+    const lone = missionOf({
+      p: mkHubProject({ panes: [pane("%1")], split: mkSplit({ seats: [seat(A, "%1")], unownedLastRun: flagged }) }),
+    });
+    const card = lone.model.cards[0];
+    expect(card.lastRun).toBeNull();
+    expect(card.projectContext!.lastRun?.ownershipUnknown).toBe(true);
+  });
+});
+
 describe("board consumers: pills, inbox rows, stuck rail, ticker", () => {
   it("a grouped project emits no gate row; the identical plain project keeps it", () => {
     const blocked = { status: "blocked" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 3, mergeAsk: null, question: null };

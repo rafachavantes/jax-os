@@ -977,6 +977,9 @@ export type HubActiveRun = {
   // Provenance only for a run a session owns in ANOTHER project (MOA-532): the project the child
   // actually targets. Absent for a local run, so old fixtures/envelopes parse unchanged.
   destinationProject?: string;
+  // The run's unlinked ownership could not be proven because the transport that could hold its
+  // caller seat failed or the match is ambiguous (M1 review F2/F6). Derived per poll, never stored.
+  ownershipUnknown?: boolean;
 };
 
 // A light per-run summary for the Sessions card — every in-flight run as its own line, unlike
@@ -989,6 +992,7 @@ export type HubActiveRunSummary = {
   target: string | null;
   startedAt: string | null;
   destinationProject?: string;
+  ownershipUnknown?: boolean;
 };
 
 export type HubLastRun = {
@@ -1019,6 +1023,9 @@ export type HubLastRun = {
   // Present only when the finished run belongs to a session in ANOTHER project: the project the
   // child actually targeted. The report/target rel fields were resolved against that destination.
   destinationProject?: string;
+  // The result's unlinked ownership could not be proven (failed script/Codex source or ambiguous
+  // match); rendered as an ownership-source warning, never as a confident ownerless result.
+  ownershipUnknown?: boolean;
 };
 
 // The session card's stage/branch/Now inputs (spec §7.5): the newest owned run drives the first
@@ -1540,7 +1547,7 @@ function boundRunPredicate(sessionExpr: string, payloadExpr: string, owners: rea
   // COALESCE('') so a legacy row with NO caller never evaluates to NULL inside NOT(...) — it must
   // stay visible as genuinely unlinked, not silently disappear from the destination's projections.
   const parts = owners.map((o) =>
-    `(${sessionExpr} = ? AND COALESCE(json_extract(${payloadExpr}, '$.caller'), '') IN (${o.callers.map(() => "?").join(", ")}))`);
+    `(COALESCE(${sessionExpr}, '') = ? AND COALESCE(json_extract(${payloadExpr}, '$.caller'), '') IN (${o.callers.map(() => "?").join(", ")}))`);
   return { sql: `(${parts.join(" OR ")})`, params: owners.flatMap((o) => [o.session, ...o.callers]) };
 }
 
@@ -2329,7 +2336,12 @@ type RunBindingIndex = {
   byOwner: Map<string, { project: string; runId: string }[]>;
   byDestination: Map<string, BoundOwner[]>;
   unknownByDestination: Map<string, boolean>;
+  // Per-run uncertainty, keyed by destination project + run id: only the affected row carries the
+  // warning, never every run of the destination (M1 review F6).
+  unknownRuns: Set<string>;
 };
+
+const runBindingKey = (project: string, runId: string): string => `${project}\u0000${runId}`;
 
 // Complete evidence: the transport that could host the caller seat succeeded. Claude needs tmux;
 // Codex needs tmux plus a nonfailed, nontruncated native snapshot when that source is relevant
@@ -2357,6 +2369,11 @@ function buildRunBindings(
   const byOwner = new Map<string, { project: string; runId: string }[]>();
   const byDestination = new Map<string, BoundOwner[]>();
   const unknownByDestination = new Map<string, boolean>();
+  const unknownRuns = new Set<string>();
+  const markUnknown = (dest: string, runId: string | null): void => {
+    unknownByDestination.set(dest, true);
+    if (runId !== null) unknownRuns.add(runBindingKey(dest, runId));
+  };
 
   for (const dest of projects) {
     const local = new Set((seatsByProject.get(dest) ?? []).flatMap((s) => (s.sessionId !== null ? [s.sessionId] : [])));
@@ -2376,13 +2393,13 @@ function buildRunBindings(
     for (const row of rows) {
       if (row.caller === null || row.session === null || local.has(row.session)) continue;
       if (!callerEvidenceComplete(row.caller, tmuxSourceOk, codexSource)) {
-        unknownByDestination.set(dest, true);
+        markUnknown(dest, row.runId);
         continue;
       }
       const matches = seats.filter((s) => s.project !== dest && s.seat.sessionId === row.session && s.callers.includes(row.caller!));
       if (matches.length === 0) continue; // complete evidence, zero compatible seats: genuinely unlinked
       if (matches.length > 1) {
-        unknownByDestination.set(dest, true); // ambiguous: never choose one
+        markUnknown(dest, row.runId); // ambiguous: never choose one
         continue;
       }
       const owner = matches[0];
@@ -2400,8 +2417,41 @@ function buildRunBindings(
         byOwner.set(owner.seat.sessionId as string, refs);
       }
     }
+
+    // A finished-only unowned result never reaches the loop above when a source failed (no
+    // foreign seat is observable). Bounded lookups over the two visible unlinked result paths are
+    // enough to surface their ownership warning (M1 review F2).
+    if (!tmuxSourceOk || codexSource === "failed" || codexSource === "truncated") {
+      const owners = byDestination.get(dest) ?? [];
+      const openSessions = [...local];
+      const visibleResults = [
+        unownedLastRunFor(db, dest, null, openSessions, owners),
+        lastRunFor(db, dest, null, { kind: "unlinked", openSessions, boundOwners: owners }),
+      ];
+      for (const result of visibleResults) {
+        if (result && resultOwnershipUnknown(db, dest, result.runId, local, owners, seats, tmuxSourceOk, codexSource)) {
+          markUnknown(dest, result.runId);
+        }
+      }
+    }
   }
-  return { byOwner, byDestination, unknownByDestination };
+  return { byOwner, byDestination, unknownByDestination, unknownRuns };
+}
+
+// Whether a visible finished result's ownership is unprovable: an explicit caller/session that is
+// not a local open seat, a transport that could hide its caller failed, or the match is ambiguous.
+function resultOwnershipUnknown(
+  db: Database.Database, dest: string, runId: string, local: ReadonlySet<string>, owners: readonly BoundOwner[],
+  seats: readonly { project: string; seat: HubSeat; callers: RunCaller[] }[], tmuxSourceOk: boolean, codexSource: HubCodexSource,
+): boolean {
+  const start = latestStartRowFor(db, dest, runId);
+  if (!start) return false;
+  const caller = callerOfRow(start);
+  const session = start.harness_session ?? null;
+  if (caller === null || session === null || local.has(session)) return false;
+  if (owners.some((o) => o.session === session)) return false; // already bound: owned, not unknown
+  if (!callerEvidenceComplete(caller, tmuxSourceOk, codexSource)) return true;
+  return seats.filter((s) => s.project !== dest && s.seat.sessionId === session && s.callers.includes(caller)).length > 1;
 }
 
 function latestStartRowFor(db: Database.Database, project: string, runId: string): RawRow | undefined {
@@ -2412,8 +2462,10 @@ function latestStartRowFor(db: Database.Database, project: string, runId: string
   ).get(project, runId) as RawRow | undefined;
 }
 
-function runHasFinished(db: Database.Database, runId: string): boolean {
-  return db.prepare("SELECT 1 FROM workflow_events WHERE run_id = ? AND type = 'run-finished' LIMIT 1").get(runId) !== undefined;
+function runHasFinished(db: Database.Database, project: string, runId: string): boolean {
+  return db.prepare(
+    "SELECT 1 FROM workflow_events WHERE project = ? AND run_id = ? AND type = 'run-finished' LIMIT 1",
+  ).get(project, runId) !== undefined;
 }
 
 // The newest finished run of `session` at one destination, with the caller identity its own
@@ -2435,34 +2487,44 @@ function sessionResultCandidate(
   return row ?? null;
 }
 
-// The newest latest-start id owned by `session` across every hub project: a finished result is
-// suppressed only by a later start in that same owner's combined run set.
-function ownerMaxStartId(db: Database.Database, projects: readonly string[], session: string): number {
-  if (projects.length === 0) return 0;
-  const marks = projects.map(() => "?").join(", ");
-  const row = db.prepare(
+// The newest latest-start id in ONE owner's combined set: the session's own runs in its project
+// plus the runs bound to it elsewhere. Unbound starts of the same session never suppress a result
+// (M1 review F7).
+function ownerMaxStartId(
+  db: Database.Database, ownerProject: string, refs: readonly { project: string; runId: string }[], session: string,
+): number {
+  const local = db.prepare(
     `SELECT MAX(id) AS id FROM workflow_events
      WHERE id IN (SELECT MAX(id) FROM workflow_events
-       WHERE project IN (${marks}) AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL
-       GROUP BY project, run_id)
+       WHERE project = ? AND type = 'run-started' AND emitter != 'jaxos' AND run_id IS NOT NULL
+       GROUP BY run_id)
        AND harness_session = ?`,
-  ).get(...projects, session) as { id: number | null };
-  return row.id ?? 0;
+  ).get(ownerProject, session) as { id: number | null };
+  let max = local.id ?? 0;
+  for (const ref of refs) {
+    if (ref.project === ownerProject) continue;
+    const start = latestStartRowFor(db, ref.project, ref.runId);
+    if (start && (start.id as number) > max) max = start.id as number;
+  }
+  return max;
 }
 
 // One open seat's combined run view: its own project's active runs plus every bound foreign run.
 // Only run facts merge — local timeline/heartbeat/action/status stay exactly project-scoped.
+// Foreign candidates and the suppression max are limited to the owner's bound refs plus its local
+// runs: a result at a destination where the session is locally open belongs to that local seat,
+// and an unbound start never suppresses a bound result (M1 review F7).
 function ownerCombinedRuns(
   db: Database.Database, ownerProject: string, session: string, callers: readonly RunCaller[],
   refs: readonly { project: string; runId: string }[], readChildLogTail: ChildLogTailReader | null,
-  relToRepos: RelToRepos | null, projects: readonly string[],
+  relToRepos: RelToRepos | null,
 ): Pick<HubScopedActivity, "activeRun" | "activeRuns" | "lastRun"> {
   const rows: { project: string; row: RawRow }[] = unfinishedRunStartedRows(db, ownerProject, { kind: "session", session })
     .map((row) => ({ project: ownerProject, row }));
   for (const ref of refs) {
     if (ref.project === ownerProject) continue;
     const start = latestStartRowFor(db, ref.project, ref.runId);
-    if (start && !runHasFinished(db, ref.runId)) rows.push({ project: ref.project, row: start });
+    if (start && !runHasFinished(db, ref.project, ref.runId)) rows.push({ project: ref.project, row: start });
   }
   rows.sort((a, b) => (b.row.id as number) - (a.row.id as number));
 
@@ -2482,14 +2544,18 @@ function ownerCombinedRuns(
     };
   }
 
-  const maxStartId = ownerMaxStartId(db, projects, session);
+  const maxStartId = ownerMaxStartId(db, ownerProject, refs, session);
+  // The owner's own project proves local ownership without a caller identity; a foreign
+  // destination must be a validated bound ref AND prove the caller matched this seat's harness.
+  const candidateDests: { project: string; callers: readonly RunCaller[] | null }[] = [
+    { project: ownerProject, callers: null },
+    ...[...new Set(refs.map((r) => r.project))].filter((d) => d !== ownerProject).map((d) => ({ project: d, callers })),
+  ];
   let best: { project: string; row: RawRow } | null = null;
-  for (const dest of projects) {
-    // The owner's own project proves local ownership without a caller identity; a foreign
-    // destination must prove the caller matched this seat's harness.
-    const candidate = sessionResultCandidate(db, dest, session, dest === ownerProject ? null : callers);
-    if (!candidate || candidate.id <= maxStartId) continue;
-    if (best === null || candidate.id > best.row.id) best = { project: dest, row: candidate };
+  for (const dest of candidateDests) {
+    const candidate = sessionResultCandidate(db, dest.project, session, dest.callers);
+    if (!candidate || (candidate.id as number) <= maxStartId) continue;
+    if (best === null || (candidate.id as number) > (best.row.id as number)) best = { project: dest.project, row: candidate };
   }
   const lastRun = best ? finishedRunProjection(db, best.project, rowOf(best.row), relToRepos, ownerProject) : null;
   return { activeRun, activeRuns, lastRun };
@@ -2501,11 +2567,28 @@ function ownerCombinedRuns(
 // every remaining run is unlinked, and the board shows it on the unlinked-runs card instead of an
 // idle project card. No open session and no in-flight unlinked run: null — the project card.
 // A seat with no recorded session owns no activity or runs.
+// Per-run ownership warning projection (M1 review F2/F6): only rows the binding pass could not
+// prove carry it. The flag is derived per poll and never changes a result's outcome.
+function markUnknownRun<T extends { runId: string; ownershipUnknown?: boolean }>(
+  run: T, project: string, bindings: RunBindingIndex | null,
+): T {
+  return bindings?.unknownRuns.has(runBindingKey(project, run.runId)) ? { ...run, ownershipUnknown: true } : run;
+}
+
+function annotateUnlinked(activity: HubScopedActivity, project: string, bindings: RunBindingIndex | null): HubScopedActivity {
+  if (!bindings || bindings.unknownRuns.size === 0) return activity;
+  return {
+    ...activity,
+    activeRun: activity.activeRun ? markUnknownRun(activity.activeRun, project, bindings) : null,
+    activeRuns: activity.activeRuns.map((run) => markUnknownRun(run, project, bindings)),
+    lastRun: activity.lastRun ? markUnknownRun(activity.lastRun, project, bindings) : null,
+  };
+}
+
 export function getSessionSplit(
   db: Database.Database, project: string, panes: HubPane[], codexSessions: HubCodexSession[], now: number,
   readChildLogTail: ChildLogTailReader | null = null, relToRepos: RelToRepos | null = null,
   sessionNames: ReadonlyMap<string, string> | null = null, bindings: RunBindingIndex | null = null,
-  allProjects: readonly string[] = [project],
 ): HubSessionSplit | null {
   const seats = sessionSeats(panes, codexSessions).map((seat) => ({
     ...seat,
@@ -2515,8 +2598,9 @@ export function getSessionSplit(
   const openSessions = seats.flatMap((seat) => (seat.sessionId !== null ? [seat.sessionId] : []));
   const unlinkedScope: RunScope = { kind: "unlinked", openSessions, boundOwners };
   if (seats.length === 0 && activeRunsFor(db, project, unlinkedScope).length === 0) return null;
-  const unlinked: HubScopedActivity = scopedActivity(db, project, unlinkedScope, now, readChildLogTail, relToRepos);
-  const unownedLastRun = unownedLastRunFor(db, project, relToRepos, openSessions, boundOwners);
+  const unlinked: HubScopedActivity = annotateUnlinked(scopedActivity(db, project, unlinkedScope, now, readChildLogTail, relToRepos), project, bindings);
+  const unowned = unownedLastRunFor(db, project, relToRepos, openSessions, boundOwners);
+  const unownedLastRun = unowned ? markUnknownRun(unowned, project, bindings) : null;
   const ownershipUnknown = unlinked.activeRuns.length > 0 || unownedLastRun !== null ? bindings?.unknownByDestination.get(project) === true : false;
   if (seats.length === 0) {
     return { seats: [], unlinked, unownedLastRun, ...(ownershipUnknown ? { unlinkedOwnershipUnknown: true } : {}) };
@@ -2528,7 +2612,7 @@ export function getSessionSplit(
         : emptyActivity(now);
       const refs = seat.sessionId !== null ? bindings?.byOwner.get(seat.sessionId) : undefined;
       if (seat.sessionId !== null && refs && refs.length > 0) {
-        activity = { ...activity, ...ownerCombinedRuns(db, project, seat.sessionId, seatCallers(seat, panes), refs, readChildLogTail, relToRepos, allProjects) };
+        activity = { ...activity, ...ownerCombinedRuns(db, project, seat.sessionId, seatCallers(seat, panes), refs, readChildLogTail, relToRepos) };
       }
       return { ...seat, activity };
     }),
@@ -2586,6 +2670,7 @@ export function getHubData(
     const newestRow = db
       .prepare("SELECT MAX(ts) AS ts FROM workflow_events WHERE project = ? AND emitter != 'jaxos'")
       .get(project) as { ts: string | null };
+    const lastRun = lastRunFor(db, project, relToRepos);
     byProject[project] = {
       panes,
       codexSessions,
@@ -2596,12 +2681,12 @@ export function getHubData(
       timeline: getProjectTimeline(db, project),
       activeRun: activeRunFor(db, project, readChildLogTail),
       activeRuns: activeRunsFor(db, project),
-      lastRun: lastRunFor(db, project, relToRepos),
+      lastRun: lastRun ? markUnknownRun(lastRun, project, bindings) : null,
       loopSummary: getLoopSummary(db, project),
       heartbeat: heartbeatFor(db, project, now),
       lastAction: lastActionFor(db, project, now),
     };
-    const split = getSessionSplit(db, project, panes, codexSessions, now, readChildLogTail, relToRepos, sessionNames, bindings, projects);
+    const split = getSessionSplit(db, project, panes, codexSessions, now, readChildLogTail, relToRepos, sessionNames, bindings);
     if (split) byProject[project].split = split;
   }
   // spec §10, round 3 F1: a STANDALONE scan, no membership filter — a pinned/hidden project with
