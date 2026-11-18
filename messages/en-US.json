@@ -201,7 +201,13 @@
       "packagesEmpty": "No pending updates.",
       "security": "security",
       "copy": "copy",
-      "copyCaption": "copy, never runs"
+      "copyCaption": "copy, never runs",
+      "temp": "/tmp",
+      "tempUnavailable": "unavailable",
+      "alertsCount": "{count, plural, one {# alert} other {# alerts}}",
+      "alertsTitle": "Server alerts",
+      "zombieChildren": "{count, plural, one {# child} other {# children}}",
+      "readOnlyNote": "Read only"
     },
     "inbox": {
       "title": "WAITING ON YOU · {count}",

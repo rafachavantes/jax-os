@@ -201,7 +201,13 @@
       "packagesEmpty": "Nenhuma atualização pendente.",
       "security": "segurança",
       "copy": "copiar",
-      "copyCaption": "copiar, não executar"
+      "copyCaption": "copiar, não executar",
+      "temp": "/tmp",
+      "tempUnavailable": "indisponível",
+      "alertsCount": "{count, plural, one {# alerta} other {# alertas}}",
+      "alertsTitle": "Alertas do servidor",
+      "zombieChildren": "{count, plural, one {# filho} other {# filhos}}",
+      "readOnlyNote": "Somente leitura"
     },
     "inbox": {
       "title": "ESPERANDO POR VOCÊ · {count}",

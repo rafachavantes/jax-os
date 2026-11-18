@@ -1,15 +1,17 @@
-import { createElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { NextIntlClientProvider } from "next-intl";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ZombieRow } from "@/server/collectors/alerts";
 import type { HealthLatest } from "@/server/db/metrics";
+import en from "../../../messages/en-US.json";
+import pt from "../../../messages/pt-BR.json";
 
 const harness = vi.hoisted(() => ({
   results: new Map<string, { data: unknown; isError: boolean }>(),
   calls: [] as { queryKey: unknown[]; queryFn: (ctx: { signal?: AbortSignal }) => unknown }[],
 }));
 
-vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key }));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (opts: { queryKey: unknown[]; queryFn: (ctx: { signal?: AbortSignal }) => unknown }) => {
     harness.calls.push(opts);
@@ -18,6 +20,19 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 import { groupZombies, meterPercent, meterValues, ServerAlerts, ServerPanel } from "./ServerPanel";
+
+// The REAL catalogs, never a key-echo translator: a missing sibling surfaces as a next-intl
+// MISSING_MESSAGE here instead of a literal key in production.
+const catalogs = { "en-US": en, "pt-BR": pt } as const;
+type Locale = keyof typeof catalogs;
+
+function renderIntl(node: ReactElement, locale: Locale = "en-US") {
+  const errors: unknown[] = [];
+  const html = renderToStaticMarkup(createElement(NextIntlClientProvider, {
+    locale, messages: catalogs[locale], timeZone: "UTC", onError: (error: unknown) => errors.push(error), children: node,
+  }));
+  return { html, errors };
+}
 
 const LATEST: HealthLatest = {
   ts: "2026-09-18T00:00:00.000Z", cpuPct: 42, memUsedMb: 4096, memTotalMb: 8192,
@@ -64,7 +79,7 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
   it("polls the existing health + alerts endpoints and renders glanceable links to stable health anchors", async () => {
     harness.results.set("health:24h", health());
     harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
-    const html = renderToStaticMarkup(createElement(ServerPanel));
+    const { html } = renderIntl(createElement(ServerPanel));
     expect(harness.calls.map((c) => c.queryKey.join(":"))).toEqual(["health:24h", "mission:alerts"]);
     expect(html).toContain('href="/health#cpu"');
     expect(html).toContain('href="/health#mem"');
@@ -81,8 +96,9 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
   it("says temporary capacity is unavailable rather than substituting disk", () => {
     harness.results.set("health:24h", health());
     harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
-    const html = renderToStaticMarkup(createElement(ServerPanel));
-    expect(html).toContain("tempUnavailable");
+    const { html } = renderIntl(createElement(ServerPanel));
+    expect(html).toContain("/tmp");
+    expect(html).toContain("unavailable");
   });
 
   it("shows the alert count (summed from existing sources) and a source warning on failure", () => {
@@ -90,17 +106,17 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
     harness.results.set("mission:alerts", {
       data: { ok: true, data: [{ kind: "zombies", count: 2, rows: [] }, { kind: "updates", count: 3, rows: [] }] }, isError: false,
     });
-    expect(renderToStaticMarkup(createElement(ServerPanel))).toContain("alertsCount");
+    expect(renderIntl(createElement(ServerPanel)).html).toContain("5 alerts");
     harness.results.set("mission:alerts", { data: undefined, isError: true });
-    expect(renderToStaticMarkup(createElement(ServerPanel))).toContain("alertsUnavailable");
+    expect(renderIntl(createElement(ServerPanel)).html).toContain("Server alerts unavailable");
   });
 
   it("first render is a skeleton, never fake values; a failed source is a visible warning", () => {
-    const html = renderToStaticMarkup(createElement(ServerPanel));
+    const { html } = renderIntl(createElement(ServerPanel));
     expect(html).toContain("animate-pulse");
     expect(html).not.toContain("42%");
     harness.results.set("health:24h", { data: undefined, isError: true });
-    expect(renderToStaticMarkup(createElement(ServerPanel))).toContain("metersUnavailable");
+    expect(renderIntl(createElement(ServerPanel)).html).toContain("Server metrics unavailable");
   });
 });
 
@@ -118,27 +134,71 @@ describe("ServerAlerts — read-only detail reused on Health (plan F4)", () => {
         ] },
       ] }, isError: false,
     });
-    const html = renderToStaticMarkup(createElement(ServerAlerts));
+    const { html } = renderIntl(createElement(ServerAlerts));
     expect(html).toContain('id="alerts"');
-    expect(html).toContain("zombiesCount");
-    expect(html).toContain("packagesCount");
+    expect(html).toContain("2 zombie processes");
+    expect(html).toContain("2 children");
+    expect(html).toContain("2 updates");
     expect(html).toContain("security");
     expect(html).not.toContain("kill -HUP");
     expect(html).not.toContain("sudo apt upgrade");
-    expect(html).toContain("readOnlyNote");
+    expect(html).toContain("Read only");
   });
 
   it("resolves to quiet empty rows and shows the source warning without crashing", () => {
     harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
-    const empty = renderToStaticMarkup(createElement(ServerAlerts));
-    expect(empty).toContain("zombiesEmpty");
-    expect(empty).toContain("packagesEmpty");
+    const { html: empty } = renderIntl(createElement(ServerAlerts));
+    expect(empty).toContain("No zombie processes.");
+    expect(empty).toContain("No pending updates.");
     harness.results.set("mission:alerts", { data: undefined, isError: true });
-    expect(renderToStaticMarkup(createElement(ServerAlerts))).toContain("alertsUnavailable");
+    expect(renderIntl(createElement(ServerAlerts)).html).toContain("Server alerts unavailable");
   });
 
   it("a non-array payload (out-of-shape fixture) degrades to empty, never a crash", () => {
     harness.results.set("mission:alerts", { data: { ok: true, data: { latest: LATEST } }, isError: false });
-    expect(() => renderToStaticMarkup(createElement(ServerAlerts))).not.toThrow();
+    expect(() => renderIntl(createElement(ServerAlerts))).not.toThrow();
+  });
+});
+
+describe("both actual catalogs resolve every server key (plan Task 5)", () => {
+  const alerts = {
+    data: { ok: true, data: [
+      { kind: "zombies", count: 2, rows: [
+        { pid: 1, ppid: 100, ageSeconds: 60, parentCommand: "node" },
+        { pid: 2, ppid: 100, ageSeconds: 120, parentCommand: "node" },
+      ] },
+      { kind: "updates", count: 2, rows: [
+        { name: "openssl", fromVersion: "3.0.13", toVersion: "3.0.15", security: true },
+        { name: "vim", fromVersion: "1", toVersion: "2", security: false },
+      ] },
+    ] },
+    isError: false,
+  };
+
+  it.each(["en-US", "pt-BR"] as const)("%s renders ServerPanel and ServerAlerts with no MISSING_MESSAGE or literal key", (locale) => {
+    harness.results.set("health:24h", health());
+    harness.results.set("mission:alerts", alerts);
+    const panel = renderIntl(createElement(ServerPanel), locale);
+    const detail = renderIntl(createElement(ServerAlerts), locale);
+    expect(panel.errors).toEqual([]);
+    expect(detail.errors).toEqual([]);
+    for (const html of [panel.html, detail.html]) {
+      expect(html).not.toMatch(/mission\.server|tempUnavailable|alertsCount|alertsTitle|zombieChildren|readOnlyNote/);
+    }
+    if (locale === "en-US") {
+      expect(panel.html).toContain("/tmp");
+      expect(panel.html).toContain("unavailable");
+      expect(panel.html).toContain("4 alerts");
+      expect(detail.html).toContain("Server alerts");
+      expect(detail.html).toContain("2 children");
+      expect(detail.html).toContain("Read only");
+    } else {
+      expect(panel.html).toContain("/tmp");
+      expect(panel.html).toContain("indisponível");
+      expect(panel.html).toContain("4 alertas");
+      expect(detail.html).toContain("Alertas do servidor");
+      expect(detail.html).toContain("2 filhos");
+      expect(detail.html).toContain("Somente leitura");
+    }
   });
 });
