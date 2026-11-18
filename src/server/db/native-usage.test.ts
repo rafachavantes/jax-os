@@ -151,6 +151,18 @@ describe("native item persistence", () => {
     dbB.close();
   });
 
+  it("warns on conflicting native identities while keeping deterministic attribution", () => {
+    const db = openDb(":memory:");
+    upsertNativeUsageItem(db, claude({ sessionId: "sess-b" }));
+    upsertNativeUsageItem(db, claude({ sessionId: "sess-a" }));
+    const snap = queryNativeUsage(db, { period: 30, now: NOW });
+    expect(snap.warnings).toContain("identity-conflict");
+    expect(snap.sessions.lead).toBe(1);
+    expect(db.prepare("SELECT session_id, identity_conflict FROM native_usage_items").get())
+      .toEqual({ session_id: "sess-a", identity_conflict: 1 });
+    db.close();
+  });
+
   it("an item upsert and the consumed offset share one transaction", () => {
     const db = openDb(":memory:");
     applyFileBatch(db, { checkpoint: checkpoint({ offset: 50 }), expectedOffset: 0, items: [], now: NOW });
@@ -297,6 +309,9 @@ describe("queryNativeUsage", () => {
     expect(claudeOnly.sessions).toEqual({ lead: 1, child: 0 });
     expect(modelOnly.totalTokens).toBe(153);
     expect(modelOnly.filters.agents).toEqual(expect.arrayContaining(["Claude Code", "build"]));
+    expect(modelOnly.totalCacheRead).toBe(11);
+    expect(modelOnly.totalCacheWrite).toBe(5);
+    expect(modelOnly.totalReasoning).toBe(7);
     db.close();
   });
 

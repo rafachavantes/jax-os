@@ -31,6 +31,9 @@ export type NativeUsageSnapshot = {
   totalInput: number;
   totalOutput: number;
   totalTokens: number;
+  totalCacheRead: number | null;
+  totalCacheWrite: number | null;
+  totalReasoning: number | null;
   totalCost: number | null;
   costCurrency: string | null;
   costCoverage: { measured: number; total: number };
@@ -71,6 +74,7 @@ type ItemRow = {
   agent: string;
   model: string | null;
   model_conflict: number;
+  identity_conflict: number;
   ts: number;
   updated_ts: number;
   day: string;
@@ -102,6 +106,7 @@ function rowToItem(row: ItemRow): NativeUsageItem {
     agent: row.agent,
     model: row.model,
     modelConflict: row.model_conflict === 1,
+    identityConflict: row.identity_conflict === 1,
     ts: row.ts,
     updatedTs: row.updated_ts,
     day: row.day,
@@ -139,17 +144,17 @@ function writeItem(db: Database.Database, item: NativeUsageItem): void {
   db.prepare(
     `INSERT INTO native_usage_items (
        harness, item_id, session_id, child_id, parent_id, is_child, provenance, agent,
-       model, model_conflict, ts, updated_ts, day, all_input, all_output,
+       model, model_conflict, identity_conflict, ts, updated_ts, day, all_input, all_output,
        input_tokens, output_tokens, cache_read, cache_write, reasoning,
        cost_amount, cost_provenance, cost_currency, projection,
        file_identity, turn_id, root_turn_id
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (harness, item_id) DO UPDATE SET
        session_id = excluded.session_id, child_id = excluded.child_id,
        parent_id = excluded.parent_id, is_child = excluded.is_child,
        provenance = excluded.provenance, agent = excluded.agent,
        model = excluded.model, model_conflict = excluded.model_conflict,
-       ts = excluded.ts, updated_ts = excluded.updated_ts, day = excluded.day,
+       identity_conflict = excluded.identity_conflict, ts = excluded.ts, updated_ts = excluded.updated_ts, day = excluded.day,
        all_input = excluded.all_input, all_output = excluded.all_output,
        input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
        cache_read = excluded.cache_read, cache_write = excluded.cache_write,
@@ -168,6 +173,7 @@ function writeItem(db: Database.Database, item: NativeUsageItem): void {
     item.agent,
     item.model,
     item.modelConflict ? 1 : 0,
+    item.identityConflict ? 1 : 0,
     item.ts,
     item.updatedTs,
     item.day,
@@ -367,8 +373,6 @@ export function applyFileBatch(
   })();
 }
 
-export type SourceStatus = SourceCoverage;
-
 export type OpenCodeTableCursor = { after: number; ceiling: number; done: boolean };
 export type OpenCodeCursorState = { v: 1; v1: OpenCodeTableCursor; v2: OpenCodeTableCursor };
 
@@ -526,8 +530,12 @@ type AggRow = {
   day: string;
   all_input: number;
   all_output: number;
+  cache_read: number | null;
+  cache_write: number | null;
+  reasoning: number | null;
   cost_amount: number | null;
   cost_currency: string | null;
+  identity_conflict?: number;
 };
 
 function sliceCost(rows: AggRow[]): { amount: number | null; currency: string | null } {
@@ -549,6 +557,19 @@ function toSlice(name: string, rows: AggRow[]): UsageSlice {
     name, allInput, allOutput, tokens: allInput + allOutput,
     cost: cost.amount, currency: cost.currency, items: rows.length,
   };
+}
+
+function detailTotal(rows: AggRow[], key: "cache_read" | "cache_write" | "reasoning"): number | null {
+  let any = false;
+  let sum = 0;
+  for (const row of rows) {
+    const value = row[key];
+    if (value !== null) {
+      any = true;
+      sum += value;
+    }
+  }
+  return any ? sum : null;
 }
 
 function daysBetween(startDay: string, endDay: string): string[] {
@@ -582,7 +603,8 @@ export function queryNativeUsage(
   const rows = db
     .prepare(
       `SELECT i.harness, i.session_id, i.child_id, i.is_child, i.agent, i.model, i.day,
-              i.all_input, i.all_output, i.cost_amount, i.cost_currency
+              i.all_input, i.all_output, i.cache_read, i.cache_write, i.reasoning,
+              i.cost_amount, i.cost_currency, i.identity_conflict
          FROM native_usage_items i
         WHERE ${where}`,
     )
@@ -664,6 +686,7 @@ export function queryNativeUsage(
   );
   const warnings = new Set(sources.flatMap((s) => s.warnings));
   if (mixed.n > 0) warnings.add("mixed-projection");
+  if (rows.some((r) => r.identity_conflict === 1)) warnings.add("identity-conflict");
 
   return {
     period: opts.period,
@@ -672,6 +695,9 @@ export function queryNativeUsage(
     totalInput: rows.reduce((s, r) => s + r.all_input, 0),
     totalOutput: rows.reduce((s, r) => s + r.all_output, 0),
     totalTokens: rows.reduce((s, r) => s + r.all_input + r.all_output, 0),
+    totalCacheRead: detailTotal(rows, "cache_read"),
+    totalCacheWrite: detailTotal(rows, "cache_write"),
+    totalReasoning: detailTotal(rows, "reasoning"),
     totalCost: totalCost.amount,
     costCurrency: totalCost.currency,
     costCoverage: { measured: costed.length, total: rows.length },

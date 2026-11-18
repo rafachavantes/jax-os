@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync as nodeStat, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
 import type Database from "better-sqlite3";
 import {
@@ -11,6 +11,7 @@ import {
   getOpenCodeCursor,
   getSourceStatuses,
   persistOpenCodeBatch,
+  pruneNativeUsage,
   setSourceStatus,
   type FileCheckpoint,
   type NativeContextRow,
@@ -39,6 +40,7 @@ export type NativeUsageItem = {
   agent: string;
   model: string | null;
   modelConflict: boolean;
+  identityConflict: boolean;
   ts: number; // earliest valid occurrence, unix seconds
   updatedTs: number; // latest valid update timestamp, unix seconds
   day: string; // UTC calendar day of ts
@@ -148,6 +150,7 @@ export function parseClaudeLine(
       agent: "Claude Code",
       model,
       modelConflict,
+      identityConflict: false,
       ts,
       updatedTs: ts,
       day: utcDay(ts),
@@ -227,6 +230,7 @@ export function parseCodexLine(
       agent: "Codex",
       model: null,
       modelConflict: false,
+      identityConflict: false,
       ts,
       updatedTs: ts,
       day: utcDay(ts),
@@ -289,6 +293,7 @@ export function parseOpenCodeRow(raw: unknown, opts: { now: number }): ParseOutc
       agent,
       model,
       modelConflict: false,
+      identityConflict: false,
       ts,
       updatedTs: Math.max(ts, updated ?? ts),
       day: utcDay(ts),
@@ -362,6 +367,9 @@ export function mergeNativeItem(a: NativeUsageItem, b: NativeUsageItem): NativeU
     day: utcDay(ts),
     model: modelConflict ? null : a.model ?? b.model,
     modelConflict,
+    identityConflict:
+      a.identityConflict || b.identityConflict ||
+      a.sessionId !== b.sessionId || (a.childId ?? "") !== (b.childId ?? "") || a.isChild !== b.isChild,
   };
 }
 
@@ -417,7 +425,6 @@ export function accountingSummary(items: NativeUsageItem[]): {
 export const OPENCODE_EXECUTABLE = "/home/rafa/.opencode/bin/opencode";
 export const OPENCODE_EXECUTABLE_SHA256 =
   "9ca0b9953d49997601655e54f846a3efa464f237e47c6f1b04716d0f2e64c4c2";
-export const OPENCODE_SCHEMA_VERSION = "1.18.34";
 
 const JSONL_BUDGET = {
   maxFilesPerPass: 6,
@@ -613,7 +620,6 @@ type ParsedJsonl = {
   items: NativeUsageItem[];
   contexts: NativeContextRow[];
   warnings: string[];
-  lineCount: number;
 };
 
 function parseJsonlContent(
@@ -624,10 +630,8 @@ function parseJsonlContent(
   const warnings = warningBag();
   const items: NativeUsageItem[] = [];
   const contexts: NativeContextRow[] = [];
-  let lineCount = 0;
   for (const line of content.split("\n")) {
     if (line.trim() === "") continue;
-    lineCount += 1;
     if (source === "claude") {
       const out = parseClaudeLine(line, { child: opts.child, now: opts.now });
       if ("item" in out) items.push(out.item);
@@ -639,7 +643,7 @@ function parseJsonlContent(
       else warnings.add(out.skip);
     }
   }
-  return { items, contexts, warnings: warnings.values, lineCount };
+  return { items, contexts, warnings: warnings.values };
 }
 
 export type JsonlPassResult = {
@@ -681,13 +685,19 @@ export function runJsonlSourcePass(
 
   const today = utcDay(deps.now());
   const todayStart = Date.parse(`${today}T00:00:00Z`);
-  const evaluated = [...known.values()].map((candidate) => {
+  const evaluated = [...known.values()].flatMap((candidate) => {
     const cp = getFileCheckpoint(deps.db, source, candidate.identity);
-    const info = deps.fs.statSync(candidate.path);
+    let info: StatLike;
+    try {
+      info = deps.fs.statSync(candidate.path);
+    } catch {
+      warnings.add("missing-file");
+      return [];
+    }
     const current =
       cp !== undefined && cp.generation === `${info.dev}:${info.ino}` && cp.done &&
       cp.size === info.size && cp.mtime === Math.floor(info.mtimeMs / 1000);
-    return { candidate, cp, info, current, processedAt: cp?.processedAt ?? 0 };
+    return [{ candidate, cp, info, current, processedAt: cp?.processedAt ?? 0 }];
   });
   const pending = evaluated
     .filter((entry) => !entry.current)
@@ -799,7 +809,8 @@ export function runJsonlSourcePass(
       }
     }
     if (readFailed) continue;
-    const consumed = done ? offset : lineStart;
+    const completeAtEof = done && carry.length === 0 && !discarding;
+    const consumed = completeAtEof ? offset : lineStart;
     const checkpoint: FileCheckpoint = {
       source,
       identity: candidate.identity,
@@ -809,7 +820,7 @@ export function runJsonlSourcePass(
       size: info.size,
       mtime: Math.floor(info.mtimeMs / 1000),
       offset: consumed,
-      done,
+      done: completeAtEof,
       processedAt: deps.now(),
     };
     try {
@@ -847,6 +858,7 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
   var dbPath = argv[argv.length - 2];
   var stateRaw = argv[argv.length - 1];
   if (typeof dbPath !== "string" || dbPath.indexOf("\u0000") !== -1 || Buffer.byteLength(dbPath, "utf8") > 4096) { fail("bad-path"); return; }
+  if (typeof stateRaw !== "string" || Buffer.byteLength(stateRaw, "utf8") > 16384) { fail("bad-state"); return; }
   var state;
   try { state = JSON.parse(stateRaw); } catch (e) { fail("bad-state"); return; }
   if (!state || state.v !== 1 || typeof state.v1 !== "object" || typeof state.v2 !== "object") { fail("bad-state"); return; }
@@ -880,6 +892,7 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
   var rids = [];
   var bytesOut = 0;
   function project(projection, row){
+    if (typeof row.data !== "string" || Buffer.byteLength(row.data, "utf8") > 1048576) { warnings.unsupported += 1; return null; }
     var data;
     try { data = JSON.parse(row.data); } catch (e) { warnings.malformed += 1; return null; }
     if (!obj(data)) { warnings.malformed += 1; return null; }
@@ -1007,11 +1020,9 @@ function openCodeExecutableState(
   }
   if (!info || !info.isFile()) return { ok: false, state: "unavailable", warning: "executable-missing" };
   const identity = `${deps.opencode.executable}:${info.dev}:${info.ino}:${info.size}:${Math.floor(info.mtimeMs)}`;
-  let hash = executableIdentityCache.get(identity);
-  if (!hash) {
-    hash = deps.opencode.hash(deps.opencode.executable) ?? "";
-    executableIdentityCache.set(identity, hash);
-  }
+  const cachedHash = executableIdentityCache.get(identity);
+  const hash = cachedHash ?? deps.opencode.hash(deps.opencode.executable) ?? null;
+  if (hash !== null && cachedHash === undefined) executableIdentityCache.set(identity, hash);
   if (hash !== OPENCODE_EXECUTABLE_SHA256) {
     return { ok: false, state: "incompatible", warning: "executable-mismatch" };
   }
@@ -1072,14 +1083,14 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   if (dbPath.includes("\u0000") || Buffer.byteLength(dbPath, "utf8") > 4096) {
     return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
   }
-  const real = insideRealRoot(deps.fs, deps.roots.opencodeDataRoot, dbPath);
-  if (!real) return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
   try {
-    const info = deps.fs.statSync(real);
+    const info = deps.fs.statSync(dbPath);
     if (!info.isFile()) throw new Error("not-file");
   } catch {
     return { items: 0, warnings: ["db-missing"], state: "unavailable", lastRefresh: 0, progress: null };
   }
+  const real = insideRealRoot(deps.fs, deps.roots.opencodeDataRoot, dbPath);
+  if (!real) return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
 
   const cursor = getOpenCodeCursor(deps.db);
   const argv = [
@@ -1169,18 +1180,32 @@ async function runOneSource(deps: NativeCollectorDeps, source: Harness, enabled:
     return;
   }
   if (source === "opencode") {
-    const result = await runOpenCodeSourcePass(deps);
-    setSourceStatus(
-      deps.db,
-      {
-        source,
-        state: result.state,
-        lastRefresh: result.lastRefresh || previous?.lastRefresh || null,
-        progress: result.progress,
-        warnings: result.warnings,
-      },
-      deps.now(),
-    );
+    try {
+      const result = await runOpenCodeSourcePass(deps);
+      setSourceStatus(
+        deps.db,
+        {
+          source,
+          state: result.state,
+          lastRefresh: result.lastRefresh || previous?.lastRefresh || null,
+          progress: result.progress,
+          warnings: result.warnings,
+        },
+        deps.now(),
+      );
+    } catch {
+      setSourceStatus(
+        deps.db,
+        {
+          source,
+          state: "unavailable",
+          lastRefresh: previous?.lastRefresh ?? null,
+          progress: previous?.progress ?? null,
+          warnings: ["pass-failed"],
+        },
+        deps.now(),
+      );
+    }
     return;
   }
   try {
@@ -1218,6 +1243,11 @@ async function runOneSource(deps: NativeCollectorDeps, source: Harness, enabled:
 }
 
 export async function runNativeUsagePass(deps: NativeCollectorDeps): Promise<void> {
+  try {
+    pruneNativeUsage(deps.db, deps.now());
+  } catch {
+    /* pruning is best-effort; collection still proceeds */
+  }
   let map = inFlight.get(deps.db);
   if (!map) {
     map = new Map();
@@ -1242,6 +1272,36 @@ export async function runNativeUsagePass(deps: NativeCollectorDeps): Promise<voi
   );
 }
 
+function nativeRootsOverride(): { claude: string; codex: string; opencode: string } | null {
+  const root = jaxosHome();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(join(root, "native-roots.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const invalid = {
+    claude: join(root, "native-invalid", "claude"),
+    codex: join(root, "native-invalid", "codex"),
+    opencode: join(root, "native-invalid", "opencode"),
+  };
+  if (!isObj(raw)) return invalid;
+  const keys = ["claude", "codex", "opencode"] as const;
+  for (const key of keys) {
+    if (typeof raw[key] !== "string" || !isAbsolute(raw[key])) return invalid;
+  }
+  try {
+    const boundary = realpathSync(root);
+    for (const key of keys) {
+      const resolved = realpathSync(raw[key] as string);
+      if (resolved !== boundary && !resolved.startsWith(base(boundary))) return invalid;
+    }
+  } catch {
+    return invalid;
+  }
+  return { claude: raw.claude as string, codex: raw.codex as string, opencode: raw.opencode as string };
+}
+
 export function defaultNativeCollectorDeps(db: Database.Database): NativeCollectorDeps {
   const home = homedir();
   const dataRoot = process.env.XDG_DATA_HOME || join(home, ".local", "share");
@@ -1252,6 +1312,7 @@ export function defaultNativeCollectorDeps(db: Database.Database): NativeCollect
   mkdirSync(cwd, { recursive: true });
   mkdirSync(xdgConfigHome, { recursive: true });
   if (!existsSync(configPath)) writeFileSync(configPath, "", "utf8");
+  const override = nativeRootsOverride();
   const pExecFile = promisify(execFile);
   const fs: NativeFs = {
     statSync: (path) => nodeStat(path),
@@ -1267,12 +1328,14 @@ export function defaultNativeCollectorDeps(db: Database.Database): NativeCollect
     nowMs: () => Date.now(),
     settings: readGeneralSettings,
     fs,
-    roots: {
-      claude: join(home, ".claude", "projects"),
-      codex: join(home, ".codex", "sessions"),
-      opencodeDataRoot: join(dataRoot, "opencode"),
-      opencodeDb: join(dataRoot, "opencode", "opencode.db"),
-    },
+    roots: override
+      ? { claude: override.claude, codex: override.codex, opencodeDataRoot: override.opencode, opencodeDb: join(override.opencode, "opencode.db") }
+      : {
+          claude: join(home, ".claude", "projects"),
+          codex: join(home, ".codex", "sessions"),
+          opencodeDataRoot: join(dataRoot, "opencode"),
+          opencodeDb: join(dataRoot, "opencode", "opencode.db"),
+        },
     opencode: {
       executable: OPENCODE_EXECUTABLE,
       cwd,

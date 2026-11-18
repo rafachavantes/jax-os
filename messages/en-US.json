@@ -721,6 +721,7 @@
         "bad-timestamp": "invalid timestamp",
         "bad-identity": "unsupported identity",
         "bad-child-identity": "unsupported child identity",
+        "identity-conflict": "conflicting native identity",
         "bad-constraint": "invalid native total",
         "unsupported": "unsupported variant",
         "no-usage": "missing usage",
@@ -740,7 +741,10 @@
         "query-failed": "metadata query failed",
         "open-failed": "native database unreadable",
         "pass-failed": "collection pass failed"
-      }
+      },
+      "cacheRead": "cache read",
+      "cacheWrite": "cache write",
+      "reasoning": "reasoning"
     },
     "hermes": {
       "promptTitle": "Prompt budget",

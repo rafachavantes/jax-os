@@ -160,7 +160,7 @@ export function UsageSection() {
     snapshot?.sources.some((s) => s.state === "available" || s.state === "empty") ?? false;
   const everySourceUnavailable =
     snapshot !== undefined &&
-    !snapshot.sources.some((s) => s.state === "available" || s.state === "empty" || s.state === "indexing");
+    snapshot.sources.every((s) => s.state === "unavailable" || s.state === "incompatible");
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
@@ -263,6 +263,11 @@ export function UsageSection() {
           <div className="flex flex-col gap-1 text-[11px] text-muted">
             <span>{t("utcNote")}</span>
             <span>{t("historyNote", { cutoff: snapshot.history.cutoffDay })}</span>
+            <span>
+              {t("cacheRead")} {snapshot.totalCacheRead === null ? "—" : fmtTokens(snapshot.totalCacheRead, locale)} ·{" "}
+              {t("cacheWrite")} {snapshot.totalCacheWrite === null ? "—" : fmtTokens(snapshot.totalCacheWrite, locale)} ·{" "}
+              {t("reasoning")} {snapshot.totalReasoning === null ? "—" : fmtTokens(snapshot.totalReasoning, locale)}
+            </span>
             <span>{t("cacheNote")}</span>
             {snapshot.costCoverage.measured > 0 ? (
               <span>{t("costCoverage", { measured: snapshot.costCoverage.measured, total: snapshot.costCoverage.total })}</span>

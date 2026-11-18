@@ -249,6 +249,7 @@ export const MIGRATIONS: readonly string[] = [
     agent           TEXT NOT NULL,
     model           TEXT,
     model_conflict  INTEGER NOT NULL DEFAULT 0,
+    identity_conflict INTEGER NOT NULL DEFAULT 0,
     ts              INTEGER NOT NULL,
     updated_ts      INTEGER NOT NULL,
     day             TEXT NOT NULL,
@@ -271,6 +272,7 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX native_usage_items_day ON native_usage_items (day, harness);
   CREATE INDEX native_usage_items_session ON native_usage_items (harness, session_id);
   CREATE INDEX native_usage_items_model ON native_usage_items (model);
+  CREATE INDEX native_usage_items_agent ON native_usage_items (agent);
 
   CREATE TABLE native_usage_files (
     source       TEXT NOT NULL,

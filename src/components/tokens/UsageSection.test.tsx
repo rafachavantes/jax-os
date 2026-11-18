@@ -22,8 +22,6 @@ vi.mock("@/lib/useTokensApi", () => ({
 
 import { UsageSection, usagePath } from "./UsageSection";
 
-const DAY = 86400;
-
 function snapshot(over: Partial<NativeUsageSnapshot> = {}): NativeUsageSnapshot {
   return {
     period: 7,
@@ -32,6 +30,9 @@ function snapshot(over: Partial<NativeUsageSnapshot> = {}): NativeUsageSnapshot 
     totalInput: 130,
     totalOutput: 38,
     totalTokens: 168,
+    totalCacheRead: 11,
+    totalCacheWrite: 5,
+    totalReasoning: 7,
     totalCost: null,
     costCurrency: null,
     costCoverage: { measured: 0, total: 2 },
@@ -82,11 +83,12 @@ describe("UsageSection", () => {
   it("distinguishes all-unavailable from a healthy empty period", () => {
     harness.query = {
       data: { ok: true, data: snapshot({
-        totalInput: 0, totalOutput: 0, totalTokens: 0, daily: [], byModel: [], byAgent: [], sessions: { lead: 0, child: 0 },
+        totalInput: 0, totalOutput: 0, totalTokens: 0, totalCacheRead: null, totalCacheWrite: null, totalReasoning: null,
+        daily: [], byModel: [], byAgent: [], sessions: { lead: 0, child: 0 },
         sources: [
           { source: "claude", state: "unavailable", lastRefresh: null, progress: null, warnings: [] },
           { source: "codex", state: "incompatible", lastRefresh: null, progress: null, warnings: [] },
-          { source: "opencode", state: "disabled", lastRefresh: null, progress: null, warnings: [] },
+          { source: "opencode", state: "unavailable", lastRefresh: null, progress: null, warnings: [] },
         ],
       }) },
       isError: false,
@@ -100,6 +102,23 @@ describe("UsageSection", () => {
     const healthyHtml = render();
     expect(healthyHtml).toContain("dailyBurn");
     expect(healthyHtml).toContain("historyNote");
+
+    harness.query = {
+      data: { ok: true, data: snapshot({
+        totalInput: 0, totalOutput: 0, totalTokens: 0, totalCacheRead: null, totalCacheWrite: null, totalReasoning: null,
+        daily: [], byModel: [], byAgent: [],
+        sources: [
+          { source: "claude", state: "disabled", lastRefresh: null, progress: null, warnings: [] },
+          { source: "codex", state: "disabled", lastRefresh: null, progress: null, warnings: [] },
+          { source: "opencode", state: "disabled", lastRefresh: null, progress: null, warnings: [] },
+        ],
+      }) },
+      isError: false,
+      dataUpdatedAt: 0,
+    };
+    const allDisabled = render();
+    expect(allDisabled).not.toContain("allUnavailable");
+    expect(allDisabled).toContain("state.disabled");
   });
 
   it("shows disabled and indexing as distinct states with view-open progress", () => {
@@ -159,6 +178,5 @@ describe("UsageSection", () => {
     expect(html).toContain("utcNote");
     expect(html).toContain("mixedProjection");
     expect(html).toContain("cacheNote");
-    void DAY;
   });
 });
