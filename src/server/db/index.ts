@@ -228,6 +228,11 @@ export const MIGRATIONS: readonly string[] = [
     layout          TEXT NULL,
     pr_scope        TEXT NOT NULL DEFAULT 'mine' CHECK (pr_scope IN ('mine', 'all'))
   );`,
+  `-- MOA-535 (migration 14): the execution-history scan. One additive PARTIAL index over the
+  -- only admissible lifecycle rows, covering the (project, run_id, id DESC) grouped-ID CTE.
+  -- Non-run events (the overwhelming majority) are not indexed at all.
+  CREATE INDEX workflow_events_executions ON workflow_events (project, run_id, id DESC)
+    WHERE run_id IS NOT NULL AND type IN ('run-started', 'run-finished');`,
 ];
 
 export function migrate(db: Database.Database): void {
