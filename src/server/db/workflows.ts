@@ -2935,6 +2935,8 @@ export type CurrentExecutionState = {
   startEventId: number | null;
   finishEventId: number | null;
   attemptStartedAt: string | null;
+  // Server-only: the recorded tmux session of the current attempt, never exposed as a row field.
+  attemptSession: string | null;
 };
 
 // Current start/finish facts for at most 20 requested runs, in ONE bounded statement. The
@@ -2995,6 +2997,9 @@ export function getCurrentRunStates(
       startEventId: start?.id ?? null,
       finishEventId: finish?.id ?? null,
       attemptStartedAt: start && Number.isFinite(Date.parse(start.ts)) ? start.ts : null,
+      attemptSession: start && typeof start.payload?.session === "string"
+        && start.payload.session.length > 0 && start.payload.session.length <= LIMITS.session
+        && !CONTROL_CHARS_RE.test(start.payload.session) ? start.payload.session : null,
     };
   });
 }

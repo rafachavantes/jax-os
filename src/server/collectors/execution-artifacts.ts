@@ -32,6 +32,14 @@ export type ExecutionArtifactFacts = {
   warnings: ArtifactWarning[];
 };
 
+// Server-only facts used to bind worker observation to the exact manifest and control repo.
+// Never part of the API payload.
+export type ExecutionArtifactInternal = { manifestPath: string | null; repo: string | null };
+
+export function artifactKey(destination: string, runId: string): string {
+  return `${destination}/${runId}`;
+}
+
 export class BudgetError extends Error {
   constructor(readonly reason: "deadline" | "timeout") {
     super(reason);
@@ -393,14 +401,17 @@ async function inspectOne(
   deps: Required<Pick<ArtifactDeps, "fsMs" | "gitMs" | "gitProbe">> & {
     reposCanonical: string; roots: Map<string, DiscoveredRoot[]>; budget: InspectionBudget;
   },
-): Promise<ExecutionArtifactFacts> {
+): Promise<{ facts: ExecutionArtifactFacts; internal: ExecutionArtifactInternal }> {
   const warnings: ArtifactWarning[] = [];
-  const unavailable = (warning: ArtifactWarning): ExecutionArtifactFacts => ({
-    destination: input.destination, runId: input.runId, branch: null, branchSource: null,
-    report: null, tests: null, warnings: [warning],
+  const unavailable = (warning: ArtifactWarning): { facts: ExecutionArtifactFacts; internal: ExecutionArtifactInternal } => ({
+    facts: {
+      destination: input.destination, runId: input.runId, branch: null, branchSource: null,
+      report: null, tests: null, warnings: [warning],
+    },
+    internal: { manifestPath: null, repo: null },
   });
   if (!PROJECT_LABEL.test(input.destination) || !RUN_ID_RE.test(input.runId)) {
-    return { ...unavailable("root-unavailable"), warnings: ["root-unavailable"] };
+    return unavailable("root-unavailable");
   }
   const resolved = await resolveRoot(input.destination, deps.roots, deps.budget, deps.fsMs);
   if (!resolved.ok) return unavailable("root-unavailable");
@@ -469,22 +480,25 @@ async function inspectOne(
   if (tests === null) warnings.push("tests-missing");
 
   return {
-    destination: input.destination,
-    runId: input.runId,
-    branch: manifest?.branch ?? null,
-    branchSource: manifest?.branch ? "manifest" : null,
-    report,
-    tests,
-    warnings,
+    facts: {
+      destination: input.destination,
+      runId: input.runId,
+      branch: manifest?.branch ?? null,
+      branchSource: manifest?.branch ? "manifest" : null,
+      report,
+      tests,
+      warnings,
+    },
+    internal: manifest ? { manifestPath, repo: canonical } : { manifestPath: null, repo: null },
   };
 }
 
 // Async, independently bounded artifact inspection for a bounded row set. A discovery failure
 // keeps known rows: every row reports root-unavailable, never a guessed path or a DB change.
-export async function inspectArtifacts(
+export async function inspectArtifactsDetailed(
   rows: readonly { destination: string; runId: string }[],
   deps: ArtifactDeps = {},
-): Promise<ExecutionArtifactFacts[]> {
+): Promise<{ facts: ExecutionArtifactFacts[]; internal: Map<string, ExecutionArtifactInternal> }> {
   const now = deps.now ?? Date.now;
   const budget = deps.budget ?? new InspectionBudget(4, 2_000, now);
   const repos = deps.reposRoot ?? configuredReposRoot();
@@ -498,19 +512,36 @@ export async function inspectArtifacts(
   try {
     reposCanonical = await budget.run(() => realpath(repos), discoveryMs);
   } catch {
-    return rows.map((row) => ({
-      destination: row.destination, runId: row.runId, branch: null, branchSource: null,
-      report: null, tests: null, warnings: ["root-unavailable"],
-    }));
+    return {
+      facts: rows.map((row) => ({
+        destination: row.destination, runId: row.runId, branch: null, branchSource: null,
+        report: null, tests: null, warnings: ["root-unavailable" as const],
+      })),
+      internal: new Map(rows.map((row) => [artifactKey(row.destination, row.runId), { manifestPath: null, repo: null }])),
+    };
   }
   const discovered = await discoverRoots(reposCanonical, budget, limits, discoveryMs);
   if (!discovered.ok) {
-    return rows.map((row) => ({
-      destination: row.destination, runId: row.runId, branch: null, branchSource: null,
-      report: null, tests: null, warnings: ["root-unavailable"],
-    }));
+    return {
+      facts: rows.map((row) => ({
+        destination: row.destination, runId: row.runId, branch: null, branchSource: null,
+        report: null, tests: null, warnings: ["root-unavailable" as const],
+      })),
+      internal: new Map(rows.map((row) => [artifactKey(row.destination, row.runId), { manifestPath: null, repo: null }])),
+    };
   }
-  return Promise.all(rows.map((row) => inspectOne(row, {
+  const inspected = await Promise.all(rows.map((row) => inspectOne(row, {
     reposCanonical, roots: discovered.roots, budget, fsMs, gitMs, gitProbe,
   })));
+  return {
+    facts: inspected.map((i) => i.facts),
+    internal: new Map(inspected.map((i) => [artifactKey(i.facts.destination, i.facts.runId), i.internal])),
+  };
+}
+
+export async function inspectArtifacts(
+  rows: readonly { destination: string; runId: string }[],
+  deps: ArtifactDeps = {},
+): Promise<ExecutionArtifactFacts[]> {
+  return (await inspectArtifactsDetailed(rows, deps)).facts;
 }
