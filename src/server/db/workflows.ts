@@ -3076,7 +3076,7 @@ export function getCurrentRunStates(
       row: built,
       startEventId: start?.id ?? null,
       finishEventId: finish?.id ?? null,
-      attemptStartedAt: start && Number.isFinite(Date.parse(start.ts)) ? start.ts : null,
+      attemptStartedAt: built?.attemptStartedAt ?? null,
       attemptSession: start && typeof start.payload?.session === "string"
         && start.payload.session.length > 0 && start.payload.session.length <= LIMITS.session
         && !CONTROL_CHARS_RE.test(start.payload.session) ? start.payload.session : null,

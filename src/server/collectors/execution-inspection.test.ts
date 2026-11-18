@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../db";
 import { collectorResponse } from "../api";
+import { getCurrentRunStates } from "../db/workflows";
 import { inspectExecutionRows } from "./execution-inspection";
 import { InspectionBudget } from "./execution-artifacts";
 import type { ProcReader } from "./execution-worker";
@@ -147,6 +148,31 @@ describe("inspectExecutionRows", () => {
     });
     expect(rows[0].current).toBeNull();
     expect(rows[0].observation).toEqual({ status: "not-checked" });
+  });
+
+  it("does not reuse an over-long start timestamp for the awaiting-worker decision", async () => {
+    const { root, abs, db } = fixture();
+    const longTs = "Wed, 18 Nov 2026 11:59:59 GMT" + " ".repeat(100);
+    expect(longTs.length).toBeGreaterThan(128);
+    expect(Number.isFinite(Date.parse(longTs))).toBe(true);
+    const secondId = Number(db.prepare(
+      `INSERT INTO workflow_events (ts, run_id, project, role, type, source, emitter, payload, delivery)
+       VALUES (?, ?, ?, 'builder', 'run-started', 'deterministic', 'wrapper', ?, 'local')`,
+    ).run(longTs, RUN, DEST, JSON.stringify({ kind: "build", session: "jax-alpha-build" })).lastInsertRowid);
+
+    const state = getCurrentRunStates(db, [{ destination: DEST, runId: RUN }])[0];
+    expect(state.attemptStartedAt).toBeNull();
+    expect(state.row?.warnings).toContain("attempt-timestamp-unknown");
+
+    const launcherPath = join(root, "launcher.py");
+    writeFileSync(launcherPath, "");
+    const rows = await inspectExecutionRows(db, [{ destination: DEST, runId: RUN, startEventId: secondId }], {
+      reposRoot: root, now: () => NOW, lastGood: new Map(),
+      realpath: async (p: string) => p, launcherPath, tmux: async () => "",
+    });
+    expect(abs).toBe(join(root, DEST));
+    expect(rows[0].refreshNeeded).toBe(false);
+    expect(rows[0].observation).toEqual({ status: "unknown", warning: "timestamp-unknown" });
   });
 });
 
