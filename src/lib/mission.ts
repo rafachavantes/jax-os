@@ -1232,33 +1232,34 @@ export type StripPresentation = { title: StripTitle; warning: StripWarning };
 // Finding 8 (branch review, LOW): the title/warning branch was inline JSX in InboxStrip, so a
 // mistake there could only be caught by rendering the component — the repo has no react-testing
 // infra and adding one is out of scope for a LOW finding. Pulled the decision into this pure
-// function instead so the adversarial readiness/model combinations (including Finding 3's
-// zero-card degraded case below) are tested directly, the same way buildMission's own branches
-// are.
+// function instead so the adversarial readiness/model combinations are tested directly, the same
+// way buildMission's own branches are.
+//
+// M2 plan F1: attention membership comes only from projects/hub (queries + panes), never from
+// PRs. `readiness` still describes the whole page (buildMission is unchanged — per-card PR
+// unavailable/partial/error stays visible, and a true projects/hub failure stays visible here),
+// but a PR-only pending/degraded source must not make a fully known attention set look
+// uncertain: a non-empty board with zero known requests is allowed the confident empty title,
+// and a genuinely empty board too. This supersedes the historical rule that PR pending/failed
+// must prevent a confident empty attention strip, including branch F3's zero-card PR-only
+// warning: only projects/hub failures get a warning here now.
 export function stripPresentation(readiness: MissionReadiness, model: MissionModel): StripPresentation {
+  // `prs` is the one source that no longer produces attention; every other pending/failed source
+  // (projects, hub) still leaves membership genuinely unknown.
+  const attentionPending = readiness.kind === "loading" && readiness.pending.some((s) => s !== "prs");
   const title: StripTitle =
-    readiness.kind === "ready"
-      ? model.inboxTotalCount === 0
+    readiness.kind === "failed" || attentionPending
+      ? { kind: "unknown" }
+      : model.inboxTotalCount === 0
         ? { kind: "empty" }
-        : { kind: "count", count: model.inboxTotalCount }
-      : { kind: "unknown" };
+        : { kind: "count", count: model.inboxTotalCount };
 
-  // Finding 3 (branch review, MEDIUM): a degraded `prs` source has nowhere to show its inline
-  // warning (a card's own `pr.status === "error"` line) when there are zero cards at all — the
-  // strip used to render only the neutral `titleUnknown` with no visible warning anywhere on the
-  // page. `model.cards.length === 0` is the exact case where no card can carry that inline
-  // warning: whenever at least one card exists, a `degraded` "prs" reading always means either the
-  // whole envelope failed (every card reads `pr.status === "error"`) or one project's own PR fetch
-  // failed (that one card reads it) — degraded is never reachable with cards present and none of
-  // them showing the error inline.
   const warning: StripWarning =
     readiness.kind === "failed"
       ? { kind: "source", sources: readiness.failed }
-      : readiness.kind === "degraded" && model.cards.length === 0
-        ? { kind: "source", sources: readiness.degraded }
-        : readiness.kind === "loading" && model.inbox.length === 0
-          ? { kind: "skeleton" }
-          : { kind: "none" };
+      : attentionPending && model.inbox.length === 0
+        ? { kind: "skeleton" }
+        : { kind: "none" };
 
   return { title, warning };
 }

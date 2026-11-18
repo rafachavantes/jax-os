@@ -7,7 +7,11 @@ const harness = vi.hoisted(() => ({
   calls: [] as { key: string; enabled?: boolean }[],
 }));
 
-vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key, useLocale: () => "en-US" }));
+vi.mock("next-intl", () => ({
+  useTranslations: () => (key: string, values?: Record<string, unknown>) =>
+    values && typeof values.count === "number" ? `${key}:${values.count}` : key,
+  useLocale: () => "en-US",
+}));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({}),
   useQuery: (opts: { queryKey: unknown[]; enabled?: boolean }) => {
@@ -53,8 +57,7 @@ beforeEach(() => {
   seed();
 });
 
-describe("Home cockpit hierarchy (M2 plan Task 5, spec AC1/AC2/AC10)", () => {
-  it("keeps the duplicate permanent count row out and renders the compact Projects controls", () => {
+describe("Home cockpit hierarchy (M2 plan Task 5, spec AC1/AC2/AC10)", () => {  it("keeps the duplicate permanent count row out and renders the compact Projects controls", () => {
     const html = render();
     expect(html).toContain("projects-controls");
     expect(html).toContain("server-strip");
@@ -110,6 +113,72 @@ describe("Home cockpit hierarchy (M2 plan Task 5, spec AC1/AC2/AC10)", () => {
     const html = render();
     expect(html).toContain("<details");
     expect(html).toContain("m1");
+  });
+});
+
+// M2 plan F1 (RED): a real buildMission over a project with five live unresolved questions —
+// validated holders on the visible card — must keep the same counted attention title, the
+// bounded preview and the full-set control while the PR source is pending, failed as a whole, or
+// failed for that one project. PRs no longer determine attention membership.
+const questionPayload = (eventId: number) => ({
+  questions: [{ question: `Pergunta ${eventId}?`, options: [{ label: "sim" }] }],
+});
+const livePane = (eventId: number) => ({
+  pane: `%${eventId}`, tmuxIncarnation: `${eventId}:1`, session: "s1", role: "lead",
+  live: true, working: false, capsule: null,
+  pendingQuestion: { eventId, pane: `%${eventId}`, tmuxIncarnation: `${eventId}:1`, payload: questionPayload(eventId) },
+  lastEventTs: "2026-11-18T10:00:00.000Z", subagentCount: 0, runtime: "claude",
+});
+const HUB_WITH_REQUESTS = {
+  ...HUB,
+  byProject: {
+    Alpha: {
+      panes: [1, 2, 3, 4, 5].map(livePane), codexSessions: [], codexUntracked: false,
+      pendingQuestion: null, freshnessCount: 0, newestEventTs: null, timeline: [],
+      activeRuns: [], lastRun: null, heartbeat: [], lastAction: null,
+    },
+  },
+};
+
+function expectCountedAttention(html: string) {
+  // The count-bearing title (mock renders `title:<count>`), never the empty/neutral fallbacks.
+  expect(html).toContain("title:5");
+  expect(html).not.toContain("titleEmpty");
+  expect(html).not.toContain("titleUnknown");
+  // Bounded preview: first three requests + the full-set control; the rest stay behind it.
+  expect(html).toContain("Pergunta 1?");
+  expect(html).toContain("Pergunta 3?");
+  expect(html).not.toContain("Pergunta 4?");
+  expect(html).toContain("showAll:5");
+}
+
+describe("Home cockpit — attention count independent of PR readiness (M2 plan F1)", () => {
+  it("keeps the counted attention title while the PR query is still pending", () => {
+    seed({ "mission:hub:": { data: { ok: true, data: HUB_WITH_REQUESTS }, isError: false } });
+    expectCountedAttention(render());
+  });
+
+  it("keeps the counted attention title while the PR envelope failed", () => {
+    seed({
+      "mission:hub:": { data: { ok: true, data: HUB_WITH_REQUESTS }, isError: false },
+      "mission:prs:scope=mine": { data: { ok: false, error: "gh down" }, isError: false },
+    });
+    expectCountedAttention(render());
+  });
+
+  it("keeps the counted attention title while one project's own PR fetch failed", () => {
+    seed({
+      "mission:hub:": { data: { ok: true, data: HUB_WITH_REQUESTS }, isError: false },
+      "mission:prs:scope=mine": { data: { ok: true, data: { Alpha: { ok: false, error: "gh down" } } }, isError: false },
+    });
+    expectCountedAttention(render());
+  });
+
+  it("a genuine hub failure still shows the attention source warning, never a confident empty title", () => {
+    seed({ "mission:hub:": { data: { ok: false, error: "hub down" }, isError: false } });
+    const html = render();
+    expect(html).toContain("titleUnknown");
+    expect(html).not.toContain("titleEmpty");
   });
 });
 

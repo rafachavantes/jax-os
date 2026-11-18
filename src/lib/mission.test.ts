@@ -320,10 +320,10 @@ describe("buildMission — prTruncatedAny (branch review, Finding 5)", () => {
 
 // Simplification (recurrence ledger R3, threshold crossed a third time — cold review round 3
 // Findings 3/5/8): one page-level join, one contract. `readiness` is a small discriminated union
-// about CONFIDENCE (loading/failed/degraded/ready) with no "empty" variant in it at all — the empty title
-// is a two-clause check the CALLER makes against ordinary data (readiness.kind === "ready" &&
-// model.inboxTotalCount === 0, InboxStrip's job, Task 8), not a type-level guarantee this module
-// claims to enforce (TypeScript is structural; it cannot make a variant "unconstructible").
+// about CONFIDENCE (loading/failed/degraded/ready) with no "empty" variant in it at all.
+// `readiness` keeps describing the whole page; `stripPresentation` derives the ATTENTION strip's
+// own confidence from the sources that produce attention (projects and hub — M2 plan F1), so this
+// suite asserts readiness itself and the strip decision separately.
 describe("buildMission — readiness (design change: one join, Findings 3/5/8)", () => {
   it("a still-pending source is reported as kind:'loading', and the model is still built from what IS known", () => {
     // Zero gates, zero pending questions, prs still pending — the model must still carry the one
@@ -374,25 +374,26 @@ describe("buildMission — readiness (design change: one join, Findings 3/5/8)",
     expect(model.cards[0].pr).toEqual({ status: "error", error: "gh: rate limited" }); // scoped to the card's own PR line
   });
 
-  it("a failed prs source with an EMPTY inbox never blesses a confident ready — titleEmpty (InboxStrip, Task 8) stays unreachable (cold review round 4, Finding 2 — R3's fifth recurrence: the blocked-gate test above can't catch this, since its inboxTotalCount is non-zero regardless of readiness.kind)", () => {
+  it("a failed prs source with an EMPTY inbox reports degraded readiness; the attention strip stays confident (M2 plan F1 supersedes the old titleEmpty block)", () => {
     const scan = scanOf([mkProject({ dir: "jax-os" })]);
     const hub = mkHub({ "jax-os": mkHubProject() });
     const { readiness, model } = buildMission(scan, hub, { ok: false, error: "gh: rate limited" }, NOW);
     expect(readiness).toEqual({ kind: "degraded", degraded: ["prs"] });
-    expect(model.inboxTotalCount).toBe(0); // empty inbox AND readiness.kind !== "ready" — titleEmpty can never render here
+    expect(model.inboxTotalCount).toBe(0); // the strip's empty title is allowed: PRs do not determine attention membership
   });
 
-  it("a per-project PR failure inside an otherwise-ok prs envelope also degrades, never a confident ready (post-merge cold review, Finding 1)", () => {
+  it("a per-project PR failure inside an otherwise-ok prs envelope still degrades readiness (post-merge cold review, Finding 1)", () => {
     // prs envelope itself is {ok:true} — only this ONE project's own PrResult is {ok:false}. The
     // old code only checked `!prs.ok` (the whole-envelope case), so this degraded to a confident
-    // titleEmpty even though the card's own pr line reads an error.
+    // titleEmpty even though the card's own pr line reads an error. Readiness stays degraded; the
+    // attention strip ignores a PR-only degradation (M2 plan F1).
     const scan = scanOf([mkProject({ dir: "jax-os" })]);
     const hub = mkHub({ "jax-os": mkHubProject() });
     const { readiness, model } = buildMission(
       scan, hub, { ok: true, data: { "jax-os": { ok: false, error: "gh: rate limited" } } }, NOW,
     );
     expect(readiness).toEqual({ kind: "degraded", degraded: ["prs"] });
-    expect(model.inboxTotalCount).toBe(0); // no gate/question/attention/PR rows — titleEmpty must still be unreachable
+    expect(model.inboxTotalCount).toBe(0);
     expect(model.cards[0].pr).toEqual({ status: "error", error: "gh: rate limited" });
   });
 
@@ -638,7 +639,7 @@ describe("buildMission — sortEpochMs compares real instants, not raw strings (
   });
 });
 
-describe("stripPresentation — pure title/warning decision (branch review, Finding 8)", () => {
+describe("stripPresentation — pure title/warning decision (branch review, Finding 8; M2 plan F1)", () => {
   it("ready with an empty inbox is the empty title with no warning", () => {
     const { title, warning } = stripPresentation({ kind: "ready" }, { ...EMPTY_MODEL, inboxTotalCount: 0 });
     expect(title).toEqual({ kind: "empty" });
@@ -658,26 +659,50 @@ describe("stripPresentation — pure title/warning decision (branch review, Find
     expect(warning).toEqual({ kind: "source", sources: ["hub"] });
   });
 
-  it("degraded with zero cards shows the source warning (Finding 3 — nothing else can carry it)", () => {
-    const readiness: MissionReadiness = { kind: "degraded", degraded: ["prs"] };
-    const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [] });
-    expect(warning).toEqual({ kind: "source", sources: ["prs"] });
-  });
-
-  it("degraded with at least one card stays inline-only — no page-level warning here", () => {
-    const readiness: MissionReadiness = { kind: "degraded", degraded: ["prs"] };
-    const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [{ dir: "x" } as never] });
+  it("a pending PR source alone never makes a known-empty attention strip uncertain (F1): empty title, no skeleton", () => {
+    const readiness: MissionReadiness = { kind: "loading", pending: ["prs"] };
+    const { title, warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [] });
+    expect(title).toEqual({ kind: "empty" });
     expect(warning).toEqual({ kind: "none" });
   });
 
-  it("loading with an empty inbox shows the skeleton", () => {
+  it("a nonempty board with zero known requests stays confidently empty while only the PR source is pending", () => {
     const readiness: MissionReadiness = { kind: "loading", pending: ["prs"] };
-    const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [] });
+    const { title, warning } = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [{ dir: "x" } as never] });
+    expect(title).toEqual({ kind: "empty" });
+    expect(warning).toEqual({ kind: "none" });
+  });
+
+  it("a degraded PR-only source is attention-ready: no PR-only warning, and an empty inbox reads empty", () => {
+    // Supersedes the old zero-card degraded warning: PRs no longer determine attention membership.
+    const readiness: MissionReadiness = { kind: "degraded", degraded: ["prs"] };
+    const zeroBoard = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [] });
+    expect(zeroBoard).toEqual({ title: { kind: "empty" }, warning: { kind: "none" } });
+    const withCards = stripPresentation(readiness, { ...EMPTY_MODEL, cards: [{ dir: "x" } as never] });
+    expect(withCards).toEqual({ title: { kind: "empty" }, warning: { kind: "none" } });
+  });
+
+  it("a valid counted request keeps its title under pending and failed PR sources, PR-only uncertainty never hides it", () => {
+    const model = { ...EMPTY_MODEL, inbox: [{ kind: "question" } as never], inboxTotalCount: 1 };
+    for (const readiness of [
+      { kind: "loading", pending: ["prs"] },
+      { kind: "degraded", degraded: ["prs"] },
+    ] as MissionReadiness[]) {
+      const { title, warning } = stripPresentation(readiness, model);
+      expect(title).toEqual({ kind: "count", count: 1 });
+      expect(warning).toEqual({ kind: "none" });
+    }
+  });
+
+  it("a pending projects/hub source keeps the attention strip uncertain: unknown title and the skeleton", () => {
+    const readiness: MissionReadiness = { kind: "loading", pending: ["hub", "prs"] };
+    const { title, warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [] });
+    expect(title).toEqual({ kind: "unknown" });
     expect(warning).toEqual({ kind: "skeleton" });
   });
 
-  it("loading with a non-empty inbox shows no skeleton — known rows already render", () => {
-    const readiness: MissionReadiness = { kind: "loading", pending: ["prs"] };
+  it("loading with known rows already in the inbox shows no skeleton — only an unresolved attention source hides them", () => {
+    const readiness: MissionReadiness = { kind: "loading", pending: ["projects"] };
     const { warning } = stripPresentation(readiness, { ...EMPTY_MODEL, inbox: [{ kind: "gate" } as never] });
     expect(warning).toEqual({ kind: "none" });
   });

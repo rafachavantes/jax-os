@@ -217,15 +217,13 @@ export function InboxStrip({ mission, onExpand }: Props) {
   const shownInbox = showAll ? model.inbox : model.inbox.slice(0, PREVIEW_CAP);
 
   // Title AND the source-warning/skeleton branch below are both decided by the pure
-  // `stripPresentation` helper (mission.ts, Finding 8) — every `readiness.kind` except `ready`
-  // (`loading`, `failed`, and `degraded` — cold review round 4, Finding 2) reads the neutral
-  // `titleUnknown` ("WAITING ON YOU", no count), never the confident `titleEmpty` ("NOTHING WAITS
-  // ON YOU"). A failed `prs` envelope with an otherwise-empty inbox is exactly the case `degraded`
-  // exists to name: it used to fall through all the way to `ready` and render the confident empty
-  // title while GitHub was down (R3's fifth recurrence). `titleEmpty` is the ONLY branch that
-  // renders it, gated on a plain two-clause check against ordinary data (Simplification 1,
-  // Findings 3/5/8) — there is no type-level claim this string is reachable "only by" a
-  // constructor; `degraded` not being `"ready"` is what actually keeps this branch out of reach.
+  // `stripPresentation` helper (mission.ts, Finding 8). M2 plan F1: attention membership comes
+  // only from projects/hub, so a PR-only pending (`loading` naming just `prs`) or degraded PR
+  // source is attention-ready — `titleEmpty` ("NOTHING WAITS ON YOU") is allowed when PRs are the
+  // only unresolved/failed source and no known request exists. A genuinely pending projects/hub
+  // source reads the neutral `titleUnknown` ("WAITING ON YOU", no count) + skeleton, and a failed
+  // projects/hub one reads `titleUnknown` + the source warning; a PR outage alone never renders a
+  // warning here (the per-card PR line carries it).
   const presentation = stripPresentation(readiness, model);
   const cardsByDir = new Map(model.cards.map((c) => [c.dir, c]));
   const stuckCards = stuckBoardCards(model);
@@ -260,8 +258,8 @@ export function InboxStrip({ mission, onExpand }: Props) {
       {presentation.warning.kind === "source" ? (
         // Additional, never a replacement (Finding 5): `model.inbox` below still renders whatever
         // rows the OTHER, non-failed source(s) already resolved — a failed source no longer erases
-        // known rows the way the old two-function design did. Also reached by a `degraded` prs
-        // source with zero cards to carry the inline warning itself (Finding 3).
+        // known rows the way the old two-function design did. Only projects/hub reach this branch
+        // now: a PR-only failure is carried by each card's own PR line (M2 plan F1).
         <SourceWarning label={t("unavailable")} detail={presentation.warning.sources.map((s) => tSource(s)).join(", ")} />
       ) : presentation.warning.kind === "skeleton" ? (
         <div className="h-6 animate-pulse rounded bg-surface-2" />
