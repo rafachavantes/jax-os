@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../db";
 import { inspectExecutionRows } from "./execution-inspection";
+import { InspectionBudget } from "./execution-artifacts";
 import type { ProcReader } from "./execution-worker";
 
 const NOW = Date.parse("2026-11-18T12:00:00.000Z");
@@ -187,6 +188,35 @@ describe("inspectExecutionRows — fresh observation and single flight", () => {
     const next = await inspectExecutionRows(db, [selector(startId)], deps);
     expect(tmuxCalls).toBe(2);
     expect(next[0].observation).not.toEqual({ status: "not-checked" });
+  });
+
+  it("re-reads durable facts after the public response settles while native cleanup is pending", async () => {
+    const { root, db, startId } = fixture();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let tmuxCalls = 0;
+    const deps = {
+      reposRoot: join(root, "missing"),
+      now: () => NOW,
+      lastGood: new Map(),
+      workerMs: 20,
+      budget: new InspectionBudget(4, 2_000, () => NOW),
+      tmux: async () => { tmuxCalls++; await gate; return ""; },
+    };
+    try {
+      const first = await inspectExecutionRows(db, [selector(startId)], deps);
+      expect(first[0].current).toMatchObject({ outcome: "open", terminal: false });
+      expect(tmuxCalls).toBe(1);
+
+      insertFinish(db);
+      const fresh = await inspectExecutionRows(db, [selector(startId)], deps);
+      expect(fresh[0].current).toMatchObject({ terminal: true, outcome: "failure" });
+      expect(fresh[0].observation).toEqual({ status: "not-checked" });
+      expect(tmuxCalls).toBe(1);
+    } finally {
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   });
 
   it("does not scan tmux when the resolved rows have no open attempt", async () => {

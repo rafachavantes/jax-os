@@ -208,7 +208,12 @@ async function runPass(
   });
 }
 
-type InspectionPass = { key: string; response: Promise<InspectionRow[]>; settled: Promise<void> };
+type InspectionPass = {
+  key: string;
+  response: Promise<InspectionRow[]>;
+  settled: Promise<void>;
+  responded: boolean;
+};
 
 // Smallest bounded state: ONE active native pass per DB/collector context. It is cleared only
 // after the pass response AND every started native operation have settled, so a hung source can
@@ -241,9 +246,11 @@ export async function inspectExecutionRows(
   const store = passStore(db, deps);
   const active = store.get(db);
   if (active) {
-    // Identical selectors share the pass; a differing request never starts a second native pool
-    // and still answers from the bounded one-statement DB re-check.
-    return active.key === key ? active.response : databaseOnlyRows(db, bounded);
+    // Identical selectors share an UNRESOLVED pass; once its public response has settled, a
+    // durable re-read is fresh again even while the native cleanup latch is still pending.
+    return active.key === key && !active.responded
+      ? active.response
+      : databaseOnlyRows(db, bounded);
   }
 
   const budget = deps.budget ?? new InspectionBudget(4, 2_000, deps.now ?? Date.now);
@@ -251,8 +258,10 @@ export async function inspectExecutionRows(
   const pass: InspectionPass = {
     key,
     response,
+    responded: false,
     settled: response.then(() => budget.settled(), () => budget.settled()),
   };
+  response.then(() => { pass.responded = true; }, () => { pass.responded = true; });
   store.set(db, pass);
   void pass.settled.then(() => {
     if (store.get(db) === pass) store.delete(db);
