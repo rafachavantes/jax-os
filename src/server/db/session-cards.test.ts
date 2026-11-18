@@ -972,6 +972,16 @@ describe("M1 review corrections", () => {
     db.close();
   });
 
+  it("F2: does not let a caller-incompatible owner hide an uncertain finished result", () => {
+    insertEvent(db, claude(S, "%1", "turn-started", "claude-userprompt"), at(1));
+    insertEvent(db, builderStarted("run-a", "claude", S, "feat/a", Q), at(2));
+    insertEvent(db, builderStarted("run-b", "codex", S, "feat/b", Q, { runtime: "codex" }), at(3));
+    insertEvent(db, runFinished("run-b", "builder", okResult("/reports/b.md"), Q), at(4));
+    expect(getHubData(db, LIVE, {}, NO_CODEX, NOW).byProject[Q].lastRun)
+      .toMatchObject({ runId: "run-b", ownershipUnknown: true });
+    db.close();
+  });
+
   it("F2: never flags a caller-less dashboard result when a source failed", () => {
     insertEvent(db, runStarted("run-dash", "builder", "build", "jaxos", "jaxos", "feat/q", Q), at(2));
     insertEvent(db, runFinished("run-dash", "builder", okResult("/reports/q.md"), Q), at(3));

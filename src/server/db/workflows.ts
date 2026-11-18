@@ -2449,7 +2449,7 @@ function resultOwnershipUnknown(
   const caller = callerOfRow(start);
   const session = start.harness_session ?? null;
   if (caller === null || session === null || local.has(session)) return false;
-  if (owners.some((o) => o.session === session)) return false; // already bound: owned, not unknown
+  if (owners.some((o) => o.session === session && o.callers.includes(caller))) return false; // already bound: owned, not unknown
   if (!callerEvidenceComplete(caller, tmuxSourceOk, codexSource)) return true;
   return seats.filter((s) => s.project !== dest && s.seat.sessionId === session && s.callers.includes(caller)).length > 1;
 }
