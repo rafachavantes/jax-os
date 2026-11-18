@@ -218,6 +218,7 @@ export type MissionCard = {
 export type MissionProjectContext = {
   prefs: { pinned: boolean; hiddenAt: string | null };
   lastRun: MissionLastRun | null;
+  retainedWorktrees?: number | null;
   hidden?: true;
 };
 
@@ -1060,7 +1061,11 @@ function buildModel(
       // (the header is hide-only; projectContext.prefs keeps the project target).
       const seatPrefs = (hub?.ok ? hub.data.prefs?.[card.key] : undefined) ?? { pinned: false, hiddenAt: null };
       const seat = buildSeatCard(card, hp!, split.seats[0], wr && wr.ok ? wr.sessions : undefined, nowMs, { ...seatPrefs, pinned: prefs.pinned }, locations);
-      seat.projectContext = { prefs, lastRun: toMissionLastRun(split.unownedLastRun, locations), ...(card.visibility === "hidden" ? { hidden: true } : {}) };
+      seat.projectContext = {
+        prefs, lastRun: toMissionLastRun(split.unownedLastRun, locations),
+        retainedWorktrees: retainedCount(wr && wr.ok ? wr.sessions : undefined, (s) => s === null || s !== split.seats[0].sessionId),
+        ...(card.visibility === "hidden" ? { hidden: true } : {}),
+      };
       return seat;
     }
     return card;

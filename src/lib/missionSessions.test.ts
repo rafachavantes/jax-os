@@ -447,6 +447,19 @@ describe("standalone single-session card (MOA-533)", () => {
     expect(c.lastRun).toBeNull();
   });
 
+  it("keeps ownerless retained worktrees in lone-seat project context without a duplicate gate row", () => {
+    const blocked = { status: "blocked" as const, minutes: null, declaredAt: new Date(NOW - 1000).toISOString(), eventId: 3, mergeAsk: null, question: null };
+    const m = missionOf(
+      { p: mkHubProject({ panes: [pane("%1", { capsule: blocked })], split: mkSplit({ seats: [seat(A, "%1")] }) }) },
+      { projects: [mkProject({ dir: "p", gate: "awaiting-approval" })], worktrees: { p: { ok: true, count: 6, oldestAgeDays: 1, sessions: [{ session: A, count: 1 }, { session: null, count: 2 }, { session: "closed", count: 3 }] } } },
+    );
+    const c = m.model.cards[0];
+    expect(c.projectContext?.retainedWorktrees).toBe(5);
+    expect(c.retainedWorktrees).toBe(1);
+    expect(c.headline).toBe("needs-you");
+    expect(m.model.inbox.some((row) => row.kind === "gate")).toBe(false);
+  });
+
   it("keeps a hidden seat recoverable when it is the only one left", () => {
     const key = `p#session:${A}`;
     const m = missionOf(

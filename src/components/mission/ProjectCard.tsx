@@ -796,6 +796,9 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
             <PrSummary pr={card.pr} githubEnabled={githubEnabled} />
             <PrefsButtons dir={card.dir} prefs={card.projectContext.prefs} visibility={card.visibility} />
           </div>
+          {card.projectContext.retainedWorktrees != null ? (
+            <span>{t("board.footerNoSession")} · {t("board.footerWorktrees", { count: card.projectContext.retainedWorktrees })}</span>
+          ) : null}
           {card.projectContext.lastRun ? (
             <div className="flex flex-col gap-0.5">
               <span className="text-[11px] uppercase tracking-[.06em]">{t("board.projectActivity")}</span>
