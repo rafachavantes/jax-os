@@ -2,7 +2,7 @@
 
 import { GripVertical } from "lucide-react";
 import { useTranslations } from "next-intl";
-import type { LayoutEntry, PrScope, ProjectWidth } from "@/lib/cockpitLayout";
+import { normalizeProjectKey, type LayoutEntry, type PrScope, type ProjectWidth } from "@/lib/cockpitLayout";
 import type { OrganizeState } from "@/lib/cockpitPrefsQuery";
 
 export const PROJECT_DRAG_MIME = "application/x-jax-project";
@@ -11,23 +11,27 @@ export const PROJECT_DRAG_MIME = "application/x-jax-project";
 // draggable (spec: "Only edit mode enables project drag handles ... preventing accidental
 // movement during normal interaction or text selection").
 export function ProjectOrganizeHandle({
-  dir, name, width, index, count, onMove, onWidth,
+  dir, name, width, index, count, onMove, onWidth, disabled = false,
 }: {
   dir: string; name: string; width: ProjectWidth; index: number; count: number;
   onMove: (dir: string, delta: -1 | 1) => void;
   onWidth: (dir: string, width: ProjectWidth) => void;
+  disabled?: boolean;
 }) {
   const t = useTranslations("mission.projects.organize");
   return (
     <div data-testid="organize-handle-row" className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-dashed border-line-strong bg-surface-2 px-2 py-1">
       <span
-        draggable
+        draggable={!disabled}
         role="button"
         tabIndex={0}
         aria-label={t("drag", { name })}
+        aria-disabled={disabled || undefined}
         data-project-dir={dir}
         onDragStart={(e) => {
+          if (disabled) { e.preventDefault(); return; }
           e.dataTransfer.setData(PROJECT_DRAG_MIME, dir);
+          // Browser compatibility only: a drop reads the project MIME, never this one.
           e.dataTransfer.setData("text/plain", dir);
           e.dataTransfer.effectAllowed = "move";
         }}
@@ -39,6 +43,7 @@ export function ProjectOrganizeHandle({
         <span>{t("widthLabel")}</span>
         <select
           value={width}
+          disabled={disabled}
           aria-label={t("width", { name })}
           onChange={(e) => onWidth(dir, e.target.value as ProjectWidth)}
           className="rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] text-body-ink"
@@ -50,7 +55,7 @@ export function ProjectOrganizeHandle({
       </label>
       <button
         type="button"
-        disabled={index === 0}
+        disabled={disabled || index === 0}
         onClick={() => onMove(dir, -1)}
         className="rounded border border-line px-1.5 py-0.5 text-[11px] font-semibold text-body-ink disabled:cursor-not-allowed disabled:text-muted"
         aria-label={t("moveEarlier", { name })}
@@ -59,7 +64,7 @@ export function ProjectOrganizeHandle({
       </button>
       <button
         type="button"
-        disabled={index === count - 1}
+        disabled={disabled || index === count - 1}
         onClick={() => onMove(dir, 1)}
         className="rounded border border-line px-1.5 py-0.5 text-[11px] font-semibold text-body-ink disabled:cursor-not-allowed disabled:text-muted"
         aria-label={t("moveLater", { name })}
@@ -70,10 +75,13 @@ export function ProjectOrganizeHandle({
   );
 }
 
+// Only our own MIME identifies a project; text/plain rides along for browser compatibility and
+// is never read. The dragged value must be one of the draft's bounded normalized identities, so
+// names with spaces/Unicode work while arbitrary external text cannot become a project.
 export function readDraggedProject(dataTransfer: Pick<DataTransfer, "getData">, draft: LayoutEntry[]): string | null {
-  const dir = dataTransfer.getData(PROJECT_DRAG_MIME) || dataTransfer.getData("text/plain");
-  if (!dir || !/^[\w./-]+$/.test(dir)) return null;
-  return draft.some((e) => e.project === dir) ? dir : null;
+  const key = normalizeProjectKey(dataTransfer.getData(PROJECT_DRAG_MIME));
+  if (key === null) return null;
+  return draft.some((e) => e.project === key) ? key : null;
 }
 
 export function ProjectLayoutControls({

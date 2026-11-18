@@ -7,6 +7,8 @@ import { ProjectOrganizeHandle, readDraggedProject } from "./ProjectLayoutContro
 
 export type BoardEntryOrganize = {
   draft: LayoutEntry[];
+  // One explicit pending-write flag: handle/select/buttons and drop handlers all read it.
+  disabled: boolean;
   onMove: (dir: string, delta: -1 | 1) => void;
   onWidth: (dir: string, width: ProjectWidth) => void;
   onDrop: (dragged: string, target: string) => void;
@@ -34,10 +36,11 @@ export function renderBoardEntry(entry: BoardEntry, opts: BoardEntryOpts): React
     ? {
         onDragOver: (e: DragEvent) => {
           e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
+          e.dataTransfer.dropEffect = organize.disabled ? "none" : "move";
         },
         onDrop: (e: DragEvent) => {
           e.preventDefault();
+          if (organize.disabled) return;
           const dragged = readDraggedProject(e.dataTransfer, organize.draft);
           if (dragged) organize.onDrop(dragged, dir);
         },
@@ -49,6 +52,7 @@ export function renderBoardEntry(entry: BoardEntry, opts: BoardEntryOpts): React
         dir={dir} name={name} width={width}
         index={index < 0 ? 0 : index} count={organize.draft.length}
         onMove={organize.onMove} onWidth={organize.onWidth}
+        disabled={organize.disabled}
       />
     ) : null;
 

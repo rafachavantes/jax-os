@@ -86,23 +86,27 @@ export function cancelOrganize(snapshot: CockpitSnapshot): OrganizeState {
   return { ...initialOrganizeState, baseline: snapshot };
 }
 
+// While a layout write is in flight the visible draft is exactly what Save submitted: freezing
+// edits here (not only in the UI) keeps a newer width/order from being replaced by the response.
+const editable = (state: OrganizeState) => state.draft !== null && state.status !== "saving";
+
 export function draftMove(state: OrganizeState, project: string, delta: -1 | 1): OrganizeState {
-  if (state.draft === null) return state;
-  return { ...state, draft: moveEntry(state.draft, project, delta), status: "dirty", error: null };
+  if (!editable(state)) return state;
+  return { ...state, draft: moveEntry(state.draft!, project, delta), status: "dirty", error: null };
 }
 
 export function draftDrop(state: OrganizeState, dragged: string, target: string): OrganizeState {
-  if (state.draft === null) return state;
-  return { ...state, draft: dropEntry(state.draft, dragged, target), status: "dirty", error: null };
+  if (!editable(state)) return state;
+  return { ...state, draft: dropEntry(state.draft!, dragged, target), status: "dirty", error: null };
 }
 
 export function draftWidth(state: OrganizeState, project: string, width: ProjectWidth): OrganizeState {
-  if (state.draft === null) return state;
-  return { ...state, draft: setEntryWidth(state.draft, project, width), status: "dirty", error: null };
+  if (!editable(state)) return state;
+  return { ...state, draft: setEntryWidth(state.draft!, project, width), status: "dirty", error: null };
 }
 
 export function beginSave(state: OrganizeState): OrganizeState {
-  if (state.draft === null) return state;
+  if (!editable(state)) return state;
   return { ...state, status: "saving", error: null };
 }
 

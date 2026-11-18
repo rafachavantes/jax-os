@@ -93,3 +93,34 @@ describe("per-project handle (dedicated drag handle + keyboard/button alternativ
     expect(readDraggedProject(unsafe, draft)).toBeNull();
   });
 });
+describe("pending save disables the organize controls (plan Task 3)", () => {
+  const handle = (disabled: boolean) => renderToStaticMarkup(createElement(ProjectOrganizeHandle, {
+    dir: "Alpha", name: "Alpha", width: "half", index: 0, count: 2,
+    onMove: () => {}, onWidth: () => {}, disabled,
+  }));
+
+  it("disables the drag handle, width select and both move buttons while saving", () => {
+    const html = handle(true);
+    expect(html).toContain('draggable="false"');
+    expect(html).toContain('aria-disabled="true"');
+    expect((html.match(/disabled=""/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps the controls enabled when no write is pending", () => {
+    const html = handle(false);
+    expect(html).toContain('draggable="true"');
+    expect(html).not.toContain('aria-disabled="true"');
+  });
+
+  it("reads only the project MIME and validates against bounded normalized draft identities", () => {
+    const draft = [{ project: "projetos/ação web", width: "third" as const }];
+    const mime = { getData: (t: string) => (t === PROJECT_DRAG_MIME ? "projetos/ação web" : "") };
+    const textOnly = { getData: (t: string) => (t === "text/plain" ? "projetos/ação web" : "") };
+    const malformed = { getData: (t: string) => (t === PROJECT_DRAG_MIME ? "../escape" : "") };
+    const unrelated = { getData: (t: string) => (t === PROJECT_DRAG_MIME ? "outra coisa" : "") };
+    expect(readDraggedProject(mime, draft)).toBe("projetos/ação web");
+    expect(readDraggedProject(textOnly, draft)).toBeNull();
+    expect(readDraggedProject(malformed, draft)).toBeNull();
+    expect(readDraggedProject(unrelated, draft)).toBeNull();
+  });
+});

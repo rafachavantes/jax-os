@@ -103,3 +103,27 @@ describe("PR scope cache isolation (plan Task 2)", () => {
     expect(missionQueryKey("projects")).toEqual(["mission", "projects", null]);
   });
 });
+describe("a pending layout write freezes the draft (plan Task 3)", () => {
+  it("width, move and drop return the same saving state — newer edits cannot be silently lost", () => {
+    const saving = beginSave(enterOrganize(rev1, cards));
+    expect(saving.status).toBe("saving");
+    expect(draftWidth(saving, "A", "full")).toBe(saving);
+    expect(draftMove(saving, "B", -1)).toBe(saving);
+    expect(draftDrop(saving, "C", "B")).toBe(saving);
+    // A duplicate beginSave is inert too.
+    expect(beginSave(saving)).toBe(saving);
+  });
+
+  it("error/conflict keep the original draft and edits become available again; only success clears it", () => {
+    const saving = beginSave(enterOrganize(rev1, cards));
+    const failed = saveFailed(saving, "network");
+    expect(failed.draft).toEqual(saving.draft);
+    expect(draftWidth(failed, "A", "full").draft!.find((e) => e.project === "A")?.width).toBe("full");
+
+    const conflicted = saveConflicted(saving, rev2);
+    expect(conflicted.draft).toEqual(saving.draft);
+    expect(draftMove(conflicted, "B", -1).draft!.map((e) => e.project)).toEqual(["B", "A", "C"]);
+
+    expect(saveSucceeded(rev2).draft).toBeNull();
+  });
+});

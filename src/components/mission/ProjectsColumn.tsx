@@ -122,7 +122,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
   const prScope: PrScope = pendingScope ?? snapshot?.prScope ?? "mine";
 
   function startOrganize() {
-    if (!snapshot) return;
+    if (!snapshot || organize.status === "saving") return;
     setOrganize(enterOrganize(snapshot, model.cards.filter((c) => c.visibility === "visible")));
     setAnnouncement("");
   }
@@ -138,7 +138,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
   }
 
   async function persistLayout() {
-    if (organize.draft === null || organize.baseRevision === null) return;
+    if (organize.status === "saving" || organize.draft === null || organize.baseRevision === null) return;
     const started = beginSave(organize);
     setOrganize(started);
     try {
@@ -151,6 +151,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
   }
 
   async function resetLayoutOverride() {
+    if (organize.status === "saving") return;
     const revision = snapshot?.revision ?? organize.baseRevision;
     if (revision === null) return;
     const started: typeof organize = organize.draft !== null ? beginSave(organize) : { ...organize, status: "saving" };
@@ -246,6 +247,7 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
           expandedDir, onToggleExpand, counts, widths,
           organize: organize.draft !== null ? {
             draft: organize.draft,
+            disabled: organize.status === "saving",
             onMove: moveProject,
             onWidth: (dir, width) => setOrganize((state) => draftWidth(state, dir, width)),
             onDrop: (dragged, target) => setOrganize((state) => draftDrop(state, dragged, target)),

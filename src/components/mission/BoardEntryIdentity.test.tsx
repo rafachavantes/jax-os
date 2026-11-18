@@ -112,3 +112,16 @@ describe("group grid: two cards per row, an odd last card takes the whole row", 
     expect(tag).toContain("project-span");
   });
 });
+describe("a pending layout write rejects drops (plan Task 3)", () => {
+  it("a drop begun before Save is rejected while the save is in flight", () => {
+    const onDrop = vi.fn();
+    const el = renderBoardEntry(plain, {
+      ...opts,
+      organize: { draft: [{ project: "p", width: "third" as const }], onMove: () => {}, onWidth: () => {}, onDrop, disabled: true },
+    }) as El & { props: { onDrop: (e: unknown) => void } };
+    const preventDefault = vi.fn();
+    el.props.onDrop({ preventDefault, dataTransfer: { getData: (t: string) => (t === "application/x-jax-project" ? "p" : "") } });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+});
