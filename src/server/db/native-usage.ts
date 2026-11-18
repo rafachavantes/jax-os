@@ -15,6 +15,7 @@ export type UsageSlice = {
   allOutput: number;
   tokens: number;
   cost: number | null;
+  currency: string | null;
   items: number;
 };
 export type NativeContextRow = {
@@ -31,6 +32,7 @@ export type NativeUsageSnapshot = {
   totalOutput: number;
   totalTokens: number;
   totalCost: number | null;
+  costCurrency: string | null;
   costCoverage: { measured: number; total: number };
   daily: { date: string; input: number; output: number; tokens: number }[];
   byModel: UsageSlice[];
@@ -528,18 +530,25 @@ type AggRow = {
   cost_currency: string | null;
 };
 
-function sliceCost(rows: AggRow[]): number | null {
+function sliceCost(rows: AggRow[]): { amount: number | null; currency: string | null } {
   const costed = rows.filter((r) => r.cost_amount !== null);
-  if (costed.length === 0) return null;
+  if (costed.length === 0) return { amount: null, currency: null };
   const currencies = new Set(costed.map((r) => r.cost_currency));
-  if (currencies.size !== 1 || currencies.has(null)) return null;
-  return costed.reduce((sum, r) => sum + (r.cost_amount ?? 0), 0);
+  if (currencies.size !== 1 || currencies.has(null)) return { amount: null, currency: null };
+  return {
+    amount: costed.reduce((sum, r) => sum + (r.cost_amount ?? 0), 0),
+    currency: [...currencies][0],
+  };
 }
 
 function toSlice(name: string, rows: AggRow[]): UsageSlice {
   const allInput = rows.reduce((s, r) => s + r.all_input, 0);
   const allOutput = rows.reduce((s, r) => s + r.all_output, 0);
-  return { name, allInput, allOutput, tokens: allInput + allOutput, cost: sliceCost(rows), items: rows.length };
+  const cost = sliceCost(rows);
+  return {
+    name, allInput, allOutput, tokens: allInput + allOutput,
+    cost: cost.amount, currency: cost.currency, items: rows.length,
+  };
 }
 
 function daysBetween(startDay: string, endDay: string): string[] {
@@ -663,7 +672,8 @@ export function queryNativeUsage(
     totalInput: rows.reduce((s, r) => s + r.all_input, 0),
     totalOutput: rows.reduce((s, r) => s + r.all_output, 0),
     totalTokens: rows.reduce((s, r) => s + r.all_input + r.all_output, 0),
-    totalCost,
+    totalCost: totalCost.amount,
+    costCurrency: totalCost.currency,
     costCoverage: { measured: costed.length, total: rows.length },
     daily,
     byModel: [...models.entries()]
