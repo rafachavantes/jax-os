@@ -582,9 +582,14 @@ async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 // handle, plus the latch that retains ownership of a timed-out unabortable op.
 type OwnedOp = { done: boolean };
 type PendingOwner = { pending: OwnedOp | null };
+// One bounded interruption fact per source runtime: the consumed entry is not
+// registered, so the directory iterator position is no longer trustworthy. Entry names
+// stay in memory and are never persisted or sent to the client.
+type DiscoveryInterruption = { dir: string; entry: string; count: number; replayed: boolean };
 type SourceRuntime = PendingOwner & {
   iterator: { dir: DirHandleLike; path: string } | null;
   discoveryFirstNext: boolean;
+  interruption: DiscoveryInterruption | null;
 };
 
 const runtimes = new WeakMap<Database.Database, Map<"claude" | "codex", SourceRuntime>>();
@@ -597,7 +602,7 @@ function runtimeFor(db: Database.Database, source: "claude" | "codex"): SourceRu
   }
   let runtime = map.get(source);
   if (!runtime) {
-    runtime = { iterator: null, pending: null, discoveryFirstNext: false };
+    runtime = { iterator: null, pending: null, discoveryFirstNext: false, interruption: null };
     map.set(source, runtime);
   }
   return runtime;
@@ -879,6 +884,33 @@ async function discoveryPass(
       break;
     }
     activeDir = current;
+    // A registration interrupted after the iterator consumed its entry leaves that
+    // entry unclassified. Close the unfinished iterator once the original operation has
+    // settled, then either replay the directory from its beginning (first interruption)
+    // or make it terminal for this cycle (second interruption at the same entry).
+    const interrupted = runtime.interruption;
+    if (interrupted && interrupted.dir === current && (interrupted.count >= 2 || !interrupted.replayed)) {
+      const owned = runtime.iterator && runtime.iterator.path === current ? runtime.iterator : null;
+      if (owned) {
+        runtime.iterator = null;
+        const closed = await scope.closeCleanup(() => owned.dir.close());
+        if (!closed) {
+          warnings.add("io-timeout");
+          outcome.pending = true;
+          return outcome;
+        }
+      }
+      if (interrupted.count >= 2) {
+        warnings.add("discovery-failed");
+        markDirDone(deps.db, source, current, deps.now(), "discovery-failed");
+        runtime.interruption = null;
+        activeDir = null;
+        outcome.progressed = true;
+        continue;
+      }
+      // One bounded replay: reopen from the beginning, without bouncing every pass.
+      interrupted.replayed = true;
+    }
     if (!runtime.iterator || runtime.iterator.path !== current) {
       // Canonical containment is revalidated immediately before every queued directory
       // open: a symlinked directory (including a constructed subagents path) is rejected
@@ -898,9 +930,24 @@ async function discoveryPass(
           }
           return outcome;
         }
-        warnings.add("symlink-escape");
-        markDirDone(deps.db, source, current, deps.now(), "symlink-escape");
+        if (current === ".") {
+          // The root was validated before this open; losing it now is unavailability,
+          // not a completed empty enumeration.
+          warnings.add("root-unavailable");
+          outcome.rootUnavailable = true;
+          return outcome;
+        }
+        if (errorCode(error) === "ENOENT" && current.endsWith("/subagents")) {
+          // The optional subagents directory is normally absent.
+          markDirDone(deps.db, source, current, deps.now());
+          activeDir = null;
+          outcome.progressed = true;
+          continue;
+        }
+        warnings.add("subdir-failed");
+        markDirDone(deps.db, source, current, deps.now(), "subdir-failed");
         activeDir = null;
+        outcome.progressed = true;
         continue;
       }
       if (!insideRealRoot(realRoot, realDir)) {
@@ -994,15 +1041,27 @@ async function discoveryPass(
       outcome.progressed = true;
       try {
         await registerEntry(ctx, current, entry, dirChild);
+        if (
+          runtime.interruption &&
+          runtime.interruption.dir === current &&
+          runtime.interruption.entry === entry.name
+        ) {
+          runtime.interruption = null;
+        }
       } catch (error) {
-        if (isTimeout(error) && error.started) {
+        if (isTimeout(error)) {
+          // The consumed entry is unregistered: record the bounded interruption fact so
+          // the directory is replayed instead of silently skipping it.
+          const prior = runtime.interruption;
+          runtime.interruption = {
+            dir: current,
+            entry: entry.name,
+            count: prior && prior.dir === current && prior.entry === entry.name ? prior.count + 1 : 1,
+            replayed: false,
+          };
           warnings.add("io-timeout");
           setDiscoveryCurrentDir(deps.db, source, current, deps.now());
-          outcome.pending = true;
-          return outcome;
-        }
-        if (isTimeout(error)) {
-          setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+          if (error.started) outcome.pending = true;
           return outcome;
         }
         warnings.add("unsupported-layout");
@@ -1016,6 +1075,8 @@ async function discoveryPass(
         outcome.pending = true;
         break;
       }
+      // The interrupted entry is gone from the directory: no replay can recover it.
+      if (runtime.interruption && runtime.interruption.dir === current) runtime.interruption = null;
       markDirDone(deps.db, source, current, deps.now());
       activeDir = null;
       continue;

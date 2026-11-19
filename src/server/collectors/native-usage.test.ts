@@ -324,6 +324,7 @@ import {
   OPENCODE_HELPER_SOURCE,
   parseOpenCodeReply,
   runNativeUsagePass,
+  type DirEntryLike,
   type NativeCollectorDeps,
   type NativeFs,
   type StatLike,
@@ -1834,6 +1835,274 @@ describe("monotonic budgeting and cooperative hash cancellation", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     await runNativeUsagePass(deps);
     expect(opens).toBe(2);
+    deps.db.close();
+  });
+});
+
+describe("interrupted discovery registration and directory failure mapping", () => {
+  function countFiles(deps: NativeCollectorDeps): number {
+    return (deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_files WHERE source = 'claude'").get() as { n: number }).n;
+  }
+
+  function countItems(deps: NativeCollectorDeps): { n: number; distinct_count: number } {
+    return deps.db.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT item_id) AS distinct_count FROM native_usage_items").get() as {
+      n: number;
+      distinct_count: number;
+    };
+  }
+
+  function statusOf(deps: NativeCollectorDeps) {
+    return getSourceStatuses(deps.db).find((s) => s.source === "claude");
+  }
+
+  it("replays an interrupted registration beyond the first 64 entries and defers a terminal directory to the next cadence", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    for (let i = 0; i < 70; i += 1) {
+      writeClaude(deps, `proj/f${String(i).padStart(2, "0")}.jsonl`, [claudeLine(`m-${i}`)]);
+    }
+    writeClaude(deps, "zz-other/good.jsonl", [claudeLine("m-good", { sessionId: "sess-good" })]);
+    const stuckAbs = join(deps.roots.claude, "proj", "f65.jsonl");
+    const projAbs = join(deps.roots.claude, "proj");
+    const sortedDir = (real: Awaited<ReturnType<NativeFs["opendir"]>>): typeof real => {
+      let buffered: DirEntryLike[] | null = null;
+      return {
+        read: async () => {
+          if (buffered === null) {
+            const entries: DirEntryLike[] = [];
+            for (;;) {
+              const entry = await real.read();
+              if (entry === null) break;
+              entries.push(entry);
+            }
+            buffered = entries.sort((a, b) => a.name.localeCompare(b.name));
+          }
+          return buffered.shift() ?? null;
+        },
+        close: () => real.close(),
+      };
+    };
+    let stuckCalls = 0;
+    let fault = true;
+    let releaseStuck: (() => void) | null = null;
+    deps.fs = {
+      ...nativeFs,
+      opendir: async (path) => {
+        const real = await nativeFs.opendir(path);
+        return path === projAbs ? sortedDir(real) : real;
+      },
+      realpath: async (path) => {
+        if (fault && path === stuckAbs) {
+          stuckCalls += 1;
+          const real = await fsRealpathAsync(path);
+          return new Promise<string>((resolve) => {
+            releaseStuck = () => resolve(real);
+          });
+        }
+        return nativeFs.realpath(path);
+      },
+    };
+    let now = NOW;
+    const tick = () => (now += 61);
+    const pass = () => runNativeUsagePass({ ...deps, now: tick, nowMs: () => 0 });
+
+    while (stuckCalls === 0) await pass();
+    expect(stuckCalls).toBe(1);
+    expect(statusOf(deps)?.state).toBe("indexing");
+    expect(statusOf(deps)?.warnings).toContain("io-timeout");
+    expect(statusOf(deps)?.state).not.toBe("empty");
+    expect(countFiles(deps)).toBe(65);
+
+    await pass();
+    expect(stuckCalls).toBe(1);
+    releaseStuck!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    while (stuckCalls < 2) await pass();
+    expect(stuckCalls).toBe(2);
+    expect(countFiles(deps)).toBe(65);
+    expect(statusOf(deps)?.warnings).toContain("io-timeout");
+    releaseStuck!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    for (let round = 0; round < 8; round += 1) {
+      await pass();
+      if (getPersistentWarnings(deps.db, "claude").includes("discovery-failed")) break;
+    }
+    expect(getPersistentWarnings(deps.db, "claude")).toContain("discovery-failed");
+    expect(statusOf(deps)?.warnings).toContain("discovery-failed");
+    expect(countFiles(deps)).toBe(66);
+
+    // Within the 60 s cadence the terminal directory is not retried and the failure
+    // stays visible on later polls.
+    const before = stuckCalls;
+    now += 1;
+    await runNativeUsagePass({ ...deps, now: () => now, nowMs: () => 0 });
+    expect(stuckCalls).toBe(before);
+    expect(statusOf(deps)?.warnings).toContain("discovery-failed");
+
+    fault = false;
+    let settled = 0;
+    while (settled < 30 && countItems(deps).n < 71) {
+      await pass();
+      settled += 1;
+    }
+    expect(countItems(deps)).toEqual({ n: 71, distinct_count: 71 });
+    expect(countFiles(deps)).toBe(71);
+    expect(getPersistentWarnings(deps.db, "claude")).toEqual([]);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id IN ('m-65','m-66','m-67','m-68','m-69')").get())
+      .toEqual({ n: 5 });
+    deps.db.close();
+  }, 60_000);
+
+  it("owns a timed-out directory read and its close before reopening the directory", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(deps, "p/one.jsonl", [claudeLine("m-one")]);
+    const pAbs = join(deps.roots.claude, "p");
+    let reads = 0;
+    let closes = 0;
+    let readStarted = false;
+    let releaseRead: (() => void) | null = null;
+    let releaseClose: (() => void) | null = null;
+    deps.fs = {
+      ...nativeFs,
+      opendir: async (path) => {
+        const real = await nativeFs.opendir(path);
+        if (path !== pAbs) return real;
+        return {
+          read: () => {
+            reads += 1;
+            if (reads === 1) {
+              readStarted = true;
+              return new Promise<DirEntryLike | null>((resolve) => {
+                releaseRead = () =>
+                  resolve({ name: "one.jsonl", isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false });
+              });
+            }
+            return real.read();
+          },
+          close: async () => {
+            closes += 1;
+            if (closes === 1) {
+              return new Promise<void>((resolve) => {
+                releaseClose = async () => {
+                  await real.close();
+                  resolve();
+                };
+              });
+            }
+            await real.close();
+          },
+        };
+      },
+    };
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pass = runNativeUsagePass({ ...deps, now: () => NOW });
+      for (let i = 0; i < 200 && !readStarted; i += 1) await vi.advanceTimersByTimeAsync(1);
+      expect(readStarted).toBe(true);
+      await vi.advanceTimersByTimeAsync(1400);
+      await pass;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(statusOf(deps)?.state).toBe("indexing");
+    expect(statusOf(deps)?.warnings).toContain("io-timeout");
+
+    releaseRead!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect({ reads, closes }).toEqual({ reads: 1, closes: 1 });
+    expect(releaseClose).not.toBeNull();
+
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+    expect(reads).toBe(1);
+    expect(statusOf(deps)?.warnings).toContain("io-pending");
+
+    releaseClose!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    let settled = 0;
+    while (settled < 8) {
+      const counted = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-one'").get() as { n: number };
+      if (counted.n === 1) break;
+      await runNativeUsagePass({ ...deps, now: () => NOW + 61 * (settled + 1) });
+      settled += 1;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-one'").get()).toEqual({ n: 1 });
+    deps.db.close();
+  }, 60_000);
+
+  it("treats a normally absent optional subagents directory as quiet", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(deps, "proj/lead.jsonl", [claudeLine("m-lead")]);
+    mkdirSync(join(deps.roots.claude, "proj", "3f0c2a51-8a4b-4c5d-9e6f-0123456789ab"), { recursive: true });
+    for (let pass = 0; pass < 8; pass += 1) {
+      await runNativeUsagePass({ ...deps, now: () => NOW + pass * 61 });
+      if (statusOf(deps)?.state === "available") break;
+    }
+    expect(statusOf(deps)?.warnings).not.toContain("symlink-escape");
+    expect(statusOf(deps)?.warnings).not.toContain("subdir-failed");
+    expect(getPersistentWarnings(deps.db, "claude")).toEqual([]);
+    expect(
+      deps.db.prepare("SELECT state, last_warning FROM native_usage_dirs WHERE source = 'claude' AND path = ?")
+        .get("proj/3f0c2a51-8a4b-4c5d-9e6f-0123456789ab/subagents"),
+    ).toEqual({ state: "done", last_warning: null });
+    deps.db.close();
+  }, 30_000);
+
+  it("classifies an unreadable queued directory as subdir-failed, never as a symlink escape", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(deps, "good/lead.jsonl", [claudeLine("m-good")]);
+    writeClaude(deps, "bad/lead-bad.jsonl", [claudeLine("m-bad")]);
+    const badAbs = join(deps.roots.claude, "bad");
+    let calls = 0;
+    deps.fs = {
+      ...nativeFs,
+      realpath: async (path) => {
+        if (path === badAbs) {
+          calls += 1;
+          if (calls % 2 === 0) {
+            const error = new Error("EACCES") as Error & { code: string };
+            error.code = "EACCES";
+            throw error;
+          }
+        }
+        return nativeFs.realpath(path);
+      },
+    };
+    for (let pass = 0; pass < 6; pass += 1) await runNativeUsagePass({ ...deps, now: () => NOW + pass * 61 });
+    const status = statusOf(deps);
+    expect(status?.warnings).toContain("subdir-failed");
+    expect(status?.warnings).not.toContain("symlink-escape");
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-good'").get()).toEqual({ n: 1 });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-bad'").get()).toEqual({ n: 0 });
+    expect(deps.db.prepare("SELECT state, last_warning FROM native_usage_dirs WHERE source = 'claude' AND path = 'bad'").get())
+      .toEqual({ state: "done", last_warning: "subdir-failed" });
+    deps.db.close();
+  }, 30_000);
+
+  it("reports a root that becomes unreadable after validation as unavailable", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(deps, "p/lead.jsonl", [claudeLine("m-1")]);
+    let rootCalls = 0;
+    deps.fs = {
+      ...nativeFs,
+      realpath: async (path) => {
+        if (path === deps.roots.claude) {
+          rootCalls += 1;
+          if (rootCalls > 1) {
+            const error = new Error("EACCES") as Error & { code: string };
+            error.code = "EACCES";
+            throw error;
+          }
+        }
+        return nativeFs.realpath(path);
+      },
+    };
+    await runNativeUsagePass({ ...deps, now: () => NOW });
+    const status = statusOf(deps);
+    expect(status?.state).toBe("unavailable");
+    expect(status?.warnings).toContain("root-unavailable");
+    expect(status?.warnings).not.toContain("symlink-escape");
     deps.db.close();
   });
 });
