@@ -18,8 +18,26 @@ import { EnvironmentDiagnostics } from "@/components/health/EnvironmentDiagnosti
 const RANGES: HealthRange[] = ["1h", "24h", "7d", "90d"];
 const STALE_S = 180;
 
-function fmtGb(mb: number | null | undefined): string {
-  return mb === null || mb === undefined ? "—" : `${(mb / 1024).toFixed(1)} GB`;
+// Binary memory values are explicit MiB/GiB; disk/tmp stay decimal GB.
+function fmtMem(mb: number | null | undefined): string {
+  if (mb === null || mb === undefined) return "—";
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb.toFixed(0)} MiB`;
+}
+
+function fmtDisk(used: number | null | undefined, total: number | null | undefined): string {
+  if (used === null || used === undefined || total === null || total === undefined) return "—";
+  const pct = total > 0 ? ` (${Math.round((used / total) * 100)}%)` : "";
+  return `${used.toFixed(0)} / ${total.toFixed(0)} GB${pct}`;
+}
+
+// The four home anchors must exist even while metrics are loading/failed; the /tmp anchor is
+// provided by EnvironmentDiagnostics' own panel.
+function MetricAnchors() {
+  return (
+    <>
+      {["cpu", "mem", "disk"].map((id) => <span key={id} id={id} className="scroll-mt-24" aria-hidden />)}
+    </>
+  );
 }
 
 const DOT: Record<string, string> = {
@@ -55,12 +73,19 @@ function HealthPageInner() {
     return (
       <div className="flex flex-col gap-[22px] p-1">
         <SourceWarning label={t("unavailable")} detail={q.error instanceof Error ? q.error.message : undefined} />
+        <MetricAnchors />
         <EnvironmentDiagnostics />
       </div>
     );
   }
   if (!data) {
-    return <div className="h-6 animate-pulse rounded bg-surface-2" />;
+    return (
+      <div className="flex flex-col gap-[22px] p-1">
+        <div className="h-6 animate-pulse rounded bg-surface-2" />
+        <MetricAnchors />
+        <EnvironmentDiagnostics />
+      </div>
+    );
   }
   if (data.latest === null) {
     return (
@@ -69,19 +94,17 @@ function HealthPageInner() {
           <Server className="h-4 w-4" />
           {t("waitingFirstSample")}
         </div>
+        <MetricAnchors />
         <EnvironmentDiagnostics />
       </div>
     );
   }
 
   const l = data.latest;
-  const diskPct =
-    l.diskUsedGb !== null && l.diskTotalGb ? Math.round((l.diskUsedGb / l.diskTotalGb) * 100) : null;
-
   const tiles = [
     { key: "cpu", icon: Cpu, value: l.cpuPct !== null ? `${l.cpuPct.toFixed(0)}%` : "—", spark: data.spark.map((p) => p.cpuPct) },
-    { key: "mem", icon: MemoryStick, value: `${fmtGb(l.memUsedMb)} / ${fmtGb(l.memTotalMb)}`, spark: data.spark.map((p) => p.memUsedMb) },
-    { key: "disk", icon: HardDrive, value: l.diskUsedGb !== null ? `${l.diskUsedGb.toFixed(0)} / ${l.diskTotalGb?.toFixed(0)} GB (${diskPct}%)` : "—", spark: data.spark.map((p) => p.diskUsedGb) },
+    { key: "mem", icon: MemoryStick, value: `${fmtMem(l.memUsedMb)} / ${fmtMem(l.memTotalMb)}`, spark: data.spark.map((p) => p.memUsedMb) },
+    { key: "disk", icon: HardDrive, value: fmtDisk(l.diskUsedGb, l.diskTotalGb), spark: data.spark.map((p) => p.diskUsedGb) },
     { key: "load", icon: Gauge, value: l.load5 !== null ? `${l.load5.toFixed(2)} / ${data.cores}` : "—", spark: data.spark.map((p) => p.load5) },
   ] as const;
 
@@ -146,7 +169,7 @@ function HealthPageInner() {
         </div>
         <div className="rounded-lg border border-line bg-surface p-4">
           <span className="text-xs font-medium text-muted">{t("charts.mem")}</span>
-          <LineChart points={data.series} maxPoints={data.seriesMax} field="memUsedMb" colorClass="text-accent" format={(v) => fmtGb(v)} />
+          <LineChart points={data.series} maxPoints={data.seriesMax} field="memUsedMb" colorClass="text-accent" format={(v) => fmtMem(v)} />
         </div>
       </div>
 

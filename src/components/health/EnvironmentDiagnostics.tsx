@@ -40,8 +40,9 @@ const STATE_CLASS: Record<ComponentState, string> = {
   "not-applicable": "border-line bg-surface-2 text-muted",
 };
 
+// Decimal GB is reserved for filesystem capacity; process RSS is binary MiB/GiB.
 const GB = (value: number): string => `${value.toFixed(1)} GB`;
-const MB = (value: number): string => (value >= 1024 ? GB(value / 1024) : `${value.toFixed(0)} MB`);
+const MiB = (value: number): string => (value >= 1024 ? `${(value / 1024).toFixed(1)} GiB` : `${value.toFixed(0)} MiB`);
 
 function Skeleton() {
   return <span className="block h-6 w-64 animate-pulse rounded bg-surface-2" />;
@@ -166,13 +167,15 @@ function Workloads() {
                   <span className="min-w-0 font-mono font-semibold [overflow-wrap:anywhere]">{group.family}</span>
                   <span>{t("workloads.processes", { count: group.count })}</span>
                   <span className="text-muted">
-                    {group.rssMb !== null ? t("workloads.rss", { value: MB(group.rssMb) }) : t("shortUnavailable")}
+                    {group.rssMb !== null ? t("workloads.rss", { value: MiB(group.rssMb) }) : t("shortUnavailable")}
                   </span>
                   <span className={group.owner.kind === "pane" ? "text-success" : "text-muted"}>
                     {group.owner.kind === "pane"
                       ? t("workloads.paneOwner", { pane: group.owner.pane })
                       : `${t("workloads.unknownOwner")} · ${t(`workloads.ownerReasons.${group.owner.reason}`)}`}
                   </span>
+                  {group.purpose !== null ? <span className="text-muted">{t("workloads.purposePane")}</span> : null}
+                  {group.maxAgeSeconds !== null ? <span className="text-muted">{t("workloads.maxAge", { value: group.maxAgeSeconds })}</span> : null}
                   {group.project ? <span className="text-muted">{t("workloads.lastKnown", { project: group.project })}</span> : null}
                   {group.contextObservedAt ? (
                     <span className="text-muted">{t("workloads.lastKnownAt")} <RelativeTime epochMs={Date.parse(group.contextObservedAt)} /></span>
@@ -186,7 +189,7 @@ function Workloads() {
                       <span className="text-body-ink">{proc.pid}</span>
                       <span>{proc.state}</span>
                       <span>{t("workloads.age", { value: proc.ageSeconds })}</span>
-                      <span>{proc.rssMb !== null ? MB(proc.rssMb) : t("shortUnavailable")}</span>
+                      <span>{proc.rssMb !== null ? MiB(proc.rssMb) : t("shortUnavailable")}</span>
                       {proc.parentCommand !== null ? (
                         <span>{t("workloads.parent", { command: proc.parentCommand, pid: proc.ppid })}</span>
                       ) : null}

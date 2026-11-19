@@ -4,7 +4,7 @@ import { useTranslations } from "next-intl";
 import { useQuery } from "@tanstack/react-query";
 import { Cpu, HardDrive, MemoryStick } from "lucide-react";
 import { fetchEnvelope } from "@/lib/api";
-import { meterValuesCompact } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { HealthPayload, HealthLatest } from "@/server/db/metrics";
 import type { Alert, PackageRow, ZombieRow } from "@/server/collectors/alerts";
 import type { ResourcesSection } from "@/server/collectors/environment";
@@ -12,8 +12,10 @@ import { SourceWarning } from "./SourceWarning";
 
 const VISIBLE_PACKAGES = 3;
 
-function fmtGb(mb: number | null | undefined): string {
-  return mb === null || mb === undefined ? "—" : `${(mb / 1024).toFixed(1)} GB`;
+// Binary memory is explicit MiB/GiB; never a decimal "GB" label for RAM.
+function fmtMem(mb: number | null | undefined): string {
+  if (mb === null || mb === undefined) return "—";
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb.toFixed(0)} MiB`;
 }
 
 function fmtVal(n: number | null | undefined, digits = 0): string {
@@ -25,7 +27,7 @@ function fmtVal(n: number | null | undefined, digits = 0): string {
 export function meterValues(latest: HealthLatest | null, cores: number | null) {
   return {
     cpu: latest?.cpuPct != null ? `${latest.cpuPct.toFixed(0)}%` : "—",
-    mem: latest ? `${fmtGb(latest.memUsedMb)} / ${fmtGb(latest.memTotalMb)}` : "—",
+    mem: latest ? `${fmtMem(latest.memUsedMb)} / ${fmtMem(latest.memTotalMb)}` : "—",
     disk: `${fmtVal(latest?.diskUsedGb)} / ${fmtVal(latest?.diskTotalGb)} GB`,
     load: latest?.load5 != null ? `${latest.load5.toFixed(2)} / ${cores ?? "—"}` : "—",
   };
@@ -81,9 +83,19 @@ export function ServerPanel() {
 
   const healthPending = health.data === undefined && !health.isError;
   const healthData = health.data?.ok ? health.data.data : null;
-  const mv = meterValuesCompact(healthData?.latest ?? null, healthData?.cores ?? null);
+  const latest = healthData?.latest ?? null;
+  const mv = {
+    cpu: latest?.cpuPct != null ? `${latest.cpuPct.toFixed(0)}%` : "—",
+    mem: latest ? `${fmtMem(latest.memUsedMb)} / ${fmtMem(latest.memTotalMb)}` : "—",
+    disk: latest?.diskUsedGb != null && latest?.diskTotalGb != null
+      ? `${Math.round((latest.diskUsedGb / latest.diskTotalGb) * 100)}%`
+      : "—",
+  };
   const rows = alertRowsOf(alerts.data);
-  const tmp = environment.data?.ok ? environment.data.data.tmp : null;
+  const envData = environment.data?.ok ? environment.data.data : null;
+  const tmp = envData?.tmp ?? null;
+  const tmpPending = environment.data === undefined && !environment.isError;
+  const tmpStale = envData?.stale === true;
   const alertsReady = alerts.data !== undefined && alerts.data.ok === true;
   const meters = [
     { key: "cpu" as const, icon: Cpu, value: mv.cpu },
@@ -109,10 +121,20 @@ export function ServerPanel() {
       )}
       <a href="/health#tmp" className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
         <span>{t("temp")}</span>
-        <span className="font-semibold text-ink">
-          {tmp ? `${tmp.usedGb.toFixed(1)} / ${tmp.totalGb.toFixed(1)} GB` : t("tempUnavailable")}
-        </span>
+        {tmpPending ? (
+          <span className="h-4 w-24 animate-pulse rounded bg-surface-2" />
+        ) : (
+          <span className="font-semibold text-ink">
+            {tmp ? `${tmp.usedGb.toFixed(1)} / ${tmp.totalGb.toFixed(1)} GB` : t("tempUnavailable")}
+          </span>
+        )}
       </a>
+      {tmpStale && tmp ? (
+        <span className="flex items-center gap-1 text-[11px] text-warning">
+          {t("tempStale")}
+          {envData?.lastGoodAt ? <> · <RelativeTime epochMs={Date.parse(envData.lastGoodAt)} /></> : null}
+        </span>
+      ) : null}
       {alerts.isError ? (
         <SourceWarning label={t("alertsUnavailable")} />
       ) : !alertsReady ? (

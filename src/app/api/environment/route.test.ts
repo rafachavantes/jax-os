@@ -57,6 +57,21 @@ describe("GET /api/environment (M5 Task 4)", () => {
     expect(route).not.toHaveProperty("DELETE");
   });
 
+  it("preserves nested partial state and keeps every section failure independent", async () => {
+    const partial = await call("?section=packages", deps({
+      packages: async () => ({ ...PACKAGES, state: "partial", warnings: ["simulation-unavailable"] }),
+    }));
+    expect(partial).toEqual({ ok: true, data: { ...PACKAGES, state: "partial", warnings: ["simulation-unavailable"] } });
+
+    const sections = ["components", "resources", "workloads", "packages"] as const;
+    for (const section of sections) {
+      const failed = await call(`?section=${section}`, deps({
+        [section]: async () => { throw new Error(`${section}-down`); },
+      }));
+      expect(failed).toEqual({ ok: false, error: `${section}-down` });
+    }
+  });
+
   it("does not poll every section for one request", async () => {
     const components = vi.fn(async () => COMPONENTS);
     const resources = vi.fn(async () => RESOURCES);

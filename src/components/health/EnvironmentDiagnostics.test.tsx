@@ -248,6 +248,50 @@ describe("EnvironmentDiagnostics (M5 Task 4)", () => {
     expect(html).not.toContain("0 candidates");
   });
 
+  it("renders healthy resources while the package promise is still pending", () => {
+    harness.results.set("environment:resources", { data: { ok: true, data: RESOURCES }, isError: false });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("1.3 GB");
+    expect(html).toContain("Package candidates");
+    expect(html).toMatch(/animate-pulse/);
+  });
+
+  it("renders a warning for a failed source instead of an endless skeleton, and all-unavailable stays explicit", () => {
+    for (const section of ["components", "resources", "workloads", "packages"]) {
+      harness.results.set(`environment:${section}`, { data: undefined, isError: true });
+    }
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html.match(/Environment data unavailable/g)).toHaveLength(4);
+    expect(html).not.toContain("animate-pulse");
+    expect(html).not.toContain("No processes observed.");
+    expect(html).not.toContain("No candidate updates.");
+  });
+
+  it("shows observation and last-good labels for packages and workloads without relabeling cached data", () => {
+    setAll();
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Observed");
+    expect(html).toContain("last good");
+    expect(html).toContain("120 MiB");
+  });
+
+  it("never renders undefined/NaN for null metric-like fields in workload details", () => {
+    setAll();
+    harness.results.set("environment:workloads", {
+      data: { ok: true, data: { ...WORKLOADS, groups: [{
+        ...WORKLOADS.groups[1],
+        rssMb: null,
+        maxAgeSeconds: null,
+        pids: [{ pid: 40, ppid: 1, state: "Sl", ageSeconds: 0, rssMb: null, parentCommand: null }],
+      }] } },
+      isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).not.toContain("undefined");
+    expect(html).not.toContain("NaN");
+    expect(html).toContain("—");
+  });
+
   it("both actual catalogs resolve every environment key", () => {
     setAll();
     for (const locale of ["en-US", "pt-BR"] as const) {

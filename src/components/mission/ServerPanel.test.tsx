@@ -59,7 +59,7 @@ const health = (over: Record<string, unknown> = {}) => ({
 
 describe("meterValues / meterPercent / groupZombies (retained pure helpers)", () => {
   it("formats each meter independently, including a null disk side", () => {
-    expect(meterValues(LATEST, 8)).toEqual({ cpu: "42%", mem: "4.0 GB / 8.0 GB", disk: "40 / 100 GB", load: "1.20 / 8" });
+    expect(meterValues(LATEST, 8)).toEqual({ cpu: "42%", mem: "4.0 GiB / 8.0 GiB", disk: "40 / 100 GB", load: "1.20 / 8" });
     expect(meterValues({ ...LATEST, diskTotalGb: null }, 8).disk).toBe("40 / — GB");
     expect(meterValues(null, null)).toEqual({ cpu: "—", mem: "—", disk: "— / — GB", load: "—" });
   });
@@ -103,12 +103,15 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
     expect(html).not.toContain("copyCaption");
   });
 
-  it("says temporary capacity is unavailable rather than substituting disk", () => {
+  it("shows a pending skeleton first and says unavailable only after a failed environment read", () => {
     harness.results.set("health:24h", health());
     harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
-    const { html } = renderIntl(createElement(ServerPanel));
-    expect(html).toContain("/tmp");
-    expect(html).toContain("unavailable");
+    const pending = renderIntl(createElement(ServerPanel)).html;
+    expect(pending).toContain("/tmp");
+    expect(pending).toMatch(/animate-pulse/);
+    harness.results.set("environment:resources", { data: undefined, isError: true });
+    const failed = renderIntl(createElement(ServerPanel)).html;
+    expect(failed).toContain("unavailable");
   });
 
   it("shows the independent measured /tmp capacity when the environment source answers", () => {
@@ -118,6 +121,31 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
     const { html } = renderIntl(createElement(ServerPanel));
     expect(html).toContain("1.5 / 4.0 GB");
     expect(html).toContain('href="/health#tmp"');
+  });
+
+  it("shows retained temporary capacity as stale with its original last-good time", () => {
+    harness.results.set("health:24h", health());
+    harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
+    harness.results.set("environment:resources", {
+      data: { ok: true, data: {
+        observedAt: "2026-09-19T00:00:00.000Z", lastGoodAt: "2026-09-18T00:00:00.000Z",
+        state: "unavailable", stale: true, warning: "statfs-failed",
+        tmp: { path: "/tmp", mountPath: "/tmp", fsType: "tmpfs", tmpfs: true, sharedRoot: false, usedGb: 1.5, totalGb: 4, availableGb: 2.5 },
+      } },
+      isError: false,
+    });
+    const { html, errors } = renderIntl(createElement(ServerPanel));
+    expect(errors).toEqual([]);
+    expect(html).toContain("1.5 / 4.0 GB");
+    expect(html).toContain("stale, showing the last good observation");
+  });
+
+  it("renders a temporary-capacity skeleton on the first render, never an unavailable claim", () => {
+    harness.results.set("health:24h", health());
+    harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
+    const { html } = renderIntl(createElement(ServerPanel));
+    expect(html).toContain("animate-pulse");
+    expect(html).not.toContain("unavailable");
   });
 
   it("shows the alert count (summed from existing sources) and a source warning on failure", () => {
