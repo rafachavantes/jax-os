@@ -154,6 +154,7 @@ function HomeCockpit() {
     const snapshot = readHomeSnapshot(browserSessionStorage());
     if (snapshot) {
       setSaved(snapshot);
+      setView(new URLSearchParams(window.location.search).has("view") ? parseHomeView(window.location.search) : snapshot.view);
       scrollRef.current = snapshot.scrollTop;
       setFilter(snapshot.filter);
       setExpandedDir(snapshot.expandedKey);
