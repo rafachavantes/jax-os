@@ -929,6 +929,7 @@ type FacetRow = {
   model: string | null;
   cost_currency: string | null;
   cost_present: number;
+  first_rowid: number;
   items: number;
   all_input: number | null;
   all_output: number | null;
@@ -936,6 +937,9 @@ type FacetRow = {
 };
 
 type SliceAcc = {
+  // First persisted identity of this slice: equal-token slices keep the order the old
+  // per-item reducer produced instead of SQLite's grouped-key order.
+  firstOrder: number;
   items: number;
   allInput: number;
   allOutput: number;
@@ -962,9 +966,10 @@ function checkedMoney(total: number, value: number): number {
   return next;
 }
 
-function emptySlice(name: string): SliceAcc & { name: string } {
+function emptySlice(name: string, firstOrder: number): SliceAcc & { name: string } {
   return {
     name,
+    firstOrder,
     items: 0,
     allInput: 0,
     allOutput: 0,
@@ -973,6 +978,7 @@ function emptySlice(name: string): SliceAcc & { name: string } {
 }
 
 function addToSlice(acc: SliceAcc, row: FacetRow): void {
+  if (row.first_rowid < acc.firstOrder) acc.firstOrder = row.first_rowid;
   const items = checkedAdd(0, row.items);
   const input = checkedAdd(0, row.all_input ?? 0);
   const output = checkedAdd(0, row.all_output ?? 0);
@@ -1054,6 +1060,7 @@ export function queryNativeUsage(
     .prepare(
       `SELECT i.agent AS agent, i.model AS model, i.cost_currency AS cost_currency,
               CASE WHEN i.cost_amount IS NULL THEN 0 ELSE 1 END AS cost_present,
+              MIN(i.rowid) AS first_rowid,
               COUNT(*) AS items, SUM(i.all_input) AS all_input, SUM(i.all_output) AS all_output,
               SUM(i.cost_amount) AS cost_sum
          FROM native_usage_items i
@@ -1079,11 +1086,11 @@ export function queryNativeUsage(
   let unknownUnit = 0;
   for (const row of facetRows) {
     const items = checkedAdd(0, row.items);
-    const agentAcc = agents.get(row.agent) ?? emptySlice(row.agent);
+    const agentAcc = agents.get(row.agent) ?? emptySlice(row.agent, row.first_rowid);
     addToSlice(agentAcc, row);
     agents.set(row.agent, agentAcc);
     const modelName = row.model ?? UNKNOWN_MODEL_FILTER;
-    const modelAcc = models.get(modelName) ?? emptySlice(modelName);
+    const modelAcc = models.get(modelName) ?? emptySlice(modelName, row.first_rowid);
     addToSlice(modelAcc, row);
     models.set(modelName, modelAcc);
     if (row.cost_present !== 1) continue;
@@ -1189,10 +1196,17 @@ export function queryNativeUsage(
       unknownUnit,
     },
     daily,
-    byModel: [...models.entries()]
-      .map(([name, acc]) => sliceFrom(name, acc))
-      .sort((a, b) => b.tokens - a.tokens || (a.name === UNKNOWN_MODEL_FILTER ? 1 : b.name === UNKNOWN_MODEL_FILTER ? -1 : 0)),
-    byAgent: [...agents.entries()].map(([name, acc]) => sliceFrom(name, acc)).sort((a, b) => b.tokens - a.tokens),
+    byModel: [...models.values()]
+      .map((acc) => ({ slice: sliceFrom(acc.name, acc), firstOrder: acc.firstOrder }))
+      .sort((a, b) =>
+        b.slice.tokens - a.slice.tokens ||
+        (a.slice.name === UNKNOWN_MODEL_FILTER ? 1 : b.slice.name === UNKNOWN_MODEL_FILTER ? -1 : 0) ||
+        a.firstOrder - b.firstOrder)
+      .map(({ slice }) => slice),
+    byAgent: [...agents.values()]
+      .map((acc) => ({ slice: sliceFrom(acc.name, acc), firstOrder: acc.firstOrder }))
+      .sort((a, b) => b.slice.tokens - a.slice.tokens || a.firstOrder - b.firstOrder)
+      .map(({ slice }) => slice),
     sessions: { lead: sessionRow.lead, child: sessionRow.child },
     sources,
     filters: {

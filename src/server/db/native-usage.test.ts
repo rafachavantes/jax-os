@@ -874,6 +874,15 @@ function legacySnapshot(db: ReturnType<typeof openDb>, opts: LegacyQuery) {
   };
 }
 
+// Money is added in a different order by grouped SQL than by the old per-row
+// reduction, so the parity bound is machine precision, not a decimal rounding.
+const MONEY_EPSILONS = 64;
+function expectMoneyEqual(actual: number, expected: number): void {
+  expect(Math.abs(actual - expected)).toBeLessThanOrEqual(
+    MONEY_EPSILONS * Number.EPSILON * Math.max(1, Math.abs(expected)),
+  );
+}
+
 function expectSlices(actual: UsageSlice[], expected: LegacySlice[]): void {
   expect(actual.map((s) => s.name)).toEqual(expected.map((s) => s.name));
   expect(actual.map((s) => ({
@@ -884,7 +893,7 @@ function expectSlices(actual: UsageSlice[], expected: LegacySlice[]): void {
   actual.forEach((slice, index) => {
     const expectedCost = expected[index].cost;
     if (expectedCost === null) expect(slice.cost).toBeNull();
-    else expect(slice.cost as number).toBeCloseTo(expectedCost, 10);
+    else expectMoneyEqual(slice.cost as number, expectedCost);
   });
 }
 
@@ -896,7 +905,7 @@ function expectMatchesLegacy(snap: NativeUsageSnapshot, legacy: ReturnType<typeo
   expect(snap.totalCacheWrite).toBe(legacy.totalCacheWrite);
   expect(snap.totalReasoning).toBe(legacy.totalReasoning);
   if (legacy.totalCost === null) expect(snap.totalCost).toBeNull();
-  else expect(snap.totalCost as number).toBeCloseTo(legacy.totalCost, 10);
+  else expectMoneyEqual(snap.totalCost as number, legacy.totalCost);
   expect(snap.costCurrency).toBe(legacy.costCurrency);
   expect(snap.costCoverage).toEqual(legacy.costCoverage);
   expect(snap.daily).toEqual(legacy.daily);
@@ -958,6 +967,42 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     for (const opts of queries) {
       expectMatchesLegacy(queryNativeUsage(db, opts), legacySnapshot(db, opts));
     }
+    db.close();
+  });
+
+  it("keeps the frozen first-occurrence order for equal-token slices, including filters", () => {
+    const db = openDb(":memory:");
+    // Seeded reverse-alphabetically: alphabetical group order would invert the ties.
+    const tie = (agent: string, model: string | null, input: number, id: string) =>
+      upsertNativeUsageItem(db, opencode({
+        session_id: `tie-${id}`, message_id: `tie-msg-${id}`, agent, model_id: model,
+        input, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, cost: null,
+      }));
+    tie("Z", "zeta", 10, "z");
+    tie("A", "alpha", 10, "a");
+    tie("agent-z", "m1", 13, "m1");
+    tie("agent-a", "m2", 7, "m2");
+    tie("agent-c", null, 10, "unknown");
+    const queries: LegacyQuery[] = [
+      { period: 30, now: NOW },
+      { period: 30, agent: "Z", now: NOW },
+      { period: 30, agent: "A", now: NOW },
+      { period: 30, model: "zeta", now: NOW },
+      { period: 30, model: "alpha", now: NOW },
+      { period: 30, model: UNKNOWN_MODEL_FILTER, now: NOW },
+    ];
+    for (const opts of queries) {
+      const snap = queryNativeUsage(db, opts);
+      const legacy = legacySnapshot(db, opts);
+      expectMatchesLegacy(snap, legacy);
+      expect(snap.byAgent.map((s) => s.name)).toEqual(
+        legacy.byAgent.map((s) => s.name),
+      );
+    }
+    expect(queryNativeUsage(db, { period: 30, now: NOW }).byModel.map((s) => s.name))
+      .toEqual(["m1", "zeta", "alpha", UNKNOWN_MODEL_FILTER, "m2"]);
+    expect(queryNativeUsage(db, { period: 30, now: NOW }).byAgent.map((s) => s.name))
+      .toEqual(["agent-z", "Z", "A", "agent-c", "agent-a"]);
     db.close();
   });
 
