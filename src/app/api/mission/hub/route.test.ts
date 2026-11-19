@@ -49,6 +49,49 @@ describe("GET /api/mission/hub (wiring)", () => {
     db.close();
   });
 
+  it("forwards proven Codex terminal identity without serializing raw title text", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-10T00:00:00.000Z"));
+      const db = openDb(":memory:");
+      insertEvent(db, CODEX_EVENT, new Date("2026-08-27T10:00:00Z"));
+      const SENTINEL = "PRIVATE-SENTINEL-THREAD-NAME";
+      const deps: HubRouteDeps = {
+        getDb: () => db,
+        getProjects: () =>
+          ({ projects: [{ dir: "p1", statusMtime: "2026-08-01T00:00:00.000Z" }], skipped: 0 }) as unknown as ReturnType<HubRouteDeps["getProjects"]>,
+        listLivePanes: async () => ({
+          paneIds: new Set(["%183"]),
+          incarnation: "3421408:1793045754",
+          paneCommands: new Map([["%183", "codex"]]),
+          codexTerminals: [{
+            pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "p1-lead", command: "codex",
+            dead: false, eligible: true, title: `${SENTINEL} | p1 | ${THREAD.slice(0, 29)}...`,
+          }],
+        }),
+        collectCodexSnapshot: async () => ({
+          ok: true as const, ts: "2026-09-10T00:00:00.000Z", truncated: false, loadedThreadIds: [THREAD],
+          threads: [{ threadId: THREAD, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+        }),
+        isCodexCliPresent: () => true,
+        getHubData,
+      };
+      const res = await handleHubGet(deps);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data.byProject.p1.codexSessions[0].terminal).toEqual({
+        pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "p1-lead",
+      });
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain(SENTINEL);
+      expect(serialized).not.toContain(`${THREAD.slice(0, 29)}...`);
+      expect(serialized).toContain("p1-lead");
+      db.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a genuine listLivePanes failure is a source warning with native state intact, not a whole-hub failure (C4)", async () => {
     // handleHubGet reads Date.now() directly (not deps-injectable) to pass `now` to getHubData,
     // which admits a project with no live pane only via the 30-day historical window in

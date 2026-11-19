@@ -50,7 +50,7 @@ import {
   pruneState, heartbeatFromRows,
   getHubMembership, getProjectPanes, getProjectTimeline, getHubData, lastRunFor,
   getLoopSummary, getWorktreeLedgerRows,
-  isWorking, countFreshEvents, getCodexSessions,
+  isWorking, countFreshEvents, getCodexSessions, sessionSeats,
   runtimeFromEmitter, lastKnownPaneContext,
   type StalenessCandidate,
   type LiveSnapshot,
@@ -60,6 +60,7 @@ import { buildMission } from "../../lib/mission";
 import type { Project } from "../collectors/projects";
 import { parseIngress } from "../collectors/workflow-events";
 import type { CodexSnapshot, CodexThread } from "../collectors/workflow-codex";
+import type { CodexTerminalObservation } from "../collectors/codex-tmux";
 
 const NOW = new Date("2026-08-18T12:00:00.000Z");
 const INCARNATION = "234790:1787586213";
@@ -3274,6 +3275,94 @@ describe("MOA-469 — native Codex session derivation", () => {
     const live: LiveSnapshot = { paneIds: new Set(), incarnation: null, paneCommands: new Map() };
     const data = getHubData(db, live, {}, SNAP(), NOW.getTime(), true, null, null, false);
     expect(data.codexSource).toBe("ok");
+    db.close();
+  });
+});
+
+describe("M3b — proven Codex terminal enrichment", () => {
+  const ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+  const OTHER = "0191f0aa-bbbb-7000-8000-00000000000a";
+  const INC = "3421408:1793045754";
+  const thread = (over: Partial<CodexThread> = {}): CodexThread => ({
+    threadId: ID, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli", status: "idle",
+    activeFlags: [], canAcceptDirectInput: true, ...over,
+  });
+  const snap = (over: Partial<Extract<CodexSnapshot, { ok: true }>> = {}): CodexSnapshot => ({
+    ok: true, ts: "2026-08-18T11:55:00.000Z", threads: [thread()], truncated: false, loadedThreadIds: [ID], ...over,
+  });
+  const observation = (over: Partial<CodexTerminalObservation> = {}): CodexTerminalObservation => ({
+    pane: "%183", tmuxIncarnation: INC, session: "p1-lead", command: "codex", dead: false, eligible: true,
+    title: `⠹ p1 | p1 | ${ID.slice(0, 29)}...`, ...over,
+  });
+  const live = (over: Partial<LiveSnapshot> = {}): LiveSnapshot => ({
+    paneIds: new Set(["%183"]), incarnation: INC, paneCommands: new Map([["%183", "codex"]]), ...over,
+  });
+  const codexEvent = (over: Partial<WorkflowEventInput> = {}): WorkflowEventInput => ({
+    run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "behavioral",
+    emitter: "codex-stop", harness_session: ID, payload: { message_tail: "x" }, pane: null, tmux_incarnation: null, ...over,
+  });
+
+  it("adds the proven terminal to the owner's Codex session without changing seats or transport", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, codexEvent(), NOW);
+    const data = getHubData(db, live({ codexTerminals: [observation()] }), {}, snap(), NOW.getTime());
+    const project = data.byProject["p1"];
+    expect(project.codexSessions).toHaveLength(1);
+    expect(project.codexSessions[0].terminal).toEqual({ pane: "%183", tmuxIncarnation: INC, session: "p1-lead" });
+    expect(project.codexSessions[0]).not.toHaveProperty("transport");
+    const seats = sessionSeats(project.panes, project.codexSessions);
+    expect(seats.filter((s) => s.transport === "codex")).toEqual([{ sessionId: ID, transport: "codex", panes: [] }]);
+    expect(seats.some((s) => s.transport === "tmux" && s.panes.some((p) => p.pane === "%183"))).toBe(false);
+    db.close();
+  });
+
+  it("never attaches a binding to another project's session", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, codexEvent(), NOW);
+    insertEvent(db, { ...codexEvent(), project: "p2", harness_session: OTHER }, NOW);
+    const data = getHubData(db, live({
+      codexTerminals: [
+        observation(),
+        observation({ pane: "%184", session: "p2-lead", title: `⠹ p2 | p2 | ${OTHER.slice(0, 29)}...` }),
+      ],
+    }), {}, snap({
+      threads: [thread(), thread({ threadId: OTHER, owner: "p2", cwd: "/home/rafa/repos/p2" })],
+      loadedThreadIds: [ID, OTHER],
+    }), NOW.getTime());
+    expect(data.byProject["p1"].codexSessions[0].terminal).toEqual({ pane: "%183", tmuxIncarnation: INC, session: "p1-lead" });
+    expect(data.byProject["p2"].codexSessions[0].terminal).toEqual({ pane: "%184", tmuxIncarnation: INC, session: "p2-lead" });
+    db.close();
+  });
+
+  it("binds two roots in one project independently and leaves a failed/truncated source without terminals", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, codexEvent(), NOW);
+    insertEvent(db, codexEvent({ harness_session: OTHER }), NOW);
+    const two = getHubData(db, live({
+      codexTerminals: [
+        observation(),
+        observation({ pane: "%184", session: "p1-second", title: `⠹ p1 | p1 | ${OTHER.slice(0, 29)}...` }),
+      ],
+    }), {}, snap({ threads: [thread(), thread({ threadId: OTHER })], loadedThreadIds: [ID, OTHER] }), NOW.getTime());
+    expect(two.byProject["p1"].codexSessions.map((s) => s.terminal?.pane)).toEqual(["%183", "%184"]);
+
+    const failed = getHubData(db, live({ codexTerminals: [observation()] }), {}, { ok: false, ts: "2026-08-18T11:55:00.000Z", error: "no socket" }, NOW.getTime());
+    expect(failed.byProject["p1"].codexSessions.every((s) => s.terminal === undefined)).toBe(true);
+
+    const truncated = getHubData(db, live({ codexTerminals: [observation()] }), {}, snap({ truncated: true }), NOW.getTime());
+    expect(truncated.byProject["p1"].codexSessions.every((s) => s.terminal === undefined)).toBe(true);
+
+    const noProof = getHubData(db, live({ codexTerminals: [observation()] }), {}, snap({ loadedThreadIds: undefined }), NOW.getTime());
+    expect(noProof.byProject["p1"].codexSessions.every((s) => s.terminal === undefined)).toBe(true);
+    db.close();
+  });
+
+  it("ignores observations when the tmux source failed", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, codexEvent(), NOW);
+    const data = getHubData(db, live({ codexTerminals: [observation()] }), {}, snap(), NOW.getTime(), false);
+    expect(data.tmuxSource).toBe("failed");
+    expect(data.byProject["p1"].codexSessions[0].terminal).toBeUndefined();
     db.close();
   });
 });
