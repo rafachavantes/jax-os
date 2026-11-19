@@ -171,8 +171,11 @@ export function createOwnDbWorkerRunner(
       failed = true;
       terminate();
     });
-    current.once("exit", () => {
-      settle(timedOut || failed || message === null ? UNAVAILABLE : message);
+    current.once("exit", (code) => {
+      // A retained message is published only for a normal code-0 exit that still fits inside
+      // the original allowance; a late or abnormal exit is unavailability, not success.
+      const normalExit = code === 0 && now() - startedAt < timeoutMs;
+      settle(normalExit && !timedOut && !failed && message !== null ? message : UNAVAILABLE);
     });
   });
 }

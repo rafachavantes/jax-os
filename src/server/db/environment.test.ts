@@ -117,7 +117,7 @@ describe("own-DB readonly worker (M5 Task 1)", () => {
     }, 50);
     const pending = errored({ path, paneKey: null, paneSql: null });
     errorWorker?.emit("error", new Error("boom"));
-    errorWorker?.emit("exit");
+    errorWorker?.emit("exit", 0);
     expect(await pending).toEqual({ ok: false, error: "database-unavailable" });
   });
 
@@ -138,7 +138,7 @@ describe("own-DB readonly worker (M5 Task 1)", () => {
     expect(settled).toBe(false);
     worker?.emit("message", { ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null });
     expect(settled).toBe(false);
-    worker?.emit("exit");
+    worker?.emit("exit", 0);
     expect(await pending).toEqual({ ok: false, error: "database-unavailable" });
   });
 
@@ -153,7 +153,7 @@ describe("own-DB readonly worker (M5 Task 1)", () => {
     worker.emit("message", { ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null });
     expect(settled).toBe(false);
     expect(worker.terminated).toBe(false);
-    worker.emit("exit");
+    worker.emit("exit", 0);
     expect(await pending).toMatchObject({ ok: true, schemaVersion: 15 });
     expect(worker.terminated).toBe(false);
   });
@@ -170,8 +170,48 @@ describe("own-DB readonly worker (M5 Task 1)", () => {
     worker.emit("error", new Error("boom"));
     expect(settled).toBe(false);
     expect(worker.terminated).toBe(true);
-    worker.emit("exit");
+    worker.emit("exit", 0);
     expect(await pending).toEqual({ ok: false, error: "database-unavailable" });
+  });
+
+  it("rejects a normal exit that happens after the original allowance", async () => {
+    const worker = fakeWorker();
+    let clock = 0;
+    const run = createOwnDbWorkerRunner(() => worker, 200, () => clock);
+    const pending = run({ path: "/x/jaxos.db", paneKey: null, paneSql: null });
+    worker.emit("message", { ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null });
+    clock = 201;
+    worker.emit("exit", 0);
+    await expect(pending).resolves.toEqual({ ok: false, error: "database-unavailable" });
+  });
+
+  it("rejects a valid message followed by an abnormal exit without an error event", async () => {
+    const worker = fakeWorker();
+    const run = createOwnDbWorkerRunner(() => worker, 500, () => 0);
+    const pending = run({ path: "/x/jaxos.db", paneKey: null, paneSql: null });
+    worker.emit("message", { ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null });
+    worker.emit("exit", 1);
+    await expect(pending).resolves.toEqual({ ok: false, error: "database-unavailable" });
+  });
+
+  it("accepts only an actual code-0 exit before the deadline", async () => {
+    const worker = fakeWorker();
+    let clock = 0;
+    const run = createOwnDbWorkerRunner(() => worker, 200, () => clock);
+    const pending = run({ path: "/x/jaxos.db", paneKey: null, paneSql: null });
+    worker.emit("message", { ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null });
+    clock = 199;
+    worker.emit("exit", 0);
+    await expect(pending).resolves.toMatchObject({ ok: true, schemaVersion: 15 });
+  });
+
+  it("treats an undefined exit code as no proof of a normal exit", async () => {
+    const worker = fakeWorker();
+    const run = createOwnDbWorkerRunner(() => worker, 500, () => 0);
+    const pending = run({ path: "/x/jaxos.db", paneKey: null, paneSql: null });
+    worker.emit("message", { ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null });
+    worker.emit("exit", undefined);
+    await expect(pending).resolves.toEqual({ ok: false, error: "database-unavailable" });
   });
 
   it("counts startup time spent before control returned against the original deadline", async () => {
@@ -189,7 +229,7 @@ describe("own-DB readonly worker (M5 Task 1)", () => {
     expect(worker.terminated).toBe(true);
     expect(settled).toBe(false);
     worker.emit("message", { ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null });
-    worker.emit("exit");
+    worker.emit("exit", 0);
     await expect(pending).resolves.toEqual({ ok: false, error: "database-unavailable" });
   });
 
@@ -201,7 +241,7 @@ describe("own-DB readonly worker (M5 Task 1)", () => {
     }, 5);
     const pending = run({ path: "/x/jaxos.db", paneKey: null, paneSql: null });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    worker?.emit("exit");
+    worker?.emit("exit", 0);
     await expect(pending).resolves.toEqual({ ok: false, error: "database-unavailable" });
   });
 
