@@ -1378,7 +1378,7 @@
         "empty": "Nenhum processo observado.",
         "summary": "{count} processos observados",
         "approxRss": "RSS é aproximado e pode incluir páginas compartilhadas.",
-        "processes": "{count, plural, one {# processo} other {# processos}}",
+        "running": "{count, plural, one {# em execução} other {# em execução}}",
         "rss": "aproximadamente {value} de RSS",
         "paneOwner": "pane {pane} (ancestralidade comprovada)",
         "unknownOwner": "origem desconhecida",

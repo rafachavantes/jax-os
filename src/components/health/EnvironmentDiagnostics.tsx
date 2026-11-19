@@ -165,7 +165,8 @@ function Workloads() {
               <details key={group.key} data-testid={`workload-${group.family}`} className="rounded-md border border-line-subtle px-3 py-2">
                 <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-body-ink">
                   <span className="min-w-0 font-mono font-semibold [overflow-wrap:anywhere]">{group.family}</span>
-                  <span>{t("workloads.processes", { count: group.count })}</span>
+                  <span>{t("workloads.running", { count: group.running })}</span>
+                  <span>{t("workloads.zombies", { count: group.zombies })}</span>
                   <span className="text-muted">
                     {group.rssMb !== null ? t("workloads.rss", { value: MiB(group.rssMb) }) : t("shortUnavailable")}
                   </span>
@@ -180,7 +181,6 @@ function Workloads() {
                   {group.contextObservedAt ? (
                     <span className="text-muted">{t("workloads.lastKnownAt")} <RelativeTime epochMs={Date.parse(group.contextObservedAt)} /></span>
                   ) : null}
-                  {group.zombies > 0 ? <span className="text-warning">{t("workloads.zombies", { count: group.zombies })}</span> : null}
                 </summary>
                 <div className="mt-2 flex flex-col gap-1 border-t border-line-subtle pt-2">
                   {group.purpose === null ? <span className="text-[11px] text-muted">{t("workloads.purposeUnknown")}</span> : null}

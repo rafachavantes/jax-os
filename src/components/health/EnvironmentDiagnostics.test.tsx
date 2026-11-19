@@ -171,6 +171,27 @@ describe("EnvironmentDiagnostics (M5 Task 4)", () => {
     expect(html).toContain("not reclaimable memory");
   });
 
+  it("always renders running and zombie counts for mixed, all-zombie and zero-zombie groups in both locales", () => {
+    for (const locale of ["en-US", "pt-BR"] as const) {
+      setAll();
+      harness.results.set("environment:workloads", {
+        data: { ok: true, data: { ...WORKLOADS, groups: [
+          { ...WORKLOADS.groups[0], running: 1, zombies: 1 },
+          { ...WORKLOADS.groups[1], key: "unknown:1000:chrome:zero", running: 0, zombies: 2 },
+          { ...WORKLOADS.groups[1], key: "unknown:1000:chrome:live", running: 2, zombies: 0 },
+        ] } },
+        isError: false,
+      });
+      const { html, errors } = render(createElement(EnvironmentDiagnostics), locale);
+      expect(errors).toEqual([]);
+      const expected = locale === "en-US"
+        ? ["1 running", "1 zombie", "0 running", "2 zombies", "2 running", "0 zombies"]
+        : ["1 em execução", "1 zumbi", "0 em execução", "2 zumbis", "2 em execução", "0 zumbi"];
+      for (const text of expected) expect(html).toContain(text);
+      expect(html).not.toContain(locale === "en-US" ? "2 processes" : "2 processos");
+    }
+  });
+
   it("shows package candidates, holds and simulation selection with honest counts and no repair command", () => {
     setAll();
     const { html } = render(createElement(EnvironmentDiagnostics));
