@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { HubPane } from "./db/workflows";
 import type { SessionAccessRow, SessionAccessSnapshot } from "./collectors/session-access";
-import { resolveSessionAccess, takenSessionAccess, type SessionAccessDeps } from "./session-access";
+import { resolveSessionAccess, takenSessionAccess, type SessionAccessConfig, type SessionAccessDeps } from "./session-access";
 import { SessionAccessError, type SessionAccessSelector } from "../lib/sessionAccess";
 
 const cardSelector: SessionAccessSelector = {
@@ -25,7 +25,7 @@ function pane(overrides: Partial<HubPane> = {}): HubPane {
   };
 }
 
-function deps(snapshot: SessionAccessSnapshot, panes: HubPane[], config = { enabled: true, roUrl: "http://127.0.0.1:10000/ro", rwUrl: "http://127.0.0.1:10001/rw" }) {
+function deps(snapshot: SessionAccessSnapshot, panes: HubPane[], config: SessionAccessConfig = { enabled: true, roUrl: "http://127.0.0.1:10000/ro", rwUrl: "http://127.0.0.1:10001/rw" }) {
   const calls = { collect: 0, projectPanes: 0 };
   const value: SessionAccessDeps & { calls: typeof calls } = {
     collect: async () => { calls.collect += 1; return snapshot; },

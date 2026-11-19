@@ -24,7 +24,7 @@ export type SessionAccessDeps = {
   now: () => number;
 };
 
-function ttydConfig(): SessionAccessConfig {
+export function readSessionAccessConfig(): SessionAccessConfig {
   const settings = readGeneralSettings();
   if (!(settings.ok && settings.data.integrations.ttyd)) return { enabled: false };
   return { enabled: true, roUrl: process.env.TTYD_RO_URL, rwUrl: process.env.TTYD_RW_URL };
@@ -33,7 +33,7 @@ function ttydConfig(): SessionAccessConfig {
 const systemDeps: SessionAccessDeps = {
   collect: () => collectSessionAccessSnapshot(),
   projectPanes: (project, live, nowMs) => getProjectPanes(getDb(), project, live, nowMs, () => false),
-  config: ttydConfig,
+  config: readSessionAccessConfig,
   now: () => Date.now(),
 };
 
