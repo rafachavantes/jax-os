@@ -1196,15 +1196,15 @@ export function queryNativeUsage(
       unknownUnit,
     },
     daily,
-    byModel: [...models.values()]
-      .map((acc) => ({ slice: sliceFrom(acc.name, acc), firstOrder: acc.firstOrder }))
+    byModel: [...models.entries()]
+      .map(([name, acc]) => ({ slice: sliceFrom(name, acc), firstOrder: acc.firstOrder }))
       .sort((a, b) =>
         b.slice.tokens - a.slice.tokens ||
         (a.slice.name === UNKNOWN_MODEL_FILTER ? 1 : b.slice.name === UNKNOWN_MODEL_FILTER ? -1 : 0) ||
         a.firstOrder - b.firstOrder)
       .map(({ slice }) => slice),
-    byAgent: [...agents.values()]
-      .map((acc) => ({ slice: sliceFrom(acc.name, acc), firstOrder: acc.firstOrder }))
+    byAgent: [...agents.entries()]
+      .map(([name, acc]) => ({ slice: sliceFrom(name, acc), firstOrder: acc.firstOrder }))
       .sort((a, b) => b.slice.tokens - a.slice.tokens || a.firstOrder - b.firstOrder)
       .map(({ slice }) => slice),
     sessions: { lead: sessionRow.lead, child: sessionRow.child },
