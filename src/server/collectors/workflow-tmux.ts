@@ -178,16 +178,17 @@ export async function listLivePanes(
       paneDead.set(native.pane, native.dead === "1");
       if (native.command) paneCommands.set(native.pane, native.command);
       if (incarnation === null) incarnation = `${native.pid}:${native.start}`;
+      const eligible = native.session.length > 0 && Buffer.byteLength(native.session, "utf8") <= SESSION_CAP
+        && controlFree(native.session) && native.title.length > 0 && controlFree(native.title)
+        && Buffer.byteLength(native.title, "utf8") <= TITLE_CAP;
       codexTerminals.push({
         pane: native.pane,
         tmuxIncarnation: `${native.pid}:${native.start}`,
         session: native.session,
         command: native.command,
         dead: native.dead === "1",
-        eligible: native.session.length > 0 && Buffer.byteLength(native.session, "utf8") <= SESSION_CAP
-          && controlFree(native.session) && native.title.length > 0 && controlFree(native.title)
-          && Buffer.byteLength(native.title, "utf8") <= TITLE_CAP,
-        title: native.title,
+        eligible,
+        title: eligible ? native.title : "",
       });
       continue;
     }

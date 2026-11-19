@@ -329,6 +329,14 @@ describe("resolveSessionAccess — fresh native Codex card binding (M3b)", () =>
       .rejects.toMatchObject({ code: "lost-target" });
   });
 
+  it("checks all native panes before binding a Codex card", async () => {
+    const claimedTwice = snapshot(codexRow(), codexRow({ pane: "%184", target: "$2:@3.%184" }));
+    const d = deps(claimedTwice, [pane()], undefined, codexDeps());
+    await expect(resolveSessionAccess(codexSelector, undefined, d)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(resolveSessionAccess(codexSelector, expected, d)).rejects.toMatchObject({ code: "lost-target" });
+    expect(d.calls.projectPanes).toBe(0);
+  });
+
   it("treats dead/moved/incarnation-changed panes as lost-target when pinned", async () => {
     const dead = snapshot(codexRow({ dead: true }));
     await expect(resolveSessionAccess(codexSelector, expected, deps(dead, [pane()], undefined, codexDeps())))

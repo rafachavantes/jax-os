@@ -248,6 +248,7 @@ describe("listLivePanes — native title observations", () => {
     const live = await listLivePanes(run);
     expect(live.paneIds).toEqual(new Set(["%1", "%2", "%3", "%4", "%5"]));
     expect(live.codexTerminals?.map((r) => r.eligible)).toEqual([false, false, false, false, false]);
+    expect(live.codexTerminals?.map((r) => r.title)).toEqual(["", "", "", "", ""]);
     expect(live.codexTerminals?.[4].title).toBe("");
     expect(live.paneCommands.get("%1")).toBe("codex");
   });
