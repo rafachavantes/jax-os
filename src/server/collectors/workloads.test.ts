@@ -248,12 +248,12 @@ describe("proven ancestry (AC6)", () => {
       tmuxWarning: "tmux-unverified", monotonic: () => 0,
     });
     expect(unknownFlag.groups.find((g) => g.family === "chrome")).toMatchObject({
-      owner: { kind: "unknown", reason: "cross-uid" },
+      owner: { kind: "unknown", reason: "tmux" },
     });
     expect(unknownFlag.coverage.partial).toBe(true);
   });
 
-  it("uses the direct AttributeInput paneSnapshotKnown fact, defaulting to the previous reasons", async () => {
+  it("uses the direct AttributeInput paneSnapshotKnown fact for unknown tmux provenance", async () => {
     const snapshot = parsePs(["  1 0 0 Ss 100 100 init", " 40 1 1000 Sl 100 512 chrome"].join("\n"));
     const entries = { 1: { ppid: 0, start: 1 }, 40: { ppid: 1, start: 2 } };
     const before = await readIdentityPhase(
@@ -275,7 +275,9 @@ describe("proven ancestry (AC6)", () => {
       snapshot, panePids: new Map(), paneIncarnation: null, before, after, live: null,
       partial: false,
     });
-    expect(unknownFlag.reasonByPid.get(40)).toBe("cross-uid");
+    expect(unknownFlag.ownerByPid.has(40)).toBe(false);
+    expect(unknownFlag.reasonByPid.get(40)).toBe("tmux");
+    expect(unknownFlag.partial).toBe(true);
   });
 
   it("keeps a cross-UID chain that reaches a real pane as cross-uid even with a known snapshot", async () => {

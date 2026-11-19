@@ -318,7 +318,7 @@ export function attributeOwners(input: AttributeInput): Attribution {
   let partial = input.partial || before.deadlineHit || after.deadlineHit;
   const attemptedBoth = (pid: number): boolean => before.attempted.has(pid) && after.attempted.has(pid);
   // Ordinary unlinked ancestry: a complete ps chain that terminates at uid0 PID1 without ever
-  // reaching an initial pane PID. Only a KNOWN initial pane snapshot makes that absence meaningful.
+  // reaching an initial pane PID. The reason reflects whether the initial pane snapshot was known.
   const noPaneRoot = (proc: ProcRow): number | null => {
     const seen = new Set<number>();
     let current: ProcRow | undefined = proc;
@@ -349,8 +349,11 @@ export function attributeOwners(input: AttributeInput): Attribution {
       continue;
     }
     if (leafLeaf === "race") { unknown("race"); continue; }
-    const ordinaryRoot = input.paneSnapshotKnown === true ? noPaneRoot(proc) : null;
-    if (ordinaryRoot !== null) { unknown("no-pane", ordinaryRoot); continue; }
+    const ordinaryRoot = noPaneRoot(proc);
+    if (ordinaryRoot !== null) {
+      unknown(input.paneSnapshotKnown === true ? "no-pane" : "tmux", ordinaryRoot);
+      continue;
+    }
 
     const seen = new Set<number>();
     let currentPid = proc.pid;
