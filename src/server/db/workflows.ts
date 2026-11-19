@@ -2487,12 +2487,16 @@ function sessionResultCandidate(
   db: Database.Database, dest: string, session: string, callers: readonly RunCaller[] | null,
 ): RawRow | null {
   const callerClause = callers ? ` AND json_extract(s.payload, '$.caller') IN (${callers.map(() => "?").join(", ")})` : "";
+  // Repeat the lifecycle predicate so SQLite can use the existing partial index.
   const row = db.prepare(
     `SELECT f.* FROM workflow_events f
      JOIN workflow_events s ON s.run_id = f.run_id AND s.type = 'run-started' AND s.emitter != 'jaxos'
+       AND s.type IN ('run-started', 'run-finished')
      WHERE f.project = ? AND f.type = 'run-finished' AND f.run_id IS NOT NULL
+       AND f.type IN ('run-started', 'run-finished')
        AND s.id = (SELECT MAX(id) FROM workflow_events
-         WHERE project = ? AND run_id = f.run_id AND type = 'run-started' AND emitter != 'jaxos')
+         WHERE project = ? AND run_id = f.run_id AND type = 'run-started' AND emitter != 'jaxos'
+           AND type IN ('run-started', 'run-finished'))
        AND s.harness_session = ?${callerClause}
      ORDER BY f.id DESC LIMIT 1`,
   ).get(dest, dest, session, ...(callers ?? [])) as RawRow | undefined;
