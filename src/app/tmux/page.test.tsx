@@ -313,6 +313,16 @@ describe("bounded target validation results (M3b corrections)", () => {
 });
 
 describe("validation lifetimes (deferred old success, failure and rearm)", () => {
+  it("ignores a prior visit's cached response even when its unbound lifetime token matches", () => {
+    const current = { token: 1, selector: selectorIdentity(cardSelector), expected: "" };
+    const cached = { lifetime: current, result: { ok: true as const, data: resolvedAccess } };
+    const mountedAt = 20_000;
+    for (const receivedAt of [1_000, 19_999]) {
+      expect(targetApplication(cached, current, receivedAt, mountedAt, mountedAt)).toEqual({ kind: "ignore" });
+    }
+    expect(targetApplication(cached, current, mountedAt + 1, mountedAt + 1, mountedAt)).toMatchObject({ kind: "ok" });
+  });
+
   it("tags each request with the lifetime captured at begin and ignores a stale result", async () => {
     const first = deferred<Response>();
     const pending = fetchTarget(cardSelector, null, new AbortController().signal, () => first.promise);

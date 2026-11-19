@@ -310,6 +310,11 @@ function SessionsPageInner() {
   const appliedSearchRef = useRef(search);
 
   useEffect(() => {
+    if (focusRef.current) {
+      notBeforeRef.current = Date.now();
+      bumpToken();
+      bumpValidation();
+    }
     setMounted(true);
     return () => clearExpiry();
   }, [clearExpiry]);
@@ -398,7 +403,6 @@ function SessionsPageInner() {
   // URL-driven application of the same transition openSelector performs. It never calls the
   // router; a location that merely reflects the already-applied selector/origin re-opens nothing.
   function applyLocation(location: FocusedLocation) {
-    clearExpiry();
     if (location.kind === "focus") {
       const current = focusRef.current;
       if (current && current.origin === location.origin
@@ -406,6 +410,7 @@ function SessionsPageInner() {
       openSelector(location.selector, location.origin);
       return;
     }
+    clearExpiry();
     // Leaving a selection invalidates outstanding Take/validation/expiry before anything else, so
     // an old result can never restore a frame or keep focused polling alive.
     setResolved(null);
