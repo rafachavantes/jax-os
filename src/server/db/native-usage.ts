@@ -940,7 +940,6 @@ type SliceAcc = {
   allInput: number;
   allOutput: number;
   costByCurrency: Map<string, number>;
-  costItemsByCurrency: Map<string, number>;
 };
 
 function checkedAdd(total: number, value: number): number {
@@ -970,7 +969,6 @@ function emptySlice(name: string): SliceAcc & { name: string } {
     allInput: 0,
     allOutput: 0,
     costByCurrency: new Map(),
-    costItemsByCurrency: new Map(),
   };
 }
 
@@ -984,7 +982,6 @@ function addToSlice(acc: SliceAcc, row: FacetRow): void {
   if (row.cost_present !== 1 || row.cost_currency === null) return;
   const currency = row.cost_currency;
   acc.costByCurrency.set(currency, checkedMoney(acc.costByCurrency.get(currency) ?? 0, row.cost_sum ?? 0));
-  acc.costItemsByCurrency.set(currency, checkedAdd(acc.costItemsByCurrency.get(currency) ?? 0, items));
 }
 
 function sliceFrom(name: string, acc: SliceAcc): UsageSlice {

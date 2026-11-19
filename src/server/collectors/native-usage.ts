@@ -1510,7 +1510,7 @@ function stateFor(
 const coverageFailureCodes = new Set(["subdir-failed", "discovery-failed", "io-timeout", "read-failed"]);
 const passFailureCodes = new Set([
   "subdir-failed", "discovery-failed", "io-timeout", "io-pending", "read-failed",
-  "checkpoint-conflict", "file-replaced", "root-unavailable",
+  "checkpoint-conflict", "file-replaced", "root-unavailable", "missing-file", "symlink-escape",
 ]);
 
 async function runJsonlSourcePass(

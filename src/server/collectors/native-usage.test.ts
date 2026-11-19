@@ -2449,10 +2449,13 @@ describe("background refresh and genuinely pending work", () => {
       JSON.stringify({ v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows, next, warnings: {} });
     const firstPage = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "1", ceiling: "2", done: false } }, [row]);
     const completePage = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "2", ceiling: "2", done: true } });
-    const resweepPage = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "1", ceiling: "1", done: false } }, [
+    const resweepPage = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "1", ceiling: "2", done: false } }, [
       { ...row, updated: 1_794_910_000_000, output: 40 },
     ]);
-    const resweepDone = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "1", ceiling: "1", done: true } });
+    const resweepPage2 = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "2", ceiling: "2", done: false } }, [
+      { ...row, message_id: "msg-2", output: 5, reasoning: 0, cost: 1 },
+    ]);
+    const resweepDone = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "2", ceiling: "2", done: true } });
     let calls = 0;
     const argvStates: string[] = [];
     const deps = makeDeps({
@@ -2463,6 +2466,7 @@ describe("background refresh and genuinely pending work", () => {
         if (calls === 1) return { stdout: firstPage };
         if (calls === 2) return { stdout: completePage };
         if (calls === 3) return { stdout: resweepPage };
+        if (calls === 4) return { stdout: resweepPage2 };
         return { stdout: resweepDone };
       },
     });
@@ -2498,6 +2502,12 @@ describe("background refresh and genuinely pending work", () => {
     expect(Object.keys(JSON.parse(argvStates.at(-1)!)).sort()).toEqual(["v", "v1", "v2"]);
     const updated = queryNativeUsage(deps.db, { period: 30, now: NOW });
     expect(updated.byAgent.find((a) => a.name === "build")?.allOutput).toBe(47);
+
+    // Several bounded background pages stay available until the re-sweep completes.
+    await pass();
+    expect(statusOf(deps, "opencode")?.state).toBe("available");
+    expect(statusOf(deps, "opencode")?.warnings).toContain("background-refresh");
+    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).byAgent.find((a) => a.name === "build")?.allOutput).toBe(52);
 
     await pass();
     expect(statusOf(deps, "opencode")?.state).toBe("available");
