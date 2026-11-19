@@ -442,6 +442,7 @@
     "unmanaged": "sem projeto",
     "attached": "conectada",
     "detached": "solta",
+    "created": "Criada",
     "windows": "{count, plural, one {# janela} other {# janelas}}",
     "readOnly": "somente leitura",
     "writable": "controle ativo",

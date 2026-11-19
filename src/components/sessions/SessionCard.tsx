@@ -39,7 +39,7 @@ export function SessionCard({ agent, selected, onSelect }: Props) {
       <div className="flex w-full items-center gap-3 text-[11px] text-muted">
         <span className="flex items-center gap-1">
           <Timer className="h-3 w-3" />
-          <RelativeTime epochMs={agent.createdEpoch * 1000} />
+          <span>{t("created")}{" "}<RelativeTime epochMs={agent.createdEpoch * 1000} /></span>
         </span>
         <span>{t("windows", { count: agent.windows })}</span>
         <span
