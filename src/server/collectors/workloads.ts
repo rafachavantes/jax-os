@@ -157,7 +157,8 @@ function readWithinAllowance<T>(promise: Promise<T>, ms: number): Promise<T | nu
 // reused (never a second original); the same pid gets a fresh operation only after its original
 // settles, so the before/after identity maps stay independent proofs. Scheduling respects the
 // libuv-derived concurrency and the injected five-second deadline; a public per-read timeout
-// returns unknown without cancelling or duplicating the original operation.
+// returns unknown/budget without cancelling or duplicating the original operation. A permanently
+// stuck OS read keeps its permit until manual process recovery — nothing is restarted here.
 export function createIdentityReader(
   read: (pid: number) => Promise<string>,
   opts: { concurrency?: number; now?: () => number; perReadMs?: number } = {},

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   attributeOwners, buildWorkloadGroups, collectWorkloads, createIdentityReader, executableFamily,
-  identityConcurrency, orderIdentityPids, parseProcStat, parsePs, readIdentityPhase,
+  identityConcurrency, IDENTITY_BUDGET, orderIdentityPids, parseProcStat, parsePs, readIdentityPhase,
   MAX_GROUP_DETAILS, MAX_GROUPS, MAX_PHASE_READS,
 } from "./workloads";
 
@@ -259,6 +259,15 @@ describe("raw read ownership across caller timeouts (observation completion Task
     expect(identityConcurrency({ UV_THREADPOOL_SIZE: "1" })).toBe(0);
     expect(identityConcurrency({ UV_THREADPOOL_SIZE: "0" })).toBe(0);
     expect(identityConcurrency({ UV_THREADPOOL_SIZE: "many" })).toBe(0);
+  });
+
+  it("admits no identity read at all with a zero/one/invalid startup pool", async () => {
+    const read = vi.fn(async () => statText(1, 0, 1));
+    const reader = createIdentityReader(read, {
+      concurrency: identityConcurrency({ UV_THREADPOOL_SIZE: "1" }), now: () => 0,
+    });
+    await expect(reader.read(1, 1e9)).resolves.toBe(IDENTITY_BUDGET);
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("keeps one original read per pending PID and never starts another after the deadline", async () => {

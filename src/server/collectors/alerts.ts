@@ -296,7 +296,7 @@ export function normalizePackageCandidates(observation: PackageObservation): Nor
   let anyAmbiguous = false;
   let anyUnresolved = false;
 
-  const candidates = [...byKey.entries()].map(([key, entry]) => {
+  const candidates = [...byKey.values()].map((entry) => {
     const row = entry.row;
     const arch = row.arch || nativeArch || "unknown";
     const arches = archesByName.get(row.name) ?? new Set([arch]);
