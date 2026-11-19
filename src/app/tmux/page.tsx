@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { fetchEnvelope, type Envelope, type TtydConfig } from "@/lib/api";
 import { RelativeTime } from "@/components/RelativeTime";
 import type { Agent } from "@/server/collectors/tmux";
@@ -185,18 +186,43 @@ export function largerWindowHref(selector: SessionAccessSelector): string {
   return `/tmux?${params.toString()}`;
 }
 
-export default function SessionsPage() {
+// The first render already reflects the live search string, so a same-route query navigation is
+// visible immediately and a focused URL never needs an effect to become the focused view.
+function pageStateFromSearch(search: string): { view: "mosaic" | "detail"; focus: Focus | null; lifecycle: ReturnType<typeof accessLifecycle> } {
+  const location = parseFocusedLocation(search);
+  if (location.kind === "focus") {
+    return {
+      view: "detail",
+      focus: { selector: location.selector, origin: location.origin },
+      lifecycle: accessLifecycle(initialAccessLifecycle, { type: "open" }),
+    };
+  }
+  if (location.kind === "invalid") {
+    return {
+      view: "detail",
+      focus: null,
+      lifecycle: accessLifecycle(initialAccessLifecycle, { type: "failure", status: "unavailable" }),
+    };
+  }
+  return { view: "mosaic", focus: null, lifecycle: initialAccessLifecycle };
+}
+
+function SessionsPageInner() {
   const t = useTranslations("sessions");
   const tm = useTranslations("sessions.mosaic");
   const tTitle = useTranslations("title");
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const search = searchParams?.toString() ?? "";
+  const initial = pageStateFromSearch(search);
 
   const [mounted, setMounted] = useState(false);
-  const [view, setView] = useState<"mosaic" | "detail">("mosaic");
-  const [focus, setFocus] = useState<Focus | null>(null);
+  const [view, setView] = useState<"mosaic" | "detail">(initial.view);
+  const [focus, setFocus] = useState<Focus | null>(initial.focus);
   const [resolved, setResolved] = useState<ResolvedSessionAccess | null>(null);
   const [expected, setExpected] = useState<ExpectedSessionTarget | null>(null);
   const [visible, setVisible] = useState(true);
-  const [lifecycle, dispatchLifecycle] = useReducer(accessLifecycle, initialAccessLifecycle);
+  const [lifecycle, dispatchLifecycle] = useReducer(accessLifecycle, initial.lifecycle);
   const [control, dispatchControl] = useReducer(controlStateReducer, { mode: "ro", busy: false, error: null });
   const [mobilePane, setMobilePane] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -281,24 +307,21 @@ export default function SessionsPage() {
     }, remaining);
   }, [clearExpiry]);
 
-  // Parse a focused link after mount — no Suspense/prerender dependency, and a missing selector
-  // never falls back to the first session. An invalid focused link fails visibly instead.
+  const appliedSearchRef = useRef(search);
+
   useEffect(() => {
     setMounted(true);
-    const location = parseFocusedLocation(window.location.search);
-    if (location.kind === "focus") {
-      setFocus({ selector: location.selector, origin: location.origin });
-      setView("detail");
-      notBeforeRef.current = Date.now();
-      bumpToken();
-      bumpValidation();
-      dispatchLifecycle({ type: "open" });
-    } else if (location.kind === "invalid") {
-      setView("detail");
-      dispatchLifecycle({ type: "failure", status: "unavailable" });
-    }
     return () => clearExpiry();
   }, [clearExpiry]);
+
+  // The live location is the single source of truth for query-only client navigation and browser
+  // Back/Forward: every actual changed search string is parsed with the bounded selector grammar.
+  // Applying it NEVER navigates — only a user-initiated handler below owns router calls.
+  useEffect(() => {
+    if (appliedSearchRef.current === search) return;
+    appliedSearchRef.current = search;
+    applyLocation(parseFocusedLocation(search));
+  }, [search]);
 
   useEffect(() => {
     visibleRef.current = document.visibilityState !== "hidden";
@@ -370,6 +393,37 @@ export default function SessionsPage() {
     bumpValidation();
     dispatchLifecycle({ type: "open" });
     dispatchControl({ type: "reset" });
+  }
+
+  // URL-driven application of the same transition openSelector performs. It never calls the
+  // router; a location that merely reflects the already-applied selector/origin re-opens nothing.
+  function applyLocation(location: FocusedLocation) {
+    clearExpiry();
+    if (location.kind === "focus") {
+      const current = focusRef.current;
+      if (current && current.origin === location.origin
+        && selectorIdentity(current.selector) === selectorIdentity(location.selector)) return;
+      openSelector(location.selector, location.origin);
+      return;
+    }
+    // Leaving a selection invalidates outstanding Take/validation/expiry before anything else, so
+    // an old result can never restore a frame or keep focused polling alive.
+    setResolved(null);
+    setExpected(null);
+    bumpToken();
+    bumpValidation();
+    if (location.kind === "invalid") {
+      setFocus(null);
+      setView("detail");
+      dispatchControl({ type: "reset" });
+      dispatchLifecycle({ type: "failure", status: "unavailable" });
+      return;
+    }
+    setFocus(null);
+    setView("mosaic");
+    setMobilePane(null);
+    dispatchControl({ type: "reset" });
+    dispatchLifecycle({ type: "hide" });
   }
 
   function reconnect() {
@@ -447,13 +501,21 @@ export default function SessionsPage() {
     }
   }
 
+  // User-initiated selections apply the state transition FIRST (synchronous frame/control
+  // invalidation), then serialize the same selection into the canonical focused URL. An explicit
+  // open PUSHES so Back can return to the previous view; an in-place switch REPLACES.
   function selectSession(session: string) {
-    openSelector({ kind: "tmux", session }, focusRef.current?.origin ?? "mosaic");
+    const origin = focusRef.current?.origin ?? "mosaic";
+    const selector: SessionAccessSelector = { kind: "tmux", session };
+    openSelector(selector, origin);
+    router.replace(sessionAccessHref(selector, origin));
   }
 
   function openCard(card: MissionCard, pane: MissionPane) {
     const selector = paneAccessSelector(card.dir, pane);
-    if (selector) openSelector(selector, "mosaic");
+    if (!selector) return;
+    openSelector(selector, "mosaic");
+    router.push(sessionAccessHref(selector, "mosaic"));
   }
 
   const mission: Mission = buildMission(projects.data, hub.data, undefined, Date.now());
@@ -545,5 +607,13 @@ export default function SessionsPage() {
         />
       ) : null}
     </div>
+  );
+}
+
+export default function SessionsPage() {
+  return (
+    <Suspense>
+      <SessionsPageInner />
+    </Suspense>
   );
 }

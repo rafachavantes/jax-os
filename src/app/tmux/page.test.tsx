@@ -1,6 +1,12 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const nav = vi.hoisted(() => ({
+  search: "",
+  push: [] as string[],
+  replace: [] as string[],
+}));
 
 const harness = vi.hoisted(() => ({
   projects: { data: { ok: true, data: { projects: [], skipped: 0 } }, isError: false },
@@ -21,6 +27,15 @@ vi.mock("next-intl", () => ({
 vi.mock("next/link", () => ({
   default: ({ href, children }: { href: string; children: React.ReactNode }) =>
     createElement("a", { href }, children),
+}));
+// Mounted tests of the real router are not possible in this Node/SSR environment; the location
+// contract itself is asserted here (a URL-driven open must never navigate on its own).
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(nav.search),
+  useRouter: () => ({
+    push: (href: string) => { nav.push.push(href); },
+    replace: (href: string) => { nav.replace.push(href); },
+  }),
 }));
 vi.mock("@/lib/useMission", () => ({
   useMission: (endpoint: "projects" | "hub" | "agents", _interval: number, enabled = true) => {
@@ -276,6 +291,42 @@ describe("validation lifetimes (deferred old success, failure and rearm)", () =>
     state = accessLifecycle(state, { type: "reconnect" });
     state = accessLifecycle(state, { type: "validation", roUrl: "http://ro/fresh" });
     expect(state.frame).toMatchObject({ mode: "ro" });
+  });
+});
+
+beforeEach(() => {
+  nav.search = "";
+  nav.push.length = 0;
+  nav.replace.length = 0;
+});
+
+describe("live same-route location (M3b final corrections)", () => {
+  it("a focused query renders the exact focused view and never navigates on its own", () => {
+    nav.search = sessionAccessHref(cardSelector, "mosaic").split("?")[1];
+    const html = renderToStaticMarkup(createElement(SessionsPage));
+    expect(html).toContain('data-testid="focused-view"');
+    expect(html).not.toContain('data-testid="mosaic"');
+    expect(html).toContain("openedFromMosaic");
+    expect(nav.push).toHaveLength(0);
+    expect(nav.replace).toHaveLength(0);
+  });
+
+  it("a query without a selector renders the generic Mosaic and never navigates", () => {
+    nav.search = "view=activity";
+    const html = renderToStaticMarkup(createElement(SessionsPage));
+    expect(html).toContain('data-testid="mosaic"');
+    expect(html).not.toContain('data-testid="focused-view"');
+    expect(nav.push).toHaveLength(0);
+    expect(nav.replace).toHaveLength(0);
+  });
+
+  it("an invalid focused query fails visibly and never navigates", () => {
+    nav.search = "kind=card&project=p";
+    const html = renderToStaticMarkup(createElement(SessionsPage));
+    expect(html).toContain('data-testid="focused-view"');
+    expect(html).toContain("targetUnavailable");
+    expect(nav.push).toHaveLength(0);
+    expect(nav.replace).toHaveLength(0);
   });
 });
 
