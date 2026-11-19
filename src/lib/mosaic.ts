@@ -13,12 +13,16 @@ export type MosaicGroup = { dir: string; name: string; panes: MissionPane[] };
 export function mosaicGroups(cards: MissionCard[]): MosaicGroup[] {
   const groups: MosaicGroup[] = [];
   for (const card of cards) {
-    const panes: MissionPane[] = [];
+    const byPane = new Map<string, MissionPane>();
     for (const s of card.sessions) {
       // A proven native Codex terminal is a real observed pane and participates in generic Mosaic;
       // one without proven metadata contributes nothing.
-      for (const p of physicalSessionPanes(s)) if (p.live) panes.push(p);
+      for (const p of physicalSessionPanes(s)) {
+        const key = `${p.pane}:${p.tmuxIncarnation}`;
+        if (p.live && (!byPane.has(key) || p.runtime === "codex")) byPane.set(key, p);
+      }
     }
+    const panes = [...byPane.values()];
     if (panes.length > 0) groups.push({ dir: card.dir, name: card.name, panes });
   }
   return groups;

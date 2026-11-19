@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mosaicGroups, mosaicPageState, selectSpotlightPane, type MosaicGroup } from "./mosaic";
+import { findMobilePane } from "./mosaicView";
 import { mosaicPaneAction, mosaicPaneState, type MissionCard, type MissionPane, type MissionReadiness } from "./mission";
 
 const pane = (over: Partial<MissionPane> = {}): MissionPane => ({
@@ -60,6 +61,26 @@ describe("M3b native Codex terminal in generic Mosaic", () => {
   it("omits a native session whose terminal is unproven or unknown", () => {
     expect(mosaicGroups([card({ sessions: [session({ terminal: undefined })] })])).toEqual([]);
     expect(mosaicGroups([card({ sessions: [session({ state: "unknown" })] })])).toEqual([]);
+  });
+
+  it.each([false, true])("keeps one proven Codex pane after Claude exits (Codex first: %s)", (codexFirst) => {
+    const native = session();
+    const stale = { transport: "tmux" as const, session: "old", panes: [pane({
+      pane: "%183", tmuxIncarnation: "3421408:1793045754", runtime: "claude", harnessSession: "old",
+    })] };
+    const value = card({ sessions: codexFirst ? [native, stale] : [stale, native] });
+    expect(findMobilePane([value], "%183")?.pane).toMatchObject({ runtime: "codex", harnessSession: ID });
+    const groups = mosaicGroups([value]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].panes).toHaveLength(1);
+    const [current] = groups[0].panes;
+    expect(current).toMatchObject({ runtime: "codex", harnessSession: ID });
+    expect(mosaicPaneAction(current).kind).toBe("none");
+    expect(findMobilePane([value], "%183")).toEqual({ card: value, pane: current, session: "jax-os-lead" });
+    const otherInc = { ...stale, panes: [{ ...stale.panes[0], tmuxIncarnation: "1:1" }] };
+    expect(mosaicGroups([card({ sessions: [otherInc, native] })])[0].panes).toHaveLength(2);
+    const dead = { ...stale, panes: [{ ...stale.panes[0], live: false }] };
+    expect(findMobilePane([card({ sessions: [dead] })], "%183")?.pane.live).toBe(false);
   });
 });
 
