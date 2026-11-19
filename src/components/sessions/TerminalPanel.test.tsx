@@ -215,5 +215,22 @@ describe("TerminalPanel prepared-frame rendering (M3b)", () => {
     expect(html).toContain("controlFailed");
     expect(buttonTag(html, "reconnect")).not.toContain("disabled=\"\"");
   });
+
+  it("announces a pending release and keeps the control disabled while busy", () => {
+    const html = renderToStaticMarkup(createElement(TerminalPanel, {
+      ...base, frameUrl: "http://rw/a", frameMode: "rw", mode: "rw", status: "live", busy: true,
+    }));
+    expect(html).toContain("releasingControl");
+    expect(buttonTag(html, "releaseControl")).toContain("disabled=\"\"");
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain('role="status"');
+  });
+
+  it("an idle live RO frame leaves Take enabled; a pending frame disables it", () => {
+    const idleFrame = renderToStaticMarkup(createElement(TerminalPanel, { ...base, frameUrl: "http://ro/a", status: "live" }));
+    expect(buttonTag(idleFrame, "takeControl")).not.toContain("disabled=\"\"");
+    const pending = renderToStaticMarkup(createElement(TerminalPanel, { ...base, status: "pending" }));
+    expect(buttonTag(pending, "takeControl")).toContain("disabled=\"\"");
+  });
 });
 

@@ -129,6 +129,83 @@ describe("control ticket lifetime (A -> B -> A)", () => {
     token += 1;
     expect(controlTicketCurrent("A", token, ticket)).toBe(false);
   });
+
+  it("a fresh Take on the now-current A after A -> B -> A succeeds", () => {
+    let token = 0;
+    const firstA = captureControlTicket("A", token)!;
+    token += 1; // select B
+    token += 1; // select A again
+    let state = controlStateReducer(idle, { type: "request", action: "take" });
+    state = controlStateReducer(state, { type: "reset" });
+    state = controlStateReducer(state, { type: "reset" });
+    state = controlStateReducer(state, {
+      type: "settle", action: "take", ok: true, error: null, current: controlTicketCurrent("A", token, firstA),
+    });
+    expect(state.mode).toBe("ro");
+
+    const fresh = captureControlTicket("A", token)!;
+    state = controlStateReducer(state, { type: "request", action: "take" });
+    state = controlStateReducer(state, {
+      type: "settle", action: "take", ok: true, error: null, current: controlTicketCurrent("A", token, fresh),
+    });
+    expect(state.mode).toBe("rw");
+  });
+
+  it("a polling fallback to another active session also invalidates an in-flight ticket", () => {
+    let token = 0;
+    const ticket = captureControlTicket("A", token)!;
+    token += 1;
+    expect(controlTicketCurrent("B", token, ticket)).toBe(false);
+  });
+
+  it("an observed lost-target invalidates a pending Take", () => {
+    let token = 0;
+    const ticket = captureControlTicket("A", token)!;
+    let state = controlStateReducer(idle, { type: "request", action: "take" });
+    // The validation effect bumps the token and resets control when the target is lost.
+    token += 1;
+    state = controlStateReducer(state, { type: "reset" });
+    state = controlStateReducer(state, {
+      type: "settle", action: "take", ok: true, error: null, current: controlTicketCurrent("A", token, ticket),
+    });
+    expect(state.mode).toBe("ro");
+    expect(state.busy).toBe(false);
+  });
+});
+
+describe("control reducer restoration (M3b final corrections)", () => {
+  it("takes control only after a confirmed success; a delayed failure stays read-only", () => {
+    let state = controlStateReducer(idle, { type: "request", action: "take" });
+    expect(state).toEqual({ mode: "ro", busy: true, error: null });
+    state = controlStateReducer(state, { type: "settle", action: "take", ok: true, error: null, current: true });
+    expect(state.mode).toBe("rw");
+
+    state = controlStateReducer(idle, { type: "request", action: "take" });
+    state = controlStateReducer(state, { type: "settle", action: "take", ok: false, error: "down", current: true });
+    expect(state.mode).toBe("ro");
+    expect(state.error).toBe("down");
+  });
+
+  it("is a synchronous duplicate guard: a second request while busy is ignored", () => {
+    const first = controlStateReducer(idle, { type: "request", action: "take" });
+    expect(controlStateReducer(first, { type: "request", action: "take" })).toEqual(first);
+  });
+
+  it("reset drops control without hiding an in-flight busy request", () => {
+    const requested = controlStateReducer(writable, { type: "request", action: "release" });
+    expect(controlStateReducer(requested, { type: "reset" })).toEqual({ mode: "ro", busy: true, error: null });
+  });
+
+  it("a stale success cannot alter current control or feedback", () => {
+    const requested = controlStateReducer(idle, { type: "request", action: "take" });
+    const afterReset = controlStateReducer(requested, { type: "reset" });
+    const stale = controlStateReducer(afterReset, {
+      type: "settle", action: "take", ok: true, error: null, current: false,
+    });
+    expect(stale.mode).toBe("ro");
+    expect(stale.error).toBeNull();
+    expect(stale.busy).toBe(false);
+  });
 });
 
 describe("validation freshness (client receipt clock)", () => {
@@ -298,6 +375,7 @@ beforeEach(() => {
   nav.search = "";
   nav.push.length = 0;
   nav.replace.length = 0;
+  harness.projects = { data: { ok: true, data: { projects: [], skipped: 0 } }, isError: false };
 });
 
 describe("live same-route location (M3b final corrections)", () => {
@@ -335,6 +413,26 @@ describe("SessionsPage — mosaic-first view", () => {
     const html = renderToStaticMarkup(createElement(SessionsPage));
     expect(html).toContain('data-testid="mosaic"');
     expect(html).not.toContain('data-testid="focused-view"');
+  });
+
+  it("passes buildMission's readiness/cards through to Mosaic", () => {
+    harness.projects = {
+      data: {
+        ok: true,
+        data: {
+          projects: [{
+            dir: "p1", name: "Alpha", stage: "build", branch: "main", builder: "claude-code",
+            gate: null, legacyGateField: false, now: "", residuals: [],
+            updated: "2026-09-19T10:00:00.000Z", archived: false,
+          }] as unknown as never,
+          skipped: 0,
+        },
+      },
+      isError: false,
+    };
+    const html = renderToStaticMarkup(createElement(SessionsPage));
+    expect(html).toContain('data-readiness="ready"');
+    expect(html).toContain('data-cards="1"');
   });
 
   it("keeps projects/hub/panes-tail enabled and agents/config disabled in the default mosaic view", () => {
