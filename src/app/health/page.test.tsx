@@ -42,4 +42,13 @@ describe("HealthPage retained poll data", () => {
     harness.query = { data: undefined, isError: true, dataUpdatedAt: 0, error: new Error("down") };
     expect(renderToStaticMarkup(createElement(HealthPage))).toContain("unavailable");
   });
+
+  it("keeps independent Environment sections mounted when metrics fail or have no sample (AC3)", () => {
+    harness.query = { data: undefined, isError: true, dataUpdatedAt: 0, error: new Error("down") };
+    expect(renderToStaticMarkup(createElement(HealthPage))).toContain("sections.components");
+    harness.query = { data: { ok: true, data: { ...payload, latest: null } }, isError: false, dataUpdatedAt: 0, error: undefined };
+    const html = renderToStaticMarkup(createElement(HealthPage));
+    expect(html).toContain("waitingFirstSample");
+    expect(html).toContain("sections.components");
+  });
 });

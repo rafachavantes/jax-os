@@ -5,7 +5,6 @@ import { execFile } from "node:child_process";
 import { readFile, statfs } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
-import type Database from "better-sqlite3";
 import { envFileStatus, type EnvFileState } from "../envFile";
 import { getDb } from "../db";
 import { checkOwnDatabase, type OwnDbCheck } from "../db/environment";
@@ -16,7 +15,7 @@ import {
 import { isCliPresent } from "./cli-presence";
 import { getProjects } from "./projects";
 import {
-  packageKey, parseHoldRows, parseSimulationRows,
+  getPackageObservation, packageKey, parseHoldRows, parseSimulationRows,
   type PackageObservation,
 } from "./alerts";
 import { listLivePanes } from "./workflow-tmux";
@@ -548,10 +547,7 @@ export function systemEnvironmentDeps(): EnvironmentDeps {
       return { bsize: stats.bsize, blocks: stats.blocks, bfree: stats.bfree, bavail: stats.bavail };
     },
     realpath: (path) => realpathSync(path),
-    packages: async () => {
-      const { getPackageObservation } = await import("./alerts");
-      return getPackageObservation();
-    },
+    packages: () => getPackageObservation(),
     exec: systemExec,
     ps: () => systemExec("ps", ["-eo", "pid=,ppid=,uid=,stat=,etimes=,rss=,comm="], { timeout: 5_000, maxBuffer: 2 * 1024 * 1024 }),
     readProc: readProcStat,

@@ -51,9 +51,11 @@ function HealthPageInner() {
   const stale = data !== null && data.collectedAgoS !== null && data.collectedAgoS > STALE_S;
 
   if (pollFailed) {
+    // AC3: independent Environment sources stay visible even when the metrics collector is down.
     return (
-      <div className="p-1">
+      <div className="flex flex-col gap-[22px] p-1">
         <SourceWarning label={t("unavailable")} detail={q.error instanceof Error ? q.error.message : undefined} />
+        <EnvironmentDiagnostics />
       </div>
     );
   }
@@ -62,9 +64,12 @@ function HealthPageInner() {
   }
   if (data.latest === null) {
     return (
-      <div className="flex items-center gap-3 p-1 text-[13px] text-muted">
-        <Server className="h-4 w-4" />
-        {t("waitingFirstSample")}
+      <div className="flex flex-col gap-[22px]">
+        <div className="flex items-center gap-3 p-1 text-[13px] text-muted">
+          <Server className="h-4 w-4" />
+          {t("waitingFirstSample")}
+        </div>
+        <EnvironmentDiagnostics />
       </div>
     );
   }
