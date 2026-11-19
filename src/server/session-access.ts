@@ -91,7 +91,9 @@ export async function resolveSessionAccess(
     const hub = panes.find(
       (p) => p.pane === selector.pane && p.tmuxIncarnation === selector.incarnation && p.live,
     );
-    if (!hub) pof("unavailable");
+    // A pinned target whose live hub row disappeared is a lost target; an initial miss is merely
+    // unavailable. Harness/seat ownership mismatches below stay unavailable either way.
+    if (!hub) pof(expected ? "lost-target" : "unavailable");
     // Strict identity: an unrecorded harness (undefined) is not the explicit unidentified seat
     // (null), and neither is a wildcard for the other.
     if (hub.harnessSession !== selector.harnessSession) pof("unavailable");
@@ -104,9 +106,10 @@ export async function resolveSessionAccess(
     const paneRows = snapshot.rows.filter((r) => r.eligible && r.pane === selector.pane);
     const row = paneRows.find((r) => r.incarnation === selector.incarnation && !r.dead);
     if (!row) {
-      // A missing initial target is unavailable; a moved/dead one is a lost target.
-      if (paneRows.length === 0) pof("unavailable");
-      pof("lost-target");
+      // A pinned binding that is no longer live is always lost. Without one, a missing initial
+      // target is unavailable while a moved/dead row is a lost target.
+      if (expected || paneRows.length > 0) pof("lost-target");
+      pof("unavailable");
     }
     requireExpectedBinding(expected, row.target, row.incarnation);
     target = row.target;

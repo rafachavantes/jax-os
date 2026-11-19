@@ -153,6 +153,54 @@ describe("resolveSessionAccess — card binding", () => {
   });
 });
 
+describe("resolveSessionAccess — pinned loss classification (F6)", () => {
+  const snapshot = { rows: [row()], serverIncarnation: "1234:1700000000" };
+  const expected = { target: "$2:@3.%7", incarnation: "1234:1700000000" };
+
+  it("a missing live hub row is unavailable initially and lost-target when pinned", async () => {
+    await expect(resolveSessionAccess(cardSelector, undefined, deps(snapshot, [])))
+      .rejects.toMatchObject({ code: "unavailable" });
+    await expect(resolveSessionAccess(cardSelector, expected, deps(snapshot, [])))
+      .rejects.toMatchObject({ code: "lost-target" });
+  });
+
+  it("a harness ownership mismatch stays unavailable with or without a pinned binding", async () => {
+    const foreign = [pane({ harnessSession: "other" })];
+    await expect(resolveSessionAccess(cardSelector, undefined, deps(snapshot, foreign)))
+      .rejects.toMatchObject({ code: "unavailable" });
+    await expect(resolveSessionAccess(cardSelector, expected, deps(snapshot, foreign)))
+      .rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("a seat ownership mismatch stays unavailable with or without a pinned binding", async () => {
+    // The matching harness row is found first, while the seat iteration sees a different owner
+    // of the same pane/incarnation — a strict seat proof failure, never a guessed replacement.
+    const reordered = [pane({ harnessSession: "sess-a", session: "zzz" }), pane({ harnessSession: "sess-other", session: "aaa" })];
+    await expect(resolveSessionAccess(cardSelector, undefined, deps(snapshot, reordered)))
+      .rejects.toMatchObject({ code: "unavailable" });
+    await expect(resolveSessionAccess(cardSelector, expected, deps(snapshot, reordered)))
+      .rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("zero eligible native pane rows is unavailable initially and lost-target when pinned", async () => {
+    const none = { rows: [], serverIncarnation: "1234:1700000000" };
+    await expect(resolveSessionAccess(cardSelector, undefined, deps(none, [pane()])))
+      .rejects.toMatchObject({ code: "unavailable" });
+    await expect(resolveSessionAccess(cardSelector, expected, deps(none, [pane()])))
+      .rejects.toMatchObject({ code: "lost-target" });
+  });
+
+  it("an eligible pane row that is dead or has another incarnation is lost-target either way", async () => {
+    for (const rows of [[row({ dead: true })], [row({ incarnation: "999:1700009999" })]]) {
+      const snap = { rows, serverIncarnation: "1234:1700000000" };
+      await expect(resolveSessionAccess(cardSelector, undefined, deps(snap, [pane()])))
+        .rejects.toMatchObject({ code: "lost-target" });
+      await expect(resolveSessionAccess(cardSelector, expected, deps(snap, [pane()])))
+        .rejects.toMatchObject({ code: "lost-target" });
+    }
+  });
+});
+
 describe("resolveSessionAccess — generic tmux selector", () => {
   it("requires exactly one active window/pane on initial access", async () => {
     const selector: SessionAccessSelector = { kind: "tmux", session: "project agent" };

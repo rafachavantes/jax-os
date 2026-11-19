@@ -241,24 +241,39 @@ describe("Mosaic — mobile 44px cell target (round-4 F3)", () => {
 });
 
 describe("Mosaic — exact pane selection (M3b)", () => {
-  it("a proven harness identity makes the cell interactive; an unproven one (undefined) does not", () => {
-    const proven = renderToStaticMarkup(createElement(Mosaic, {
-      readiness: readyEmpty, cards: [cardWithPanes({}, [pane({ harnessSession: "sess-a" })])], panesTail: null, busy: false,
+  // The markup contains the desktop grid first and the mobile column second; splitting at the
+  // mobile-only class lets each surface's own eligibility be asserted independently.
+  function renderSections(p: MissionPane): { desktop: string; mobile: string } {
+    const html = renderToStaticMarkup(createElement(Mosaic, {
+      readiness: readyEmpty, cards: [cardWithPanes({}, [p])], panesTail: null, busy: false,
       onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
     }));
-    expect(proven).toContain('role="button"');
-    const unproven = renderToStaticMarkup(createElement(Mosaic, {
-      readiness: readyEmpty, cards: [cardWithPanes({}, [pane({})])], panesTail: null, busy: false,
-      onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
-    }));
-    expect(unproven).not.toContain('role="button"');
+    const [desktop = "", mobile = ""] = html.split("lg:hidden");
+    return { desktop, mobile };
+  }
+
+  it("a proven harness identity makes the desktop cell interactive", () => {
+    const { desktop } = renderSections(pane({ harnessSession: "sess-a" }));
+    expect(desktop).toContain('role="button"');
+    expect(desktop).toContain("openPane");
+  });
+
+  it("an unproven harness identity (undefined) keeps only the mobile preview interactive", () => {
+    const { desktop, mobile } = renderSections(pane({ harnessSession: undefined }));
+    expect(desktop).not.toContain('role="button"');
+    expect(mobile).toContain('role="button"');
+    expect(mobile).toContain("openPane");
   });
 
   it("the null unidentified-pane seat stays interactive (it is an explicit seat, not a wildcard)", () => {
-    const html = renderToStaticMarkup(createElement(Mosaic, {
-      readiness: readyEmpty, cards: [cardWithPanes({}, [pane({ harnessSession: null })])], panesTail: null, busy: false,
-      onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
-    }));
-    expect(html).toContain('role="button"');
+    const { desktop, mobile } = renderSections(pane({ harnessSession: null }));
+    expect(desktop).toContain('role="button"');
+    expect(mobile).toContain('role="button"');
+  });
+
+  it("a null tmux session keeps the mobile preview closed", () => {
+    const { mobile } = renderSections(pane({ tmuxSession: null }));
+    expect(mobile).not.toContain('role="button"');
+    expect(mobile).not.toContain("openPane");
   });
 });

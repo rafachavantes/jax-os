@@ -233,7 +233,7 @@ export function Mosaic({ readiness, cards, panesTail, busy, onAction, onOpenDeta
             card={cardByDir.get(dir)!} pane={pane} spotlightHere={false} dim={false}
             lines={panesTailLookup(panesTail, pane.pane)}
             busy={busy} onAction={onAction}
-            onOpen={pane.tmuxSession !== null && pane.harnessSession !== undefined ? () => onOpenMobile(pane.pane) : null}
+            onOpen={pane.tmuxSession !== null ? () => onOpenMobile(pane.pane) : null}
           />
         ))}
       </div>
