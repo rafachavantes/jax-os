@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   accountingSummary,
   canonicalOpenCodeItems,
@@ -325,6 +325,7 @@ import {
   parseOpenCodeReply,
   runNativeUsagePass,
   type DirEntryLike,
+  type DirHandleLike,
   type NativeCollectorDeps,
   type NativeFs,
   type StatLike,
@@ -333,10 +334,36 @@ import {
 const VERIFY_HOME = process.env.JAXOS_HOME || join(process.cwd(), ".local/verify-home");
 mkdirSync(VERIFY_HOME, { recursive: true });
 
+// Fixture-owned directory iterators: open handles are closed at test teardown so a
+// deferred or unfinished read never leaks a GC close warning across tests.
+const ownedDirHandles = new Set<DirHandleLike>();
+function trackedDir(handle: DirHandleLike): DirHandleLike {
+  const tracked: DirHandleLike = {
+    read: () => handle.read(),
+    close: async () => {
+      ownedDirHandles.delete(tracked);
+      await handle.close();
+    },
+  };
+  ownedDirHandles.add(tracked);
+  return tracked;
+}
+afterEach(async () => {
+  const handles = [...ownedDirHandles];
+  ownedDirHandles.clear();
+  for (const handle of handles) {
+    try {
+      await handle.close();
+    } catch {
+      /* teardown only: the fixture-owned handle is already unusable */
+    }
+  }
+});
+
 const nativeFs: NativeFs = {
   stat: (p) => fsStatAsync(p),
   realpath: (p) => fsRealpathAsync(p),
-  opendir: async (p) => fsOpendirAsync(p) as never,
+  opendir: async (p) => trackedDir((await fsOpendirAsync(p)) as unknown as DirHandleLike),
   open: async (p) => {
     const handle = await fsOpenAsync(p, "r");
     return {
