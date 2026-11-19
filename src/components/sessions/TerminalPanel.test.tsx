@@ -76,6 +76,20 @@ describe("M3b frame lifecycle (deferred races, pause/resume, expiry, healthy pol
     expect(accessLifecycle(released, { type: "validation", roUrl: "http://ro/a" }).frame?.mode).toBe("ro");
   });
 
+  it("a failed Take reports the existing unknown state, never indefinite pending", () => {
+    let state = accessLifecycle(initialAccessLifecycle, { type: "open" });
+    state = accessLifecycle(state, { type: "validation", roUrl: "http://ro/a" });
+    state = accessLifecycle(state, { type: "takeStart" });
+    const failed = accessLifecycle(state, { type: "takeFailed" });
+    expect(failed.frame).toBeNull();
+    expect(failed.pendingAttach).toBe(false);
+    expect(failed.status).toBe("unknown");
+    // An ordinary metadata success cannot attach; only an explicit reconnect starts RO again.
+    expect(accessLifecycle(failed, { type: "validation", roUrl: "http://ro/later" })).toBe(failed);
+    const reconnected = accessLifecycle(failed, { type: "reconnect" });
+    expect(reconnected.pendingAttach).toBe(true);
+    expect(accessLifecycle(reconnected, { type: "validation", roUrl: "http://ro/fresh" }).frame?.mode).toBe("ro");
+  });
 });
 
 describe("accessFailureStatus (bounded target codes)", () => {
@@ -87,6 +101,17 @@ describe("accessFailureStatus (bounded target codes)", () => {
     expect(accessFailureStatus("invalid-selector")).toBe("unknown");
   });
 });
+
+function buttonTag(html: string, label: string): string {
+  const labelAt = html.indexOf(`>${label}`);
+  const start = html.lastIndexOf("<button", labelAt === -1 ? html.indexOf(label) : labelAt);
+  const end = html.indexOf(">", start);
+  return start === -1 || end === -1 ? "" : html.slice(start, end);
+}
+
+function iframeOf(html: string): string {
+  return html.match(/<iframe[\s\S]*?<\/iframe>/)?.[0] ?? "";
+}
 
 describe("TerminalPanel prepared-frame rendering (M3b)", () => {
   const base = {
@@ -150,6 +175,45 @@ describe("TerminalPanel prepared-frame rendering (M3b)", () => {
     const html = renderToStaticMarkup(createElement(TerminalPanel, { ...base, configured: false, status: "unconfigured" }));
     expect(html).toContain("notConfigured");
     expect(html).not.toContain("<iframe");
+  });
+
+  it("a prepared live frame survives the separate config poll (false/true/loading) with the same node and URL", () => {
+    const live = { ...base, frameUrl: "http://127.0.0.1:10000/ro/?arg=%242%3A%403.%257", status: "live" as const };
+    const ready = renderToStaticMarkup(createElement(TerminalPanel, live));
+    const frame = iframeOf(ready);
+    expect(frame).toContain("http://127.0.0.1:10000/ro/?arg=");
+    expect(iframeOf(renderToStaticMarkup(createElement(TerminalPanel, { ...live, configured: false })))).toBe(frame);
+    expect(iframeOf(renderToStaticMarkup(createElement(TerminalPanel, { ...live, configLoading: true })))).toBe(frame);
+    expect(iframeOf(renderToStaticMarkup(createElement(TerminalPanel, { ...live, configured: true })))).toBe(frame);
+  });
+
+  it("a live RW frame keeps its iframe and an enabled Release even when the config poll fails", () => {
+    const html = renderToStaticMarkup(createElement(TerminalPanel, {
+      ...base, configured: false, frameUrl: "http://127.0.0.1:10001/rw/?arg=%242%3A%403.%257",
+      frameMode: "rw", mode: "rw", status: "live",
+    }));
+    expect(iframeOf(html)).toContain("http://127.0.0.1:10001/rw/?arg=");
+    expect(html).toContain("releaseControl");
+    expect(buttonTag(html, "releaseControl")).not.toContain("disabled=\"\"");
+  });
+
+  it("Take remains gated on the configured transport for a live RO frame", () => {
+    const live = { ...base, frameUrl: "http://127.0.0.1:10000/ro/?arg=x", status: "live" as const };
+    const enabled = renderToStaticMarkup(createElement(TerminalPanel, { ...live, configured: true }));
+    const gated = renderToStaticMarkup(createElement(TerminalPanel, { ...live, configured: false }));
+    expect(buttonTag(enabled, "takeControl")).not.toContain("disabled=\"\"");
+    expect(buttonTag(gated, "takeControl")).toContain("disabled=\"\"");
+    expect(iframeOf(gated)).toBe(iframeOf(enabled));
+  });
+
+  it("a failed Take shows the existing control error and an available Reconnect", () => {
+    const html = renderToStaticMarkup(createElement(TerminalPanel, {
+      ...base, configured: true, status: "unknown", error: "controlFailed",
+    }));
+    expect(html).not.toContain("<iframe");
+    expect(html).toContain("unknown");
+    expect(html).toContain("controlFailed");
+    expect(buttonTag(html, "reconnect")).not.toContain("disabled=\"\"");
   });
 });
 

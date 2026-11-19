@@ -134,7 +134,9 @@ export function accessLifecycle(state: AccessLifecycle, event: AccessEvent): Acc
         pendingAttach: false,
       };
     case "takeFailed":
-      return { generation: state.generation + 1, frame: null, status: "pending", pendingAttach: false };
+      // A failed Take is a real, visible failure — not an endless "validating" state. Only an
+      // explicit reconnect starts a new validation lifetime that may attach RO.
+      return { generation: state.generation + 1, frame: null, status: "unknown", pendingAttach: false };
     case "releaseStart":
       return { generation: state.generation + 1, frame: null, status: "pending", pendingAttach: true };
   }
@@ -188,14 +190,16 @@ export function TerminalPanel({
 }: Props) {
   const t = useTranslations("sessions");
   const writable = mode === "rw" && frameMode === "rw" && frameUrl !== null;
-  const canControl = configured && !busy && frameUrl !== null && status === "live";
+  // The lifecycle owns the prepared frame; the separate config poll may only gate a NEW Take.
+  // Release of an already-live RW frame stays usable while that poll is failing.
+  const releaseEnabled = writable && !busy && status === "live";
+  const takeEnabled = configured && !busy && frameUrl !== null && status === "live";
+  const canControl = writable ? releaseEnabled : takeEnabled;
 
   let body: React.ReactNode;
-  if (configLoading) {
-    body = <div className="m-5 h-6 animate-pulse rounded bg-surface-2" />;
-  } else if (!configured || status === "unconfigured") {
-    body = <div className="p-5"><SourceWarning label={t("notConfigured")} /></div>;
-  } else if (frameUrl !== null) {
+  // A prepared frame is rendered from the lifecycle alone: a config false/true or loading/ready
+  // flip must never unmount and remount it (that would silently reattach, possibly RW).
+  if (frameUrl !== null) {
     body = (
       <iframe
         key={`${frameMode}-${frameKey}`}
@@ -204,6 +208,10 @@ export function TerminalPanel({
         className="h-full min-h-0 w-full flex-1 border-0"
       />
     );
+  } else if (configLoading) {
+    body = <div className="m-5 h-6 animate-pulse rounded bg-surface-2" />;
+  } else if (!configured || status === "unconfigured") {
+    body = <div className="p-5"><SourceWarning label={t("notConfigured")} /></div>;
   } else if (status === "paused") {
     body = <div className="p-5 text-[12.5px] text-muted">{t("paused")}</div>;
   } else if (status === "unknown") {
