@@ -191,7 +191,7 @@ export const EXACT_SHAPE_BODY = { ok: false, error: "invalid payload" } as const
 export function parseExactControlPayload(
   payload: Record<string, unknown>,
 ): { selector: SessionAccessSelector; expected: ExpectedSessionTarget } | "legacy" | null {
-  if (!("selector" in payload)) return "legacy";
+  if (!("selector" in payload)) return "expected" in payload ? null : "legacy";
   if ("session" in payload) return null;
   const selector = parseSessionAccessSelector(payload.selector);
   const expected = parseExpectedTarget(payload.expected);

@@ -917,10 +917,17 @@ describe("exact session control shape (M3b plan Task 2)", () => {
 
   it("rejects a mixed legacy/exact body instead of guessing", async () => {
     let resolvedCalls = 0;
-    const res = await handleTakeControl(request({ session: "jax-test", selector, expected }), deps({
+    const exactDeps = () => deps({
       resolve: async () => { resolvedCalls += 1; return resolved; },
-    }));
-    expect(await res.json()).toEqual({ ok: false, error: "invalid payload" });
+    });
+    for (const body of [
+      { session: "jax-test", selector, expected },
+      { session: "jax-test", expected },
+      { selector, expected, extra: true, session: "x" },
+    ]) {
+      const res = await handleTakeControl(request(body), exactDeps());
+      expect(await res.json()).toEqual({ ok: false, error: "invalid payload" });
+    }
     expect(resolvedCalls).toBe(0);
     expect(rows()).toEqual([]);
   });
