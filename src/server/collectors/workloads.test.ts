@@ -391,6 +391,10 @@ describe("raw read ownership across caller timeouts (observation completion Task
     for (const read of cases) {
       const reader = createIdentityReader(read, { concurrency: 1, now: () => 0 });
       await expect(reader.read(101, 5_000)).resolves.toBeNull();
+      const phase = await readIdentityPhase([101], reader.read, { deadline: 10_000, now: () => 0 });
+      expect(phase.attempted.has(101)).toBe(true);
+      expect(phase.stats.size).toBe(0);
+      expect(phase.deadlineHit).toBe(false);
     }
   });
 

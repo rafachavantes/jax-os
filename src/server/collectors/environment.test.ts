@@ -419,12 +419,11 @@ describe("native pane alive evidence (final contracts Task 2)", () => {
     return `${pid} (fixture) ${[state, String(ppid), ...Array<string>(17).fill("0"), String(start)].join(" ")}`;
   }
 
-  function panesWith(dead: [boolean | undefined, boolean | undefined], reads?: () => number) {
+  function panesWith(dead: [boolean | undefined, boolean | undefined]) {
     let count = 0;
     return async () => {
       const value = dead[Math.min(count, dead.length - 1)];
       count += 1;
-      reads?.();
       const paneDead = new Map<string, boolean>();
       if (value !== undefined) paneDead.set("%1", value);
       return {
