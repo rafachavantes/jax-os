@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createPackageObservationReader, createSystemAsyncExec, getAlerts, packageKey, parseDfAlerts,
-  parseHoldListing, parseHoldRows, parseLoadAlert, parsePackageListing, parsePackageRows,
+  createPackageObservationReader, createSystemAsyncExec, getAlerts, normalizePackageCandidates, packageKey,
+  parseDfAlerts, parseHoldListing, parseHoldRows, parseLoadAlert, parsePackageListing, parsePackageRows,
   parseSimulationListing, parseSimulationRows, parseZombieRows, PACKAGE_TTL_MS, type PackageObservation,
 } from "./alerts";
 
@@ -246,6 +246,23 @@ describe("package parsers — architecture identity (M5 Task 2)", () => {
     ]);
   });
 
+  it("accepts the real unprivileged simulation preamble with the indented package list", () => {
+    const out = [
+      "NOTE: This is only a simulation!",
+      " apt-get needs root privileges for real execution.",
+      " Keep also in mind that locking is deactivated,",
+      " so don't depend on the relevance to the real current situation!",
+      "Reading package lists...",
+      "Building dependency tree...",
+      "Reading state information...",
+      "The following packages will be upgraded:",
+      "  bar",
+      "Inst bar [1] (2 stable [all])",
+      "1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+    ].join("\n");
+    expect(parseSimulationListing(out)).toEqual({ rows: [{ name: "bar", arch: "all", version: "2" }], recognized: true });
+  });
+
   it("recognizes a zero-upgrade summary but never empty/arbitrary prose as proof of zero", () => {
     expect(parseSimulationListing("Reading package lists...\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n").recognized).toBe(true);
     expect(parseSimulationListing("").recognized).toBe(false);
@@ -256,6 +273,45 @@ describe("package parsers — architecture identity (M5 Task 2)", () => {
     expect(packageKey("openssl", null, "amd64")).toBe("openssl:amd64");
     expect(packageKey("openssl", "i386", "amd64")).toBe("openssl:i386");
     expect(packageKey("openssl", null, null)).toBe("openssl:unknown");
+  });
+});
+
+describe("shared normalized candidates (observation completion Task 1)", () => {
+  const row = (over: Partial<PackageObservation["rows"][number]> = {}) => ({
+    name: "bar", arch: "amd64", key: "bar:amd64", fromVersion: "1", toVersion: "2", security: false, ...over,
+  });
+
+  it("dedupes identical rows once while keeping conflicting versions as one unknown candidate", () => {
+    const identical = normalizePackageCandidates(observation({ rows: [row(), row()] }));
+    expect(identical.candidates).toHaveLength(1);
+    expect(identical.duplicateConflict).toBe(false);
+
+    const conflicting = normalizePackageCandidates(observation({
+      rows: [row(), row({ fromVersion: "0", toVersion: "3" })],
+      simulation: [{ name: "bar", arch: "amd64", version: "2" }],
+    }));
+    expect(conflicting.candidates).toHaveLength(1);
+    expect(conflicting.candidates[0]).toMatchObject({ key: "bar:amd64", reason: "unknown", selectedNow: false, conflict: true });
+    expect(conflicting.duplicateConflict).toBe(true);
+  });
+
+  it("keeps missing selection evidence unknown instead of a solver-deferral claim", () => {
+    const missing = normalizePackageCandidates(observation({ rows: [row()], simulation: null }));
+    expect(missing.candidates[0]).toMatchObject({ reason: "unknown", selectedNow: false });
+    expect(missing.selectionKnown).toBe(false);
+
+    const noHolds = normalizePackageCandidates(observation({ rows: [row()], holds: null }));
+    expect(noHolds.candidates[0]).toMatchObject({ reason: "unknown", selectedNow: false });
+    expect(noHolds.selectionKnown).toBe(false);
+  });
+
+  it("keeps a held-and-selected conflict out of the held and selected classification", () => {
+    const conflict = normalizePackageCandidates(observation({
+      rows: [row()],
+      holds: [{ name: "bar", arch: "amd64" }],
+      simulation: [{ name: "bar", arch: "amd64", version: "2" }],
+    }));
+    expect(conflict.candidates[0]).toMatchObject({ held: true, selectedNow: false, conflict: true, reason: "unknown" });
   });
 });
 
@@ -359,6 +415,23 @@ describe("shared package observation (M5 Task 2)", () => {
     const reader = createPackageObservationReader(exec, () => 1_000_000);
     const first = await reader.read();
     expect(first).toMatchObject({ state: "failed", stale: false, lastGoodAt: null, rows: [] });
+  });
+
+  it("counts the deduped normalized rows, not the raw listing", async () => {
+    const exec = vi.fn(async (file: string) => {
+      if (file === "apt") {
+        return "Listing...\nbar/stable 2 amd64 [upgradable from: 1]\nbar/stable 2 amd64 [upgradable from: 1]\n";
+      }
+      if (file === "apt-mark") return "";
+      if (file === "apt-get") return "Reading package lists...\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n";
+      if (file === "dpkg") return "amd64\n";
+      throw new Error(`unexpected ${file}`);
+    });
+    const reader = createPackageObservationReader(exec, () => 1_000_000);
+    const alerts = await getAlerts({
+      exec: execFor(ALERT_EXECS), loadavg: loadavgOk, packages: () => reader.read(),
+    });
+    expect(alerts.find((a) => a.kind === "updates")).toMatchObject({ count: 1, rows: [{ key: "bar:amd64" }] });
   });
 
   it("keeps one pending run across repeated polls instead of starting duplicates", async () => {

@@ -17,8 +17,8 @@ import {
   parseSettings, readRawSettings, settingsKeyPresence, type KeyPresence, type RawSettingsRead, type SettingsResult,
 } from "../settings";
 import {
-  getPackageObservation, packageKey, validPackageArch, validPackageName,
-  type PackageObservation, type PackageRow, type PackageWarning,
+  getPackageObservation, normalizePackageCandidates,
+  type NormalizedPackageCandidate, type PackageObservation, type PackageWarning,
 } from "./alerts";
 import { listLivePanes } from "./workflow-tmux";
 import { collectWorkloads, readProcStat, type WorkloadsSection } from "./workloads";
@@ -132,18 +132,7 @@ export type ResourcesSection = {
   warning: "mount-facts" | "statfs-failed" | null;
 };
 
-export type PackageCandidate = {
-  key: string;
-  name: string;
-  arch: string;
-  fromVersion: string;
-  toVersion: string;
-  security: boolean;
-  held: boolean;
-  selectedNow: boolean;
-  conflict: boolean;
-  reason: "held" | "selected-now" | "deferred-unknown" | "unknown";
-};
+export type PackageCandidate = NormalizedPackageCandidate;
 
 export type PackageCounts = {
   total: number;
@@ -339,129 +328,35 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
 
 export const MAX_PACKAGE_ROWS = 500;
 
-type FactMatch = { state: "match" } | { state: "no" } | { state: "ambiguous" } | { state: "unresolved" };
-
-// A bare (architecture-less) policy fact resolves only to an unambiguous native or Arch:all
-// candidate. Two eligible candidates stay unknown instead of being matched to both.
-function matchFact(
-  fact: { name: string; arch: string | null },
-  name: string,
-  arch: string,
-  nativeArch: string | null,
-  archesForName: Set<string>,
-): FactMatch {
-  if (fact.name !== name) return { state: "no" };
-  if (fact.arch !== null) return fact.arch === arch ? { state: "match" } : { state: "no" };
-  if (nativeArch === null) {
-    const all = [...archesForName].filter((candidate) => candidate === "all");
-    return all.length === 1 ? (arch === "all" ? { state: "match" } : { state: "no" }) : { state: "unresolved" };
-  }
-  const eligible = [...archesForName].filter((candidate) => candidate === nativeArch || candidate === "all");
-  if (eligible.length > 1) return { state: "ambiguous" };
-  if (eligible.length === 0) return { state: "no" };
-  return eligible[0] === arch ? { state: "match" } : { state: "no" };
-}
-
 // One normalized projection used by both the Environment section and alert counts. No subprocess
-// runs here: candidates/holds/simulation/architecture all come from the shared observation.
+// runs here: candidates/holds/simulation/architecture all come from the shared observation, and
+// the section keeps the source observation time instead of renewing it on every poll.
 export function buildPackageSection(
   observation: PackageObservation,
-  deps: Pick<EnvironmentDeps, "now">,
+  _deps?: Pick<EnvironmentDeps, "now">,
 ): PackagesSection {
-  const nowMs = deps.now();
-  const observedAt = new Date(nowMs).toISOString();
   const warnings = [...observation.warnings];
   if (observation.state === "failed" && observation.rows.length === 0) {
     return {
-      observedAt, lastGoodAt: observation.lastGoodAt, state: "unavailable",
+      observedAt: observation.observedAt, lastGoodAt: observation.lastGoodAt, state: "unavailable",
       candidates: [], counts: null, truncated: false, warnings,
     };
   }
 
-  const nativeArch = observation.nativeArch;
-  const byKey = new Map<string, PackageRow>();
-  let duplicateConflict = false;
-  for (const row of observation.rows) {
-    if (!validPackageName(row.name)) continue;
-    if (row.arch && !validPackageArch(row.arch)) continue;
-    const key = packageKey(row.name, row.arch, nativeArch);
-    const existing = byKey.get(key);
-    if (existing) {
-      if (existing.fromVersion !== row.fromVersion || existing.toVersion !== row.toVersion) duplicateConflict = true;
-      continue;
-    }
-    byKey.set(key, row);
-  }
-
-  const archesByName = new Map<string, Set<string>>();
-  for (const row of byKey.values()) {
-    const arch = row.arch || nativeArch || "unknown";
-    const set = archesByName.get(row.name) ?? new Set<string>();
-    set.add(arch);
-    archesByName.set(row.name, set);
-  }
-
-  const holds = observation.holds;
-  const simulation = observation.simulation;
-  let anyUnresolved = false;
-  let anyAmbiguous = false;
-
-  const normalized = [...byKey.values()].map((row) => {
-    const arch = row.arch || nativeArch || "unknown";
-    const arches = archesByName.get(row.name) ?? new Set([arch]);
-    let held = false;
-    let simVersion: string | null = null;
-    let simMatched = false;
-    let ambiguous = false;
-    let unresolved = false;
-
-    if (holds !== null) {
-      for (const fact of holds) {
-        const match = matchFact(fact, row.name, arch, nativeArch, arches);
-        if (match.state === "match") held = true;
-        if (match.state === "ambiguous") { ambiguous = true; anyAmbiguous = true; }
-        if (match.state === "unresolved") { unresolved = true; anyUnresolved = true; }
-      }
-    }
-    if (simulation !== null) {
-      for (const fact of simulation) {
-        const match = matchFact(fact, row.name, arch, nativeArch, arches);
-        if (match.state === "match") { simMatched = true; simVersion = fact.version; }
-        if (match.state === "ambiguous") { ambiguous = true; anyAmbiguous = true; }
-        if (match.state === "unresolved") { unresolved = true; anyUnresolved = true; }
-      }
-    }
-    const selectedNow = simMatched && simVersion !== null && simVersion === row.toVersion;
-    const conflict = held && selectedNow;
-    const reason: PackageCandidate["reason"] = conflict || ambiguous || unresolved
-      ? "unknown"
-      : held ? "held"
-        : selectedNow ? "selected-now"
-          : "deferred-unknown";
-    return {
-      key: packageKey(row.name, row.arch, nativeArch),
-      name: row.name,
-      arch,
-      fromVersion: row.fromVersion,
-      toVersion: row.toVersion,
-      security: row.security,
-      held,
-      selectedNow: selectedNow && !conflict,
-      conflict,
-      reason,
-    } satisfies PackageCandidate;
-  }).sort((a, b) => a.key.localeCompare(b.key));
-
+  const { candidates: normalized, duplicateConflict, selectionKnown } = normalizePackageCandidates(observation);
   const truncated = normalized.length > MAX_PACKAGE_ROWS;
   const shown = truncated ? normalized.slice(0, MAX_PACKAGE_ROWS) : normalized;
-  const totalKnown = observation.children.candidates.ok || observation.children.candidates.lastGoodAt !== null;
-  const selectionKnown = holds !== null && simulation !== null && !anyUnresolved && !anyAmbiguous;
+  // Known rows from a partial listing stay an explicitly incomplete known count, never a
+  // complete-total claim; a first total failure has no rows and was returned as unavailable.
+  const totalKnown = normalized.length > 0
+    || observation.children.candidates.ok
+    || observation.children.candidates.lastGoodAt !== null;
   const counts: PackageCounts | null = totalKnown ? {
     total: normalized.length,
     shown: shown.length,
     remainder: normalized.length - shown.length,
     selectedNow: selectionKnown ? normalized.filter((c) => c.reason === "selected-now").length : null,
-    held: selectionKnown ? normalized.filter((c) => c.held).length : null,
+    held: selectionKnown ? normalized.filter((c) => c.reason === "held").length : null,
     deferred: selectionKnown ? normalized.filter((c) => c.reason === "deferred-unknown").length : null,
     unknown: normalized.filter((c) => c.reason === "unknown").length,
   } : null;
@@ -472,7 +367,7 @@ export function buildPackageSection(
       : observation.state === "ok" && warnings.length === 0 && !hasConflict && !duplicateConflict && !truncated ? "ok"
         : "partial";
   return {
-    observedAt,
+    observedAt: observation.observedAt,
     lastGoodAt: observation.lastGoodAt,
     state,
     candidates: shown,

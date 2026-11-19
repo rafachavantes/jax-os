@@ -164,6 +164,8 @@ export function parseSimulationListing(out: string): PackageSimulationListing {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed.startsWith("Conf ")) { sawProof = true; continue; }
+    // Inst/summary are matched on trimmed text; the simulation preamble and the indented
+    // package list keep their raw indentation, which is part of their supported shape.
     const inst = INST_RE.exec(trimmed);
     if (inst) {
       const target = splitNameArch(inst[1]);
@@ -177,7 +179,7 @@ export function parseSimulationListing(out: string): PackageSimulationListing {
       continue;
     }
     if (SIM_SUMMARY_RE.test(trimmed)) { sawProof = true; continue; }
-    if (SIM_PREAMBLE_RE.some((re) => re.test(trimmed))) continue;
+    if (SIM_PREAMBLE_RE.some((re) => re.test(line) || re.test(trimmed))) continue;
     recognized = false;
   }
   return { rows, recognized: recognized && sawProof };
@@ -214,6 +216,143 @@ export type PackageObservation = {
     architecture: PackageChildFacts;
   };
 };
+
+export type PackageCandidateReason = "held" | "selected-now" | "deferred-unknown" | "unknown";
+
+export type NormalizedPackageCandidate = {
+  key: string;
+  name: string;
+  arch: string;
+  fromVersion: string;
+  toVersion: string;
+  security: boolean;
+  held: boolean;
+  selectedNow: boolean;
+  conflict: boolean;
+  reason: PackageCandidateReason;
+};
+
+export type NormalizedPackageSet = {
+  candidates: NormalizedPackageCandidate[];
+  duplicateConflict: boolean;
+  selectionKnown: boolean;
+};
+
+type FactMatch = { state: "match" } | { state: "no" } | { state: "ambiguous" } | { state: "unresolved" };
+
+// A bare (architecture-less) policy fact resolves only to an unambiguous native or Arch:all
+// candidate. Two eligible candidates stay unknown instead of being matched to both.
+function matchPolicyFact(
+  fact: { name: string; arch: string | null },
+  name: string,
+  arch: string,
+  nativeArch: string | null,
+  archesForName: Set<string>,
+): FactMatch {
+  if (fact.name !== name) return { state: "no" };
+  if (fact.arch !== null) return fact.arch === arch ? { state: "match" } : { state: "no" };
+  if (nativeArch === null) {
+    const all = [...archesForName].filter((candidate) => candidate === "all");
+    return all.length === 1 ? (arch === "all" ? { state: "match" } : { state: "no" }) : { state: "unresolved" };
+  }
+  const eligible = [...archesForName].filter((candidate) => candidate === nativeArch || candidate === "all");
+  if (eligible.length > 1) return { state: "ambiguous" };
+  if (eligible.length === 0) return { state: "no" };
+  return eligible[0] === arch ? { state: "match" } : { state: "no" };
+}
+
+// ONE normalized projection shared by the alert count and the Environment section. Identical
+// duplicate rows count once; conflicting versions for one canonical key stay one unknown
+// candidate and are never silently selected from the first row.
+export function normalizePackageCandidates(observation: PackageObservation): NormalizedPackageSet {
+  const nativeArch = observation.nativeArch;
+  const byKey = new Map<string, { row: PackageRow; conflicting: boolean }>();
+  let duplicateConflict = false;
+  for (const row of observation.rows) {
+    if (!validPackageName(row.name)) continue;
+    if (row.arch && !validPackageArch(row.arch)) continue;
+    const key = packageKey(row.name, row.arch, nativeArch);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { row, conflicting: false });
+      continue;
+    }
+    if (existing.row.fromVersion !== row.fromVersion || existing.row.toVersion !== row.toVersion) {
+      existing.conflicting = true;
+      duplicateConflict = true;
+    }
+  }
+
+  const archesByName = new Map<string, Set<string>>();
+  for (const { row } of byKey.values()) {
+    const arch = row.arch || nativeArch || "unknown";
+    const set = archesByName.get(row.name) ?? new Set<string>();
+    set.add(arch);
+    archesByName.set(row.name, set);
+  }
+
+  const holds = observation.holds;
+  const simulation = observation.simulation;
+  let anyAmbiguous = false;
+  let anyUnresolved = false;
+
+  const candidates = [...byKey.entries()].map(([key, entry]) => {
+    const row = entry.row;
+    const arch = row.arch || nativeArch || "unknown";
+    const arches = archesByName.get(row.name) ?? new Set([arch]);
+    let held = false;
+    let simVersion: string | null = null;
+    let simMatched = false;
+    let ambiguous = false;
+    let unresolved = false;
+    if (holds !== null) {
+      for (const fact of holds) {
+        const match = matchPolicyFact(fact, row.name, arch, nativeArch, arches);
+        if (match.state === "match") held = true;
+        if (match.state === "ambiguous") ambiguous = true;
+        if (match.state === "unresolved") unresolved = true;
+      }
+    }
+    if (simulation !== null) {
+      for (const fact of simulation) {
+        const match = matchPolicyFact(fact, row.name, arch, nativeArch, arches);
+        if (match.state === "match") { simMatched = true; simVersion = fact.version; }
+        if (match.state === "ambiguous") ambiguous = true;
+        if (match.state === "unresolved") unresolved = true;
+      }
+    }
+    if (ambiguous) anyAmbiguous = true;
+    if (unresolved) anyUnresolved = true;
+    const selected = simMatched && simVersion !== null && simVersion === row.toVersion;
+    const heldSelected = held && selected;
+    const unresolvedEvidence = holds === null || simulation === null || ambiguous || unresolved;
+    const reason: PackageCandidateReason = entry.conflicting || unresolvedEvidence || heldSelected
+      ? "unknown"
+      : held
+        ? "held"
+        : selected
+          ? "selected-now"
+          : "deferred-unknown";
+    return {
+      key: packageKey(row.name, row.arch, nativeArch),
+      name: row.name,
+      arch,
+      fromVersion: row.fromVersion,
+      toVersion: row.toVersion,
+      security: row.security,
+      held,
+      selectedNow: reason === "selected-now",
+      conflict: entry.conflicting || heldSelected,
+      reason,
+    } satisfies NormalizedPackageCandidate;
+  }).sort((a, b) => a.key.localeCompare(b.key));
+
+  return {
+    candidates,
+    duplicateConflict,
+    selectionKnown: holds !== null && simulation !== null && !anyAmbiguous && !anyUnresolved,
+  };
+}
 
 export type FixedExecOptions = { timeout?: number; maxBuffer?: number; env?: NodeJS.ProcessEnv };
 export type AsyncExec = (file: string, args: readonly string[], opts?: FixedExecOptions) => Promise<string>;
@@ -457,8 +596,9 @@ export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]
   const observation = await packagesWithinBudget(
     packages, snapshot, options.packageWaitMs ?? PACKAGE_ALERT_AWAIT_MS, Date.now,
   );
-  if (observation.rows.length > 0) {
-    alerts.push({ kind: "updates", count: observation.rows.length, rows: observation.rows });
+  const normalized = normalizePackageCandidates(observation).candidates;
+  if (normalized.length > 0) {
+    alerts.push({ kind: "updates", count: normalized.length, rows: normalized });
   }
   if (observation.state === "failed") {
     alerts.push({ kind: "source", source: "packages", state: "failed" });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseSettings, settingsKeyPresence, type GeneralSettings } from "../settings";
-import type { PackageObservation, PackageRow } from "./alerts";
+import { createPackageObservationReader, type PackageObservation, type PackageRow } from "./alerts";
 import {
   buildComponents, buildPackageSection, capacityFromStatfs, createEnvironmentRuntime, createSourceObserver,
   decodeMountField, loopbackBase, MAX_PATH_SEGMENTS, parseMountInfo, probeCliPresence, readBoundedText,
@@ -599,6 +599,87 @@ describe("package candidates (AC7)", () => {
     expect(section.warnings).toContain("simulation-unavailable");
     expect(section.candidates).toHaveLength(1);
     expect(section.counts).toMatchObject({ total: 1, selectedNow: null, deferred: null });
+  });
+
+  it("selects the raw Arch:all candidate through the real parser-to-section path", async () => {
+    const exec = vi.fn(async (file: string) => {
+      if (file === "apt") return "Listing...\nbar/stable 2 all [upgradable from: 1]";
+      if (file === "apt-mark") return "";
+      if (file === "apt-get") {
+        return [
+          "NOTE: This is only a simulation!",
+          " apt-get needs root privileges for real execution.",
+          " Keep also in mind that locking is deactivated,",
+          " so don't depend on the relevance to the real current situation!",
+          "Reading package lists...",
+          "Building dependency tree...",
+          "Reading state information...",
+          "The following packages will be upgraded:",
+          "  bar",
+          "Inst bar [1] (2 stable [all])",
+          "1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+        ].join("\n");
+      }
+      if (file === "dpkg") return "amd64";
+      throw new Error(`unexpected ${file}`);
+    });
+    const observation = await createPackageObservationReader(exec, () => NOW).read();
+    const section = buildPackageSection(observation, { now: () => NOW + 300_000 });
+    expect(section.candidates[0]).toMatchObject({ key: "bar:all", selectedNow: true, reason: "selected-now" });
+    expect(section.counts).toMatchObject({ total: 1, selectedNow: 1, held: 0, deferred: 0, unknown: 0 });
+  });
+
+  it("preserves the source observation time instead of renewing it on projection", async () => {
+    const original = observation({ observedAt: new Date(NOW - 600_000).toISOString() });
+    const section = buildPackageSection(original, { now: () => NOW });
+    expect(section.observedAt).toBe(original.observedAt);
+  });
+
+  it("keeps missing simulation evidence unknown with nullable selection counts", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64")],
+      simulation: null,
+      warnings: ["simulation-unavailable"],
+    }), { now: () => NOW });
+    expect(section.candidates[0]).toMatchObject({ reason: "unknown", selectedNow: false });
+    expect(section.counts).toMatchObject({ total: 1, selectedNow: null, held: null, deferred: null });
+    expect(section.state).toBe("partial");
+  });
+
+  it("classifies a held-and-selected conflict only as unknown", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64")],
+      holds: [{ name: "bar", arch: "amd64" }],
+      simulation: [{ name: "bar", arch: "amd64", version: "2" }],
+    }), { now: () => NOW });
+    expect(section.candidates[0]).toMatchObject({ reason: "unknown", selectedNow: false, held: true });
+    expect(section.counts).toMatchObject({ total: 1, selectedNow: 0, held: 0, deferred: 0, unknown: 1 });
+    expect(section.state).toBe("partial");
+  });
+
+  it("keeps conflicting duplicate versions as one unknown candidate", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64"), pkg("bar", "amd64", { fromVersion: "0", toVersion: "3" })],
+      simulation: [{ name: "bar", arch: "amd64", version: "2" }],
+    }), { now: () => NOW });
+    expect(section.candidates).toHaveLength(1);
+    expect(section.candidates[0]).toMatchObject({ key: "bar:amd64", reason: "unknown", selectedNow: false, conflict: true });
+    expect(section.counts).toMatchObject({ total: 1, unknown: 1, selectedNow: 0, held: 0, deferred: 0 });
+    expect(section.state).toBe("partial");
+  });
+
+  it("keeps known rows from a partial listing as an explicitly incomplete count", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64")],
+      warnings: ["candidates-unrecognized"],
+      children: {
+        ...observation().children,
+        candidates: { ok: false, observedAt: new Date(NOW).toISOString(), lastGoodAt: null },
+      },
+    }), { now: () => NOW });
+    expect(section.state).toBe("partial");
+    expect(section.warnings).toContain("candidates-unrecognized");
+    expect(section.counts).toMatchObject({ total: 1, shown: 1, remainder: 0 });
   });
 
   it("a total package-query failure is unavailable, never an all-clear zero", () => {
