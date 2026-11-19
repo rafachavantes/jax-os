@@ -654,7 +654,17 @@ describe("cross-project run ownership (MOA-532)", () => {
     parentOpen();
     insertEvent(db, builderStarted(RUN, "claude", A, "feat/q", Q), at(2));
     insertEvent(db, runFinished(RUN, "builder", { result: "success", exit_code: 0, report_path: "/reports/q.md", summary: "ok", head_sha: "a".repeat(40) }, Q), at(3));
-    const hub = hubOf(db);
+    const prepare = vi.spyOn(db, "prepare");
+    let hub: HubEnvelopeData;
+    let candidates: string[];
+    try {
+      hub = hubOf(db);
+      candidates = [...new Set(prepare.mock.calls.map(([sql]) => sql).filter((sql) =>
+        sql.includes("JOIN workflow_events s ON s.run_id = f.run_id"),
+      ))];
+    } finally {
+      prepare.mockRestore();
+    }
     const parent = seatOf(hub, P, A)!;
     expect(parent.activity.activeRuns).toEqual([]);
     expect(parent.activity.lastRun).toMatchObject({ runId: RUN, destinationProject: Q });
@@ -663,6 +673,15 @@ describe("cross-project run ownership (MOA-532)", () => {
     expect(hub.byProject[Q].timeline.map((e) => e.type).sort()).toEqual(["run-finished", "run-started"]);
     // ...and the split has no ownerless result or unlinked run.
     expect(hub.byProject[Q].split).toBeUndefined();
+    expect(candidates).toHaveLength(2);
+    expect(candidates.some((sql) => sql.includes("$.caller"))).toBe(true);
+    expect(candidates.some((sql) => !sql.includes("$.caller"))).toBe(true);
+    for (const sql of candidates) {
+      const args = sql.includes("$.caller") ? [Q, Q, A, "claude"] : [P, P, A];
+      const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[];
+      expect(plan.some((row) => row.detail.startsWith("SEARCH workflow_events ") &&
+        row.detail.includes("project=?") && row.detail.includes("run_id=?"))).toBe(true);
+    }
     db.close();
   });
 
