@@ -12,7 +12,7 @@ vi.mock("next/link", () => ({
 }));
 
 import {
-  TerminalPanel, accessLifecycle, initialAccessLifecycle,
+  TerminalPanel, accessFailureStatus, accessLifecycle, initialAccessLifecycle,
 } from "./TerminalPanel";
 
 describe("M3b frame lifecycle (deferred races, pause/resume, expiry, healthy polls)", () => {
@@ -76,6 +76,16 @@ describe("M3b frame lifecycle (deferred races, pause/resume, expiry, healthy pol
     expect(accessLifecycle(released, { type: "validation", roUrl: "http://ro/a" }).frame?.mode).toBe("ro");
   });
 
+});
+
+describe("accessFailureStatus (bounded target codes)", () => {
+  it("distinguishes unknown source from a lost/unavailable/unconfigured target", () => {
+    expect(accessFailureStatus("source-failure")).toBe("unknown");
+    expect(accessFailureStatus("lost-target")).toBe("lost-target");
+    expect(accessFailureStatus("unavailable")).toBe("unavailable");
+    expect(accessFailureStatus("unconfigured")).toBe("unconfigured");
+    expect(accessFailureStatus("invalid-selector")).toBe("unknown");
+  });
 });
 
 describe("TerminalPanel prepared-frame rendering (M3b)", () => {
