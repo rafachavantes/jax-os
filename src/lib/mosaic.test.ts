@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mosaicGroups, mosaicPageState, selectSpotlightPane, type MosaicGroup } from "./mosaic";
-import { mosaicPaneAction, type MissionCard, type MissionPane, type MissionReadiness } from "./mission";
+import { mosaicPaneAction, mosaicPaneState, type MissionCard, type MissionPane, type MissionReadiness } from "./mission";
 
 const pane = (over: Partial<MissionPane> = {}): MissionPane => ({
   pane: "%1", tmuxIncarnation: "1:1", session: "s1", tmuxSession: "s1", role: "lead",
@@ -35,6 +35,31 @@ describe("mosaicGroups (Sessions mosaic spec §5 Decisions 1/2)", () => {
   it("a codex-only card (no tmux panes at all) contributes no group (non-goal: Codex-native sessions)", () => {
     const codexOnly = card({ dir: "p1", sessions: [{ transport: "codex", threadId: "t1", state: "working", lastEventTs: null, subagentCount: 0, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null }] });
     expect(mosaicGroups([codexOnly])).toEqual([]);
+  });
+});
+
+describe("M3b native Codex terminal in generic Mosaic", () => {
+  const ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+  const session = (over: Record<string, unknown> = {}) => ({
+    transport: "codex" as const, threadId: ID, state: "needs-you" as const, lastEventTs: null, subagentCount: 0,
+    capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null,
+    terminal: { pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead" }, ...over,
+  });
+
+  it("includes a proven terminal with native state and no tmux quick-answer action", () => {
+    const groups = mosaicGroups([card({ dir: "p1", sessions: [session()] })]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].panes[0]).toMatchObject({
+      pane: "%183", harnessSession: ID, runtime: "codex", state: "needs-you", tmuxSession: "jax-os-lead",
+    });
+    expect(mosaicPaneState(groups[0].panes[0])).toBe("waiting-for-input");
+    expect(mosaicPaneAction(groups[0].panes[0]).kind).toBe("none");
+    expect(selectSpotlightPane(groups)?.pane.pane).toBe("%183");
+  });
+
+  it("omits a native session whose terminal is unproven or unknown", () => {
+    expect(mosaicGroups([card({ sessions: [session({ terminal: undefined })] })])).toEqual([]);
+    expect(mosaicGroups([card({ sessions: [session({ state: "unknown" })] })])).toEqual([]);
   });
 });
 

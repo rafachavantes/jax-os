@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, cardAccessPane, paneAccessSelector, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
+import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, cardAccessPane, paneAccessSelector, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, physicalSessionPanes, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
 import { parseIndexedReply } from "./workflow";
 import type { Envelope } from "./api";
 import type { Project, ProjectScan } from "../server/collectors/projects";
@@ -1787,6 +1787,14 @@ describe("mosaicPaneState (Sessions mosaic spec §6, state table rows 5-8)", () 
     for (const state of ["idle", "waiting", "stuck", "unknown"] as const) {
       expect(mosaicPaneState({ ...base, state })).toBe("idle-stale");
     }
+    for (const state of ["waiting", "stuck"] as const) {
+      expect(mosaicPaneState({ ...base, runtime: "claude", state })).toBe("idle-stale");
+    }
+  });
+  it("M3b: a proven native Codex pane keeps native state — needs-you waits, working works", () => {
+    expect(mosaicPaneState({ ...base, runtime: "codex", state: "needs-you" })).toBe("waiting-for-input");
+    expect(mosaicPaneState({ ...base, runtime: "codex", state: "working" })).toBe("working");
+    expect(mosaicPaneState({ ...base, runtime: "codex", state: "stuck" })).toBe("idle-stale");
   });
 });
 
@@ -2193,6 +2201,50 @@ describe("M3b exact session access projection (plan Task 1)", () => {
     ]) ] })).toBeNull();
     expect(cardAccessPane({ sessions: [tmuxSession([paneModel({ pane: "%1", live: false })])] })).toBeNull();
     expect(cardAccessPane({ sessions: [{ transport: "codex", threadId: "t", state: "idle", lastEventTs: null, subagentCount: 0, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null }] })).toBeNull();
+  });
+});
+
+describe("M3b physical Codex terminal presentation (plan Task 6)", () => {
+  const ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+  const OTHER = "0191f0aa-bbbb-7000-8000-00000000000a";
+  const TERMINAL = { pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead" };
+  const codex = (over: Record<string, unknown> = {}) => ({
+    transport: "codex" as const, threadId: ID, state: "idle" as const, lastEventTs: null, subagentCount: 0,
+    capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null,
+    terminal: TERMINAL, ...over,
+  });
+  const paneModel = (overrides: Partial<MissionPane>): MissionPane => ({
+    pane: "%1", live: true, tmuxIncarnation: "1:1", session: "s", tmuxSession: "s", role: "lead",
+    state: "idle", lastEventTs: null, pendingQuestion: null, capsuleStatus: null, capsuleMinutes: null,
+    capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, subagentCount: 0, capsuleEventId: null,
+    ...overrides,
+  });
+
+  it("adapts only a proven known terminal and keeps every quick-answer field inert", () => {
+    const panes = physicalSessionPanes(codex());
+    expect(panes).toHaveLength(1);
+    expect(panes[0]).toMatchObject({
+      pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead", tmuxSession: "jax-os-lead",
+      harnessSession: ID, role: "adhoc", runtime: "codex", live: true, state: "idle",
+      pendingQuestion: null, capsuleStatus: null, capsuleEventId: null, capsuleAnswerable: false,
+    });
+    expect(physicalSessionPanes(codex({ state: "unknown" }))).toEqual([]);
+    expect(physicalSessionPanes(codex({ terminal: undefined }))).toEqual([]);
+  });
+
+  it("yields the exact same kind:card selector Home and Mosaic both consume", () => {
+    const [pane] = physicalSessionPanes(codex());
+    expect(paneAccessSelector("jax-os", pane)).toEqual({
+      kind: "card", project: "jax-os", harnessSession: ID, pane: "%183", incarnation: "3421408:1793045754",
+    });
+  });
+
+  it("keeps the old header selection first and only falls back to one sole Codex terminal", () => {
+    const tmux = (...panes: MissionPane[]) => ({ transport: "tmux" as const, session: "s", panes });
+    expect(cardAccessPane({ sessions: [tmux(paneModel({ pane: "%1", role: "adhoc" })), codex()] })?.pane).toBe("%1");
+    expect(cardAccessPane({ sessions: [codex()] })?.pane).toBe("%183");
+    expect(cardAccessPane({ sessions: [codex(), codex({ threadId: OTHER, terminal: { ...TERMINAL, pane: "%184" } })] })).toBeNull();
+    expect(cardAccessPane({ sessions: [tmux(paneModel({ pane: "%1", role: "adhoc" }), paneModel({ pane: "%2", role: "adhoc" })), codex()] })).toBeNull();
   });
 });
 

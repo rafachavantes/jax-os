@@ -137,6 +137,23 @@ describe("ProjectCard — transport-aware session rows (MOA-469 §4)", () => {
     expect(html).not.toContain("expanded.openInTmux");
   });
 
+  it("a Codex row with a proven terminal gets the localized tmux action and real session context", () => {
+    const card: MissionCard = {
+      ...CODEX_ROW,
+      sessions: [{
+        transport: "codex" as const, threadId: "0191f0aa-1234-7000-8000-000000000001", state: "working" as const,
+        lastEventTs: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null,
+        subagentCount: 0, terminal: { pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead" },
+      }],
+    };
+    const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));
+    expect(html).toContain('href="/tmux?kind=card');
+    expect(html).toContain("pane=%25183");
+    expect(html).toContain("0191f0aa-1234-7000-8000-000000000001");
+    expect(html).toContain("jax-os-lead");
+    expect(html).toContain("expanded.openInTmux");
+  });
+
   it("a Codex source failure still renders the working Claude card", () => {
     const card: MissionCard = { ...PANE_ROW, codexSource: "failed" };
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));

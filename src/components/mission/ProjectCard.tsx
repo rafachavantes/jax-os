@@ -6,7 +6,7 @@ import { Bot, ChevronDown, ChevronRight, Clock3, File, FolderGit2, GitBranch, Gi
 import { useTranslations } from "next-intl";
 import Link from "next/link";
 import {
-  answerEventId, artifactRelForRun, cancelAction, cardAccessPane, cardKey, paneAccessSelector, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
+  answerEventId, artifactRelForRun, cancelAction, cardAccessPane, cardKey, paneAccessSelector, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, physicalSessionPanes, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
   stuckLine, gateWaitingLine, heartbeatPath, worstFinding, worstPaneState,
   type MissionActiveRunSummary, type MissionCard, type MissionCardPr, type MissionLastRun, type MissionPane, type MissionPendingQuestion, type MissionState,
 } from "@/lib/mission";
@@ -1117,6 +1117,8 @@ function ExpandedCard({
             // Finding 2); key native rows by threadId.
             if (s.transport === "codex") {
               const paneStyles = STATE_STYLES[s.state];
+              const terminalPane = physicalSessionPanes(s)[0];
+              const href = terminalPane ? paneAccessHref(card, terminalPane) : null;
               return (
                 <div key={`codex-${s.threadId}`} className="flex flex-col gap-1">
                   <span className="flex items-center gap-1.5 text-[12.5px] font-semibold text-body-ink">
@@ -1126,9 +1128,15 @@ function ExpandedCard({
                   <div className="flex items-center gap-2.5 pl-5 text-[12.5px]">
                     <span className="font-mono text-muted" title={s.threadId}>{s.threadId.slice(0, 8)}…</span>
                     <span className={`rounded-full border px-2 py-0.5 text-[10.5px] font-semibold ${paneStyles.tag}`}>{t(`states.${s.state}`)}</span>
+                    {terminalPane ? <span className="font-mono text-muted">{terminalPane.tmuxSession}</span> : null}
                     {s.subagentCount > 0 ? <span className="text-[10.5px] text-muted">{t("expanded.subagentSuffix", { count: s.subagentCount })}</span> : null}
                     {s.lastEventTs ? (
                       <span className="ml-auto flex-none text-[11px] text-muted"><RelativeTime epochMs={Date.parse(s.lastEventTs)} /></span>
+                    ) : null}
+                    {href ? (
+                      <Link href={href} className="flex-none rounded border border-line-strong px-1.5 py-0.5 text-[10.5px] font-semibold text-body-ink">
+                        {t("expanded.openInTmux")}
+                      </Link>
                     ) : null}
                   </div>
                 </div>

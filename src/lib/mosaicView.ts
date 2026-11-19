@@ -1,5 +1,6 @@
 // src/lib/mosaicView.ts
 import type { MissionCard, MissionPane } from "./mission";
+import { physicalSessionPanes } from "./mission";
 
 // Round-1: src/app/tmux/page.tsx (a Next.js page module) may export ONLY its default component
 // (next-page-modules-reject-named-exports) — this is the one presentation-only lookup that plan
@@ -15,8 +16,7 @@ export function findMobilePane(cards: MissionCard[], paneId: string | null): { c
   if (paneId === null) return null;
   for (const card of cards) {
     for (const s of card.sessions) {
-      if (s.transport !== "tmux") continue;
-      const pane = s.panes.find((p) => p.pane === paneId);
+      const pane = physicalSessionPanes(s).find((p) => p.pane === paneId);
       if (pane && pane.tmuxSession !== null) return { card, pane, session: pane.tmuxSession };
     }
   }

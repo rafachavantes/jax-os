@@ -13,6 +13,7 @@ import type { Commit } from "../server/collectors/activity";
 import type { WorktreeResult } from "../server/collectors/worktrees";
 import { CONTRACT_STATUSES, STAGES, paneKey, type ContractStatus, type Role, type Stage } from "./workflow";
 import type { SessionAccessSelector } from "./sessionAccess";
+import type { CodexTerminal } from "../server/collectors/codex-tmux";
 
 export type MissionState = "unknown" | "needs-you" | "stuck" | "working" | "waiting" | "idle";
 
@@ -103,6 +104,9 @@ export type MissionSession =
       // MissionPane already mirrors HubPane.capsule — optional for the same fixture-blast-radius
       // reason as MissionPane.capsuleAnswerable above.
       capsuleMergeAsk?: number | null; capsuleQuestion?: string | null; capsuleAnswerable?: boolean; capsuleMergeBranch?: string; capsuleMergeTarget?: string;
+      // M3b: the PROVEN existing physical terminal, when the server observed one. Absent means no
+      // terminal action — never a fabricated pane.
+      terminal?: CodexTerminal;
     };
 
 export type MissionTimelineEntry = {
@@ -442,7 +446,9 @@ export type MosaicPaneState = "working" | "waiting-for-input" | "blocked-permiss
 // `.live` itself. Deliberately collapses paneState's four non-attention values (idle, waiting,
 // stuck, unknown) into one static "idle-stale" reading — full six-way nuance stays one click
 // away in the existing card/viewer, never lost, just not painted on a small cell.
-export function mosaicPaneState(pane: Pick<MissionPane, "state" | "capsuleStatus" | "pendingQuestion">): MosaicPaneState {
+export function mosaicPaneState(pane: Pick<MissionPane, "state" | "capsuleStatus" | "pendingQuestion"> & { runtime?: PaneRuntime }): MosaicPaneState {
+  // A proven native Codex terminal carries native attention, never a tmux question/answer path.
+  if (pane.runtime === "codex" && pane.state === "needs-you") return "waiting-for-input";
   if (pane.capsuleStatus === "blocked") return "blocked-permission";
   if (pane.capsuleStatus === "needs_input" || pane.pendingQuestion !== null) return "waiting-for-input";
   if (pane.state === "working") return "working";
@@ -608,13 +614,36 @@ export function paneAccessSelector(project: string, pane: MissionPane): SessionA
   return { kind: "card", project, harnessSession: pane.harnessSession, pane: pane.pane, incarnation: pane.tmuxIncarnation };
 }
 
-// M3b: the ONE pane a card header may open. A sole live tmux pane, or a unique recorded lead;
-// anything ambiguous yields no link (the card shows the localized unavailable action instead).
+// M3b: the ONE presentation view of a native Codex session's PROVEN physical terminal. This is
+// not a seat, a transport reclassification or server authority; every tmux quick-answer field
+// stays null because a native answer goes through its own queue.
+export function physicalSessionPanes(session: MissionSession): MissionPane[] {
+  if (session.transport === "tmux") return session.panes;
+  if (!session.terminal || session.state === "unknown") return [];
+  return [{
+    pane: session.terminal.pane, tmuxIncarnation: session.terminal.tmuxIncarnation,
+    session: session.terminal.session, tmuxSession: session.terminal.session,
+    harnessSession: session.threadId, role: "adhoc", runtime: "codex", live: true,
+    state: session.state, lastEventTs: session.lastEventTs, subagentCount: session.subagentCount,
+    pendingQuestion: null, capsuleEventId: null, capsuleStatus: null,
+    capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null,
+    capsuleQuestion: null, capsuleAnswerable: false,
+  }];
+}
+
+// M3b: the ONE pane a card header may open. The old live tmux sole-pane/unique-lead result always
+// wins when it exists; only with no live tmux candidate may one sole proven Codex terminal supply
+// it. Anything ambiguous yields no link (the card shows the localized unavailable action instead).
 export function cardAccessPane(card: Pick<MissionCard, "sessions">): MissionPane | null {
-  const panes = liveSessions(card.sessions).flatMap((s) => (s.transport === "tmux" ? s.panes : []));
-  if (panes.length === 1) return panes[0];
-  const leads = panes.filter((p) => p.role === "lead");
-  return leads.length === 1 ? leads[0] : null;
+  const live = liveSessions(card.sessions);
+  const panes = live.flatMap((s) => (s.transport === "tmux" ? s.panes : []));
+  if (panes.length > 0) {
+    if (panes.length === 1) return panes[0];
+    const leads = panes.filter((p) => p.role === "lead");
+    return leads.length === 1 ? leads[0] : null;
+  }
+  const codexPanes = live.flatMap((s) => (s.transport === "codex" ? physicalSessionPanes(s) : []));
+  return codexPanes.length === 1 ? codexPanes[0] : null;
 }
 
 // tmux panes grouped by tmux session name, in pane order. A session-less pane groups by
@@ -644,6 +673,7 @@ function toMissionCodexSession(s: HubCodexSession, nowMs: number): Extract<Missi
     capsuleMergeAsk: s.capsule?.mergeAsk ?? null, capsuleQuestion: s.capsule?.question ?? null,
     capsuleMergeBranch: s.capsule?.mergeBranch, capsuleMergeTarget: s.capsule?.mergeTarget,
     capsuleAnswerable: s.capsule?.answerable ?? true,
+    ...(s.terminal ? { terminal: s.terminal } : {}),
   };
 }
 

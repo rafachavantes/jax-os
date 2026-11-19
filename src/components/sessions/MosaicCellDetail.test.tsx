@@ -98,6 +98,24 @@ describe("MosaicCellDetail — distinct Open terminal action (M3b)", () => {
     expect(html).toContain(">a<"); // preview still renders (Open is an extra action, not a replacement)
   });
 
+  it("opens a proven native Codex pane with the same full-UUID card selector", () => {
+    const ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+    const html = renderToStaticMarkup(createElement(MosaicCellDetail, {
+      card,
+      pane: pane({
+        pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead", tmuxSession: "jax-os-lead",
+        harnessSession: ID, runtime: "codex", role: "adhoc",
+      }),
+      session: "jax-os-lead", lines: ["a"], busy: false, onAction: () => {}, onClose: () => {},
+    }));
+    expect(html).toContain('href="/tmux?kind=card');
+    expect(html).toContain(`harnessSession=${ID}`);
+    expect(html).toContain("pane=%25183");
+    expect(html).toContain("incarnation=3421408%3A1793045754");
+    expect(html).toContain("from=mosaic");
+    expect(html).not.toContain('type="text"');
+  });
+
   it("renders no Open terminal action when the pane harness identity is unproven", () => {
     const html = renderToStaticMarkup(createElement(MosaicCellDetail, {
       card, pane: pane({}), session: "s1", lines: null, busy: false, onAction: () => {}, onClose: () => {},

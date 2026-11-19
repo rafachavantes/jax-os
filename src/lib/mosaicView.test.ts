@@ -36,6 +36,20 @@ describe("findMobilePane", () => {
     const cards: MissionCard[] = [{ ...cardBase, sessions: [{ transport: "tmux", session: "s1", panes: [pane({ pane: "%2", tmuxSession: null })] }] }];
     expect(findMobilePane(cards, "%2")).toBeNull();
   });
+  it("M3b: resolves a proven native Codex terminal by pane id with its real session", () => {
+    const ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+    const codex = {
+      transport: "codex" as const, threadId: ID, state: "working" as const, lastEventTs: null, subagentCount: 0,
+      capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null,
+      terminal: { pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead" },
+    };
+    const cards: MissionCard[] = [{ ...cardBase, sessions: [codex] }];
+    const found = findMobilePane(cards, "%183");
+    expect(found?.session).toBe("jax-os-lead");
+    expect(found?.pane).toMatchObject({ pane: "%183", harnessSession: ID, runtime: "codex" });
+    expect(findMobilePane([{ ...cardBase, sessions: [{ ...codex, terminal: undefined }] }], "%183")).toBeNull();
+  });
+
   it("skips codex sessions (no pane field to match)", () => {
     const cards: MissionCard[] = [{ ...cardBase, sessions: [{ transport: "codex", threadId: "t1", state: "working", lastEventTs: null, subagentCount: 0, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null }] }];
     expect(findMobilePane(cards, "%1")).toBeNull();
