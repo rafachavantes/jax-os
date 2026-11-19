@@ -39,6 +39,9 @@ export type MissionPane = {
   // `.tmuxSession`, never `.session`, or it can target a bare pane id as if it were a tmux
   // session name (Take Control 404s: `{ok:false, error:"session not found"}`).
   tmuxSession: string | null;
+  // M3b exact session access: the agent conversation this pane currently hosts. `undefined` is
+  // unproven/absent and `null` the explicit unidentified-pane seat — neither is a harness wildcard.
+  harnessSession?: string | null;
   role: "lead" | "adhoc";
   state: MissionState;
   lastEventTs: string | null;
@@ -592,7 +595,17 @@ function toMissionPane(p: HubPane, nowMs: number): MissionPane {
     capsuleQuestion: p.capsule?.question ?? null,
     capsuleAnswerable: p.capsule?.answerable ?? true,
     runtime: p.runtime, live: p.live, tmuxSession: p.session,
+    ...(p.harnessSession !== undefined ? { harnessSession: p.harnessSession } : {}),
   };
+}
+
+// M3b: the ONE pane a card header may open. A sole live tmux pane, or a unique recorded lead;
+// anything ambiguous yields no link (the card shows the localized unavailable action instead).
+export function cardAccessPane(card: Pick<MissionCard, "sessions">): MissionPane | null {
+  const panes = liveSessions(card.sessions).flatMap((s) => (s.transport === "tmux" ? s.panes : []));
+  if (panes.length === 1) return panes[0];
+  const leads = panes.filter((p) => p.role === "lead");
+  return leads.length === 1 ? leads[0] : null;
 }
 
 // tmux panes grouped by tmux session name, in pane order. A session-less pane groups by

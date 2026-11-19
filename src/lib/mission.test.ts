@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
+import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, cardAccessPane, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
 import { parseIndexedReply } from "./workflow";
 import type { Envelope } from "./api";
 import type { Project, ProjectScan } from "../server/collectors/projects";
@@ -64,6 +64,7 @@ function mkPane(overrides: Partial<HubPane> & { pane: string }): HubPane {
     subagentCount: overrides.subagentCount ?? 0,
     runtime: overrides.runtime ?? "claude",
     ...("questionAnswerable" in overrides ? { questionAnswerable: overrides.questionAnswerable } : {}),
+    ...("harnessSession" in overrides ? { harnessSession: overrides.harnessSession } : {}),
   };
 }
 
@@ -2147,5 +2148,50 @@ describe("buildTicker — PR dedupe by provider identity (plan Task 4)", () => {
     const prRows = items.filter((i) => i.source === "pr");
     expect(prRows).toHaveLength(2);
     expect(new Set(prRows.map((r) => (r.source === "pr" ? r.url : ""))).size).toBe(2);
+  });
+});
+
+describe("M3b exact session access projection (plan Task 1)", () => {
+  const paneModel = (overrides: Partial<MissionPane>): MissionPane => ({
+    pane: "%1", live: true, tmuxIncarnation: "1:1", session: "s", tmuxSession: "s", role: "lead",
+    state: "idle", lastEventTs: null, pendingQuestion: null, capsuleStatus: null, capsuleMinutes: null,
+    capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, subagentCount: 0, capsuleEventId: null,
+    ...overrides,
+  });
+  const tmuxSession = (panes: MissionPane[]): MissionSession => ({ transport: "tmux", session: "s", panes });
+
+  it("passes harnessSession through, preserving undefined (unproven) vs null (unidentified seat)", () => {
+    const scan = scanOf([mkProject({ dir: "p1" })]);
+    const hub = mkHub({
+      p1: mkHubProject({ panes: [
+        mkPane({ pane: "%1", harnessSession: "sess-a" }),
+        mkPane({ pane: "%2", harnessSession: null }),
+        mkPane({ pane: "%3" }),
+      ] }),
+    });
+    const { model } = buildMission(scan, hub, undefined, NOW);
+    const panes = (model.cards[0].sessions[0] as Extract<MissionSession, { transport: "tmux" }>).panes;
+    const byPane = new Map(panes.map((p) => [p.pane, p.harnessSession]));
+    expect(byPane.get("%1")).toBe("sess-a");
+    expect(byPane.get("%2")).toBeNull();
+    expect(byPane.has("%3") && byPane.get("%3") === null).toBe(false);
+  });
+
+  it("chooses a sole live pane or a unique lead, never a first/newest fallback", () => {
+    expect(cardAccessPane({ sessions: [tmuxSession([paneModel({ pane: "%1" })])] })?.pane).toBe("%1");
+    expect(cardAccessPane({ sessions: [tmuxSession([
+      paneModel({ pane: "%1", role: "adhoc" }),
+      paneModel({ pane: "%2", role: "lead" }),
+    ]) ] })?.pane).toBe("%2");
+    expect(cardAccessPane({ sessions: [tmuxSession([
+      paneModel({ pane: "%1", role: "lead" }),
+      paneModel({ pane: "%2", role: "lead" }),
+    ]) ] })).toBeNull();
+    expect(cardAccessPane({ sessions: [tmuxSession([
+      paneModel({ pane: "%1", role: "adhoc" }),
+      paneModel({ pane: "%2", role: "adhoc" }),
+    ]) ] })).toBeNull();
+    expect(cardAccessPane({ sessions: [tmuxSession([paneModel({ pane: "%1", live: false })])] })).toBeNull();
+    expect(cardAccessPane({ sessions: [{ transport: "codex", threadId: "t", state: "idle", lastEventTs: null, subagentCount: 0, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null }] })).toBeNull();
   });
 });
