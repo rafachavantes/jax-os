@@ -149,6 +149,10 @@ export default function SessionsPage() {
   const expiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Synchronous duplicate guard: a second click in the same tick never starts a second POST.
   const controlBusyRef = useRef(false);
+  // Synchronous selection token: every open/reconnect/visibility pause/loss bumps it, so a delayed
+  // response can only affect a frame whose selector AND token still match.
+  const tokenRef = useRef(0);
+  const bumpToken = () => { tokenRef.current += 1; return tokenRef.current; };
 
   const projects = useMission<ProjectScan>("projects", 10_000, view === "mosaic");
   const hub = useMission<HubEnvelopeData>("hub", 10_000, view === "mosaic");
@@ -190,6 +194,7 @@ export default function SessionsPage() {
     const remaining = Math.max(0, FRESHNESS_MS - (Date.now() - receivedAt));
     expiryRef.current = setTimeout(() => {
       if (!visibleRef.current) return;
+      bumpToken();
       dispatchLifecycle({ type: "failure", status: "expired" });
     }, remaining);
   }, [clearExpiry]);
@@ -203,6 +208,7 @@ export default function SessionsPage() {
       setFocus({ selector: location.selector, origin: location.origin });
       setView("detail");
       notBeforeRef.current = Date.now();
+      bumpToken();
       dispatchLifecycle({ type: "open" });
     } else if (location.kind === "invalid") {
       setView("detail");
@@ -220,9 +226,11 @@ export default function SessionsPage() {
       setVisible(next);
       if (!next) {
         clearExpiry();
+        bumpToken();
         dispatchLifecycle({ type: "hide" });
       } else if (focusRef.current) {
         notBeforeRef.current = Date.now();
+        bumpToken();
         dispatchLifecycle({ type: "show" });
         refetchRef.current();
       }
@@ -239,6 +247,7 @@ export default function SessionsPage() {
     if (receivedAt < notBeforeRef.current) return;
     if (targetFreshness(receivedAt, Date.now()) === "expired") {
       clearExpiry();
+      bumpToken();
       dispatchLifecycle({ type: "failure", status: "expired" });
       return;
     }
@@ -246,6 +255,7 @@ export default function SessionsPage() {
     if (!result.ok) {
       clearExpiry();
       setResolved(null);
+      bumpToken();
       dispatchLifecycle({ type: "failure", status: accessFailureStatus(result.code) });
       return;
     }
@@ -263,6 +273,7 @@ export default function SessionsPage() {
     setExpected(null);
     setView("detail");
     notBeforeRef.current = Date.now();
+    bumpToken();
     dispatchLifecycle({ type: "open" });
     dispatchControl({ type: "reset" });
   }
@@ -271,6 +282,7 @@ export default function SessionsPage() {
     if (!focusRef.current) return;
     clearExpiry();
     notBeforeRef.current = Date.now();
+    bumpToken();
     dispatchLifecycle({ type: "reconnect" });
     refetchRef.current();
   }
@@ -294,14 +306,14 @@ export default function SessionsPage() {
     const binding = expectedRef.current;
     if (controlBusyRef.current || !current || !binding) return;
     const selector = current.selector;
-    const token = lifecycleRef.current.generation + 1;
+    const token = bumpToken();
     controlBusyRef.current = true;
     clearExpiry();
     dispatchLifecycle({ type: "takeStart" });
     dispatchControl({ type: "request", action: "take" });
     try {
       const res = await postJson<TakenSessionAccess>("/api/tmux/take-control", { selector, expected: binding });
-      const stillCurrent = lifecycleRef.current.generation === token
+      const stillCurrent = tokenRef.current === token
         && focusRef.current !== null && selectorIdentity(focusRef.current.selector) === selectorIdentity(selector);
       if (res.ok && res.data?.rwUrl && stillCurrent) {
         setResolved(res.data);
@@ -322,7 +334,7 @@ export default function SessionsPage() {
     const binding = expectedRef.current;
     if (controlBusyRef.current || !current || !binding) return;
     const selector = current.selector;
-    const token = lifecycleRef.current.generation + 1;
+    const token = bumpToken();
     controlBusyRef.current = true;
     clearExpiry();
     // Synchronous read-only transition BEFORE any await; the audit cannot restore RW.
@@ -330,7 +342,7 @@ export default function SessionsPage() {
     dispatchControl({ type: "request", action: "release" });
     try {
       const res = await postJson("/api/tmux/release-control", { selector, expected: binding });
-      const stillCurrent = lifecycleRef.current.generation === token
+      const stillCurrent = tokenRef.current === token
         && focusRef.current !== null && selectorIdentity(focusRef.current.selector) === selectorIdentity(selector);
       dispatchControl({ type: "settle", action: "release", ok: res.ok, error: res.ok ? null : (res.error ?? t("controlFailed")), current: stillCurrent });
       if (stillCurrent) {
