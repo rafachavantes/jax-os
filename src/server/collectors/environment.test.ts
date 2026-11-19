@@ -155,16 +155,43 @@ describe("buildComponents — explainable state matrix (AC2)", () => {
     expect(byId(none, "host-probes")).toMatchObject({ state: "unknown", detail: "not-checked" });
     const partial = buildComponents(facts({ hostProbes: { resources: true, workloads: false, packages: null } }));
     expect(byId(partial, "host-probes")).toMatchObject({ state: "unavailable", detail: "sections-partial" });
+    const some = buildComponents(facts({ hostProbes: { resources: true, workloads: null, packages: null } }));
+    expect(byId(some, "host-probes")).toMatchObject({ state: "unknown", detail: "sections-partial" });
   });
 });
 
-describe("mount parsing and /tmp capacity (AC4)", () => {
-  const MOUNTINFO = [
+const MOUNTINFO = [
     "22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw",
     "23 22 0:30 / /tmp rw,nosuid - tmpfs tmpfs rw,size=1000000k",
     "24 22 8:1 /var/tmp /mnt/my\\040disk rw - ext4 /dev/sda1 rw",
     "25 22 0:31 / /tmp rw - tmpfs tmpfs rw,size=2",
   ].join("\n");
+
+function runtimeDeps(over: Partial<EnvironmentDeps> = {}): EnvironmentDeps {
+  return {
+    now: () => NOW,
+    sleep: () => new Promise<void>(() => {}),
+    readSettingsRaw: () => ({ ok: true, raw: undefined, file: "absent" }),
+    ownDb: async () => ({ ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null }),
+    checkProjects: async () => ({ ok: true }),
+    listPanes: async () => ({ paneIds: new Set(), incarnation: null, paneCommands: new Map() }),
+    ttydTransport: () => ({ ro: null, rw: null }),
+    httpOk: async () => true,
+    cli: async () => "missing",
+    linearCredential: () => false,
+    envFile: () => "ok",
+    readMountInfo: async () => MOUNTINFO,
+    statfs: async () => ({ bsize: 4096, blocks: 1_000_000, bfree: 250_000, bavail: 200_000 }),
+    realpath: () => "/tmp",
+    packages: async () => observation(),
+    exec: async () => "",
+    ps: async () => "",
+    readProc: async () => { throw new Error("no proc"); },
+    ...over,
+  };
+}
+
+describe("mount parsing and /tmp capacity (AC4)", () => {
 
   it("decodes octal escapes and selects the longest prefix with the last overmount winning", () => {
     const mounts = parseMountInfo(MOUNTINFO);
@@ -188,6 +215,13 @@ describe("mount parsing and /tmp capacity (AC4)", () => {
     expect(capacityFromStatfs({ bsize: 4096, blocks: 100, bfree: 10, bavail: -1 })).toBeNull();
   });
 
+  it("decodes a work-dir escape but never matches it against fixed /tmp", () => {
+    const mounts = parseMountInfo("30 1 8:1 / / rw - ext4 /dev/sda1 rw\n31 30 8:1 / /tmp\\040work rw - ext4 /dev/sda1 rw");
+    expect(selectMount(mounts, "/tmp")?.mountId).toBe("30"); // the root, never the escaped work-dir mount
+    expect(selectMount(mounts, "/tmp work/sub")?.mountId).toBe("31");
+    expect(selectMount(mounts, "/tmp work")?.mountId).toBe("31");
+  });
+
   it("validates only loopback ttyd bases", () => {
     expect(loopbackBase("http://127.0.0.1:10000/x")).toBe("http://127.0.0.1:10000");
     expect(loopbackBase("https://localhost:10000")).toBe("https://localhost:10000");
@@ -196,29 +230,6 @@ describe("mount parsing and /tmp capacity (AC4)", () => {
     expect(loopbackBase(undefined)).toBeNull();
   });
 
-  function runtimeDeps(over: Partial<EnvironmentDeps> = {}): EnvironmentDeps {
-    return {
-      now: () => NOW,
-      sleep: () => new Promise<void>(() => {}),
-      readSettingsRaw: () => ({ ok: true, raw: undefined, file: "absent" }),
-      ownDb: async () => ({ ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null }),
-      checkProjects: async () => ({ ok: true }),
-      listPanes: async () => ({ paneIds: new Set(), incarnation: null, paneCommands: new Map() }),
-      ttydTransport: () => ({ ro: null, rw: null }),
-      httpOk: async () => true,
-      cli: async () => "missing",
-      linearCredential: () => false,
-      envFile: () => "ok",
-      readMountInfo: async () => MOUNTINFO,
-      statfs: async () => ({ bsize: 4096, blocks: 1_000_000, bfree: 250_000, bavail: 200_000 }),
-      realpath: () => "/tmp",
-      packages: async () => observation(),
-      exec: async () => "",
-      ps: async () => "",
-      readProc: async () => { throw new Error("no proc"); },
-      ...over,
-    };
-  }
 
   it("reports a distinct tmpfs mount with decimal GB and no shared-root claim", async () => {
     const runtime = createEnvironmentRuntime(runtimeDeps());
@@ -283,6 +294,110 @@ describe("mount parsing and /tmp capacity (AC4)", () => {
     }));
     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("blocked")), 100));
     await expect(Promise.race([Promise.all([runtime.resources(), runtime.components()]).then(() => "ok"), timeout])).resolves.toBe("ok");
+  });
+});
+
+describe("host-probe component (M5 Task 4)", () => {
+  it("reports only already-observed section availability and never starts a package query", async () => {
+    const packages = vi.fn(async () => observation());
+    const runtime = createEnvironmentRuntime(runtimeDeps({ packages }));
+    const none = await runtime.components();
+    expect(byId(none.components, "host-probes")).toMatchObject({ state: "unknown", detail: "not-checked" });
+    expect(packages).not.toHaveBeenCalled();
+
+    await runtime.resources();
+    const partial = await runtime.components();
+    expect(byId(partial.components, "host-probes")).toMatchObject({ state: "unknown", detail: "sections-partial" });
+
+    await runtime.workloads();
+    await runtime.packages();
+    const all = await runtime.components();
+    expect(byId(all.components, "host-probes")).toMatchObject({ state: "healthy", detail: "sections-observed" });
+  });
+
+  it("shows a partial/unavailable host probe without hiding healthy components", async () => {
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      readMountInfo: async () => { throw new Error("unreadable"); },
+    }));
+    await runtime.resources();
+    const section = await runtime.components();
+    expect(byId(section.components, "host-probes")).toMatchObject({ state: "unavailable", detail: "sections-partial" });
+    expect(byId(section.components, "database")?.state).toBe("healthy");
+  });
+});
+
+describe("ttyd transport facts (M5 Task 4)", () => {
+  const ttydSettings = () => ({ ok: true as const, raw: { integrations: { ttyd: true } }, file: "present" as const });
+
+  async function ttydComponent(over: Partial<EnvironmentDeps>) {
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      readSettingsRaw: ttydSettings,
+      ...over,
+    }));
+    const section = await runtime.components();
+    return section.components.find((component) => component.id === "ttyd");
+  }
+
+  it("reports missing URLs only when neither transport is configured", async () => {
+    const httpOk = vi.fn(async () => true);
+    expect(await ttydComponent({ ttydTransport: () => ({ ro: null, rw: null }), httpOk })).toMatchObject({
+      state: "needs-configuration", detail: "urls-missing",
+    });
+    expect(httpOk).not.toHaveBeenCalled();
+  });
+
+  it("keeps external configured transports unverified and never probes them", async () => {
+    const httpOk = vi.fn(async () => true);
+    expect(await ttydComponent({
+      ttydTransport: () => ({ ro: "http://example.com:10000", rw: "https://example.org:10000" }),
+      httpOk,
+    })).toMatchObject({ state: "unknown", detail: "external-unverified-both" });
+    expect(httpOk).not.toHaveBeenCalled();
+
+    expect(await ttydComponent({
+      ttydTransport: () => ({ ro: "http://example.com:10000", rw: null }),
+      httpOk,
+    })).toMatchObject({ state: "unknown", detail: "external-unverified-ro" });
+    expect(httpOk).not.toHaveBeenCalled();
+  });
+
+  it("represents one configured side and an invalid URL as configured-unverified, not missing", async () => {
+    const httpOk = vi.fn(async () => true);
+    expect(await ttydComponent({
+      ttydTransport: () => ({ ro: null, rw: "http://localhost:10000" }),
+      httpOk,
+    })).toMatchObject({ state: "healthy", detail: "http-ok-rw" });
+    expect(await ttydComponent({
+      ttydTransport: () => ({ ro: "not a url", rw: null }),
+      httpOk,
+    })).toMatchObject({ state: "unknown", detail: "external-unverified-ro" });
+  });
+
+  it("probes a validated loopback base once and never claims a WebSocket/session", async () => {
+    const httpOk = vi.fn(async () => true);
+    expect(await ttydComponent({
+      ttydTransport: () => ({ ro: "http://127.0.0.1:10000/x", rw: "http://localhost:10001/y" }),
+      httpOk,
+    })).toMatchObject({ state: "healthy", detail: "http-ok-both" });
+    expect(httpOk).toHaveBeenCalledTimes(1);
+    expect(httpOk).toHaveBeenCalledWith("http://127.0.0.1:10000");
+
+    httpOk.mockResolvedValue(false);
+    expect(await ttydComponent({
+      ttydTransport: () => ({ ro: "http://127.0.0.1:10000/x", rw: null }),
+      httpOk,
+    })).toMatchObject({ state: "failed", detail: "http-unreachable" });
+  });
+
+  it("does not even read transport env when ttyd is disabled", async () => {
+    const transport = vi.fn(() => ({ ro: "http://127.0.0.1:10000", rw: null }));
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      readSettingsRaw: () => ({ ok: true, raw: undefined, file: "absent" }),
+      ttydTransport: transport,
+    }));
+    const section = await runtime.components();
+    expect(section.components.find((c) => c.id === "ttyd")?.state).toBe("disabled-default");
+    expect(transport).not.toHaveBeenCalled();
   });
 });
 

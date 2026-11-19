@@ -104,8 +104,14 @@ function Resources() {
           {data.state !== "ok" || !tmp ? (
             <SourceWarning
               label={t("resources.unavailable")}
-              detail={data.stale ? t("resources.stale") : undefined}
+              detail={data.warning ? t(`resources.warnings.${data.warning}`) : undefined}
             />
+          ) : null}
+          {data.stale ? (
+            <span className="text-[11px] text-warning">
+              {t("resources.stale")}
+              {data.lastGoodAt ? <> · <RelativeTime epochMs={Date.parse(data.lastGoodAt)} /></> : null}
+            </span>
           ) : null}
           {tmp ? (
             <div data-testid="tmp-capacity" className="flex flex-col gap-1 rounded-md border border-line-subtle px-3 py-2">
@@ -120,7 +126,7 @@ function Resources() {
                 {tmp.tmpfs ? t("resources.tmpfs") : tmp.sharedRoot ? t("resources.sharedRoot") : t("resources.distinct")}
               </span>
               <span className="text-[11px] text-muted">
-                {t("observed")} <RelativeTime epochMs={Date.parse(data.observedAt)} />
+                {t("observed")} <RelativeTime epochMs={Date.parse(data.stale && data.lastGoodAt ? data.lastGoodAt : data.observedAt)} />
               </span>
             </div>
           ) : null}

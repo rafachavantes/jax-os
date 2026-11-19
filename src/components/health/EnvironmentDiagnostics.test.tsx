@@ -141,7 +141,22 @@ describe("EnvironmentDiagnostics (M5 Task 4)", () => {
     const { html } = render(createElement(EnvironmentDiagnostics));
     expect(html).toContain("Temporary capacity unavailable");
     expect(html).toContain("Showing the last good observation.");
+    expect(html).toContain("Filesystem capacity could not be read");
     expect(html).toContain("4.0 GB");
+  });
+
+  it("distinguishes a mount-facts failure from a capacity failure in both locales", () => {
+    for (const locale of ["en-US", "pt-BR"] as const) {
+      setAll();
+      harness.results.set("environment:resources", {
+        data: { ok: true, data: { ...RESOURCES, state: "unavailable", stale: false, tmp: null, warning: "mount-facts" } },
+        isError: false,
+      });
+      const { html, errors } = render(createElement(EnvironmentDiagnostics), locale);
+      expect(errors).toEqual([]);
+      expect(html).toContain(locale === "en-US" ? "Mount facts could not be read" : "Fatos de montagem");
+      expect(html).not.toContain(locale === "en-US" ? "Filesystem capacity could not be read" : "capacidade do sistema");
+    }
   });
 
   it("explains workloads with proven/unknown origin, approximate RSS and zombie lifecycle", () => {
@@ -167,6 +182,70 @@ describe("EnvironmentDiagnostics (M5 Task 4)", () => {
     expect(html).toContain("security");
     expect(html).toContain("install updates manually");
     expect(html).not.toMatch(/apt(-get)? (upgrade|install)|kill -/i);
+  });
+
+  it("every machine detail code resolves in both catalogs", () => {
+    const cases: [string, string][] = [
+      ["database", "select-1"], ["database", "database-unavailable"], ["database", "database-unverified"],
+      ["projects", "settings-unreadable"], ["projects", "root-readable-unverified"],
+      ["projects", "root-unreadable"], ["projects", "root-unverified"],
+      ["tmux", "snapshot"], ["tmux", "tmux-unavailable"], ["tmux", "tmux-unverified"],
+      ["ttyd", "urls-missing"], ["ttyd", "external-unverified-ro"], ["ttyd", "external-unverified-rw"],
+      ["ttyd", "external-unverified-both"], ["ttyd", "http-ok-ro"], ["ttyd", "http-ok-rw"],
+      ["ttyd", "http-ok-both"], ["ttyd", "http-unreachable"], ["ttyd", "http-unverified"],
+      ["github", "configured-unverified"], ["github", "cli-missing"], ["github", "cli-unverified"],
+      ["linear", "credential-present"], ["linear", "credential-missing"],
+      ["claude", "cli-present"], ["claude", "cli-missing"], ["claude", "cli-unverified"],
+      ["metrics", "database-unverified"], ["metrics", "database-unavailable"], ["metrics", "no-sample"],
+      ["metrics", "fresh"], ["metrics", "stale"],
+      ["host-probes", "not-checked"], ["host-probes", "sections-observed"], ["host-probes", "sections-partial"],
+      ["env-file", "secure"], ["env-file", "missing"], ["env-file", "not-regular"],
+      ["env-file", "wrong-owner"], ["env-file", "bad-mode"],
+    ];
+    for (const locale of ["en-US", "pt-BR"] as const) {
+      for (const [id, detail] of cases) {
+        harness.results.set("environment:components", {
+          data: { ok: true, data: { observedAt: "2026-11-19T00:00:00.000Z", components: [
+            { id, state: "healthy", detail, observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null },
+          ] } },
+          isError: false,
+        });
+        const { errors } = render(createElement(EnvironmentDiagnostics), locale);
+        expect(errors, `${locale} ${id} ${detail}`).toEqual([]);
+      }
+    }
+  });
+
+  it("an unavailable workload source never also says zero processes", () => {
+    setAll();
+    harness.results.set("environment:workloads", {
+      data: { ok: true, data: {
+        ...WORKLOADS, state: "unavailable", groups: [], totalProcesses: 0,
+        coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: true, reasons: {} },
+        warning: "tmux-unavailable",
+      } },
+      isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Workload snapshot unavailable");
+    expect(html).toContain("Live pane snapshot unavailable");
+    expect(html).not.toContain("No processes observed.");
+    expect(html).not.toContain("0 processes observed");
+  });
+
+  it("an unavailable package source never shows a confident zero summary or empty list", () => {
+    setAll();
+    harness.results.set("environment:packages", {
+      data: { ok: true, data: {
+        ...PACKAGES, state: "unavailable", candidates: [], counts: null,
+        warnings: ["package-query-failed"],
+      } },
+      isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Package query unavailable");
+    expect(html).not.toContain("No candidate updates.");
+    expect(html).not.toContain("0 candidates");
   });
 
   it("both actual catalogs resolve every environment key", () => {

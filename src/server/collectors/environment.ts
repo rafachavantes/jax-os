@@ -234,10 +234,13 @@ function ttydSide(facts: ComponentFacts["ttyd"]): "ro" | "rw" | "both" | null {
   return null;
 }
 
-function hostProbesState(probes: ComponentFacts["hostProbes"]): ComponentResult["state"] {
-  const observed = [probes.resources, probes.workloads, probes.packages].filter((v): v is boolean => v !== null);
-  if (observed.length === 0) return "unknown";
-  return observed.every(Boolean) ? "healthy" : "unavailable";
+function hostProbesResult(probes: ComponentFacts["hostProbes"], t: number): ComponentResult {
+  const values = [probes.resources, probes.workloads, probes.packages];
+  const observed = values.filter((v): v is boolean => v !== null);
+  if (observed.length === 0) return result("host-probes", "unknown", "not-checked", t);
+  if (observed.some((v) => !v)) return result("host-probes", "unavailable", "sections-partial", t);
+  if (observed.length < values.length) return result("host-probes", "unknown", "sections-partial", t);
+  return result("host-probes", "healthy", "sections-observed", t);
 }
 
 // Pure matrix projection: every state and detail is fixture-testable without touching the host.
@@ -301,13 +304,7 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
     return result("tmux", "unknown", "tmux-unverified", t);
   })();
 
-  const probes = ((): ComponentResult => {
-    const state = hostProbesState(facts.hostProbes);
-    if (state === "unknown") return result("host-probes", "unknown", "not-checked", t);
-    return state === "healthy"
-      ? result("host-probes", "healthy", "sections-observed", t)
-      : result("host-probes", "unavailable", "sections-partial", t);
-  })();
+  const probes = hostProbesResult(facts.hostProbes, t);
 
   return [
     database,
