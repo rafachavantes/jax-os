@@ -51,7 +51,7 @@ import {
   getHubMembership, getProjectPanes, getProjectTimeline, getHubData, lastRunFor,
   getLoopSummary, getWorktreeLedgerRows,
   isWorking, countFreshEvents, getCodexSessions,
-  runtimeFromEmitter,
+  runtimeFromEmitter, lastKnownPaneContext,
   type StalenessCandidate,
   type LiveSnapshot,
 } from "./workflows";
@@ -4371,6 +4371,50 @@ describe("an answered ask clears its capsule (stale card buttons)", () => {
   it("keeps the capsule when the answer failed (the ask is still open)", () => {
     const { db } = seed({ ok: false });
     expect(getProjectPanes(db, "p1", live)[0].capsule).not.toBeNull();
+    db.close();
+  });
+});
+
+describe("lastKnownPaneContext (M5)", () => {
+  it("projects the newest stored project/session/role for the exact pane+incarnation key", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, {
+      run_id: null, project: "older", role: "lead", type: "turn-started",
+      source: "behavioral", emitter: "claude-userprompt", pane: "%1",
+      tmux_incarnation: INCARNATION, harness_session: "s-old", payload: {},
+    }, NOW);
+    insertEvent(db, {
+      run_id: null, project: "newer", role: "adhoc", type: "turn-started",
+      source: "behavioral", emitter: "claude-userprompt", pane: "%1",
+      tmux_incarnation: INCARNATION, harness_session: "s-new", payload: {},
+    }, NOW);
+    expect(lastKnownPaneContext(db, "%1", INCARNATION)).toEqual({
+      project: "newer", role: "adhoc", session: "s-new", observedAt: NOW.toISOString(),
+    });
+    db.close();
+  });
+
+  it("a different incarnation, another pane, or no incarnation is unknown", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, {
+      run_id: null, project: "p1", role: "lead", type: "turn-started",
+      source: "behavioral", emitter: "claude-userprompt", pane: "%1",
+      tmux_incarnation: INCARNATION, harness_session: "s1", payload: {},
+    }, NOW);
+    expect(lastKnownPaneContext(db, "%1", "999:1")).toBeNull();
+    expect(lastKnownPaneContext(db, "%2", INCARNATION)).toBeNull();
+    expect(lastKnownPaneContext(db, "%1", null)).toBeNull();
+    db.close();
+  });
+
+  it("never projects a Codex row as a Claude pane's context (existing pane agent filter)", () => {
+    const db = openDb(":memory:");
+    insertEvent(db, {
+      run_id: null, project: "p1", role: "lead", type: "turn-started",
+      source: "behavioral", emitter: "codex-userprompt", pane: "%1",
+      tmux_incarnation: INCARNATION, harness_session: "s1", payload: {},
+    }, NOW);
+    expect(lastKnownPaneContext(db, "%1", INCARNATION)).toBeNull();
     db.close();
   });
 });

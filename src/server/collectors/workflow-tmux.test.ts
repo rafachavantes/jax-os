@@ -75,7 +75,7 @@ describe("injectAnswers", () => {
     });
     const pause = vi.fn(async (ms: number) => { pauses.push(ms); });
     await injectAnswers(PANE, SHAPES, ANSWERS, INCARNATION, run, pause);
-    expect(calls[0]).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_current_command}"]);
+    expect(calls[0]).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_current_command}"]);
     const sends = calls.slice(1);
     expect(sends[0]).toEqual(["send-keys", "-t", PANE, "Down"]);
     expect(sends.at(-1)).toEqual(["send-keys", "-t", PANE, "Enter"]);
@@ -149,9 +149,21 @@ describe("runtime command association (MOA-469)", () => {
     expect(isCodexCommand("zsh")).toBe(false);
   });
 
+  it("records the pane PID separately from the server incarnation and keeps the command (M5 F14)", async () => {
+    const run = vi.fn(async (_file: string, args: string[]) => {
+      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_current_command}"]);
+      return "%1 234790 1787586213 234800 codex\n%2 234790 1787586213 234801 bash\n";
+    });
+    const live = await listLivePanes(run);
+    expect(live.incarnation).toBe("234790:1787586213");
+    expect(live.panePids).toEqual(new Map([["%1", 234800], ["%2", 234801]]));
+    expect(live.paneCommands.get("%1")).toBe("codex");
+    expect(live.panePids?.get("%1")).not.toBe(234790);
+  });
+
   it("records the pane_current_command per pane in the live snapshot", async () => {
     const run = vi.fn(async (_file: string, args: string[]) => {
-      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_current_command}"]);
+      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_current_command}"]);
       return "%1 234790 1787586213 codex\n%2 234790 1787586213 bash\n";
     });
     const live = await listLivePanes(run);
@@ -164,21 +176,21 @@ describe("runtime command association (MOA-469)", () => {
 describe("listLivePanes", () => {
   it("returns pane-id membership plus the ONE server-wide incarnation string", async () => {
     const run = vi.fn(async (_file: string, args: string[]) => {
-      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_current_command}"]);
+      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_current_command}"]);
       return "%1 234790 1787586213 bash\n%2 234790 1787586213 bash\n"; // pid/start_time identical on every line
     });
     const live = await listLivePanes(run);
-    expect(live).toEqual({ paneIds: new Set(["%1", "%2"]), incarnation: "234790:1787586213", paneCommands: new Map([["%1", "bash"], ["%2", "bash"]]) });
+    expect(live).toEqual({ paneIds: new Set(["%1", "%2"]), incarnation: "234790:1787586213", paneCommands: new Map([["%1", "bash"], ["%2", "bash"]]), panePids: new Map() });
   });
 
   it("returns an empty set and null incarnation when tmux has no server (never throws)", async () => {
     const run = vi.fn(async () => { throw new Error("no server running on /tmp/tmux-1000/default"); });
-    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map() });
+    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map() });
   });
 
   it("also reads an 'error connecting' failure as no-server (never throws)", async () => {
     const run = vi.fn(async () => { throw new Error("error connecting to /tmp/tmux-1000/default (No such file or directory)"); });
-    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map() });
+    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map() });
   });
 
   it("a genuine tmux command failure (missing binary, permission, ...) throws instead of reading as an empty snapshot (branch review Finding 5)", async () => {
@@ -189,7 +201,7 @@ describe("listLivePanes", () => {
   it("skips a malformed line rather than throwing, still resolves incarnation from a good line", async () => {
     const run = vi.fn(async () => "not-a-valid-line\n%1 234790 1787586213 bash\n");
     const live = await listLivePanes(run);
-    expect(live).toEqual({ paneIds: new Set(["%1"]), incarnation: "234790:1787586213", paneCommands: new Map([["%1", "bash"]]) });
+    expect(live).toEqual({ paneIds: new Set(["%1"]), incarnation: "234790:1787586213", paneCommands: new Map([["%1", "bash"]]), panePids: new Map() });
   });
 
   it("treats timeout as source failure, not parsed panes", async () => {

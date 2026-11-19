@@ -147,14 +147,20 @@ function defaultPath(): string {
   return join(jaxosHome(), "settings.json");
 }
 
-export function readGeneralSettings(path: string = defaultPath()): SettingsResult {
+// M5 Task 1: raw read for diagnostics. `readGeneralSettings` already collapses absence/malformed
+// into one result; component diagnostics must additionally tell an ABSENT key (disabled by
+// default) from an EXPLICIT `false` in a readable file, so the raw JSON is needed. Never exposed
+// beyond this module's own `settingsKeyPresence` projection.
+export type RawSettingsRead =
+  | { ok: true; raw: unknown; file: "absent" | "present" }
+  | { ok: false; error: "settings-unreadable" | "settings-malformed" };
+
+export function readRawSettings(path: string = defaultPath()): RawSettingsRead {
   let stat: ReturnType<typeof statSync>;
   try {
     stat = statSync(path);
   } catch (err) {
-    // F1: only ENOENT means absent -> defaults. Any other stat failure (EACCES, ENOTDIR,
-    // ...) is a real problem and must be reported, not silently defaulted.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return parseSettings(undefined);
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, raw: undefined, file: "absent" };
     return { ok: false, error: "settings-unreadable" };
   }
   if (!stat.isFile()) return { ok: false, error: "settings-unreadable" };
@@ -170,7 +176,45 @@ export function readGeneralSettings(path: string = defaultPath()): SettingsResul
   } catch {
     return { ok: false, error: "settings-malformed" };
   }
-  return parseSettings(json);
+  return { ok: true, raw: json, file: "present" };
+}
+
+export type KeyPresence = {
+  linear: boolean; ttyd: boolean; webhook: boolean; hermesTokens: boolean;
+  classifier: boolean; github: boolean; vault: boolean;
+  agents: { claude: boolean; codex: boolean; opencode: boolean };
+};
+
+// Key-presence only: no values, no writes. A key is "explicit" when the owner wrote it in a
+// readable file; absence (including a wholly absent file) leaves every flag false. The legacy
+// `subscriptions` names count as explicit for the same agent they map to.
+export function settingsKeyPresence(raw: unknown): KeyPresence {
+  const none = (): KeyPresence => ({
+    linear: false, ttyd: false, webhook: false, hermesTokens: false,
+    classifier: false, github: false, vault: false,
+    agents: { claude: false, codex: false, opencode: false },
+  });
+  if (!isObj(raw) || !isObj(raw.integrations)) return none();
+  const integrations = raw.integrations;
+  const has = (k: string) => Object.hasOwn(integrations, k);
+  const out = none();
+  for (const k of BOOL_INTEGRATION_KEYS) if (has(k)) out[k] = true;
+  if (has("agents") && isObj(integrations.agents)) {
+    const agents = integrations.agents;
+    for (const k of AGENT_KEYS) if (Object.hasOwn(agents, k)) out.agents[k] = true;
+  } else if (has("subscriptions") && isObj(integrations.subscriptions)) {
+    const subs = integrations.subscriptions;
+    if (Object.hasOwn(subs, "claude")) out.agents.claude = true;
+    if (Object.hasOwn(subs, "codex")) out.agents.codex = true;
+    if (Object.hasOwn(subs, "opencodeGo")) out.agents.opencode = true;
+  }
+  return out;
+}
+
+export function readGeneralSettings(path: string = defaultPath()): SettingsResult {
+  const read = readRawSettings(path);
+  if (!read.ok) return read;
+  return parseSettings(read.raw);
 }
 
 type WriteFs = {

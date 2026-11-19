@@ -103,30 +103,41 @@ export function isCodexCommand(cmd: string): boolean {
 // failure and must propagate, not be swallowed into "zero live panes" (Finding 5).
 const NO_SERVER_RE = /no server running|error connecting/i;
 
+// M5 Task 2 (F14): pane PID is its OWN observed fact, inserted before the free command field.
+// It is NOT the server `#{pid}`/`#{start_time}` incarnation pair. Optional in the return type so
+// older injected fixtures (command in the fourth field) keep parsing as command-only.
 export async function listLivePanes(
   run: ExecFile = systemExec,
-): Promise<{ paneIds: Set<string>; incarnation: string | null; paneCommands: Map<string, string> }> {
+): Promise<{ paneIds: Set<string>; incarnation: string | null; paneCommands: Map<string, string>; panePids?: Map<string, number> }> {
   let output: string;
   try {
-    output = await run("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_current_command}"]);
+    output = await run("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_current_command}"]);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (NO_SERVER_RE.test(message)) {
-      return { paneIds: new Set(), incarnation: null, paneCommands: new Map() }; // no tmux server — zero live panes, not an error
+      return { paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map() }; // no tmux server — zero live panes, not an error
     }
     throw e; // genuine command failure — let the caller's error contract surface it
   }
   const paneIds = new Set<string>();
   const paneCommands = new Map<string, string>();
+  const panePids = new Map<string, number>();
   let incarnation: string | null = null;
   for (const line of output.split("\n")) {
     const m = LIVE_LINE_RE.exec(line.trim());
     if (!m) continue;
     paneIds.add(m[1]);
-    if (m[4]) paneCommands.set(m[1], m[4]);
+    // New format: "<pane_pid> <command…>"; legacy injected fixtures carry only the command.
+    const withPid = /^([0-9]{1,10})\s(.*)$/.exec(m[4]);
+    if (withPid) {
+      panePids.set(m[1], Number(withPid[1]));
+      if (withPid[2]) paneCommands.set(m[1], withPid[2]);
+    } else if (m[4]) {
+      paneCommands.set(m[1], m[4]);
+    }
     if (incarnation === null) incarnation = `${m[2]}:${m[3]}`; // server-scope — read once, from the first good line
   }
-  return { paneIds, incarnation, paneCommands };
+  return { paneIds, incarnation, paneCommands, panePids };
 }
 
 // Sessions mosaic spec §7 Decision 10: "last N output lines live". `-S -{lines-1}` asks tmux for

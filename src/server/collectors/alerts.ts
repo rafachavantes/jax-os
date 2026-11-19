@@ -1,15 +1,21 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { LOCAL_OPTS } from "../inputLimits";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 
 export type ZombieRow = { pid: number; ppid: number; ageSeconds: number; parentCommand: string | null };
-export type PackageRow = { name: string; fromVersion: string; toVersion: string; security: boolean };
+// M5 Task 3: architecture is part of identity — two architectures of one name are two rows.
+export type PackageRow = { name: string; arch: string; key: string; fromVersion: string; toVersion: string; security: boolean };
+
+export type AlertSource = "disk" | "load" | "zombies" | "packages";
 
 export type Alert =
   | { kind: "disk"; mount: string; usedPercent: number }
   | { kind: "load"; load5: number; cores: number }
   | { kind: "zombies"; count: number; rows: ZombieRow[] }
-  | { kind: "updates"; count: number; rows: PackageRow[] };
+  | { kind: "updates"; count: number; rows: PackageRow[] }
+  // M5 Task 3: an ordinary probe failure is an explicit source state, not a silently omitted
+  // alert. Existing array consumers keep their fields; this is an additive variant.
+  | { kind: "source"; source: AlertSource; state: "failed" };
 
 // df -P guarantees one line per filesystem. Filter to /dev/* so pseudo
 // filesystems (/run/lock at 5MB) never false-alert.
@@ -50,7 +56,23 @@ export function parseZombieRows(psOut: string): ZombieRow[] {
   return zombies.map((z) => ({ ...z, parentCommand: commandByPid.get(z.ppid) ?? null }));
 }
 
-const PACKAGE_LINE_RE = /^([^/\s]+)\/(\S+)\s+(\S+)\s+\S+\s+\[upgradable from:\s*([^\]]+)\]/;
+export type PackageNameArch = { name: string; arch: string | null };
+
+// M5 F6: identity is `name:arch`. Bare names take the fixed native architecture (read by the
+// caller with `dpkg --print-architecture`); when that is unknown, the key stays explicitly
+// ambiguous instead of silently collapsing two architectures.
+export function packageKey(name: string, arch: string | null, nativeArch: string | null): string {
+  const resolved = arch && arch.length > 0 ? arch : nativeArch && nativeArch.length > 0 ? nativeArch : "unknown";
+  return `${name}:${resolved}`;
+}
+
+function splitNameArch(token: string): PackageNameArch | null {
+  if (!/^[A-Za-z0-9][A-Za-z0-9+.-]*(?::[A-Za-z0-9-]+)?$/.test(token)) return null;
+  const at = token.lastIndexOf(":");
+  return at > 0 ? { name: token.slice(0, at), arch: token.slice(at + 1) } : { name: token, arch: null };
+}
+
+const PACKAGE_LINE_RE = /^([^/\s]+)\/(\S+)\s+(\S+)\s+(\S+)\s+\[upgradable from:\s*([^\]]+)\]/;
 
 // Parses `apt list --upgradable` (English locale only; revisit if apt output ever localizes);
 // a SUITE name (after "/") carrying "-security" marks it security-sourced. A line
@@ -60,60 +82,133 @@ export function parsePackageRows(aptOut: string): PackageRow[] {
   for (const line of aptOut.split(/\r?\n/)) {
     const m = PACKAGE_LINE_RE.exec(line);
     if (!m) continue;
-    const [, name, suite, toVersion, fromVersion] = m;
-    rows.push({ name, fromVersion: fromVersion.trim(), toVersion, security: suite.includes("-security") });
+    const [, name, suite, toVersion, arch, fromVersion] = m;
+    rows.push({
+      name, arch, key: packageKey(name, arch, null),
+      fromVersion: fromVersion.trim(), toVersion, security: suite.includes("-security"),
+    });
   }
   return rows;
 }
 
-// apt list is ~0.5s today; 1h cache kept as apt-lock insurance per spec
-let aptCache: { at: number; rows: PackageRow[] } | null = null;
-const APT_TTL_MS = 60 * 60 * 1000;
-
-// Untested shell glue. Each probe fails independently — one broken probe
-// must not blank the whole card (these are core utils; failure ≈ never).
-export type Utf8ExecSync = (
-  file: string,
-  args: readonly string[],
-  options: { encoding: "utf8"; timeout: number; maxBuffer: number },
-) => string;
-
-const APT_OPTS = { encoding: "utf8" as const, timeout: 15_000, maxBuffer: 2 * 1024 * 1024 };
-
-function isLimitError(e: unknown): boolean {
-  const code = (e as { code?: unknown }).code;
-  return code === "ETIMEDOUT" || code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+// `apt-mark showhold` prints one bare (or name:arch) package per line.
+export function parseHoldRows(out: string): PackageNameArch[] {
+  const rows: PackageNameArch[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    const parsed = splitNameArch(line.trim());
+    if (parsed) rows.push(parsed);
+  }
+  return rows;
 }
 
-export function getAlerts(exec: Utf8ExecSync = execFileSync as Utf8ExecSync): Alert[] {
+// `apt-get --simulate upgrade` marks each selected package with an `Inst` row.
+export function parseSimulationRows(out: string): PackageNameArch[] {
+  const rows: PackageNameArch[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = /^Inst\s+(\S+)\s+\[/.exec(line);
+    if (!m) continue;
+    const parsed = splitNameArch(m[1]);
+    if (parsed) rows.push(parsed);
+  }
+  return rows;
+}
+
+export type PackageObservation = {
+  rows: PackageRow[];
+  state: "ok" | "failed";
+  observedAt: string;
+  lastGoodAt: string | null;
+  stale: boolean;
+  error: "package-query-failed" | null;
+};
+
+export type AsyncExec = (file: string, args: readonly string[]) => Promise<string>;
+
+const execFileAsync = promisify(execFile);
+const systemAsyncExec: AsyncExec = async (file, args) => {
+  const { stdout } = await execFileAsync(file, args, {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 1024 * 1024,
+  });
+  return stdout;
+};
+
+export const PACKAGE_TTL_MS = 5 * 60 * 1000;
+
+// One cached, single-flight package observation shared by `getAlerts` and Environment (M5 F7):
+// a cache miss cannot overlap another apt run, and a pending probe never delays resources.
+export function createPackageObservationReader(exec: AsyncExec = systemAsyncExec, now: () => number = Date.now) {
+  let cache: { at: number; obs: PackageObservation } | null = null;
+  let inflight: Promise<PackageObservation> | null = null;
+  return {
+    reset() { cache = null; inflight = null; },
+    async read(): Promise<PackageObservation> {
+      const t = now();
+      if (cache && t - cache.at < PACKAGE_TTL_MS) return cache.obs;
+      if (inflight) return inflight;
+      inflight = (async (): Promise<PackageObservation> => {
+        try {
+          const rows = parsePackageRows(await exec("apt", ["list", "--upgradable"]));
+          const obs: PackageObservation = {
+            rows, state: "ok", observedAt: new Date(t).toISOString(),
+            lastGoodAt: new Date(t).toISOString(), stale: false, error: null,
+          };
+          cache = { at: t, obs };
+          return obs;
+        } catch {
+          const prev = cache?.obs;
+          const obs: PackageObservation = {
+            rows: prev?.rows ?? [], state: "failed", observedAt: new Date(t).toISOString(),
+            lastGoodAt: prev?.lastGoodAt ?? null, stale: prev !== null, error: "package-query-failed",
+          };
+          cache = { at: t, obs };
+          return obs;
+        }
+      })().finally(() => { inflight = null; });
+      return inflight;
+    },
+  };
+}
+
+export const packageObservation = createPackageObservationReader();
+export const getPackageObservation = (): Promise<PackageObservation> => packageObservation.read();
+
+export type GetAlertsOptions = {
+  exec?: AsyncExec;
+  packages?: () => Promise<PackageObservation>;
+};
+
+// Each probe fails independently and becomes an explicit source alert; the call itself never
+// rejects for an ordinary source failure (error contract: visible warning, not a blank card).
+export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]> {
+  const exec = options.exec ?? systemAsyncExec;
+  const packages = options.packages ?? getPackageObservation;
   const alerts: Alert[] = [];
   try {
-    const df = exec("df", ["-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"], LOCAL_OPTS);
-    alerts.push(...parseDfAlerts(df));
-  } catch (e) {
-    if (isLimitError(e)) throw e;
+    alerts.push(...parseDfAlerts(await exec("df", ["-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"])));
+  } catch {
+    alerts.push({ kind: "source", source: "disk", state: "failed" });
   }
   try {
-    const cores = Number(exec("nproc", [], LOCAL_OPTS).trim());
-    const load = parseLoadAlert(readFileSync("/proc/loadavg", "utf8"), cores);
+    const cores = Number((await exec("nproc", [])).trim());
+    const load = parseLoadAlert(await readFile("/proc/loadavg", "utf8"), cores);
     if (load) alerts.push(load);
-  } catch (e) {
-    if (isLimitError(e)) throw e;
+  } catch {
+    alerts.push({ kind: "source", source: "load", state: "failed" });
   }
   try {
-    const rows = parseZombieRows(exec("ps", ["-eo", "pid,ppid,stat,etimes,comm"], LOCAL_OPTS));
+    const rows = parseZombieRows(await exec("ps", ["-eo", "pid,ppid,stat,etimes,comm"]));
     if (rows.length > 0) alerts.push({ kind: "zombies", count: rows.length, rows });
-  } catch (e) {
-    if (isLimitError(e)) throw e;
+  } catch {
+    alerts.push({ kind: "source", source: "zombies", state: "failed" });
   }
-  try {
-    if (!aptCache || Date.now() - aptCache.at > APT_TTL_MS) {
-      const out = exec("apt", ["list", "--upgradable"], APT_OPTS);
-      aptCache = { at: Date.now(), rows: parsePackageRows(out) };
-    }
-    if (aptCache.rows.length > 0) alerts.push({ kind: "updates", count: aptCache.rows.length, rows: aptCache.rows });
-  } catch (e) {
-    if (isLimitError(e)) throw e;
+  const observation = await packages();
+  if (observation.rows.length > 0) {
+    alerts.push({ kind: "updates", count: observation.rows.length, rows: observation.rows });
+  }
+  if (observation.state === "failed") {
+    alerts.push({ kind: "source", source: "packages", state: "failed" });
   }
   return alerts;
 }

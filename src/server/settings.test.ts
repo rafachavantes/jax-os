@@ -8,6 +8,8 @@ import { openDb } from "./db";
 import {
   parseSettings,
   readGeneralSettings,
+  readRawSettings,
+  settingsKeyPresence,
   seedAgentsIfFirstRun,
   writeGeneralSettings,
   SettingsAuditUnavailableError,
@@ -289,5 +291,49 @@ describe("seedAgentsIfFirstRun (MOA-504 D4)", () => {
     expect(() => seedAgentsIfFirstRun(db, has(["codex"]), path, fs)).toThrow(SettingsAuditFailedError);
     const r = readGeneralSettings(path);
     expect(r.ok && r.data.integrations.agents).toEqual({ claude: false, codex: true, opencode: false });
+  });
+});
+
+describe("M5 raw settings presence (Task 1)", () => {
+  it("readRawSettings keeps absence distinct and returns the parsed JSON when readable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gs-raw-"));
+    expect(readRawSettings(join(dir, "absent.json"))).toEqual({ ok: true, raw: undefined, file: "absent" });
+    const path = join(dir, "settings.json");
+    writeFileSync(path, JSON.stringify({ integrations: { linear: true } }));
+    expect(readRawSettings(path)).toEqual({ ok: true, raw: { integrations: { linear: true } }, file: "present" });
+  });
+
+  it("readRawSettings reports malformed JSON distinctly from unreadable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gs-raw-"));
+    const path = join(dir, "settings.json");
+    writeFileSync(path, "{not json");
+    expect(readRawSettings(path)).toEqual({ ok: false, error: "settings-malformed" });
+    expect(readRawSettings(join(dir, "settings.json", "x"))).toEqual({ ok: false, error: "settings-unreadable" });
+  });
+
+  it("settingsKeyPresence reports only explicit keys, including legacy subscription names", () => {
+    const presence = settingsKeyPresence({
+      integrations: {
+        linear: false,
+        agents: { codex: false },
+      },
+    });
+    expect(presence.linear).toBe(true);
+    expect(presence.agents).toEqual({ claude: false, codex: true, opencode: false });
+    expect(presence.ttyd).toBe(false);
+    expect(presence.github).toBe(false);
+
+    const legacy = settingsKeyPresence({ integrations: { subscriptions: { claude: false, opencodeGo: true } } });
+    expect(legacy.agents).toEqual({ claude: true, codex: false, opencode: true });
+  });
+
+  it("settingsKeyPresence treats absent/unknown raw shapes as all-default, never malformed", () => {
+    const none = {
+      linear: false, ttyd: false, webhook: false, hermesTokens: false,
+      classifier: false, github: false, vault: false,
+      agents: { claude: false, codex: false, opencode: false },
+    };
+    expect(settingsKeyPresence(undefined)).toEqual(none);
+    expect(settingsKeyPresence("nope")).toEqual(none);
   });
 });

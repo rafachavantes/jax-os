@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { getAlerts, parseDfAlerts, parseLoadAlert, parsePackageRows, parseZombieRows } from "./alerts";
+import {
+  createPackageObservationReader, getAlerts, packageKey, parseDfAlerts, parseHoldRows, parseLoadAlert,
+  parsePackageRows, parseSimulationRows, parseZombieRows, PACKAGE_TTL_MS,
+} from "./alerts";
 
 const DF = `Filesystem     1024-blocks     Used Available Capacity Mounted on
 /dev/sda1        157197504 92993088  57759796      62% /
@@ -35,44 +38,64 @@ describe("parseLoadAlert", () => {
   });
 });
 
-const LOCAL_OPTS = { encoding: "utf8" as const, timeout: 5_000, maxBuffer: 1024 * 1024 };
-const APT_OPTS = { encoding: "utf8" as const, timeout: 15_000, maxBuffer: 2 * 1024 * 1024 };
+const execFor = (files: Record<string, string>) => vi.fn(async (file: string) => {
+  const value = files[file];
+  if (value === undefined) throw new Error(`unexpected ${file}`);
+  return value;
+});
 
-describe("getAlerts executor bounds", () => {
-  it("treats a local-command timeout as source failure, not parsed alerts", () => {
-    const exec = vi.fn(() => {
-      throw Object.assign(new Error("timeout"), { code: "ETIMEDOUT", stdout: DF });
+const emptyPackages = async () => ({
+  rows: [], state: "ok" as const, observedAt: "2026-11-19T00:00:00.000Z",
+  lastGoodAt: "2026-11-19T00:00:00.000Z", stale: false, error: null,
+});
+
+describe("getAlerts — explicit source states (M5 Task 3)", () => {
+  it("a timed-out probe becomes a source warning instead of throwing or vanishing", async () => {
+    const exec = vi.fn(async (file: string) => {
+      if (file === "df") throw Object.assign(new Error("timeout"), { code: "ETIMEDOUT" });
+      if (file === "nproc") return "8\n";
+      if (file === "ps") return "STAT\n";
+      throw new Error("unexpected");
     });
-    expect(() => getAlerts(exec)).toThrow();
-    expect(exec).toHaveBeenCalledWith(
-      "df",
-      ["-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"],
-      LOCAL_OPTS,
-    );
+    const alerts = await getAlerts({ exec, packages: emptyPackages });
+    expect(alerts).toContainEqual({ kind: "source", source: "disk", state: "failed" });
   });
 
-  it("treats df overflow as source failure, not partial parsed success", () => {
-    const exec = vi.fn(() => {
-      throw Object.assign(new Error("overflow"), {
-        code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
-        stdout: DF,
-      });
-    });
-    expect(() => getAlerts(exec)).toThrow();
-  });
-
-  it("uses the longer apt cap and treats apt overflow as source failure", () => {
-    const exec = vi.fn((file: string) => {
+  it("an overflowed probe is the same explicit unavailable state, while siblings still return", async () => {
+    const exec = vi.fn(async (file: string) => {
       if (file === "df") return DF;
       if (file === "nproc") return "8\n";
-      if (file === "ps") return "STAT\nSsl\n";
-      throw Object.assign(new Error("overflow"), {
-        code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
-        stdout: "Listing...\ncurl/noble 8.5.0 amd64 [upgradable from: 8.4.0]\n",
-      });
+      if (file === "ps") throw Object.assign(new Error("overflow"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+      throw new Error("unexpected");
     });
-    expect(() => getAlerts(exec)).toThrow();
-    expect(exec).toHaveBeenCalledWith("apt", ["list", "--upgradable"], APT_OPTS);
+    const alerts = await getAlerts({ exec, packages: emptyPackages });
+    expect(alerts).toContainEqual({ kind: "source", source: "zombies", state: "failed" });
+    expect(alerts).toContainEqual({ kind: "disk", mount: "/data", usedPercent: 90 });
+  });
+
+  it("a failed package observation preserves last-good rows and flags the source", async () => {
+    const exec = execFor({ df: DF, nproc: "8\n", ps: "STAT\n" });
+    const alerts = await getAlerts({
+      exec,
+      packages: async () => ({
+        rows: [{ name: "openssl", arch: "amd64", key: "openssl:amd64", fromVersion: "1", toVersion: "2", security: true }],
+        state: "failed", observedAt: "2026-11-19T00:00:00.000Z",
+        lastGoodAt: "2026-11-18T23:55:00.000Z", stale: true, error: "package-query-failed",
+      }),
+    });
+    expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "failed" });
+    expect(alerts.find((a) => a.kind === "updates")).toMatchObject({ count: 1 });
+  });
+
+  it("calls ps with the existing widened column set and keeps the update/alert count from one projection", async () => {
+    const psOut = "  PID  PPID STAT ELAPSED COMMAND\n41822     1  Ssl    7260 node\n48211 41822  Z+     7260 node\n";
+    const exec = execFor({ df: DF, nproc: "8\n", ps: psOut });
+    const alerts = await getAlerts({ exec, packages: emptyPackages });
+    expect(exec).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,stat,etimes,comm"]);
+    expect(alerts.find((a) => a.kind === "zombies")).toEqual({
+      kind: "zombies", count: 1,
+      rows: [{ pid: 48211, ppid: 41822, ageSeconds: 7260, parentCommand: "node" }],
+    });
   });
 });
 
@@ -99,62 +122,100 @@ describe("parseZombieRows", () => {
   });
 });
 
-describe("parsePackageRows", () => {
+describe("parsePackageRows — architecture identity (M5 F6)", () => {
   it("returns an empty array with no upgrades", () => {
     expect(parsePackageRows("Listing...\n")).toEqual([]);
   });
 
-  it("separates security from non-security lines", () => {
+  it("separates security from non-security lines and keys by name:arch", () => {
     const out = "Listing...\n" +
       "openssl/noble-security 3.0.15 amd64 [upgradable from: 3.0.13]\n" +
-      "curl/noble 8.5.0 amd64 [upgradable from: 8.4.0]\n";
+      "curl/noble 8.5.0 amd64 [upgradable from: 8.4.0]\n" +
+      "libc6/noble 2.39-0ubuntu8 all [upgradable from: 2.38]\n";
     expect(parsePackageRows(out)).toEqual([
-      { name: "openssl", fromVersion: "3.0.13", toVersion: "3.0.15", security: true },
-      { name: "curl", fromVersion: "8.4.0", toVersion: "8.5.0", security: false },
+      { name: "openssl", arch: "amd64", key: "openssl:amd64", fromVersion: "3.0.13", toVersion: "3.0.15", security: true },
+      { name: "curl", arch: "amd64", key: "curl:amd64", fromVersion: "8.4.0", toVersion: "8.5.0", security: false },
+      { name: "libc6", arch: "all", key: "libc6:all", fromVersion: "2.38", toVersion: "2.39-0ubuntu8", security: false },
     ]);
   });
 
   it("skips a malformed line missing the bracketed version pair, never crashes", () => {
     const out = "Listing...\ncurl/noble 8.5.0 amd64 [upgradable from\nvim/noble 2:9.1 amd64 [upgradable from: 2:9.0]\n";
     expect(parsePackageRows(out)).toEqual([
-      { name: "vim", fromVersion: "2:9.0", toVersion: "2:9.1", security: false },
+      { name: "vim", arch: "amd64", key: "vim:amd64", fromVersion: "2:9.0", toVersion: "2:9.1", security: false },
     ]);
+  });
+
+  it("keeps two architectures of the same name as distinct rows", () => {
+    const out = "Listing...\nfoo/noble 2 amd64 [upgradable from: 1]\nfoo/noble 2 i386 [upgradable from: 1]\n";
+    expect(parsePackageRows(out).map((r) => r.key)).toEqual(["foo:amd64", "foo:i386"]);
   });
 });
 
-describe("getAlerts — success path (round-1 plan review F5)", () => {
-  it("calls ps with the widened column set, returns row-shaped alerts, and caches the package rows", () => {
-    const psOut = "  PID  PPID STAT ELAPSED COMMAND\n41822     1  Ssl    7260 node\n48211 41822  Z+     7260 node\n";
-    const aptOut = "Listing...\nopenssl/noble-security 3.0.15 amd64 [upgradable from: 3.0.13]\n";
-    const zombieAlert = {
-      kind: "zombies" as const, count: 1,
-      rows: [{ pid: 48211, ppid: 41822, ageSeconds: 7260, parentCommand: "node" }],
-    };
-    const updatesAlert = {
-      kind: "updates" as const, count: 1,
-      rows: [{ name: "openssl", fromVersion: "3.0.13", toVersion: "3.0.15", security: true }],
-    };
+describe("hold and simulation parsers (M5 Task 3)", () => {
+  it("normalizes bare and name:arch hold rows, ignoring blank lines", () => {
+    expect(parseHoldRows("openssl\ncurl\n\nlibc6:i386\nnot a package\n")).toEqual([
+      { name: "openssl", arch: null },
+      { name: "curl", arch: null },
+      { name: "libc6", arch: "i386" },
+    ]);
+  });
 
-    const firstExec = vi.fn((file: string) => {
-      if (file === "df") return DF;
-      if (file === "nproc") return "8\n";
-      if (file === "ps") return psOut;
-      return aptOut;
-    });
-    const firstAlerts = getAlerts(firstExec);
-    expect(firstExec).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,stat,etimes,comm"], LOCAL_OPTS);
-    expect(firstAlerts.find((a) => a.kind === "zombies")).toEqual(zombieAlert);
-    expect(firstAlerts.find((a) => a.kind === "updates")).toEqual(updatesAlert);
+  it("extracts Inst targets from a simulation, including architecture suffixes", () => {
+    const out = "Reading package lists...\n" +
+      "Inst openssl [3.0.13] (noble-security 3.0.15 amd64 [amd64])\n" +
+      "Inst libc6:i386 [2.38] (noble 2.39 i386 [i386])\n" +
+      "Conf openssl (3.0.15 noble-security [amd64])\n";
+    expect(parseSimulationRows(out)).toEqual([
+      { name: "openssl", arch: null },
+      { name: "libc6", arch: "i386" },
+    ]);
+  });
 
-    // Same TTL window: a second call must reuse the cached package rows, never
-    // re-invoking apt.
-    const secondExec = vi.fn((file: string) => {
-      if (file === "df") return DF;
-      if (file === "nproc") return "8\n";
-      if (file === "ps") return psOut;
-      throw new Error("apt must not be called again -- the cache is still within its TTL");
-    });
-    const secondAlerts = getAlerts(secondExec);
-    expect(secondAlerts.find((a) => a.kind === "updates")).toEqual(updatesAlert);
+  it("bare keys use the fixed native architecture, and ambiguity stays unknown", () => {
+    expect(packageKey("openssl", null, "amd64")).toBe("openssl:amd64");
+    expect(packageKey("openssl", "i386", "amd64")).toBe("openssl:i386");
+    expect(packageKey("openssl", null, null)).toBe("openssl:unknown");
+  });
+});
+
+describe("shared package observation (M5 F7)", () => {
+  it("single-flights concurrent reads and caches the combined observation for 5 minutes", async () => {
+    let now = 1_000_000;
+    let resolveExec: ((value: string) => void) | undefined;
+    const exec = vi.fn(() => new Promise<string>((resolve) => { resolveExec = resolve; }));
+    const reader = createPackageObservationReader(exec, () => now);
+    const first = reader.read();
+    const second = reader.read();
+    expect(exec).toHaveBeenCalledTimes(1);
+    resolveExec!("Listing...\ncurl/noble 8.5.0 amd64 [upgradable from: 8.4.0]\n");
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toMatchObject({ state: "ok", stale: false });
+    expect(b.rows).toHaveLength(1);
+
+    now += PACKAGE_TTL_MS - 1;
+    await reader.read();
+    expect(exec).toHaveBeenCalledTimes(1);
+
+    now += 2;
+    exec.mockResolvedValueOnce("Listing...\n");
+    const refreshed = await reader.read();
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(refreshed.rows).toEqual([]);
+  });
+
+  it("a failed refresh retains the last-good rows and marks them stale", async () => {
+    let now = 1_000_000;
+    const exec = vi.fn()
+      .mockResolvedValueOnce("Listing...\ncurl/noble 8.5.0 amd64 [upgradable from: 8.4.0]\n")
+      .mockRejectedValueOnce(new Error("apt lock"));
+    const reader = createPackageObservationReader(exec, () => now);
+    await reader.read();
+    now += PACKAGE_TTL_MS + 1;
+    const failed = await reader.read();
+    expect(failed.state).toBe("failed");
+    expect(failed.stale).toBe(true);
+    expect(failed.lastGoodAt).not.toBeNull();
+    expect(failed.rows.map((r) => r.key)).toEqual(["curl:amd64"]);
   });
 });
