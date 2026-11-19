@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createEnvironmentRuntime, type EnvironmentDeps } from "./environment";
 import {
   attributeOwners, buildWorkloadGroups, collectWorkloads, createIdentityReader, executableFamily,
   identityConcurrency, IDENTITY_BUDGET, orderIdentityPids, parseProcStat, parsePs, readIdentityPhase,
@@ -46,6 +47,37 @@ const STABLE: Record<number, ChainEntry> = {
   40: { ppid: 1, start: 6, comm: "chrome" },
   41: { ppid: 40, start: 7, comm: "Google Chrome Helper (Renderer)" },
 };
+
+function environmentDeps(over: Partial<EnvironmentDeps> = {}): EnvironmentDeps {
+  const at = new Date(1).toISOString();
+  const child = { ok: true as const, observedAt: at, lastGoodAt: at };
+  return {
+    now: () => 1,
+    sleep: () => new Promise<void>(() => {}),
+    readSettingsRaw: () => ({ ok: true, raw: undefined, file: "absent" }),
+    ownDb: async () => ({ ok: true, schemaVersion: 15, latestMetricTs: null, paneContext: null }),
+    checkProjects: async () => ({ ok: true }),
+    listPanes: async () => ({
+      paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map(),
+    }),
+    ttydTransport: () => ({ ro: null, rw: null }),
+    httpOk: async () => true,
+    cli: async () => "missing",
+    linearCredential: () => false,
+    envFile: () => "ok",
+    readMountInfo: async () => "22 1 8:1 / / rw - ext4 /dev/sda1 rw",
+    statfs: async () => ({ bsize: 4096, blocks: 100, bfree: 25, bavail: 20 }),
+    realpath: () => "/tmp",
+    packages: async () => ({
+      rows: [], holds: [], simulation: [], nativeArch: "amd64", state: "ok",
+      observedAt: at, lastGoodAt: at, stale: false, error: null, warnings: [],
+      children: { candidates: child, holds: child, simulation: child, architecture: child },
+    }),
+    ps: async () => "",
+    readProc: async () => statText(1, 0, 1),
+    ...over,
+  };
+}
 
 describe("parsePs (F9)", () => {
   it("takes the command as the remainder after six fields, preserving spaces", () => {
@@ -268,6 +300,101 @@ describe("raw read ownership across caller timeouts (observation completion Task
     });
     await expect(reader.read(1, 1e9)).resolves.toBe(IDENTITY_BUDGET);
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it("applies the real startup pool size in the default factory", async () => {
+    vi.stubEnv("UV_THREADPOOL_SIZE", "1");
+    try {
+      let starts = 0;
+      const reader = createIdentityReader(async () => { starts += 1; return ""; }, { now: () => 0 });
+      await expect(reader.read(101, 5_000)).resolves.toBe(IDENTITY_BUDGET);
+      expect(starts).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("carries budget facts from the runtime default factory without a proc read at pool 1", async () => {
+    vi.stubEnv("UV_THREADPOOL_SIZE", "1");
+    try {
+      const readProc = vi.fn(async () => statText(1, 0, 1));
+      const runtime = createEnvironmentRuntime(environmentDeps({
+        ps: async () => " 10 1 1000 S 1 1 tmux\n 100 10 1000 R 1 1 codex",
+        readProc,
+      }));
+      const result = await runtime.workloads();
+      expect(readProc).not.toHaveBeenCalled();
+      expect(result.coverage.reasons.budget).toBe(2);
+      expect(result.groups.every((g) => g.owner.kind === "unknown" && g.owner.reason === "budget")).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("defaults to two originals absent the pool variable and honors a configured pool", async () => {
+    vi.useFakeTimers();
+    const startsWith = async (pool: string | undefined): Promise<number> => {
+      vi.stubEnv("UV_THREADPOOL_SIZE", pool);
+      try {
+        let starts = 0;
+        const read = vi.fn(() => {
+          starts += 1;
+          return new Promise<string>(() => {});
+        });
+        const reader = createIdentityReader(read, { now: () => 0, perReadMs: 100 });
+        const pending = [reader.read(1, 5_000), reader.read(2, 5_000), reader.read(3, 5_000)];
+        await vi.advanceTimersByTimeAsync(100);
+        const outcomes = await Promise.all(pending);
+        expect(outcomes.every((outcome) => outcome === IDENTITY_BUDGET)).toBe(true);
+        return starts;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+    try {
+      expect(await startsWith(undefined)).toBe(2);
+      expect(await startsWith("2")).toBe(1);
+      expect(await startsWith("0")).toBe(0);
+      expect(await startsWith("many")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps settled malformed, empty or rejected identities missing instead of budget", async () => {
+    const cases: (() => Promise<string>)[] = [
+      async () => "malformed",
+      async () => "",
+      async () => { throw new Error("ENOENT"); },
+    ];
+    for (const read of cases) {
+      const reader = createIdentityReader(read, { concurrency: 1, now: () => 0 });
+      await expect(reader.read(101, 5_000)).resolves.toBeNull();
+    }
+  });
+
+  it("reuses an expired original without a new attempt and reports its budget", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    let release!: (text: string) => void;
+    const read = vi.fn(() => new Promise<string>((resolve) => { release = resolve; }));
+    try {
+      const reader = createIdentityReader(read, { concurrency: 1, now: () => clock, perReadMs: 100 });
+      const first = reader.read(101, 5_000);
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(first).resolves.toBe(IDENTITY_BUDGET);
+      expect(read).toHaveBeenCalledTimes(1);
+      clock = 100;
+      await expect(reader.read(101, 5_000)).resolves.toBe(IDENTITY_BUDGET);
+      expect(read).toHaveBeenCalledTimes(1);
+      const phase = await readIdentityPhase([101], reader.read, { deadline: 10_000, now: () => clock });
+      expect(phase.attempted.has(101)).toBe(false);
+      expect(phase.stats.size).toBe(0);
+      release(statText(101, 1, 1));
+      await vi.advanceTimersByTimeAsync(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps one original read per pending PID and never starts another after the deadline", async () => {

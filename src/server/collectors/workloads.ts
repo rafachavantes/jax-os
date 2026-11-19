@@ -134,14 +134,14 @@ export type IdentityOutcome = ProcStat | null | typeof IDENTITY_BUDGET;
 export type IdentityRead = (pid: number, deadline: number) => Promise<IdentityOutcome>;
 export type IdentityReader = { read: IdentityRead };
 
-function readWithinAllowance<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  if (ms <= 0) return Promise.resolve(null);
+function readWithinAllowance<T>(promise: Promise<T>, ms: number): Promise<T | typeof IDENTITY_BUDGET> {
+  if (ms <= 0) return Promise.resolve(IDENTITY_BUDGET);
   return new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      resolve(null);
+      resolve(IDENTITY_BUDGET);
     }, ms);
     timer.unref?.();
     promise.then((value) => {
@@ -163,7 +163,7 @@ export function createIdentityReader(
   read: (pid: number) => Promise<string>,
   opts: { concurrency?: number; now?: () => number; perReadMs?: number } = {},
 ): IdentityReader {
-  const concurrency = Math.max(0, Math.min(MAX_ORIGINAL_IDENTITY_READS, opts.concurrency ?? DEFAULT_IDENTITY_CONCURRENCY));
+  const concurrency = Math.max(0, Math.min(MAX_ORIGINAL_IDENTITY_READS, opts.concurrency ?? identityConcurrency()));
   const now = opts.now ?? (() => performance.now());
   const perReadMs = opts.perReadMs ?? IDENTITY_READ_TIMEOUT_MS;
   type Entry = { startedAt: number; promise: Promise<IdentityOutcome> };
@@ -220,8 +220,7 @@ export function createIdentityReader(
         created.promise = start(pid, created, deadline);
         entry = created;
       }
-      const outcome = await readWithinAllowance(entry.promise, entry.startedAt + perReadMs - now());
-      return outcome === null ? IDENTITY_BUDGET : outcome;
+      return readWithinAllowance(entry.promise, entry.startedAt + perReadMs - now());
     },
   };
 }
