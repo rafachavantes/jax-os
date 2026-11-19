@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createPackageObservationReader, getAlerts, packageKey, parseDfAlerts, parseHoldListing, parseHoldRows,
-  parseLoadAlert, parsePackageListing, parsePackageRows, parseSimulationListing, parseSimulationRows,
-  parseZombieRows, PACKAGE_TTL_MS, type PackageObservation,
+  createPackageObservationReader, createSystemAsyncExec, getAlerts, packageKey, parseDfAlerts,
+  parseHoldListing, parseHoldRows, parseLoadAlert, parsePackageListing, parsePackageRows,
+  parseSimulationListing, parseSimulationRows, parseZombieRows, PACKAGE_TTL_MS, type PackageObservation,
 } from "./alerts";
 
 vi.mock("./alerts", async (importOriginal) => {
@@ -256,6 +256,21 @@ describe("package parsers — architecture identity (M5 Task 2)", () => {
     expect(packageKey("openssl", null, "amd64")).toBe("openssl:amd64");
     expect(packageKey("openssl", "i386", "amd64")).toBe("openssl:i386");
     expect(packageKey("openssl", null, null)).toBe("openssl:unknown");
+  });
+});
+
+describe("fixed subprocess locale (M5 Task 1)", () => {
+  it("pins LC_ALL/LANG=C and applies the requested budgets on every apt/dpkg call", async () => {
+    const calls: { file: string; options: Record<string, unknown> }[] = [];
+    const exec = createSystemAsyncExec(async (file, _args, options) => {
+      calls.push({ file, options });
+      return { stdout: "" };
+    }, { PATH: "/bin", NODE_ENV: "test" });
+    await exec("apt", ["list", "--upgradable"], { timeout: 5_000, maxBuffer: 1024 * 1024 });
+    await exec("dpkg", ["--print-architecture"], { timeout: 2_000, maxBuffer: 4 * 1024 });
+    for (const call of calls) expect(call.options.env).toMatchObject({ LC_ALL: "C", LANG: "C" });
+    expect(calls[0].options).toMatchObject({ timeout: 5_000, maxBuffer: 1024 * 1024 });
+    expect(calls[1].options).toMatchObject({ timeout: 2_000, maxBuffer: 4 * 1024 });
   });
 });
 

@@ -12,12 +12,6 @@ export const OWN_DB_TIMEOUT_MS = 200;
 // Bounded pane identity: pane id plus server incarnation may never exceed this many characters.
 export const PANE_IDENTITY_MAX = 1024;
 
-export type OwnDbCheck = {
-  ok: boolean;
-  schemaVersion: number | null;
-  error: "database-unavailable" | null;
-};
-
 export type OwnDbSnapshot =
   | {
     ok: true;

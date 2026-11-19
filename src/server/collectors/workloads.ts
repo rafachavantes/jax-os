@@ -21,7 +21,6 @@ export const MAX_PS_PROCESSES = 10_000;
 export const MAX_ANCESTORS = 64;
 // One before map + one after map, each capped at 1024 unique identities (2048 total), 8 at a time.
 export const MAX_PHASE_READS = 1_024;
-export const MAX_PROC_READS = 2_048;
 export const READ_CONCURRENCY = 8;
 export const IDENTITY_READ_TIMEOUT_MS = 2_000;
 export const IDENTITY_DEADLINE_MS = 5_000;

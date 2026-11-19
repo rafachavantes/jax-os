@@ -193,7 +193,6 @@ export type EnvironmentDeps = {
   statfs: (path: string) => Promise<StatfsFacts>;
   realpath: (path: string) => string;
   packages: () => Promise<PackageObservation>;
-  exec: (file: string, args: readonly string[], opts: { timeout: number; maxBuffer: number }) => Promise<string>;
   ps: () => Promise<string>;
   readProc: (pid: number) => Promise<string>;
 };
@@ -880,11 +879,8 @@ export function systemEnvironmentDeps(options: SystemEnvironmentOptions = {}): E
   const env = options.env ?? process.env;
   const run = options.execFileImpl ?? execFileAsync;
   const ownDb = options.ownDbRunner ? createOwnDbReader(options.ownDbRunner) : readOwnDb;
-  const exec: EnvironmentDeps["exec"] = async (file, args, opts) => {
-    const { stdout } = await run(file, args, {
-      encoding: "utf8", timeout: opts.timeout, maxBuffer: opts.maxBuffer,
-      env: { ...env, ...C_LOCALE_ENV },
-    });
+  const runFixed = async (file: string, args: readonly string[], timeout: number, maxBuffer: number) => {
+    const { stdout } = await run(file, args, { encoding: "utf8", timeout, maxBuffer, env: { ...env, ...C_LOCALE_ENV } });
     return stdout;
   };
   const boundedProc = (pid: number) => Promise.race([readProcStat(pid), timeoutAfter(2_000)]);
@@ -910,8 +906,7 @@ export function systemEnvironmentDeps(options: SystemEnvironmentOptions = {}): E
     },
     realpath: (path) => realpathSync(path),
     packages: () => getPackageObservation(),
-    exec,
-    ps: () => exec("ps", ["-eo", "pid=,ppid=,uid=,stat=,etimes=,rss=,comm="], { timeout: 5_000, maxBuffer: 2 * 1024 * 1024 }),
+    ps: () => runFixed("ps", ["-eo", "pid=,ppid=,uid=,stat=,etimes=,rss=,comm="], 5_000, 2 * 1024 * 1024),
     readProc: boundedProc,
   };
 }

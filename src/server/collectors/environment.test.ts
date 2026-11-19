@@ -184,7 +184,6 @@ function runtimeDeps(over: Partial<EnvironmentDeps> = {}): EnvironmentDeps {
     statfs: async () => ({ bsize: 4096, blocks: 1_000_000, bfree: 250_000, bavail: 200_000 }),
     realpath: () => "/tmp",
     packages: async () => observation(),
-    exec: async () => "",
     ps: async () => "",
     readProc: async () => { throw new Error("no proc"); },
     ...over,
@@ -444,7 +443,7 @@ describe("source observer — one original pending operation (M5 Task 1)", () =>
 });
 
 describe("fixed probe budgets and CLI presence (M5 Task 1)", () => {
-  it("passes the approved locale and budgets to ps and apt/dpkg probes", async () => {
+  it("passes the approved locale and budgets to the ps probe", async () => {
     const calls: { file: string; options: Record<string, unknown> }[] = [];
     const deps = systemEnvironmentDeps({
       env: { PATH: "/bin", LINEAR_API_KEY: "present", NODE_ENV: "test" },
@@ -454,11 +453,8 @@ describe("fixed probe budgets and CLI presence (M5 Task 1)", () => {
       },
     });
     await deps.ps();
-    await deps.exec("dpkg", ["--print-architecture"], { timeout: 2_000, maxBuffer: 4 * 1024 });
     expect(calls[0]).toMatchObject({ file: "ps", options: { timeout: 5_000, maxBuffer: 2 * 1024 * 1024 } });
     expect(calls[0].options.env).toMatchObject({ LC_ALL: "C", LANG: "C" });
-    expect(calls[1]).toMatchObject({ file: "dpkg", options: { timeout: 2_000, maxBuffer: 4 * 1024 } });
-    expect(calls[1].options.env).toMatchObject({ LC_ALL: "C", LANG: "C" });
   });
 
   it("probes only the fixed CLI names without launching them", async () => {

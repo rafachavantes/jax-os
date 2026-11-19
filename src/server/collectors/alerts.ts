@@ -222,15 +222,25 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_EXEC = { timeout: 5_000, maxBuffer: 1024 * 1024 } as const;
 // Every fixed subprocess runs in the C locale so apt/dpkg/ps wording never depends on the host.
 const C_LOCALE = { LC_ALL: "C", LANG: "C" } as const;
-const systemAsyncExec: AsyncExec = async (file, args, opts = {}) => {
-  const { stdout } = await execFileAsync(file, args, {
-    encoding: "utf8",
-    timeout: opts.timeout ?? DEFAULT_EXEC.timeout,
-    maxBuffer: opts.maxBuffer ?? DEFAULT_EXEC.maxBuffer,
-    env: { ...process.env, ...C_LOCALE, ...opts.env },
-  });
-  return stdout;
-};
+
+export type RawExecFile = (
+  file: string, args: readonly string[],
+  options: { encoding: "utf8"; timeout: number; maxBuffer: number; env: NodeJS.ProcessEnv },
+) => Promise<{ stdout: string }>;
+
+export function createSystemAsyncExec(run: RawExecFile = execFileAsync, env: NodeJS.ProcessEnv = process.env): AsyncExec {
+  return async (file, args, opts = {}) => {
+    const { stdout } = await run(file, args, {
+      encoding: "utf8",
+      timeout: opts.timeout ?? DEFAULT_EXEC.timeout,
+      maxBuffer: opts.maxBuffer ?? DEFAULT_EXEC.maxBuffer,
+      env: { ...env, ...C_LOCALE, ...opts.env },
+    });
+    return stdout;
+  };
+}
+
+const systemAsyncExec = createSystemAsyncExec();
 
 export const PACKAGE_TTL_MS = 5 * 60 * 1000;
 export const ARCH_RE = /^[a-z0-9-]{1,32}$/;
