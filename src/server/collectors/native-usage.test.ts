@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   accountingSummary,
   canonicalOpenCodeItems,
@@ -297,6 +297,7 @@ import {
   writeFileSync,
   appendFileSync,
   utimesSync,
+  chmodSync,
 } from "node:fs";
 import {
   open as fsOpenAsync,
@@ -311,6 +312,7 @@ import { parseSettings, type SettingsResult } from "../settings";
 import {
   getFileCheckpoint,
   getOpenCodeCursor,
+  getPersistentWarnings,
   getSourceStatuses,
   queryNativeUsage,
 } from "../db/native-usage";
@@ -432,12 +434,18 @@ describe("bounded JSONL collection", () => {
     writeClaude(deps, "proj-b/s2.jsonl", [claudeLine("msg-1")]);
     writeClaude(deps, "proj-a/child/subagents/agent-1.jsonl", [claudeLine("msg-2", { agentId: "agent-1" })]);
     writeFileSync(join(deps.roots.claude, "proj-a", "notes.txt"), "not jsonl");
-    await runNativeUsagePass(deps);
+    const seenWarnings = new Set<string>();
+    for (let pass = 0; pass < 6; pass += 1) {
+      await runNativeUsagePass(deps);
+      const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+      for (const warning of status?.warnings ?? []) seenWarnings.add(warning);
+      if (status?.state === "available") break;
+    }
     const snap = queryNativeUsage(deps.db, { period: 30, now: NOW });
     expect(snap.totalTokens).toBe(30);
     expect(snap.sessions).toEqual({ lead: 1, child: 1 });
     expect(snap.sources.find((s) => s.source === "claude")?.state).toBe("available");
-    expect(snap.warnings).toContain("unsupported-layout");
+    expect([...seenWarnings]).toContain("unsupported-layout");
     deps.db.close();
   });
 
@@ -460,7 +468,11 @@ describe("bounded JSONL collection", () => {
     let status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
     expect(status?.state).toBe("indexing");
     expect(status?.progress?.filesDone).toBeLessThanOrEqual(6);
-    await runNativeUsagePass(deps);
+    for (let pass = 0; pass < 8; pass += 1) {
+      status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+      if (status?.state === "available") break;
+      await runNativeUsagePass(deps);
+    }
     status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
     expect(status?.state).toBe("available");
     expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).sessions.lead).toBe(1);
@@ -473,6 +485,24 @@ describe("bounded JSONL collection", () => {
     truncateSync(files[1], 0);
     await runNativeUsagePass({ ...deps, now: () => NOW + 122 });
     expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 9 });
+    deps.db.close();
+  });
+
+  it("advances a scalar generation when the same inode is truncated", async () => {
+    const deps = makeDeps();
+    const path = writeClaude(deps, "p/one.jsonl", [claudeLine("m-one")]);
+    for (let pass = 0; pass < 4; pass += 1) {
+      await runNativeUsagePass({ ...deps, now: () => NOW + pass * 61 });
+      if (getFileCheckpoint(deps.db, "claude", "p/one.jsonl")?.done) break;
+    }
+    const before = getFileCheckpoint(deps.db, "claude", "p/one.jsonl");
+    expect(before?.generation).toMatch(/^\d+:\d+$/);
+    truncateSync(path, 0);
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 * 6 });
+    const after = getFileCheckpoint(deps.db, "claude", "p/one.jsonl");
+    expect(after?.generation).toBe(`${before!.generation}:1`);
+    expect(after?.offset).toBe(0);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
     deps.db.close();
   });
 
@@ -532,6 +562,10 @@ describe("bounded JSONL collection", () => {
       opendir: async () => { throw new Error("must not opendir"); },
     };
     deps.fs = spy;
+    deps.opencode.ensureAdapter = async () => { throw new Error("must not prepare"); };
+    deps.opencode.exec = async () => { throw new Error("must not execute"); };
+    deps.opencode.hash = async () => { throw new Error("must not hash"); };
+    deps.opencode.stat = async () => { throw new Error("must not stat the executable"); };
     await runNativeUsagePass(deps);
     expect(getSourceStatuses(deps.db).map((s) => s.state)).toEqual(["disabled", "disabled", "disabled"]);
     deps.db.close();
@@ -547,7 +581,21 @@ describe("bounded JSONL collection", () => {
 });
 
 describe("startup-only synthetic native roots", () => {
-  it("accepts roots beneath JAXOS_HOME and fails closed on an escaping root", async () => {
+  async function withFreshBoundary<T>(home: string, run: (mod: typeof import("./native-usage")) => Promise<T>): Promise<T> {
+    const previous = process.env.JAXOS_HOME;
+    process.env.JAXOS_HOME = home;
+    vi.resetModules();
+    try {
+      const mod = await import("./native-usage");
+      return await run(mod);
+    } finally {
+      vi.resetModules();
+      if (previous === undefined) delete process.env.JAXOS_HOME;
+      else process.env.JAXOS_HOME = previous;
+    }
+  }
+
+  it("captures one immutable configuration for the whole process boundary", async () => {
     const base = mkdtempSync(join(VERIFY_HOME, "roots-"));
     const claude = join(base, "claude");
     const codex = join(base, "codex");
@@ -556,24 +604,64 @@ describe("startup-only synthetic native roots", () => {
     mkdirSync(codex, { recursive: true });
     mkdirSync(opencode, { recursive: true });
     writeFileSync(join(base, "native-roots.json"), JSON.stringify({ claude, codex, opencode }));
-    const previous = process.env.JAXOS_HOME;
-    process.env.JAXOS_HOME = base;
     try {
-      const db = openDb(":memory:");
-      const deps = await defaultNativeCollectorDeps(db);
-      expect(deps.roots).toMatchObject({
-        claude, codex, opencodeDataRoot: opencode, opencodeDb: join(opencode, "opencode.db"),
+      await withFreshBoundary(base, async (mod) => {
+        const db = openDb(":memory:");
+        const deps = await mod.defaultNativeCollectorDeps(db);
+        expect(deps.roots).toEqual({
+          claude, codex, opencodeDataRoot: opencode, opencodeDb: join(opencode, "opencode.db"),
+        });
+        expect(deps.configWarnings).toEqual([]);
+        writeFileSync(join(base, "native-roots.json"), JSON.stringify({ claude: "/tmp", codex, opencode }));
+        const again = await mod.defaultNativeCollectorDeps(openDb(":memory:"));
+        expect(again.roots).toEqual(deps.roots);
+        db.close();
       });
-      db.close();
-      writeFileSync(join(base, "native-roots.json"), JSON.stringify({ claude: "/tmp", codex, opencode }));
-      const escapedDb = openDb(":memory:");
-      const escaped = await defaultNativeCollectorDeps(escapedDb);
-      expect(escaped.roots.claude).toContain("native-invalid");
-      expect(escaped.roots.claude).not.toBe("/tmp");
-      escapedDb.close();
     } finally {
-      if (previous === undefined) delete process.env.JAXOS_HOME;
-      else process.env.JAXOS_HOME = previous;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed to owned invalid roots with a diagnostic for a present unusable override", async () => {
+    const cases: { name: string; write: (dir: string) => void }[] = [
+      { name: "malformed", write: (dir) => writeFileSync(join(dir, "native-roots.json"), "{not-json") },
+      { name: "non-object", write: (dir) => writeFileSync(join(dir, "native-roots.json"), "[]") },
+      { name: "relative", write: (dir) => writeFileSync(join(dir, "native-roots.json"), JSON.stringify({ claude: "rel", codex: "rel", opencode: "rel" })) },
+      { name: "escaping", write: (dir) => writeFileSync(join(dir, "native-roots.json"), JSON.stringify({ claude: "/tmp", codex: dir, opencode: dir })) },
+      {
+        name: "unreadable",
+        write: (dir) => {
+          const path = join(dir, "native-roots.json");
+          writeFileSync(path, JSON.stringify({ claude: dir, codex: dir, opencode: dir }));
+          chmodSync(path, 0o000);
+        },
+      },
+    ];
+    for (const testCase of cases) {
+      const base = mkdtempSync(join(VERIFY_HOME, "roots-invalid-"));
+      testCase.write(base);
+      try {
+        await withFreshBoundary(base, async (mod) => {
+          const deps = await mod.defaultNativeCollectorDeps(openDb(":memory:"));
+          expect(deps.roots.claude).toContain("native-invalid");
+          expect(deps.roots.claude).not.toBe("/tmp");
+          expect(deps.configWarnings).toEqual(["config-invalid"]);
+        });
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("selects the normal native roots only when the override is absent", async () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "roots-absent-"));
+    try {
+      await withFreshBoundary(base, async (mod) => {
+        const deps = await mod.defaultNativeCollectorDeps(openDb(":memory:"));
+        expect(deps.roots.claude).not.toContain("native-invalid");
+        expect(deps.configWarnings).toEqual([]);
+      });
+    } finally {
       rmSync(base, { recursive: true, force: true });
     }
   });
@@ -1114,12 +1202,18 @@ describe("oversized-line discard progress", () => {
     let cp = getFileCheckpoint(deps.db, "claude", "p/huge.jsonl");
     expect(cp).toMatchObject({ discarding: true, done: false });
     expect(cp!.offset).toBeGreaterThan(0);
-    await runNativeUsagePass(deps);
-    cp = getFileCheckpoint(deps.db, "claude", "p/huge.jsonl");
+    const seenWarnings = new Set<string>();
+    for (let pass = 0; pass < 6; pass += 1) {
+      for (const warning of getSourceStatuses(deps.db).find((s) => s.source === "claude")?.warnings ?? []) {
+        seenWarnings.add(warning);
+      }
+      cp = getFileCheckpoint(deps.db, "claude", "p/huge.jsonl");
+      if (cp?.done && !cp.discarding) break;
+      await runNativeUsagePass(deps);
+    }
     expect(cp).toMatchObject({ discarding: false, done: true });
     expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
-    const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
-    expect(status?.warnings).toContain("line-too-long");
+    expect([...seenWarnings]).toContain("line-too-long");
     deps.db.close();
   }, 60_000);
 
@@ -1131,7 +1225,11 @@ describe("oversized-line discard progress", () => {
     await runNativeUsagePass(deps);
     expect(getFileCheckpoint(deps.db, "claude", "p/huge.jsonl")?.discarding).toBe(true);
     const restarted = { ...deps };
-    await runNativeUsagePass(restarted);
+    for (let pass = 0; pass < 6; pass += 1) {
+      await runNativeUsagePass(restarted);
+      const done = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+      if (done.n === 1) break;
+    }
     expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
 
     writeFileSync(path, `${"z".repeat(3 * 1024 * 1024)}\n`);
@@ -1342,4 +1440,299 @@ describe("Fixture A: 50k rows per projection table", () => {
     expect(replied).toBe(100_000);
     rmSync(base, { recursive: true, force: true });
   }, 120_000);
+});
+
+describe("one owned IO scope and honest source lifecycle", () => {
+  async function settleDiscovery(deps: NativeCollectorDeps, source: "claude" | "codex", max = 8): Promise<void> {
+    for (let pass = 0; pass < max; pass += 1) {
+      await runNativeUsagePass({ ...deps, now: () => NOW + pass * 61 });
+      const status = getSourceStatuses(deps.db).find((s) => s.source === source);
+      if (status?.state !== "indexing") return;
+    }
+  }
+
+  it("rejects a queued subagents symlink before enumerating its target", async () => {
+    const deps = makeDeps();
+    const outside = join(deps.roots.claude, "..", "outside-subagents");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "leak.jsonl"), `${claudeLine("m-leak")}\n`);
+    mkdirSync(join(deps.roots.claude, "proj", "uuid"), { recursive: true });
+    symlinkSync(outside, join(deps.roots.claude, "proj", "uuid", "subagents"));
+    const opened: string[] = [];
+    deps.fs = {
+      ...nativeFs,
+      opendir: async (path) => {
+        opened.push(fsRealpathSync(path));
+        return nativeFs.opendir(path);
+      },
+    };
+    await settleDiscovery(deps, "claude");
+    expect(opened).not.toContain(fsRealpathSync(outside));
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "claude")?.warnings)
+      .toContain("symlink-escape");
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 0 });
+    deps.db.close();
+  });
+
+  it("requires opened-handle identity before reading and closes on an fstat failure", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/one.jsonl", [claudeLine("m-one")]);
+    let reads = 0;
+    let closed = 0;
+    deps.fs = {
+      ...nativeFs,
+      open: async (path) => {
+        const handle = await nativeFs.open(path);
+        return {
+          read: (buffer, offset, length, position) => {
+            reads += 1;
+            return handle.read(buffer, offset, length, position);
+          },
+          close: async () => {
+            closed += 1;
+            await handle.close();
+          },
+          stat: async () => {
+            throw new Error("EIO");
+          },
+        };
+      },
+    };
+    await settleDiscovery(deps, "claude");
+    expect(reads).toBe(0);
+    expect(closed).toBe(1);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 0 });
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "claude")?.warnings)
+      .toContain("read-failed");
+    deps.db.close();
+  });
+
+  it("retains the original root operation across polls instead of starting another", async () => {
+    const deps = makeDeps();
+    let statCalls = 0;
+    deps.fs = {
+      ...nativeFs,
+      stat: (path) => {
+        if (path !== deps.roots.claude) return nativeFs.stat(path);
+        statCalls += 1;
+        return new Promise<never>(() => {});
+      },
+    };
+    await runNativeUsagePass(deps);
+    expect(statCalls).toBe(1);
+    await runNativeUsagePass(deps);
+    expect(statCalls).toBe(1);
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "claude")?.warnings)
+      .toContain("io-pending");
+    deps.db.close();
+  });
+
+  it("closes a late successful open exactly once after a timed-out attempt", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/late.jsonl", [claudeLine("m-late")]);
+    let openCalls = 0;
+    let closed = 0;
+    let releaseOpen: (() => void) | null = null;
+    deps.fs = {
+      ...nativeFs,
+      open: async (path) => {
+        openCalls += 1;
+        if (openCalls === 1) {
+          const real = await nativeFs.open(path);
+          return new Promise((resolve) => {
+            releaseOpen = () => resolve({
+              read: (buffer, offset, length, position) => real.read(buffer, offset, length, position),
+              close: async () => {
+                closed += 1;
+                await real.close();
+              },
+              stat: () => real.stat(),
+            });
+          });
+        }
+        return nativeFs.open(path);
+      },
+    };
+    await runNativeUsagePass(deps);
+    expect(openCalls).toBe(1);
+    expect(closed).toBe(0);
+    releaseOpen!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(closed).toBe(1);
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+    expect(openCalls).toBe(2);
+    deps.db.close();
+  });
+
+  it("starts no discovery operation after the scheduling deadline", async () => {
+    const deps = makeDeps();
+    let ms = 0;
+    const events: string[] = [];
+    deps.fs = {
+      ...nativeFs,
+      stat: async (path) => {
+        events.push(`stat@${ms}`);
+        ms += 500;
+        return fsStatAsync(path);
+      },
+      realpath: async (path) => {
+        events.push(`realpath@${ms}`);
+        ms += 500;
+        return fsRealpathAsync(path);
+      },
+      opendir: async (path) => {
+        events.push(`opendir@${ms}`);
+        return nativeFs.opendir(path);
+      },
+    };
+    await runNativeUsagePass({ ...deps, now: () => NOW, nowMs: () => ms });
+    expect(events.some((event) => event.startsWith("opendir"))).toBe(false);
+    deps.db.close();
+  });
+
+  it("finishes a supported 512 KiB line inside its single line allowance", async () => {
+    const deps = makeDeps();
+    const padding = "x".repeat(470 * 1024);
+    writeClaude(deps, "p/big.jsonl", [
+      JSON.stringify({
+        type: "assistant", sessionId: "sess-big", timestamp: "2026-11-17T10:00:00Z",
+        message: { id: "m-big", usage: { input_tokens: 1, output_tokens: 1 }, content: padding },
+      }),
+    ]);
+    let ms = 0;
+    let reads = 0;
+    deps.fs = {
+      ...nativeFs,
+      open: async (path) => {
+        const handle = await nativeFs.open(path);
+        return {
+          read: (buffer, offset, length, position) => {
+            reads += 1;
+            ms += 60;
+            return handle.read(buffer, offset, length, position);
+          },
+          close: () => handle.close(),
+          stat: () => handle.stat(),
+        };
+      },
+    };
+    const timed = { ...deps, now: () => NOW, nowMs: () => ms };
+    for (let pass = 0; pass < 3; pass += 1) {
+      await runNativeUsagePass(timed);
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-big'").get() as { n: number };
+      if (row.n === 1) break;
+    }
+    expect(reads).toBeGreaterThan(8);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-big'").get()).toEqual({ n: 1 });
+    expect(getFileCheckpoint(deps.db, "claude", "p/big.jsonl")?.offset).toBeGreaterThan(470 * 1024);
+    deps.db.close();
+  });
+
+  it("reports a missing previously-known root as unavailable with retained rows", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/one.jsonl", [claudeLine("m-one")]);
+    await settleDiscovery(deps, "claude");
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+    rmSync(deps.roots.claude, { recursive: true, force: true });
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.state).toBe("unavailable");
+    expect(status?.warnings).toContain("root-unavailable");
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+    deps.db.close();
+  });
+
+  it("keeps a persisted failure warning across a later indexing poll", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/000bad.jsonl", [claudeLine("m-bad")]);
+    for (let i = 0; i < 20; i += 1) writeClaude(deps, `p/f${String(i).padStart(3, "0")}.jsonl`, [claudeLine(`m-${i}`)]);
+    deps.fs = {
+      ...nativeFs,
+      open: async (path) => {
+        if (path.endsWith("000bad.jsonl")) throw new Error("EACCES");
+        return nativeFs.open(path);
+      },
+    };
+    await runNativeUsagePass(deps);
+    expect(getPersistentWarnings(deps.db, "claude")).toContain("read-failed");
+    await runNativeUsagePass(deps);
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.state).toBe("indexing");
+    expect(status?.warnings).toContain("read-failed");
+    deps.fs = nativeFs;
+    for (let pass = 1; pass <= 6; pass += 1) {
+      await runNativeUsagePass({ ...deps, now: () => NOW + pass * 61 });
+      if (!getPersistentWarnings(deps.db, "claude").includes("read-failed")) break;
+    }
+    expect(getPersistentWarnings(deps.db, "claude")).not.toContain("read-failed");
+    deps.db.close();
+  });
+
+  it("keeps one original OpenCode hash reader across repeated preparation timeouts", async () => {
+    let hashCalls = 0;
+    const deps = makeDeps({
+      hash: () => {
+        hashCalls += 1;
+        return new Promise<never>(() => {});
+      },
+    });
+    writeFileSync(deps.roots.opencodeDb, "");
+    await runNativeUsagePass(deps);
+    expect(hashCalls).toBe(1);
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+    expect(hashCalls).toBe(1);
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "opencode");
+    expect(status?.warnings).toContain("io-pending");
+    deps.db.close();
+  });
+
+  it("hashes the default dependency with bounded chunks instead of readFile", async () => {
+    const { createHash } = await import("node:crypto");
+    const base = mkdtempSync(join(VERIFY_HOME, "hash-"));
+    const path = join(base, "executable.bin");
+    const content = Buffer.alloc(150 * 1024);
+    for (let i = 0; i < content.length; i += 1) content[i] = i % 251;
+    writeFileSync(path, content);
+    const deps = await defaultNativeCollectorDeps(openDb(":memory:"));
+    const hash = await deps.opencode.hash(path);
+    expect(hash).toBe(createHash("sha256").update(content).digest("hex"));
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe("strict OpenCode helper reply contract", () => {
+  const previous = {
+    v: 1 as const,
+    v1: { after: "10", ceiling: "20", done: false },
+    v2: { after: null, ceiling: null, done: false },
+  };
+  const base = {
+    v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows: [] as unknown[],
+    next: { v1: { after: "12", ceiling: "20", done: false }, v2: { after: null, ceiling: null, done: false } },
+    warnings: {} as Record<string, unknown>,
+  };
+  const parse = (over: Record<string, unknown>) => parseOpenCodeReply(JSON.stringify({ ...base, ...over }), previous);
+
+  it("rejects unknown warning keys, noninteger counts, nonboolean done and frame sizes", () => {
+    expect(parse({ warnings: { mystery: 1 } })).toBeNull();
+    expect(parse({ warnings: { malformed: 1.5 } })).toBeNull();
+    expect(parse({ next: { ...base.next, v1: { after: "12", ceiling: "20", done: "yes" } } })).toBeNull();
+    expect(parse({ rows: ["not-an-object"] })).toBeNull();
+    expect(parse({ rows: Array.from({ length: 513 }, () => ({})) })).toBeNull();
+    expect(parse({ padding: "p".repeat(17 * 1024) })).toBeNull();
+    expect(parse({ rows: Array.from({ length: 16 }, () => ({ pad: "p".repeat(16 * 1024) })) })).toBeNull();
+  });
+
+  it("rejects alternate rowid spellings while accepting the signed minimum", () => {
+    expect(parse({ next: { ...base.next, v1: { after: "-0", ceiling: "20", done: false } } })).toBeNull();
+    expect(parse({ next: { ...base.next, v1: { after: "007", ceiling: "20", done: false } } })).toBeNull();
+    const min = parseOpenCodeReply(JSON.stringify({
+      ...base,
+      next: {
+        v1: { after: "-9223372036854775808", ceiling: "-9223372036854775808", done: true },
+        v2: { after: null, ceiling: null, done: true },
+      },
+    }), { v: 1, v1: { after: null, ceiling: null, done: false }, v2: { after: null, ceiling: null, done: false } });
+    expect(min?.next.v1.after).toBe("-9223372036854775808");
+  });
 });

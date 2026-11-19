@@ -746,7 +746,8 @@
         "file-replaced": "file replaced while reading",
         "subdir-failed": "subdirectory unreadable",
         "discovery-failed": "discovery failed",
-        "root-unavailable": "native root unreadable"
+        "root-unavailable": "native root unreadable",
+        "config-invalid": "native root configuration rejected"
       },
       "cacheRead": "cache read",
       "cacheWrite": "cache write",

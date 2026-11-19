@@ -318,7 +318,7 @@ function writeFileCheckpoint(db: Database.Database, cp: FileCheckpoint, now: num
        size = excluded.size, mtime = excluded.mtime, offset = excluded.offset,
        discarding = excluded.discarding, done = excluded.done,
        processed_at = excluded.processed_at, updated_at = excluded.updated_at,
-       failed_until = 0`,
+       failed_until = 0, last_warning = NULL`,
   ).run(
     cp.source,
     cp.identity,
@@ -426,11 +426,13 @@ export function addPendingDir(
 }
 
 export function nextPendingDir(db: Database.Database, source: Harness): string | null {
-  const order = source === "codex" ? "path DESC" : "path ASC";
+  // Prefix paths sort before their extensions, so plain path order keeps each directory
+  // ahead of the children it registers. Codex walks the newest layout first.
+  const order = source === "codex" ? "DESC" : "ASC";
   const row = db
     .prepare(
       `SELECT path FROM native_usage_dirs WHERE source = ? AND state = 'pending'
-        ORDER BY (length(path) - length(replace(path, '/', ''))) ASC, ${order} LIMIT 1`,
+        ORDER BY path ${order} LIMIT 1`,
     )
     .get(source) as { path: string } | undefined;
   return row?.path ?? null;
@@ -449,9 +451,19 @@ export function setDiscoveryCurrentDir(
   );
 }
 
-export function markDirDone(db: Database.Database, source: Harness, path: string, now: number): void {
+export function markDirDone(
+  db: Database.Database,
+  source: Harness,
+  path: string,
+  now: number,
+  warning: string | null = null,
+): void {
   db.transaction(() => {
-    db.prepare("UPDATE native_usage_dirs SET state = 'done' WHERE source = ? AND path = ?").run(source, path);
+    db.prepare("UPDATE native_usage_dirs SET state = 'done', last_warning = ? WHERE source = ? AND path = ?").run(
+      warning,
+      source,
+      path,
+    );
     db.prepare("UPDATE native_usage_discovery SET current_dir = NULL, updated_at = ? WHERE source = ?").run(now, source);
   }).immediate();
 }
@@ -502,13 +514,12 @@ export type IngestionCandidate = {
   mtime: number | null;
 };
 
-// Fixed indexed selection: up to two recently-active tails plus a fair rotation
-// over every readable registered file. visit_ord advances even for already-done
+// Fixed indexed selection: the two persisted-newest native tails plus a fair rotation
+// over every other readable registered file. visit_ord advances even for already-done
 // files, so a frozen wall clock cannot pin the same selection forever.
 export function selectIngestionCandidates(
   db: Database.Database,
   source: Harness,
-  todayStart: number,
   now: number,
   max = 6,
 ): IngestionCandidate[] {
@@ -518,18 +529,19 @@ export function selectIngestionCandidates(
       .prepare(
         `SELECT identity FROM native_usage_files
           WHERE source = ? AND failed_until <= ?
-            AND ((mtime IS NOT NULL AND mtime >= ?) OR (processed_at IS NOT NULL AND processed_at >= ?))
-          ORDER BY visit_ord ASC, identity ASC LIMIT ?`,
+          ORDER BY mtime DESC, identity ASC LIMIT ?`,
       )
-      .all(source, now, todayStart, now - 120, hotLimit) as { identity: string }[];
+      .all(source, now, hotLimit) as { identity: string }[];
     const hotSet = new Set(hot.map((r) => r.identity));
+    const hotArgs = [...hotSet];
+    const fairSql =
+      `SELECT identity FROM native_usage_files
+        WHERE source = ? AND failed_until <= ?
+          ${hotSet.size > 0 ? `AND identity NOT IN (${hotArgs.map(() => "?").join(", ")})` : ""}
+        ORDER BY visit_ord ASC, identity ASC LIMIT ?`;
     const fair = db
-      .prepare(
-        `SELECT identity FROM native_usage_files
-          WHERE source = ? AND failed_until <= ?
-          ORDER BY visit_ord ASC, identity ASC LIMIT ?`,
-      )
-      .all(source, now, max) as { identity: string }[];
+      .prepare(fairSql)
+      .all(source, now, ...hotArgs, max) as { identity: string }[];
     const chosen: string[] = [...hotSet];
     for (const row of fair) {
       if (chosen.length >= max) break;
@@ -560,13 +572,11 @@ export function markFileFailure(
   identity: string,
   retryAt: number,
   now: number,
+  warning: string,
 ): void {
-  db.prepare("UPDATE native_usage_files SET failed_until = ?, updated_at = ? WHERE source = ? AND identity = ?").run(
-    retryAt,
-    now,
-    source,
-    identity,
-  );
+  db.prepare(
+    "UPDATE native_usage_files SET failed_until = ?, last_warning = ?, updated_at = ? WHERE source = ? AND identity = ?",
+  ).run(retryAt, warning, now, source, identity);
 }
 
 export function markFileCurrent(
@@ -578,8 +588,24 @@ export function markFileCurrent(
   now: number,
 ): void {
   db.prepare(
-    "UPDATE native_usage_files SET size = ?, mtime = ?, failed_until = 0, updated_at = ? WHERE source = ? AND identity = ?",
+    `UPDATE native_usage_files SET size = ?, mtime = ?, failed_until = 0, last_warning = NULL, updated_at = ?
+      WHERE source = ? AND identity = ?`,
   ).run(size, mtime, now, source, identity);
+}
+
+// Safe persisted failure facts survive the poll that skipped the failed entry; only a
+// successful retry or a fresh discovery cycle clears them.
+export function getPersistentWarnings(db: Database.Database, source: Harness): string[] {
+  const rows = db
+    .prepare(
+      `SELECT last_warning AS warning FROM native_usage_files
+        WHERE source = ? AND last_warning IS NOT NULL
+       UNION
+       SELECT last_warning AS warning FROM native_usage_dirs
+        WHERE source = ? AND last_warning IS NOT NULL`,
+    )
+    .all(source, source) as { warning: string }[];
+  return rows.map((r) => r.warning);
 }
 
 export function getRegistryCounts(
@@ -607,8 +633,9 @@ export function countRegisteredFiles(db: Database.Database, source: Harness): nu
 
 export type FileBatch = {
   checkpoint: FileCheckpoint;
-  expectedOffset: number | null;
-  expectNewGeneration?: boolean;
+  // The exact prior registry state observed by this writer: null means "no row", a
+  // placeholder row is passed explicitly. A stale generation/offset is never a wildcard.
+  expectedPrior: FileCheckpoint | null;
   items: NativeUsageItem[];
   contexts?: NativeContextRow[];
   now: number;
@@ -624,14 +651,11 @@ export function applyFileBatch(
   const cutoffDay = utcDay(batch.now - 90 * 86400);
   return db.transaction(() => {
     const existing = getFileCheckpoint(db, batch.checkpoint.source, batch.checkpoint.identity);
-    if (batch.expectNewGeneration) {
-      if (existing && existing.generation === batch.checkpoint.generation) throw new Error("checkpoint-conflict");
-    } else if (batch.expectedOffset !== null) {
-      if (!existing) {
-        if (batch.expectedOffset !== 0) throw new Error("checkpoint-conflict");
-      } else if (existing.generation !== batch.checkpoint.generation || existing.offset !== batch.expectedOffset) {
-        throw new Error("checkpoint-conflict");
-      }
+    const prior = batch.expectedPrior;
+    if (prior === null) {
+      if (existing) throw new Error("checkpoint-conflict");
+    } else if (!existing || existing.generation !== prior.generation || existing.offset !== prior.offset) {
+      throw new Error("checkpoint-conflict");
     }
     for (const context of batch.contexts ?? []) insertNativeContext(db, context, batch.now);
     let inserted = 0;
@@ -663,6 +687,8 @@ export function canonicalRowId(value: unknown): string | null {
   try {
     const numeric = BigInt(value);
     if (numeric < BigInt("-9223372036854775808") || numeric > BigInt("9223372036854775807")) return null;
+    // Canonical spelling only: no "-0", no leading zeroes.
+    if (numeric.toString() !== value) return null;
   } catch {
     return null;
   }

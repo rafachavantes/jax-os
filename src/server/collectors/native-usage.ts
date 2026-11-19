@@ -13,6 +13,7 @@ import {
   finishDiscoveryCycle,
   getFileCheckpoint,
   getOpenCodeCursor,
+  getPersistentWarnings,
   getRegistryCounts,
   getSourceStatuses,
   hasPendingDirs,
@@ -454,6 +455,7 @@ const JSONL_BUDGET = {
   startLineDeadlineMs: 150,
   wallDeadlineMs: 1200,
   lineDeadlineMs: 1000,
+  commitReserveMs: 100,
   maxLineBytes: 1024 * 1024,
   discoveryEntriesPerPass: 64,
   discoveryMsPerPass: 50,
@@ -484,7 +486,8 @@ export type DirHandleLike = {
 export type FileHandleLike = {
   read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
   close(): Promise<void>;
-  stat?(): Promise<StatLike>;
+  // Supplied by the real file handle; an unavailable fstat must never be permission to read.
+  stat(): Promise<StatLike>;
 };
 export type NativeFs = {
   stat(path: string): Promise<StatLike>;
@@ -506,6 +509,7 @@ export type NativeCollectorDeps = {
   settings: () => SettingsResult;
   fs: NativeFs;
   roots: { claude: string; codex: string; opencodeDataRoot: string; opencodeDb: string };
+  configWarnings?: string[];
   opencode: {
     executable: string;
     cwd: string;
@@ -545,23 +549,22 @@ function errorCode(error: unknown): string | null {
 }
 
 class IoTimeout extends Error {
-  constructor() {
+  constructor(readonly started = false) {
     super("io-timeout");
   }
 }
 
-function isTimeout(error: unknown): boolean {
+function isTimeout(error: unknown): error is IoTimeout {
   return error instanceof IoTimeout;
 }
 
-async function boundedIo<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  if (!(timeoutMs > 0)) throw new IoTimeout();
+async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new IoTimeout()), timeoutMs);
+        timer = setTimeout(() => reject(new IoTimeout(true)), Math.max(0, timeoutMs));
       }),
     ]);
   } finally {
@@ -572,9 +575,9 @@ async function boundedIo<T>(promise: Promise<T>, timeoutMs: number): Promise<T> 
 // Per-source single-flight runtime: at most one directory iterator and one JSONL
 // handle, plus the latch that retains ownership of a timed-out unabortable op.
 type OwnedOp = { done: boolean };
-type SourceRuntime = {
+type PendingOwner = { pending: OwnedOp | null };
+type SourceRuntime = PendingOwner & {
   iterator: { dir: DirHandleLike; path: string } | null;
-  pending: OwnedOp | null;
   discoveryFirstNext: boolean;
 };
 
@@ -594,18 +597,104 @@ function runtimeFor(db: Database.Database, source: "claude" | "codex"): SourceRu
   return runtime;
 }
 
-function ownPending(runtime: SourceRuntime, promise: Promise<unknown>, cleanup?: () => Promise<void> | void): void {
-  const record: OwnedOp = { done: false };
-  runtime.pending = record;
-  promise
-    .then(async () => {
-      if (cleanup) await cleanup();
-    })
-    .catch(() => undefined)
-    .finally(() => {
+// One owned scope per active pass. Every root, discovery and file operation starts
+// through the same monotonic wall deadline and is registered exactly once. A timed-out
+// operation keeps the pending latch until it settles AND its handle cleanup completes;
+// later polls see the latch and start nothing new.
+class IoWindow {
+  readonly start: number;
+  readonly scheduleDeadline: number;
+  readonly wallDeadline: number;
+  constructor(
+    private readonly owner: PendingOwner,
+    private readonly clock: () => number,
+    totalMs: number = JSONL_BUDGET.wallDeadlineMs,
+    scheduleMs: number = JSONL_BUDGET.softDeadlineMs,
+  ) {
+    this.start = clock();
+    this.scheduleDeadline = this.start + scheduleMs;
+    this.wallDeadline = this.start + totalMs;
+  }
+  get now(): number {
+    return this.clock();
+  }
+  get expired(): boolean {
+    return this.clock() >= this.wallDeadline;
+  }
+  get remainingWall(): number {
+    return Math.max(0, this.wallDeadline - this.clock());
+  }
+  get scheduleOpen(): boolean {
+    return this.clock() < this.scheduleDeadline;
+  }
+  // File/line starts stop early enough to leave discovery its 50 ms slice.
+  get lineStartOpen(): boolean {
+    return this.clock() < this.start + JSONL_BUDGET.startLineDeadlineMs;
+  }
+
+  // Invokes the thunk exactly once, only while the absolute deadline has budget.
+  async io<T>(
+    thunk: () => Promise<T>,
+    deadlineAt: number,
+    onLate?: (value: T | undefined) => Promise<void> | void,
+  ): Promise<T> {
+    const budget = Math.min(deadlineAt, this.wallDeadline) - this.clock();
+    if (!(budget > 0)) throw new IoTimeout(false);
+    const promise = thunk();
+    try {
+      return await raceTimeout(promise, budget);
+    } catch (error) {
+      if (error instanceof IoTimeout) this.latch(promise, onLate);
+      throw error;
+    }
+  }
+
+  // Waits on an already-started cleanup operation using only the remaining budget.
+  async settle<T>(promise: Promise<T>): Promise<T> {
+    return raceTimeout(promise, Math.max(1, this.remainingWall));
+  }
+
+  // Retains the original promise and its cleanup through actual settlement.
+  latch<T>(promise: Promise<T>, cleanup?: (value: T | undefined) => Promise<void> | void): void {
+    const record: OwnedOp = { done: false };
+    this.owner.pending = record;
+    void (async () => {
+      let value: T | undefined;
+      try {
+        value = await promise;
+      } catch {
+        value = undefined;
+      }
+      try {
+        if (cleanup) await cleanup(value);
+      } catch {
+        /* cleanup settled unsuccessfully; the failure stays visible on the source */
+      }
+    })().finally(() => {
       record.done = true;
-      if (runtime.pending === record) runtime.pending = null;
+      if (this.owner.pending === record) this.owner.pending = null;
     });
+  }
+
+  // Closes/cleans up an owned handle without starting more collection work.
+  async closeCleanup<T>(start: () => Promise<T>): Promise<boolean> {
+    let promise: Promise<T>;
+    try {
+      promise = start();
+    } catch {
+      return true;
+    }
+    try {
+      await this.settle(promise);
+      return true;
+    } catch (error) {
+      if (error instanceof IoTimeout) {
+        this.latch(promise);
+        return false;
+      }
+      return true;
+    }
+  }
 }
 
 const joinRel = (a: string, b: string) => (a === "." ? b : `${a}/${b}`);
@@ -613,45 +702,57 @@ const relDepth = (rel: string) => (rel === "." ? 0 : rel.split("/").length);
 const absOf = (root: string, rel: string) => (rel === "." ? root : join(root, ...rel.split("/")));
 
 async function containReal(
+  scope: IoWindow,
   fs: NativeFs,
   realRoot: string,
   absPath: string,
-  timeoutMs: number,
 ): Promise<string | null> {
+  let real: string;
   try {
-    const real = await boundedIo(fs.realpath(absPath), timeoutMs);
-    return insideRealRoot(realRoot, real) ? real : null;
+    real = await scope.io(() => fs.realpath(absPath), scope.wallDeadline, () => undefined);
   } catch (error) {
-    if (error instanceof IoTimeout) throw error;
+    if (isTimeout(error)) throw error;
     return null;
   }
+  return insideRealRoot(realRoot, real) ? real : null;
 }
 
-type RootState = { ok: true; realRoot: string } | { ok: false; missing: boolean };
+type RootState =
+  | { ok: true; realRoot: string }
+  | { ok: false; missing: boolean; pending: boolean };
 
-async function resolveRoot(deps: NativeCollectorDeps, root: string, timeoutMs: number): Promise<RootState> {
+async function resolveRoot(
+  scope: IoWindow,
+  deps: NativeCollectorDeps,
+  root: string,
+): Promise<RootState> {
+  let info: StatLike;
   try {
-    const info = await boundedIo(deps.fs.stat(root), timeoutMs);
-    if (!info.isDirectory()) return { ok: false, missing: false };
+    info = await scope.io(() => deps.fs.stat(root), scope.wallDeadline, () => undefined);
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return { ok: false, missing: true };
-    return { ok: false, missing: false };
+    if (isTimeout(error)) return { ok: false, missing: false, pending: error.started };
+    if (errorCode(error) === "ENOENT") return { ok: false, missing: true, pending: false };
+    return { ok: false, missing: false, pending: false };
   }
+  if (!info.isDirectory()) return { ok: false, missing: false, pending: false };
   try {
-    const realRoot = await boundedIo(deps.fs.realpath(root), timeoutMs);
+    const realRoot = await scope.io(() => deps.fs.realpath(root), scope.wallDeadline, () => undefined);
     return { ok: true, realRoot };
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return { ok: false, missing: true };
-    return { ok: false, missing: false };
+    if (isTimeout(error)) return { ok: false, missing: false, pending: error.started };
+    if (errorCode(error) === "ENOENT") return { ok: false, missing: true, pending: false };
+    return { ok: false, missing: false, pending: false };
   }
 }
 
 type DiscoveryOutcome = {
   rootUnavailable: boolean;
-  warnings: string[];
+  pending: boolean;
+  progressed: boolean;
 };
 
 type DiscoveryContext = {
+  scope: IoWindow;
   deps: NativeCollectorDeps;
   runtime: SourceRuntime;
   source: "claude" | "codex";
@@ -665,19 +766,18 @@ async function registerEntry(
   dirPath: string,
   entry: DirEntryLike,
   dirChild: boolean,
-  remainingMs: number,
 ): Promise<void> {
-  const { deps, source } = ctx;
+  const { scope, deps, source } = ctx;
   const rel = joinRel(dirPath, entry.name);
   const abs = absOf(deps.roots[source], rel);
   const depth = relDepth(rel);
   const safeDir = async (): Promise<boolean> => {
     if (!entry.isDirectory()) return false;
-    const real = await containReal(deps.fs, ctx.realRoot, abs, remainingMs);
+    const real = await containReal(scope, deps.fs, ctx.realRoot, abs);
     return real !== null;
   };
   const safeFile = async (): Promise<boolean> => {
-    const real = await containReal(deps.fs, ctx.realRoot, abs, remainingMs);
+    const real = await containReal(scope, deps.fs, ctx.realRoot, abs);
     if (real === null) {
       ctx.warnings.add("symlink-escape");
       return false;
@@ -748,185 +848,268 @@ async function registerEntry(
 
 async function discoveryPass(
   deps: NativeCollectorDeps,
+  scope: IoWindow,
   runtime: SourceRuntime,
   source: "claude" | "codex",
   realRoot: string,
   budgetMs: number,
   warnings: ReturnType<typeof warningBag>,
-): Promise<boolean> {
+): Promise<DiscoveryOutcome> {
+  const outcome: DiscoveryOutcome = { rootUnavailable: false, pending: false, progressed: false };
   const state = ensureDiscoveryCycle(deps.db, source, deps.now(), JSONL_BUDGET.refreshMs / 1000);
-  if (state.state === "complete") return false;
+  if (state.state === "complete") return outcome;
   const ctx: DiscoveryContext = {
-    deps, runtime, source, realRoot, cycle: state.cycle, warnings,
+    scope, deps, runtime, source, realRoot, cycle: state.cycle, warnings,
   };
-  const start = deps.nowMs();
+  const sliceEnd = Math.min(scope.now + budgetMs, scope.scheduleDeadline);
   let entries = 0;
-  let rootUnavailable = false;
   let activeDir: string | null = state.currentDir;
 
-  while (entries < JSONL_BUDGET.discoveryEntriesPerPass && deps.nowMs() - start < budgetMs) {
+  while (entries < JSONL_BUDGET.discoveryEntriesPerPass && scope.now < sliceEnd) {
     const current = activeDir ?? nextPendingDir(deps.db, source);
     if (current === null) {
       finishDiscoveryCycle(deps.db, source, deps.now());
+      outcome.progressed = true;
       break;
     }
+    activeDir = current;
     if (!runtime.iterator || runtime.iterator.path !== current) {
-      if (runtime.iterator) {
-        try {
-          await boundedIo(runtime.iterator.dir.close(), JSONL_BUDGET.wallDeadlineMs);
-        } catch {
-          /* the replaced iterator is released best-effort */
-        }
-        runtime.iterator = null;
-      }
-      const openPromise = deps.fs.opendir(absOf(deps.roots[source], current));
+      // Canonical containment is revalidated immediately before every queued directory
+      // open: a symlinked directory (including a constructed subagents path) is rejected
+      // before it is enumerated.
+      let realDir: string;
       try {
-        const dir = await boundedIo(openPromise, JSONL_BUDGET.wallDeadlineMs);
-        runtime.iterator = { dir, path: current };
-        setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+        realDir = await scope.io(
+          () => deps.fs.realpath(absOf(deps.roots[source], current)),
+          scope.wallDeadline,
+          () => undefined,
+        );
       } catch (error) {
+        if (isTimeout(error)) {
+          if (error.started) {
+            warnings.add("io-timeout");
+            outcome.pending = true;
+          }
+          return outcome;
+        }
+        warnings.add("symlink-escape");
+        markDirDone(deps.db, source, current, deps.now(), "symlink-escape");
+        activeDir = null;
+        continue;
+      }
+      if (!insideRealRoot(realRoot, realDir)) {
+        warnings.add("symlink-escape");
+        markDirDone(deps.db, source, current, deps.now(), "symlink-escape");
+        activeDir = null;
+        continue;
+      }
+      const open = scope.io(
+        () => deps.fs.opendir(realDir),
+        scope.wallDeadline,
+        (dir) => dir?.close(),
+      );
+      let dir: DirHandleLike;
+      try {
+        dir = await open;
+      } catch (error) {
+        if (isTimeout(error)) {
+          if (error.started) {
+            warnings.add("io-timeout");
+            outcome.pending = true;
+          }
+          return outcome;
+        }
         if (current === ".") {
           if (errorCode(error) === "ENOENT") {
             finishDiscoveryCycle(deps.db, source, deps.now());
             break;
           }
-          if (isTimeout(error)) {
-            warnings.add("io-timeout");
-            ownPending(runtime, openPromise.then((dir) => dir.close()).catch(() => undefined));
-          } else {
-            warnings.add("root-unavailable");
-          }
-          rootUnavailable = true;
+          warnings.add("root-unavailable");
+          outcome.rootUnavailable = true;
           break;
         }
         if (errorCode(error) === "ENOENT" && current.endsWith("/subagents")) {
           markDirDone(deps.db, source, current, deps.now());
+          activeDir = null;
+          outcome.progressed = true;
           continue;
         }
-        if (isTimeout(error)) {
-          warnings.add("io-timeout");
-          ownPending(runtime, openPromise.then((dir) => dir.close()).catch(() => undefined));
-          return rootUnavailable;
-        }
         warnings.add("subdir-failed");
-        markDirDone(deps.db, source, current, deps.now());
+        markDirDone(deps.db, source, current, deps.now(), "subdir-failed");
+        activeDir = null;
+        outcome.progressed = true;
         continue;
       }
+      runtime.iterator = { dir, path: current };
+      setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+      outcome.progressed = true;
     }
     const iterator = runtime.iterator;
     if (!iterator) break;
     const dirChild = current !== "." && current.endsWith("/subagents");
     let exhausted = false;
-    while (entries < JSONL_BUDGET.discoveryEntriesPerPass && deps.nowMs() - start < budgetMs) {
-      const readPromise = iterator.dir.read();
+    while (entries < JSONL_BUDGET.discoveryEntriesPerPass && scope.now < sliceEnd) {
       let entry: DirEntryLike | null;
       try {
-        entry = await boundedIo(readPromise, JSONL_BUDGET.wallDeadlineMs);
+        entry = await scope.io(
+          () => iterator.dir.read(),
+          scope.wallDeadline,
+          async () => {
+            try {
+              await iterator.dir.close();
+            } finally {
+              runtime.iterator = null;
+            }
+          },
+        );
       } catch (error) {
-        ownPending(runtime, readPromise, () => iterator.dir.close());
+        if (isTimeout(error) && error.started) {
+          warnings.add("io-timeout");
+          setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+          outcome.pending = true;
+          return outcome;
+        }
+        if (isTimeout(error)) {
+          setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+          return outcome;
+        }
+        warnings.add("discovery-failed");
         runtime.iterator = null;
-        setDiscoveryCurrentDir(deps.db, source, current, deps.now());
-        warnings.add(isTimeout(error) ? "io-timeout" : "discovery-failed");
-        return rootUnavailable;
+        await scope.closeCleanup(() => iterator.dir.close());
+        markDirDone(deps.db, source, current, deps.now(), "discovery-failed");
+        activeDir = null;
+        return outcome;
       }
       if (entry === null) {
         exhausted = true;
         break;
       }
       entries += 1;
+      outcome.progressed = true;
       try {
-        await registerEntry(ctx, current, entry, dirChild, JSONL_BUDGET.wallDeadlineMs);
+        await registerEntry(ctx, current, entry, dirChild);
       } catch (error) {
-        if (isTimeout(error)) {
+        if (isTimeout(error) && error.started) {
           warnings.add("io-timeout");
           setDiscoveryCurrentDir(deps.db, source, current, deps.now());
-          return rootUnavailable;
+          outcome.pending = true;
+          return outcome;
+        }
+        if (isTimeout(error)) {
+          setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+          return outcome;
         }
         warnings.add("unsupported-layout");
       }
     }
     if (exhausted) {
-      const closePromise = iterator.dir.close();
-      try {
-        await boundedIo(closePromise, JSONL_BUDGET.wallDeadlineMs);
-      } catch {
-        ownPending(runtime, closePromise);
-      }
+      const closed = await scope.closeCleanup(() => iterator.dir.close());
       runtime.iterator = null;
+      if (!closed) {
+        warnings.add("io-timeout");
+        outcome.pending = true;
+        break;
+      }
       markDirDone(deps.db, source, current, deps.now());
       activeDir = null;
       continue;
     }
     setDiscoveryCurrentDir(deps.db, source, current, deps.now());
-    return rootUnavailable;
+    return outcome;
   }
   if (!hasPendingDirs(deps.db, source) && runtime.iterator === null) {
     finishDiscoveryCycle(deps.db, source, deps.now());
+    outcome.progressed = true;
   }
-  return rootUnavailable;
+  return outcome;
 }
 
 type IngestionOutcome = {
   filesProcessed: number;
+  confirmed: number;
   items: number;
   bytes: number;
   overranReserve: boolean;
   rootUnavailable: boolean;
+  pending: boolean;
 };
 
+type IngestResult = {
+  processed: boolean;
+  confirmed: boolean;
+  items: number;
+  bytes: number;
+  pending: boolean;
+};
+
+// Same-inode truncation advances a scalar generation suffix; dev/inode stay separate
+// physical identity checks.
+function generationFor(prev: FileCheckpoint | undefined, physical: string, truncated: boolean): string {
+  let epoch = 0;
+  if (prev) {
+    if (prev.generation === physical) epoch = 0;
+    else if (prev.generation.startsWith(`${physical}:`)) {
+      const parsed = Number(prev.generation.slice(physical.length + 1));
+      epoch = Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+    }
+  }
+  const next = truncated ? epoch + 1 : epoch;
+  return next > 0 ? `${physical}:${next}` : physical;
+}
+
 async function ingestFile(
+  scope: IoWindow,
   deps: NativeCollectorDeps,
   runtime: SourceRuntime,
   candidate: DiscoveryCandidate,
   source: "claude" | "codex",
   realRoot: string,
-  passStart: number,
   maxSourceBytes: number,
   warnings: ReturnType<typeof warningBag>,
-): Promise<{ processed: boolean; items: number; bytes: number }> {
-  const cp = getFileCheckpoint(deps.db, source, candidate.identity);
-  const abs = absOf(deps.roots[source], candidate.identity);
+): Promise<IngestResult> {
+  const id = candidate.identity;
+  const retryAt = deps.now() + JSONL_BUDGET.failureRetryMs / 1000;
+  const failed = (warning: string): IngestResult => {
+    warnings.add(warning);
+    markFileFailure(deps.db, source, id, retryAt, deps.now(), warning);
+    return { processed: false, confirmed: false, items: 0, bytes: 0, pending: false };
+  };
+  const outstanding = (bytes = 0, warning = "io-timeout"): IngestResult => {
+    warnings.add(warning);
+    return { processed: false, confirmed: false, items: 0, bytes, pending: true };
+  };
+  const stop = (bytes = 0): IngestResult => ({
+    processed: false, confirmed: false, items: 0, bytes, pending: false,
+  });
+
+  const cp = getFileCheckpoint(deps.db, source, id);
+  const abs = absOf(deps.roots[source], id);
   let real: string | null;
   try {
-    real = await containReal(deps.fs, realRoot, abs, JSONL_BUDGET.wallDeadlineMs);
+    real = await containReal(scope, deps.fs, realRoot, abs);
   } catch (error) {
-    if (isTimeout(error)) {
-      warnings.add("io-timeout");
-      ownPending(runtime, deps.fs.realpath(abs));
-      return { processed: false, items: 0, bytes: 0 };
-    }
+    if (isTimeout(error)) return error.started ? outstanding() : stop();
     real = null;
   }
-  if (real === null) {
-    warnings.add("symlink-escape");
-    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
-    return { processed: false, items: 0, bytes: 0 };
-  }
+  if (real === null) return failed("symlink-escape");
   let info: StatLike;
   try {
-    info = await boundedIo(deps.fs.stat(real), JSONL_BUDGET.wallDeadlineMs);
+    info = await scope.io(() => deps.fs.stat(real!), scope.wallDeadline, () => undefined);
   } catch (error) {
-    if (isTimeout(error)) {
-      warnings.add("io-timeout");
-      ownPending(runtime, deps.fs.stat(real));
-      return { processed: false, items: 0, bytes: 0 };
-    }
-    warnings.add("missing-file");
-    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
-    return { processed: false, items: 0, bytes: 0 };
+    if (isTimeout(error)) return error.started ? outstanding() : stop();
+    return failed(errorCode(error) === "ENOENT" ? "missing-file" : "read-failed");
   }
-  if (!info.isFile()) {
-    warnings.add("missing-file");
-    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
-    return { processed: false, items: 0, bytes: 0 };
-  }
-  const generation = `${info.dev}:${info.ino}`;
+  if (!info.isFile()) return failed("missing-file");
+  const physical = `${info.dev}:${info.ino}`;
+  // An observed shrink (with or without a same inode) advances the scalar generation.
+  const truncated = cp !== undefined && info.size < cp.offset;
+  const generation = generationFor(cp, physical, truncated);
   const sameGeneration = cp !== undefined && cp.generation === generation;
   const mtime = Math.floor(info.mtimeMs / 1000);
   const current = sameGeneration && cp!.done && !cp!.discarding && cp!.size === info.size && cp!.mtime === mtime;
   if (current) {
-    markFileCurrent(deps.db, source, candidate.identity, info.size, mtime, deps.now());
-    return { processed: false, items: 0, bytes: 0 };
+    markFileCurrent(deps.db, source, id, info.size, mtime, deps.now());
+    return { processed: false, confirmed: true, items: 0, bytes: 0, pending: false };
   }
 
   const startOffset = sameGeneration && cp!.offset <= info.size ? cp!.offset : 0;
@@ -939,68 +1122,97 @@ async function ingestFile(
   let fileBytes = 0;
   let sourceBytes = 0;
   let deadlineHit = false;
+  let handleOwnedByPending = false;
+  let closeTimedOut = false;
+  let lineDeadline: number | null = null;
   const items: NativeUsageItem[] = [];
   const contexts: NativeContextRow[] = [];
   let handle: FileHandleLike | null = null;
-  let handleOwnedByPending = false;
-  const openPromise = deps.fs.open(real);
   try {
-    handle = await boundedIo(openPromise, JSONL_BUDGET.wallDeadlineMs);
+    handle = await scope.io(
+      () => deps.fs.open(real!),
+      scope.wallDeadline,
+      (opened) => opened?.close(),
+    );
   } catch (error) {
-    if (isTimeout(error)) {
-      warnings.add("io-timeout");
-      ownPending(runtime, openPromise.then((opened) => opened.close()).catch(() => undefined));
-      return { processed: false, items: 0, bytes: 0 };
-    }
-    warnings.add("read-failed");
-    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
-    return { processed: false, items: 0, bytes: 0 };
+    if (isTimeout(error)) return error.started ? outstanding() : stop();
+    return failed("read-failed");
   }
-  if (handle.stat) {
-    try {
-      const opened = await boundedIo(handle.stat(), JSONL_BUDGET.wallDeadlineMs);
-      if (`${opened.dev}:${opened.ino}` !== generation) {
-        warnings.add("file-replaced");
-        await handle.close().catch(() => undefined);
-        return { processed: false, items: 0, bytes: 0 };
-      }
-    } catch {
-      /* identity is re-checked before commit */
+
+  // The opened-handle identity is mandatory before any read; an unavailable fstat fails
+  // the file closed instead of hoping a later path stat succeeds.
+  try {
+    const opened = await scope.io(
+      () => handle!.stat(),
+      scope.wallDeadline,
+      () => handle!.close(),
+    );
+    if (`${opened.dev}:${opened.ino}` !== physical) {
+      warnings.add("file-replaced");
+      if (!(await scope.closeCleanup(() => handle!.close()))) warnings.add("io-timeout");
+      handle = null;
+      return { processed: false, confirmed: false, items: 0, bytes: 0, pending: false };
     }
+  } catch (error) {
+    if (isTimeout(error) && error.started) {
+      handleOwnedByPending = true;
+      return outstanding();
+    }
+    await scope.closeCleanup(() => handle!.close());
+    handle = null;
+    if (isTimeout(error)) return stop();
+    return failed("read-failed");
   }
 
   try {
     while (fileBytes < JSONL_BUDGET.stepBytes && sourceBytes < maxSourceBytes) {
-      const elapsed = deps.nowMs() - passStart;
-      if (deadlineHit) break;
-      if (carry.length === 0 && elapsed >= JSONL_BUDGET.startLineDeadlineMs) {
-        deadlineHit = true;
-        break;
+      if (scope.expired) break;
+      const startingLine = carry.length === 0 && !discarding;
+      if (startingLine) {
+        if (!scope.lineStartOpen) {
+          deadlineHit = true;
+          break;
+        }
+        // The line deadline starts with the first read of a new line and includes it.
+        lineDeadline = Math.min(
+          scope.now + JSONL_BUDGET.lineDeadlineMs,
+          scope.wallDeadline - JSONL_BUDGET.commitReserveMs,
+        );
+        if (lineDeadline <= scope.now) {
+          deadlineHit = true;
+          break;
+        }
       }
-      if (elapsed >= JSONL_BUDGET.softDeadlineMs) {
-        deadlineHit = true;
-        break;
+      if (lineDeadline === null) {
+        lineDeadline = Math.min(
+          scope.now + JSONL_BUDGET.lineDeadlineMs,
+          scope.wallDeadline - JSONL_BUDGET.commitReserveMs,
+        );
       }
-      const remainingLineMs = JSONL_BUDGET.lineDeadlineMs;
       const bounded = Math.max(
         1,
         Math.min(JSONL_BUDGET.chunkBytes, JSONL_BUDGET.stepBytes - fileBytes, maxSourceBytes - sourceBytes),
       );
       const chunk = Buffer.alloc(bounded);
       const activeHandle = handle;
-      const readPromise = activeHandle.read(chunk, 0, bounded, offset);
+      // Discarded oversized lines are bounded by the step/wall budget, not a line deadline.
+      const readDeadline = discarding
+        ? scope.wallDeadline - JSONL_BUDGET.commitReserveMs
+        : (lineDeadline as number);
       let read: { bytesRead: number };
       try {
-        read = await boundedIo(readPromise, remainingLineMs);
+        read = await scope.io(
+          () => activeHandle!.read(chunk, 0, bounded, offset),
+          readDeadline,
+          () => activeHandle!.close(),
+        );
       } catch (error) {
-        if (isTimeout(error)) {
-          warnings.add("io-timeout");
+        if (isTimeout(error) && error.started) {
           handleOwnedByPending = true;
-          ownPending(runtime, readPromise, () => activeHandle.close());
-          return { processed: false, items: 0, bytes: sourceBytes };
+          return outstanding(sourceBytes);
         }
-        warnings.add("read-failed");
-        break;
+        if (isTimeout(error)) break;
+        return failed("read-failed");
       }
       if (read.bytesRead <= 0) {
         done = true;
@@ -1028,9 +1240,16 @@ async function ingestFile(
           lineStart = nextLineStart;
           continue;
         }
+        // A line whose IO had already started may finish; a new line never starts after
+        // the scheduling deadline, so the checkpoint stays before its first byte.
+        if (lineDeadline === null && scope.now >= scope.start + JSONL_BUDGET.startLineDeadlineMs) {
+          deadlineHit = true;
+          break;
+        }
         const lineBytes = carry.subarray(0, newline);
         carry = carry.subarray(newline + 1);
         lineStart = nextLineStart;
+        lineDeadline = null;
         if (lineBytes.length > JSONL_BUDGET.maxLineBytes) {
           warnings.add("line-too-long");
         } else {
@@ -1049,22 +1268,21 @@ async function ingestFile(
             }
           }
         }
-        if (deps.nowMs() - passStart >= JSONL_BUDGET.startLineDeadlineMs) {
-          deadlineHit = true;
-          break;
-        }
       }
       if (deadlineHit) break;
     }
   } finally {
     if (handle && !handleOwnedByPending) {
-      try {
-        await boundedIo(handle.close(), JSONL_BUDGET.wallDeadlineMs);
-      } catch {
-        /* the process exit path releases the descriptor */
+      const closed = await scope.closeCleanup(() => handle!.close());
+      if (!closed) {
+        handle = null;
+        closeTimedOut = true;
       }
     }
   }
+
+  if (closeTimedOut) return outstanding(sourceBytes);
+  if (scope.expired) return { processed: false, confirmed: false, items: 0, bytes: sourceBytes, pending: false };
 
   if (done) {
     if (discarding) {
@@ -1075,14 +1293,12 @@ async function ingestFile(
       done = false;
     }
   }
-  const consumed = done ? offset : discarding ? offset : lineStart;
+  const consumed = done ? offset : lineStart;
   const completeAtEof = done && carry.length === 0;
 
-  const expectedOffset = sameGeneration ? cp!.offset : 0;
-  const expectNewGeneration = cp !== undefined && !sameGeneration;
   const checkpoint: FileCheckpoint = {
     source,
-    identity: candidate.identity,
+    identity: id,
     child: candidate.child,
     generation,
     dev: String(info.dev),
@@ -1095,70 +1311,74 @@ async function ingestFile(
     processedAt: deps.now(),
   };
   try {
-    const verify = await boundedIo(deps.fs.stat(real), JSONL_BUDGET.wallDeadlineMs);
-    if (`${verify.dev}:${verify.ino}` !== generation) {
+    const verify = await scope.io(() => deps.fs.stat(real!), scope.wallDeadline, () => undefined);
+    if (`${verify.dev}:${verify.ino}` !== physical) {
       warnings.add("file-replaced");
-      return { processed: false, items: 0, bytes: sourceBytes };
+      return { processed: false, confirmed: false, items: 0, bytes: sourceBytes, pending: false };
     }
-  } catch {
-    warnings.add("read-failed");
-    return { processed: false, items: 0, bytes: sourceBytes };
+  } catch (error) {
+    if (isTimeout(error)) return error.started ? outstanding(sourceBytes) : stop(sourceBytes);
+    return failed("read-failed");
   }
+  if (scope.expired) return { processed: false, confirmed: false, items: 0, bytes: sourceBytes, pending: false };
   try {
     applyFileBatch(deps.db, {
       checkpoint,
-      expectedOffset,
-      expectNewGeneration,
+      expectedPrior: cp ?? null,
       items,
       contexts,
       now: deps.now(),
     });
   } catch {
     warnings.add("checkpoint-conflict");
-    return { processed: false, items: 0, bytes: sourceBytes };
+    return { processed: false, confirmed: false, items: 0, bytes: sourceBytes, pending: false };
   }
-  return { processed: true, items: items.length, bytes: sourceBytes };
+  return { processed: true, confirmed: false, items: items.length, bytes: sourceBytes, pending: false };
 }
 
 async function ingestionPass(
   deps: NativeCollectorDeps,
+  scope: IoWindow,
   source: "claude" | "codex",
   realRoot: string,
-  passStart: number,
   warnings: ReturnType<typeof warningBag>,
 ): Promise<IngestionOutcome> {
   const outcome: IngestionOutcome = {
     filesProcessed: 0,
+    confirmed: 0,
     items: 0,
     bytes: 0,
     overranReserve: false,
     rootUnavailable: false,
+    pending: false,
   };
-  const now = deps.now();
-  const today = utcDay(now);
-  const todayStart = Date.parse(`${today}T00:00:00Z`) / 1000;
-  const candidates = selectIngestionCandidates(deps.db, source, todayStart, now, JSONL_BUDGET.maxFilesPerPass);
+  const runtime = runtimeFor(deps.db, source);
+  const candidates = selectIngestionCandidates(deps.db, source, deps.now(), JSONL_BUDGET.maxFilesPerPass);
   for (const candidate of candidates) {
     if (outcome.filesProcessed >= JSONL_BUDGET.maxFilesPerPass) break;
     if (outcome.bytes >= JSONL_BUDGET.maxBytesPerSource) break;
-    const elapsed = deps.nowMs() - passStart;
-    if (elapsed >= JSONL_BUDGET.startLineDeadlineMs) {
+    if (scope.now >= scope.start + JSONL_BUDGET.startLineDeadlineMs || scope.expired) {
       outcome.overranReserve = true;
       break;
     }
     const result = await ingestFile(
+      scope,
       deps,
-      runtimeFor(deps.db, source),
+      runtime,
       candidate,
       source,
       realRoot,
-      passStart,
       JSONL_BUDGET.maxBytesPerSource - outcome.bytes,
       warnings,
     );
     outcome.filesProcessed += result.processed ? 1 : 0;
+    outcome.confirmed += result.confirmed ? 1 : 0;
     outcome.items += result.items;
     outcome.bytes += result.bytes;
+    if (result.pending) {
+      outcome.pending = true;
+      break;
+    }
   }
   return outcome;
 }
@@ -1192,11 +1412,25 @@ async function runJsonlSourcePass(
   warnings: string[];
   state: SourceState;
   stalled: boolean;
+  progressed: boolean;
 }> {
-  const root = deps.roots[source];
   const warnings = warningBag();
   const runtime = runtimeFor(deps.db, source);
-  const passStart = deps.nowMs();
+  for (const code of getPersistentWarnings(deps.db, source)) warnings.add(code);
+
+  if (deps.configWarnings && deps.configWarnings.length > 0) {
+    for (const code of deps.configWarnings) warnings.add(code);
+    return {
+      items: 0,
+      filesProcessed: 0,
+      filesTotal: countRegisteredFiles(deps.db, source),
+      filesDone: getRegistryCounts(deps.db, source, deps.now()).done,
+      warnings: warnings.values,
+      state: "unavailable",
+      stalled: false,
+      progressed: false,
+    };
+  }
 
   if (runtime.pending) {
     warnings.add("io-pending");
@@ -1209,12 +1443,14 @@ async function runJsonlSourcePass(
       warnings: warnings.values,
       state: "indexing",
       stalled: true,
+      progressed: false,
     };
   }
 
-  const rootState = await resolveRoot(deps, root, Math.max(1, JSONL_BUDGET.wallDeadlineMs));
+  const scope = new IoWindow(runtime, deps.nowMs);
+  const rootState = await resolveRoot(scope, deps, deps.roots[source]);
   if (!rootState.ok) {
-    if (rootState.missing) {
+    if (rootState.pending) {
       const counts = getRegistryCounts(deps.db, source, deps.now());
       return {
         items: 0,
@@ -1222,8 +1458,35 @@ async function runJsonlSourcePass(
         filesTotal: counts.total,
         filesDone: counts.done,
         warnings: warnings.values,
-        state: counts.total === 0 ? "empty" : "indexing",
+        state: "indexing",
+        stalled: true,
+        progressed: false,
+      };
+    }
+    if (rootState.missing) {
+      const total = countRegisteredFiles(deps.db, source);
+      if (total === 0) {
+        return {
+          items: 0,
+          filesProcessed: 0,
+          filesTotal: 0,
+          filesDone: 0,
+          warnings: warnings.values,
+          state: "empty",
+          stalled: false,
+          progressed: true,
+        };
+      }
+      warnings.add("root-unavailable");
+      return {
+        items: 0,
+        filesProcessed: 0,
+        filesTotal: total,
+        filesDone: getRegistryCounts(deps.db, source, deps.now()).done,
+        warnings: warnings.values,
+        state: "unavailable",
         stalled: false,
+        progressed: false,
       };
     }
     return {
@@ -1234,6 +1497,7 @@ async function runJsonlSourcePass(
       warnings: ["root-unavailable"],
       state: "unavailable",
       stalled: false,
+      progressed: false,
     };
   }
 
@@ -1241,31 +1505,45 @@ async function runJsonlSourcePass(
   const discoveryFirst = runtime.discoveryFirstNext || knownCount === 0;
   runtime.discoveryFirstNext = false;
   let rootUnavailable = false;
+  let pending = false;
+  let progressed = false;
   let ingestion: IngestionOutcome | null = null;
 
   const runDiscovery = async (budget: number) => {
-    const unavailable = await discoveryPass(deps, runtime, source, rootState.realRoot, Math.max(0, budget), warnings);
-    if (unavailable) rootUnavailable = true;
+    if (!scope.scheduleOpen || scope.expired) return;
+    const outcome = await discoveryPass(deps, scope, runtime, source, rootState.realRoot, Math.max(0, budget), warnings);
+    if (outcome.rootUnavailable) rootUnavailable = true;
+    if (outcome.pending) pending = true;
+    if (outcome.progressed) progressed = true;
   };
 
-  if (discoveryFirst) {
+  if (!scope.scheduleOpen) {
+    // Slow root validation consumed the scheduling window: start nothing else this pass.
+  } else if (discoveryFirst) {
     await runDiscovery(JSONL_BUDGET.discoveryMsPerPass);
-    ingestion = await ingestionPass(deps, source, rootState.realRoot, passStart, warnings);
-    if (ingestion.overranReserve) runtime.discoveryFirstNext = true;
+    if (!pending && scope.scheduleOpen) {
+      ingestion = await ingestionPass(deps, scope, source, rootState.realRoot, warnings);
+    }
   } else {
-    ingestion = await ingestionPass(deps, source, rootState.realRoot, passStart, warnings);
+    ingestion = await ingestionPass(deps, scope, source, rootState.realRoot, warnings);
+    if (!pending && ingestion.overranReserve) runtime.discoveryFirstNext = true;
+    // The final slice of the scheduling window is reserved for discovery.
+    const remaining = Math.min(JSONL_BUDGET.discoveryMsPerPass, scope.scheduleDeadline - scope.now);
+    if (!pending && remaining > 0) await runDiscovery(remaining);
+  }
+  if (ingestion) {
     if (ingestion.overranReserve) runtime.discoveryFirstNext = true;
-    // The final 50 ms of the scheduling window is reserved for discovery.
-    const elapsed = deps.nowMs() - passStart;
-    const remaining = JSONL_BUDGET.softDeadlineMs - elapsed;
-    if (remaining > 0) await runDiscovery(Math.min(JSONL_BUDGET.discoveryMsPerPass, remaining));
+    if (ingestion.pending) pending = true;
+    if (ingestion.filesProcessed > 0 || ingestion.confirmed > 0) progressed = true;
   }
 
   const counts = getRegistryCounts(deps.db, source, deps.now());
   const coverageFailure = warnings.values.some((code) => coverageFailureCodes.has(code));
   const state = rootUnavailable
     ? "unavailable"
-    : stateFor(source, deps.db, deps.now(), coverageFailure);
+    : pending
+      ? "indexing"
+      : stateFor(source, deps.db, deps.now(), coverageFailure);
   return {
     items: ingestion?.items ?? 0,
     filesProcessed: ingestion?.filesProcessed ?? 0,
@@ -1273,7 +1551,8 @@ async function runJsonlSourcePass(
     filesDone: counts.done,
     warnings: warnings.values,
     state,
-    stalled: false,
+    stalled: pending,
+    progressed,
   };
 }
 
@@ -1450,22 +1729,63 @@ export const OPENCODE_SCHEMA = "1.18.34";
 
 const executableIdentityCache = new Map<string, string>();
 
+// OpenCode preparation shares the same bounded single-flight boundary as JSONL sources:
+// a timed-out reader keeps its latch until it settles; later polls start nothing new.
+const openCodeRuntimes = new WeakMap<Database.Database, PendingOwner>();
+
+function openCodeRuntime(db: Database.Database): PendingOwner {
+  let runtime = openCodeRuntimes.get(db);
+  if (!runtime) {
+    runtime = { pending: null };
+    openCodeRuntimes.set(db, runtime);
+  }
+  return runtime;
+}
+
+type PrepFailure = { ok: false; state: SourceState; warning: string; pending: boolean };
+
 async function openCodeExecutableState(
+  scope: IoWindow,
   deps: NativeCollectorDeps,
-): Promise<{ ok: true } | { ok: false; state: SourceState; warning: string }> {
+): Promise<{ ok: true } | PrepFailure> {
   let info: StatLike | null;
   try {
-    info = await deps.opencode.stat(deps.opencode.executable);
-  } catch {
+    info = await scope.io(
+      () => deps.opencode.stat(deps.opencode.executable),
+      scope.wallDeadline,
+      () => undefined,
+    );
+  } catch (error) {
+    if (isTimeout(error)) {
+      return { ok: false, state: "unavailable", warning: "io-pending", pending: error.started };
+    }
     info = null;
   }
-  if (!info || !info.isFile()) return { ok: false, state: "unavailable", warning: "executable-missing" };
+  if (!info || !info.isFile()) {
+    return { ok: false, state: "unavailable", warning: "executable-missing", pending: false };
+  }
   const identity = `${deps.opencode.executable}:${info.dev}:${info.ino}:${info.size}:${Math.floor(info.mtimeMs)}`;
   const cachedHash = executableIdentityCache.get(identity);
-  const hash = cachedHash ?? (await deps.opencode.hash(deps.opencode.executable)) ?? null;
+  let hash: string | null;
+  if (cachedHash !== undefined) {
+    hash = cachedHash;
+  } else {
+    try {
+      hash = await scope.io(
+        () => deps.opencode.hash(deps.opencode.executable),
+        scope.wallDeadline,
+        () => undefined,
+      );
+    } catch (error) {
+      if (isTimeout(error)) {
+        return { ok: false, state: "unavailable", warning: "io-pending", pending: error.started };
+      }
+      hash = null;
+    }
+  }
   if (hash !== null && cachedHash === undefined) executableIdentityCache.set(identity, hash);
   if (hash !== OPENCODE_EXECUTABLE_SHA256) {
-    return { ok: false, state: "incompatible", warning: "executable-mismatch" };
+    return { ok: false, state: "incompatible", warning: "executable-mismatch", pending: false };
   }
   return { ok: true };
 }
@@ -1480,6 +1800,12 @@ type OpenCodeReply = {
   warnings: Record<string, number>;
 };
 
+const OPENCODE_WARNING_KEYS = new Set(["malformed", "overlength", "unsupported", "budget"]);
+const OPENCODE_MAX_ROWS = 512;
+const OPENCODE_MAX_ROW_BYTES = 16 * 1024;
+const OPENCODE_MAX_ROWS_BYTES = 240 * 1024;
+const OPENCODE_MAX_HEADER_BYTES = 16 * 1024;
+
 export function parseOpenCodeReply(
   stdout: string,
   previous: OpenCodeCursorState,
@@ -1493,12 +1819,27 @@ export function parseOpenCodeReply(
   }
   if (!isObj(raw) || raw.v !== 1 || raw.ok !== true || !Array.isArray(raw.rows)) return null;
   if (raw.runtime !== OPENCODE_RUNTIME || raw.schema !== OPENCODE_SCHEMA) return null;
+  if (raw.rows.length > OPENCODE_MAX_ROWS) return null;
+  let rowsBytes = 0;
+  for (const row of raw.rows) {
+    if (!isObj(row)) return null;
+    const size = Buffer.byteLength(JSON.stringify(row), "utf8");
+    if (size > OPENCODE_MAX_ROW_BYTES) return null;
+    rowsBytes += size;
+  }
+  if (rowsBytes > OPENCODE_MAX_ROWS_BYTES) return null;
+  const header: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key !== "rows") header[key] = value;
+  }
+  if (Buffer.byteLength(JSON.stringify(header), "utf8") > OPENCODE_MAX_HEADER_BYTES) return null;
   const next = raw.next;
   if (!isObj(next) || !isObj(next.v1) || !isObj(next.v2)) return null;
   const sanitize = (
     cursor: Record<string, unknown>,
     prior: OpenCodeCursorState["v1"],
   ): OpenCodeCursorState["v1"] | null => {
+    if (typeof cursor.done !== "boolean") return null;
     const after = cursor.after === null ? null : canonicalDecimal(cursor.after);
     if (after === null && cursor.after !== null) return null;
     const ceiling = cursor.ceiling === null ? null : canonicalDecimal(cursor.ceiling);
@@ -1509,16 +1850,17 @@ export function parseOpenCodeReply(
     if (prior.after !== null && after === null && !(prior.done && cursor.done === true)) return null;
     if (prior.ceiling !== null && ceiling === null && !(prior.done && cursor.done === true)) return null;
     if (prior.done && !cursor.done && after !== null && prior.after !== null && BigInt(after) <= BigInt(prior.after)) return null;
-    return { after, ceiling, done: cursor.done === true };
+    return { after, ceiling, done: cursor.done };
   };
   const v1 = sanitize(next.v1, previous.v1);
   const v2 = sanitize(next.v2, previous.v2);
   if (!v1 || !v2) return null;
   const warnings: Record<string, number> = {};
-  if (isObj(raw.warnings)) {
-    for (const [key, value] of Object.entries(raw.warnings)) {
-      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) warnings[key] = value;
-    }
+  if (!isObj(raw.warnings)) return null;
+  for (const [key, value] of Object.entries(raw.warnings)) {
+    if (!OPENCODE_WARNING_KEYS.has(key)) return null;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return null;
+    warnings[key] = value;
   }
   return {
     v: 1,
@@ -1536,6 +1878,8 @@ function canonicalDecimal(value: unknown): string | null {
   try {
     const numeric = BigInt(value);
     if (numeric < BigInt("-9223372036854775808") || numeric > BigInt("9223372036854775807")) return null;
+    // Canonical spelling only: no "-0", no leading zeroes.
+    if (numeric.toString() !== value) return null;
   } catch {
     return null;
   }
@@ -1549,30 +1893,54 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   lastRefresh: number;
   progress: { filesDone: number; filesTotal: number } | null;
 }> {
-  if (deps.opencode.ensureAdapter) await deps.opencode.ensureAdapter();
-  const executable = await openCodeExecutableState(deps);
-  if (!executable.ok) {
-    return { items: 0, warnings: [executable.warning], state: executable.state, lastRefresh: 0, progress: null };
+  const failed = (warning: string, state: SourceState = "unavailable") => ({
+    items: 0,
+    warnings: [warning],
+    state,
+    lastRefresh: 0,
+    progress: null,
+  });
+  const runtime = openCodeRuntime(deps.db);
+  if (runtime.pending) return failed("io-pending");
+  if (deps.configWarnings && deps.configWarnings.length > 0) {
+    return { items: 0, warnings: [...deps.configWarnings], state: "unavailable", lastRefresh: 0, progress: null };
   }
+  const scope = new IoWindow(runtime, deps.nowMs);
+  if (deps.opencode.ensureAdapter) {
+    try {
+      await scope.io(() => deps.opencode.ensureAdapter!(), scope.wallDeadline, () => undefined);
+    } catch (error) {
+      if (isTimeout(error)) return failed(error.started ? "io-pending" : "io-timeout");
+      return failed("pass-failed");
+    }
+  }
+  const executable = await openCodeExecutableState(scope, deps);
+  if (!executable.ok) return failed(executable.warning, executable.state);
   const dbPath = deps.roots.opencodeDb;
   if (dbPath.includes("\u0000") || Buffer.byteLength(dbPath, "utf8") > 4096) {
-    return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
+    return failed("db-invalid");
   }
   try {
-    const info = await deps.fs.stat(dbPath);
+    const info = await scope.io(() => deps.fs.stat(dbPath), scope.wallDeadline, () => undefined);
     if (!info.isFile()) throw new Error("not-file");
-  } catch {
-    return { items: 0, warnings: ["db-missing"], state: "unavailable", lastRefresh: 0, progress: null };
+  } catch (error) {
+    if (isTimeout(error)) return failed(error.started ? "io-pending" : "io-timeout");
+    return failed("db-missing");
   }
   let real: string | null;
   try {
-    const realRoot = await deps.fs.realpath(deps.roots.opencodeDataRoot);
-    const realDb = await deps.fs.realpath(dbPath);
+    const realRoot = await scope.io(
+      () => deps.fs.realpath(deps.roots.opencodeDataRoot),
+      scope.wallDeadline,
+      () => undefined,
+    );
+    const realDb = await scope.io(() => deps.fs.realpath(dbPath), scope.wallDeadline, () => undefined);
     real = insideRealRoot(realRoot, realDb) ? realDb : null;
-  } catch {
+  } catch (error) {
+    if (isTimeout(error)) return failed(error.started ? "io-pending" : "io-timeout");
     real = null;
   }
-  if (!real) return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
+  if (!real) return failed("db-invalid");
 
   const cursor = getOpenCodeCursor(deps.db);
   const argv = [
@@ -1594,7 +1962,7 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
     });
     stdout = result.stdout;
   } catch {
-    return { items: 0, warnings: ["exec-failed"], state: "unavailable", lastRefresh: 0, progress: null };
+    return failed("exec-failed");
   }
 
   let parsedRaw: unknown;
@@ -1606,12 +1974,10 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   if (isObj(parsedRaw) && parsedRaw.ok === false) {
     const error = typeof parsedRaw.error === "string" ? parsedRaw.error : "helper-failed";
     const state: SourceState = error === "schema-fail-closed" || error === "runtime-fail" ? "incompatible" : "unavailable";
-    return { items: 0, warnings: [error], state, lastRefresh: 0, progress: null };
+    return failed(error, state);
   }
   const reply = parseOpenCodeReply(stdout, cursor);
-  if (!reply) {
-    return { items: 0, warnings: ["malformed-reply"], state: "unavailable", lastRefresh: 0, progress: null };
-  }
+  if (!reply) return failed("malformed-reply");
 
   const items: NativeUsageItem[] = [];
   const warnings = warningBag();
@@ -1699,7 +2065,9 @@ async function runOneSource(deps: NativeCollectorDeps, source: Harness, enabled:
         source,
         state: result.state,
         lastRefresh:
-          result.state === "unavailable" || result.stalled ? previous?.lastRefresh ?? null : now,
+          result.state === "unavailable" || result.stalled || !result.progressed
+            ? previous?.lastRefresh ?? null
+            : now,
         progress: { filesDone: result.filesDone, filesTotal: result.filesTotal },
         warnings: result.warnings,
       },
@@ -1750,44 +2118,89 @@ export async function runNativeUsagePass(deps: NativeCollectorDeps): Promise<voi
   );
 }
 
-async function nativeRootsOverride(): Promise<{ claude: string; codex: string; opencode: string } | null> {
-  const root = jaxosHome();
-  let raw: unknown;
-  try {
-    raw = JSON.parse(await readFile(join(root, "native-roots.json"), "utf8"));
-  } catch {
-    return null;
-  }
-  const invalid = {
+type StartupRoots = NativeCollectorDeps["roots"];
+type StartupConfig = { roots: StartupRoots; warnings: string[] };
+
+// One immutable startup/first-use configuration promise per process boundary. Absence
+// alone selects the normal native roots; anything present but unusable selects owned
+// invalid fixture roots with an explicit diagnostic, never the production roots.
+let startupConfigPromise: Promise<StartupConfig> | null = null;
+
+function normalNativeRoots(): StartupRoots {
+  const home = homedir();
+  const dataRoot = process.env.XDG_DATA_HOME || join(home, ".local", "share");
+  return {
+    claude: join(home, ".claude", "projects"),
+    codex: join(home, ".codex", "sessions"),
+    opencodeDataRoot: join(dataRoot, "opencode"),
+    opencodeDb: join(dataRoot, "opencode", "opencode.db"),
+  };
+}
+
+function invalidNativeRoots(root: string): StartupRoots {
+  const opencodeDataRoot = join(root, "native-invalid", "opencode");
+  return {
     claude: join(root, "native-invalid", "claude"),
     codex: join(root, "native-invalid", "codex"),
-    opencode: join(root, "native-invalid", "opencode"),
+    opencodeDataRoot,
+    opencodeDb: join(opencodeDataRoot, "opencode.db"),
   };
-  if (!isObj(raw)) return invalid;
+}
+
+async function readStartupConfig(): Promise<StartupConfig> {
+  const root = jaxosHome();
+  let text: string;
+  try {
+    text = await readFile(join(root, "native-roots.json"), "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return { roots: normalNativeRoots(), warnings: [] };
+    return { roots: invalidNativeRoots(root), warnings: ["config-invalid"] };
+  }
+  const invalid = (): StartupConfig => ({ roots: invalidNativeRoots(root), warnings: ["config-invalid"] });
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return invalid();
+  }
+  if (!isObj(raw)) return invalid();
   const keys = ["claude", "codex", "opencode"] as const;
   for (const key of keys) {
-    if (typeof raw[key] !== "string" || !isAbsolute(raw[key])) return invalid;
+    if (typeof raw[key] !== "string" || !isAbsolute(raw[key] as string)) return invalid();
   }
   try {
     const boundary = await nodeRealpathAsync(root);
+    const resolved: Record<string, string> = {};
     for (const key of keys) {
-      const resolved = await nodeRealpathAsync(raw[key] as string);
-      if (resolved !== boundary && !resolved.startsWith(base(boundary))) return invalid;
+      const real = await nodeRealpathAsync(raw[key] as string);
+      if (real !== boundary && !real.startsWith(base(boundary))) return invalid();
+      resolved[key] = real;
     }
+    return {
+      roots: {
+        claude: resolved.claude,
+        codex: resolved.codex,
+        opencodeDataRoot: resolved.opencode,
+        opencodeDb: join(resolved.opencode, "opencode.db"),
+      },
+      warnings: [],
+    };
   } catch {
-    return invalid;
+    return invalid();
   }
-  return { claude: raw.claude as string, codex: raw.codex as string, opencode: raw.opencode as string };
+}
+
+function startupConfig(): Promise<StartupConfig> {
+  if (!startupConfigPromise) startupConfigPromise = readStartupConfig();
+  return startupConfigPromise;
 }
 
 export async function defaultNativeCollectorDeps(db: Database.Database): Promise<NativeCollectorDeps> {
-  const home = homedir();
-  const dataRoot = process.env.XDG_DATA_HOME || join(home, ".local", "share");
   const adapterRoot = join(jaxosHome(), "native-opencode");
   const cwd = join(adapterRoot, "cwd");
   const configPath = join(adapterRoot, "empty.toml");
   const xdgConfigHome = join(adapterRoot, "config");
-  const override = await nativeRootsOverride();
+  const startup = await startupConfig();
   const pExecFile = promisify(execFile);
   const fs: NativeFs = {
     stat: (path) => nodeStatAsync(path),
@@ -1808,14 +2221,8 @@ export async function defaultNativeCollectorDeps(db: Database.Database): Promise
     nowMs: () => Date.now(),
     settings: readGeneralSettings,
     fs,
-    roots: override
-      ? { claude: override.claude, codex: override.codex, opencodeDataRoot: override.opencode, opencodeDb: join(override.opencode, "opencode.db") }
-      : {
-          claude: join(home, ".claude", "projects"),
-          codex: join(home, ".codex", "sessions"),
-          opencodeDataRoot: join(dataRoot, "opencode"),
-          opencodeDb: join(dataRoot, "opencode", "opencode.db"),
-        },
+    roots: startup.roots,
+    configWarnings: startup.warnings,
     opencode: {
       executable: OPENCODE_EXECUTABLE,
       cwd,
@@ -1847,11 +2254,25 @@ export async function defaultNativeCollectorDeps(db: Database.Database): Promise
           return null;
         }
       },
+      // Streams fixed bounded chunks; the whole executable is never materialized.
       hash: async (path) => {
+        let handle: Awaited<ReturnType<typeof nodeOpenAsync>> | null = null;
         try {
-          return createHash("sha256").update(await readFile(path)).digest("hex");
+          handle = await nodeOpenAsync(path, "r");
+          const digest = createHash("sha256");
+          const buffer = Buffer.alloc(64 * 1024);
+          let position = 0;
+          for (;;) {
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+            if (bytesRead <= 0) break;
+            digest.update(buffer.subarray(0, bytesRead));
+            position += bytesRead;
+          }
+          return digest.digest("hex");
         } catch {
           return null;
+        } finally {
+          await handle?.close().catch(() => undefined);
         }
       },
     },

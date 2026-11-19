@@ -6,10 +6,14 @@ import { openDb } from "./index";
 import {
   applyFileBatch,
   getFileCheckpoint,
+  getPersistentWarnings,
   getSourceStatuses,
   insertNativeContext,
+  markFileFailure,
   pruneNativeUsage,
   queryNativeUsage,
+  registerNativeFile,
+  selectIngestionCandidates,
   setSourceStatus,
   UNKNOWN_MODEL_FILTER,
   upsertNativeUsageItem,
@@ -117,13 +121,13 @@ describe("native item persistence", () => {
     const db = openDb(":memory:");
     applyFileBatch(db, {
       checkpoint: checkpoint({ identity: "a.jsonl" }),
-      expectedOffset: null,
+      expectedPrior: null,
       items: [codex("a.jsonl")],
       now: NOW,
     });
     applyFileBatch(db, {
       checkpoint: checkpoint({ identity: "b.jsonl" }),
-      expectedOffset: null,
+      expectedPrior: null,
       items: [codex("b.jsonl")],
       now: NOW,
     });
@@ -170,10 +174,10 @@ describe("native item persistence", () => {
 
   it("an item upsert and the consumed offset share one transaction", () => {
     const db = openDb(":memory:");
-    applyFileBatch(db, { checkpoint: checkpoint({ offset: 50 }), expectedOffset: 0, items: [], now: NOW });
+    applyFileBatch(db, { checkpoint: checkpoint({ offset: 50 }), expectedPrior: null, items: [], now: NOW });
     expect(() => applyFileBatch(db, {
       checkpoint: checkpoint({ offset: 100 }),
-      expectedOffset: 49,
+      expectedPrior: checkpoint({ offset: 49 }),
       items: [claude({})],
       now: NOW,
     })).toThrow("checkpoint-conflict");
@@ -184,10 +188,10 @@ describe("native item persistence", () => {
 
   it("restarts a truncated/replaced file at zero without losing measured identities", () => {
     const db = openDb(":memory:");
-    applyFileBatch(db, { checkpoint: checkpoint({ offset: 100 }), expectedOffset: null, items: [claude({})], now: NOW });
+    applyFileBatch(db, { checkpoint: checkpoint({ offset: 100 }), expectedPrior: null, items: [claude({})], now: NOW });
     applyFileBatch(db, {
       checkpoint: checkpoint({ generation: "2:2", dev: "2", ino: "2", offset: 40 }),
-      expectedOffset: null,
+      expectedPrior: checkpoint({ offset: 100 }),
       items: [claude({})],
       now: NOW,
     });
@@ -225,7 +229,7 @@ describe("native item persistence", () => {
 describe("Codex context joins", () => {
   it("backfills an unknown model when the turn context arrives on a later pass", () => {
     const db = openDb(":memory:");
-    applyFileBatch(db, { checkpoint: checkpoint({ source: "codex", identity: "r.jsonl" }), expectedOffset: null, items: [codex("r.jsonl")], now: NOW });
+    applyFileBatch(db, { checkpoint: checkpoint({ source: "codex", identity: "r.jsonl" }), expectedPrior: null, items: [codex("r.jsonl")], now: NOW });
     expect(queryNativeUsage(db, { period: 30, now: NOW }).byModel.map((m) => m.name)).toEqual([UNKNOWN_MODEL_FILTER]);
     insertNativeContext(db, { fileIdentity: "r.jsonl", turnId: "turn-1", rootTurnId: "turn-1", model: "gpt-5.6-luna" }, NOW);
     const snap = queryNativeUsage(db, { period: 30, now: NOW });
@@ -235,7 +239,7 @@ describe("Codex context joins", () => {
 
   it("resolves a conflicting context to unknown and stays unknown", () => {
     const db = openDb(":memory:");
-    applyFileBatch(db, { checkpoint: checkpoint({ source: "codex", identity: "r.jsonl" }), expectedOffset: null, items: [codex("r.jsonl")], now: NOW });
+    applyFileBatch(db, { checkpoint: checkpoint({ source: "codex", identity: "r.jsonl" }), expectedPrior: null, items: [codex("r.jsonl")], now: NOW });
     insertNativeContext(db, { fileIdentity: "r.jsonl", turnId: "turn-1", rootTurnId: "turn-1", model: "model-a" }, NOW);
     expect(insertNativeContext(db, { fileIdentity: "r.jsonl", turnId: "turn-1", rootTurnId: "turn-1", model: "model-b" }, NOW)).toBe("conflict");
     insertNativeContext(db, { fileIdentity: "r.jsonl", turnId: "turn-1", rootTurnId: "turn-1", model: "model-a" }, NOW);
@@ -290,7 +294,7 @@ describe("retention, CAS and cost coverage", () => {
     const recent = claude({ timestamp: "2026-11-17T10:00:00Z", message: { id: "recent", usage: { input_tokens: 1, output_tokens: 1 } } });
     const result = applyFileBatch(db, {
       checkpoint: checkpoint({ offset: 50 }),
-      expectedOffset: 0,
+      expectedPrior: null,
       items: [old, recent],
       now: NOW,
     });
@@ -302,24 +306,22 @@ describe("retention, CAS and cost coverage", () => {
 
   it("refuses to overwrite newer progress and to reuse a completed transition", () => {
     const db = openDb(":memory:");
-    applyFileBatch(db, { checkpoint: checkpoint({ offset: 50 }), expectedOffset: 0, items: [], now: NOW });
+    applyFileBatch(db, { checkpoint: checkpoint({ offset: 50 }), expectedPrior: null, items: [], now: NOW });
     expect(() => applyFileBatch(db, {
       checkpoint: checkpoint({ offset: 60 }),
-      expectedOffset: 0,
+      expectedPrior: checkpoint({ offset: 40 }),
       items: [],
       now: NOW,
     })).toThrow("checkpoint-conflict");
     applyFileBatch(db, {
       checkpoint: checkpoint({ generation: "2:2", dev: "2", ino: "2", offset: 10 }),
-      expectedOffset: 0,
-      expectNewGeneration: true,
+      expectedPrior: checkpoint({ offset: 50 }),
       items: [],
       now: NOW,
     });
     expect(() => applyFileBatch(db, {
       checkpoint: checkpoint({ generation: "2:2", dev: "2", ino: "2", offset: 20 }),
-      expectedOffset: 0,
-      expectNewGeneration: true,
+      expectedPrior: checkpoint({ offset: 50 }),
       items: [],
       now: NOW,
     })).toThrow("checkpoint-conflict");
@@ -461,6 +463,126 @@ describe("queryNativeUsage", () => {
     expect(snap.history.indexing).toBe(true);
     expect(snap.warnings).toContain("read-failed");
     expect(getSourceStatuses(db)).toHaveLength(2);
+    db.close();
+  });
+});
+
+describe("checkpoint compare-and-swap", () => {
+  it("rejects a stale writer whose observed predecessor has since transitioned", () => {
+    const db = openDb(":memory:");
+    const observed = checkpoint({ generation: "1:1", offset: 100 });
+    applyFileBatch(db, { checkpoint: observed, expectedPrior: null, items: [], now: NOW });
+    const next = checkpoint({ generation: "2:2", dev: "2", ino: "2", offset: 50 });
+    applyFileBatch(db, { checkpoint: next, expectedPrior: observed, items: [], now: NOW });
+    expect(() => applyFileBatch(db, {
+      checkpoint: checkpoint({ generation: "3:3", dev: "3", ino: "3", offset: 20 }),
+      expectedPrior: observed,
+      items: [claude({})],
+      now: NOW,
+    })).toThrow("checkpoint-conflict");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 0 });
+    expect(getFileCheckpoint(db, "claude", "p/one.jsonl")).toMatchObject({ generation: "2:2", offset: 50 });
+    db.close();
+  });
+
+  it("requires an exact prior state instead of an offset-zero wildcard", () => {
+    const db = openDb(":memory:");
+    const placeholder = checkpoint({ generation: "", offset: 0, done: false });
+    registerNativeFile(db, "claude", "p/one.jsonl", false, NOW);
+    expect(getFileCheckpoint(db, "claude", "p/one.jsonl")).toMatchObject({ generation: "", offset: 0 });
+    applyFileBatch(db, {
+      checkpoint: checkpoint({ generation: "1:1", offset: 10 }),
+      expectedPrior: placeholder,
+      items: [],
+      now: NOW,
+    });
+    expect(() => applyFileBatch(db, {
+      checkpoint: checkpoint({ generation: "1:1", offset: 20 }),
+      expectedPrior: null,
+      items: [],
+      now: NOW,
+    })).toThrow("checkpoint-conflict");
+    expect(getFileCheckpoint(db, "claude", "p/one.jsonl")?.offset).toBe(10);
+    db.close();
+  });
+});
+
+describe("indexed ingestion selection", () => {
+  function seed(db: ReturnType<typeof openDb>, identities: string[]): void {
+    for (const identity of identities) registerNativeFile(db, "claude", identity, false, NOW);
+  }
+  function setMtime(db: ReturnType<typeof openDb>, identity: string, mtime: number): void {
+    db.prepare("UPDATE native_usage_files SET mtime = ? WHERE source = 'claude' AND identity = ?").run(mtime, identity);
+  }
+
+  it("picks the two persisted-newest mtimes with identity tie-breaks, not visit order", () => {
+    const db = openDb(":memory:");
+    const ids = Array.from({ length: 6 }, (_, i) => `p/f${i}.jsonl`);
+    seed(db, ids);
+    for (const id of ids) setMtime(db, id, NOW - 3600);
+    setMtime(db, ids[4], NOW);
+    setMtime(db, ids[5], NOW);
+    const first = selectIngestionCandidates(db, "claude", NOW, 6);
+    expect(first.slice(0, 2).map((c) => c.identity)).toEqual(["p/f4.jsonl", "p/f5.jsonl"]);
+    expect(first).toHaveLength(6);
+    expect(first.slice(2).map((c) => c.identity)).not.toContain("p/f4.jsonl");
+    db.close();
+  });
+
+  it("keeps four fair slots rotating over done files and defers failed entries", () => {
+    const db = openDb(":memory:");
+    const ids = Array.from({ length: 10 }, (_, i) => `p/f${i}.jsonl`);
+    seed(db, ids);
+    for (const id of ids) {
+      db.prepare("UPDATE native_usage_files SET done = 1 WHERE source = 'claude' AND identity = ?").run(id);
+    }
+    setMtime(db, ids[0], NOW);
+    setMtime(db, ids[1], NOW);
+    markFileFailure(db, "claude", ids[2], NOW + 60, NOW, "missing-file");
+    const first = selectIngestionCandidates(db, "claude", NOW, 6);
+    expect(first.map((c) => c.identity)).not.toContain(ids[2]);
+    expect(first).toHaveLength(6);
+    const fairFirst = first.slice(2).map((c) => c.identity);
+    const second = selectIngestionCandidates(db, "claude", NOW, 6);
+    const fairSecond = second.slice(2).map((c) => c.identity);
+    expect(fairFirst).not.toEqual(fairSecond);
+    expect(new Set([...fairFirst, ...fairSecond]).size).toBeGreaterThan(4);
+    expect(getPersistentWarnings(db, "claude")).toEqual(["missing-file"]);
+    db.close();
+  });
+
+  it("selects two genuinely newest known tails among 500 same-day files within two calls", () => {
+    const db = openDb(":memory:");
+    const ids = Array.from({ length: 500 }, (_, i) => `p/f${String(i).padStart(3, "0")}.jsonl`);
+    seed(db, ids);
+    for (const id of ids) setMtime(db, id, NOW - 600);
+    setMtime(db, ids[498], NOW);
+    setMtime(db, ids[499], NOW);
+    expect(selectIngestionCandidates(db, "claude", NOW, 2).map((c) => c.identity))
+      .toEqual(["p/f498.jsonl", "p/f499.jsonl"]);
+    expect(selectIngestionCandidates(db, "claude", NOW, 2).map((c) => c.identity))
+      .toEqual(["p/f498.jsonl", "p/f499.jsonl"]);
+    db.close();
+  });
+
+  it("plans hot, fair and pending-directory queries without a temporary sort", () => {
+    const db = openDb(":memory:");
+    const plan = (sql: string, ...params: unknown[]) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[]).map((r) => r.detail);
+    for (const details of [
+      plan(
+        "SELECT identity FROM native_usage_files WHERE source = ? AND failed_until <= ? ORDER BY mtime DESC, identity ASC LIMIT ?",
+        "claude", NOW, 2,
+      ),
+      plan(
+        "SELECT identity FROM native_usage_files WHERE source = ? AND failed_until <= ? ORDER BY visit_ord ASC, identity ASC LIMIT ?",
+        "claude", NOW, 6,
+      ),
+      plan("SELECT path FROM native_usage_dirs WHERE source = ? AND state = 'pending' ORDER BY path ASC LIMIT 1", "claude"),
+      plan("SELECT path FROM native_usage_dirs WHERE source = ? AND state = 'pending' ORDER BY path DESC LIMIT 1", "codex"),
+    ]) {
+      expect(details.join("\n")).not.toMatch(/TEMP B-TREE/i);
+    }
     db.close();
   });
 });

@@ -746,7 +746,8 @@
         "file-replaced": "arquivo substituído durante a leitura",
         "subdir-failed": "subdiretório ilegível",
         "discovery-failed": "descoberta falhou",
-        "root-unavailable": "raiz nativa ilegível"
+        "root-unavailable": "raiz nativa ilegível",
+        "config-invalid": "configuração de raiz nativa rejeitada"
       },
       "cacheRead": "leitura de cache",
       "cacheWrite": "escrita de cache",

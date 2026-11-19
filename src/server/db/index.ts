@@ -291,12 +291,16 @@ export const MIGRATIONS: readonly string[] = [
     discarding   INTEGER NOT NULL DEFAULT 0,
     done         INTEGER NOT NULL DEFAULT 0,
     failed_until INTEGER NOT NULL DEFAULT 0,
+    last_warning TEXT,
     visit_ord    INTEGER NOT NULL DEFAULT 0,
     processed_at INTEGER,
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (source, identity)
   );
-  CREATE INDEX native_usage_files_selection ON native_usage_files (source, failed_until, visit_ord);
+  -- Hot selection is ordered by persisted native mtime; fair rotation by the persisted
+  -- visit ordinal. Both are order-covered so a poll never sorts the whole registry.
+  CREATE INDEX native_usage_files_hot ON native_usage_files (source, mtime DESC, identity);
+  CREATE INDEX native_usage_files_fair ON native_usage_files (source, visit_ord, identity);
 
   -- Durable bounded discovery: the pending/completed directory registry plus the
   -- one unfinished directory per source. Entries are validated root-relative paths.
@@ -306,8 +310,10 @@ export const MIGRATIONS: readonly string[] = [
     child  INTEGER NOT NULL DEFAULT 0,
     state  TEXT NOT NULL CHECK (state IN ('pending', 'done')),
     cycle  INTEGER NOT NULL,
+    last_warning TEXT,
     PRIMARY KEY (source, path)
   );
+  CREATE INDEX native_usage_dirs_pending ON native_usage_dirs (source, state, path);
 
   CREATE TABLE native_usage_discovery (
     source        TEXT PRIMARY KEY,
