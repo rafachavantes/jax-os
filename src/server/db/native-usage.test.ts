@@ -949,6 +949,19 @@ function seedAggregationFixture(db: ReturnType<typeof openDb>): void {
 }
 
 describe("scoped projection diagnostics and reduced SQL aggregation", () => {
+  it("keeps the old day-index order for equal-token slices across days", () => {
+    const db = openDb(":memory:");
+    for (const [id, agent, model, daysAgo] of [["late", "Z-late", "zeta", 0], ["early", "A-early", "alpha", 1]] as const) {
+      upsertNativeUsageItem(db, opencode({ session_id: id, message_id: id, agent, model_id: model,
+        created: createdAt(daysAgo), input: 5, output: 5, cost: null }));
+    }
+    const opts = { period: 30 as const, now: NOW };
+    const legacy = legacySnapshot(db, opts);
+    expect(legacy.byModel.map((s) => s.name)).toEqual(["alpha", "zeta"]);
+    expectMatchesLegacy(queryNativeUsage(db, opts), legacy);
+    db.close();
+  });
+
   it("parity-matches the frozen 342 reduction across periods, agents and models", () => {
     const db = openDb(":memory:");
     seedAggregationFixture(db);

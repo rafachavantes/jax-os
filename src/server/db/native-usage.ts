@@ -929,7 +929,7 @@ type FacetRow = {
   model: string | null;
   cost_currency: string | null;
   cost_present: number;
-  first_rowid: number;
+  first_position: number;
   items: number;
   all_input: number | null;
   all_output: number | null;
@@ -937,8 +937,7 @@ type FacetRow = {
 };
 
 type SliceAcc = {
-  // First persisted identity of this slice: equal-token slices keep the order the old
-  // per-item reducer produced instead of SQLite's grouped-key order.
+  // Equal-token slices retain the old day-index scan order, including within-day ties.
   firstOrder: number;
   items: number;
   allInput: number;
@@ -978,7 +977,7 @@ function emptySlice(name: string, firstOrder: number): SliceAcc & { name: string
 }
 
 function addToSlice(acc: SliceAcc, row: FacetRow): void {
-  if (row.first_rowid < acc.firstOrder) acc.firstOrder = row.first_rowid;
+  if (row.first_position < acc.firstOrder) acc.firstOrder = row.first_position;
   const items = checkedAdd(0, row.items);
   const input = checkedAdd(0, row.all_input ?? 0);
   const output = checkedAdd(0, row.all_output ?? 0);
@@ -1060,11 +1059,14 @@ export function queryNativeUsage(
     .prepare(
       `SELECT i.agent AS agent, i.model AS model, i.cost_currency AS cost_currency,
               CASE WHEN i.cost_amount IS NULL THEN 0 ELSE 1 END AS cost_present,
-              MIN(i.rowid) AS first_rowid,
+              MIN(i.first_position) AS first_position,
               COUNT(*) AS items, SUM(i.all_input) AS all_input, SUM(i.all_output) AS all_output,
               SUM(i.cost_amount) AS cost_sum
-         FROM native_usage_items i
-        WHERE ${where}
+         FROM (
+           SELECT i.agent, i.model, i.cost_currency, i.cost_amount, i.all_input, i.all_output,
+                  ROW_NUMBER() OVER (ORDER BY i.day, i.rowid) AS first_position
+             FROM native_usage_items i WHERE ${where}
+         ) i
         GROUP BY i.agent, i.model, i.cost_currency, CASE WHEN i.cost_amount IS NULL THEN 0 ELSE 1 END`,
     )
     .all(...params) as FacetRow[];
@@ -1086,11 +1088,11 @@ export function queryNativeUsage(
   let unknownUnit = 0;
   for (const row of facetRows) {
     const items = checkedAdd(0, row.items);
-    const agentAcc = agents.get(row.agent) ?? emptySlice(row.agent, row.first_rowid);
+    const agentAcc = agents.get(row.agent) ?? emptySlice(row.agent, row.first_position);
     addToSlice(agentAcc, row);
     agents.set(row.agent, agentAcc);
     const modelName = row.model ?? UNKNOWN_MODEL_FILTER;
-    const modelAcc = models.get(modelName) ?? emptySlice(modelName, row.first_rowid);
+    const modelAcc = models.get(modelName) ?? emptySlice(modelName, row.first_position);
     addToSlice(modelAcc, row);
     models.set(modelName, modelAcc);
     if (row.cost_present !== 1) continue;
