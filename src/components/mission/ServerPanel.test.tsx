@@ -161,6 +161,34 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
     expect(renderIntl(createElement(ServerPanel)).html).toContain("7 alerts");
   });
 
+  it("excludes a pending package check from the count and labels it neutrally", () => {
+    harness.results.set("health:24h", health());
+    harness.results.set("mission:alerts", {
+      data: { ok: true, data: [
+        { kind: "zombies", count: 2, rows: [] },
+        { kind: "disk", mount: "/data", usedPercent: 90 },
+        { kind: "source", source: "packages", state: "pending" },
+      ] }, isError: false,
+    });
+    const { html } = renderIntl(createElement(ServerPanel));
+    expect(html).toContain("3 alerts");
+    expect(html).toContain("Package check pending");
+  });
+
+  it("counts the cached failure once while a pending refresh contributes zero", () => {
+    harness.results.set("health:24h", health());
+    harness.results.set("mission:alerts", {
+      data: { ok: true, data: [
+        { kind: "updates", count: 3, rows: [] },
+        { kind: "source", source: "packages", state: "failed" },
+        { kind: "source", source: "packages", state: "pending" },
+      ] }, isError: false,
+    });
+    const { html } = renderIntl(createElement(ServerPanel));
+    expect(html).toContain("4 alerts");
+    expect(html).toContain("Package check pending");
+  });
+
   it("shows the alert count (summed from existing sources) and a source warning on failure", () => {
     harness.results.set("health:24h", health());
     harness.results.set("mission:alerts", {
@@ -242,6 +270,33 @@ describe("ServerAlerts — read-only detail reused on Health (plan F4)", () => {
     expect(renderIntl(createElement(ServerAlerts)).html).toContain("Server alerts unavailable");
   });
 
+  it("renders the pending package check neutrally and suppresses the all-clear", () => {
+    harness.results.set("mission:alerts", {
+      data: { ok: true, data: [{ kind: "source", source: "packages", state: "pending" }] }, isError: false,
+    });
+    const { html, errors } = renderIntl(createElement(ServerAlerts));
+    expect(errors).toEqual([]);
+    expect(html).toContain("Package check pending");
+    expect(html).not.toContain("No pending updates.");
+  });
+
+  it("keeps cached rows and BOTH source facts when a failed observation is refreshing", () => {
+    harness.results.set("mission:alerts", {
+      data: { ok: true, data: [
+        { kind: "updates", count: 1, rows: [
+          { name: "openssl", arch: "amd64", key: "openssl:amd64", fromVersion: "1", toVersion: "2", security: false },
+        ] },
+        { kind: "source", source: "packages", state: "failed" },
+        { kind: "source", source: "packages", state: "pending" },
+      ] }, isError: false,
+    });
+    const { html } = renderIntl(createElement(ServerAlerts));
+    expect(html).toContain("openssl");
+    expect(html).toContain("Could not check packages.");
+    expect(html).toContain("Package check pending");
+    expect(html).not.toContain("No pending updates.");
+  });
+
   it("a non-array payload (out-of-shape fixture) degrades to empty, never a crash", () => {
     harness.results.set("mission:alerts", { data: { ok: true, data: { latest: LATEST } }, isError: false });
     expect(() => renderIntl(createElement(ServerAlerts))).not.toThrow();
@@ -259,6 +314,7 @@ describe("both actual catalogs resolve every server key (plan Task 5)", () => {
         { name: "openssl", fromVersion: "3.0.13", toVersion: "3.0.15", security: true },
         { name: "vim", fromVersion: "1", toVersion: "2", security: false },
       ] },
+      { kind: "source", source: "packages", state: "pending" },
     ] },
     isError: false,
   };
@@ -278,14 +334,18 @@ describe("both actual catalogs resolve every server key (plan Task 5)", () => {
       expect(panel.html).toContain("/tmp");
       expect(panel.html).toContain("1.5 / 4.0 GB");
       expect(panel.html).toContain("4 alerts");
+      expect(panel.html).toContain("Package check pending");
       expect(detail.html).toContain("Server alerts");
+      expect(detail.html).toContain("Package check pending");
       expect(detail.html).toContain("2 children");
       expect(detail.html).toContain("Read only");
     } else {
       expect(panel.html).toContain("/tmp");
       expect(panel.html).toContain("1.5 / 4.0 GB");
       expect(panel.html).toContain("4 alertas");
+      expect(panel.html).toContain("Verificação de pacotes pendente");
       expect(detail.html).toContain("Alertas do servidor");
+      expect(detail.html).toContain("Verificação de pacotes pendente");
       expect(detail.html).toContain("2 filhos");
       expect(detail.html).toContain("Somente leitura");
     }

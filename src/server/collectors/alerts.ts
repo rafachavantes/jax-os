@@ -15,7 +15,9 @@ export type Alert =
   | { kind: "updates"; count: number; rows: PackageRow[] }
   // M5 Task 3: an ordinary probe failure is an explicit source state, not a silently omitted
   // alert. Existing array consumers keep their fields; this is an additive variant.
-  | { kind: "source"; source: AlertSource; state: "failed" };
+  | { kind: "source"; source: AlertSource; state: "failed" }
+  // A caller timeout leaves the original package probe pending; that is not a failed source.
+  | { kind: "source"; source: "packages"; state: "pending" };
 
 // df -P guarantees one line per filesystem. Filter to /dev/* so pseudo
 // filesystems (/run/lock at 5MB) never false-alert.
@@ -147,6 +149,8 @@ const SIM_PREAMBLE_RE = [
   /^Reading state information\.\.\.$/,
   /^Calculating upgrade\.\.\.$/,
   /^The following packages will be upgraded:$/,
+  /^The following packages have been kept back:$/,
+  /^The following upgrades have been deferred due to phasing:$/,
   /^(?:Need to get|After this operation|Fetched) /,
   /^\s{2,}[a-z0-9][a-z0-9+.:-]*(?:\s+[a-z0-9][a-z0-9+.:-]*)*$/,
 ];
@@ -552,14 +556,20 @@ function unavailableObservation(base: PackageObservation | null, at: number): Pa
   };
 }
 
+type PackageAlertOutcome =
+  | { kind: "observation"; observation: PackageObservation }
+  | { kind: "error"; observation: PackageObservation }
+  | { kind: "pending"; snapshot: PackageObservation | null };
+
 // A slow package probe may take a full second; the rest of the alerts always resolve. The
-// original pending probe is never cancelled or duplicated by this timeout.
+// original pending probe is never cancelled or duplicated by this timeout, and a caller timeout
+// is reported as pending instead of manufacturing a failed observation.
 async function packagesWithinBudget(
   packages: () => Promise<PackageObservation>,
   snapshot: () => PackageObservation | null,
   waitMs: number,
   now: () => number,
-): Promise<PackageObservation> {
+): Promise<PackageAlertOutcome> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), waitMs); });
   try {
@@ -567,8 +577,9 @@ async function packagesWithinBudget(
       packages().then((obs) => ({ kind: "obs" as const, obs }), () => ({ kind: "error" as const })),
       deadline.then(() => ({ kind: "timeout" as const })),
     ]);
-    if (result.kind === "obs") return result.obs;
-    return unavailableObservation(snapshot(), now());
+    if (result.kind === "obs") return { kind: "observation", observation: result.obs };
+    if (result.kind === "error") return { kind: "error", observation: unavailableObservation(snapshot(), now()) };
+    return { kind: "pending", snapshot: snapshot() };
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -600,17 +611,25 @@ export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]
   } catch {
     alerts.push({ kind: "source", source: "zombies", state: "failed" });
   }
-  const observation = await packagesWithinBudget(
+  const packagesOutcome = await packagesWithinBudget(
     packages, snapshot, options.packageWaitMs ?? PACKAGE_ALERT_AWAIT_MS, Date.now,
   );
-  const normalized = normalizePackageCandidates(observation).candidates;
-  if (normalized.length > 0) {
-    alerts.push({ kind: "updates", count: normalized.length, rows: normalized });
+  // A pending refresh reuses the cached snapshot's known rows and keeps any genuine completed
+  // failure warning; the pending fact itself never contributes a failed-source claim.
+  const observation = packagesOutcome.kind === "pending" ? packagesOutcome.snapshot : packagesOutcome.observation;
+  if (observation) {
+    const normalized = normalizePackageCandidates(observation).candidates;
+    if (normalized.length > 0) {
+      alerts.push({ kind: "updates", count: normalized.length, rows: normalized });
+    }
+    // A partial observation keeps its known total but never becomes a complete-count/all-clear
+    // badge: the existing source warning rides alongside the rows.
+    if (observation.state !== "ok") {
+      alerts.push({ kind: "source", source: "packages", state: "failed" });
+    }
   }
-  // A partial observation keeps its known total but never becomes a complete-count/all-clear
-  // badge: the existing source warning rides alongside the rows.
-  if (observation.state !== "ok") {
-    alerts.push({ kind: "source", source: "packages", state: "failed" });
+  if (packagesOutcome.kind === "pending") {
+    alerts.push({ kind: "source", source: "packages", state: "pending" });
   }
   return alerts;
 }

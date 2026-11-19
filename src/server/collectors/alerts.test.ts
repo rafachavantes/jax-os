@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createPackageObservationReader, createSystemAsyncExec, getAlerts, normalizePackageCandidates, packageKey,
   parseDfAlerts, parseHoldListing, parseHoldRows, parseLoadAlert, parsePackageListing, parsePackageRows,
-  parseSimulationListing, parseSimulationRows, parseZombieRows, PACKAGE_TTL_MS, type PackageObservation,
+  parseSimulationListing, parseSimulationRows, parseZombieRows, PACKAGE_ALERT_AWAIT_MS, PACKAGE_TTL_MS,
+  type PackageObservation,
 } from "./alerts";
 
 vi.mock("./alerts", async (importOriginal) => {
@@ -168,8 +169,96 @@ describe("getAlerts — explicit source states (M5 Task 3)", () => {
     });
     expect(packages).toHaveBeenCalledTimes(1);
     expect(alerts).toContainEqual({ kind: "disk", mount: "/data", usedPercent: 90 });
+    // Cached completed failure and the live pending refresh are BOTH source facts.
     expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "failed" });
+    expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "pending" });
     expect(alerts.find((a) => a.kind === "updates")).toMatchObject({ count: 1 });
+  });
+
+  it("a first pending package load emits only the pending fact, never a failed source", async () => {
+    const alerts = await getAlerts({
+      exec: execFor(ALERT_EXECS), loadavg: loadavgOk,
+      packages: () => new Promise<PackageObservation>(() => {}), packageSnapshot: () => null, packageWaitMs: 5,
+    });
+    expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "pending" });
+    expect(alerts).not.toContainEqual({ kind: "source", source: "packages", state: "failed" });
+    expect(alerts.some((a) => a.kind === "updates")).toBe(false);
+  });
+
+  it("a completed non-ok observation keeps its visible failure and is not pending", async () => {
+    const alerts = await getAlerts({
+      exec: execFor(ALERT_EXECS), loadavg: loadavgOk,
+      packages: async () => observation({
+        rows: [], state: "failed", lastGoodAt: null, stale: false,
+        error: "package-query-failed", warnings: ["package-query-failed"],
+        children: {
+          candidates: childFacts("2026-11-19T00:00:00.000Z", false, null),
+          holds: childFacts("2026-11-19T00:00:00.000Z", false, null),
+          simulation: childFacts("2026-11-19T00:00:00.000Z", false, null),
+          architecture: childFacts("2026-11-19T00:00:00.000Z", false, null),
+        },
+      }),
+    });
+    expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "failed" });
+    expect(alerts).not.toContainEqual({ kind: "source", source: "packages", state: "pending" });
+  });
+
+  it("an explicit package rejection is still a failed source, not pending", async () => {
+    const alerts = await getAlerts({
+      exec: execFor(ALERT_EXECS), loadavg: loadavgOk,
+      packages: async () => { throw new Error("apt unavailable"); },
+    });
+    expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "failed" });
+    expect(alerts).not.toContainEqual({ kind: "source", source: "packages", state: "pending" });
+  });
+
+  it("a slow refresh after a real five-minute expiry keeps cached rows and only adds pending", async () => {
+    let now = 1_000_000;
+    let simulationCalls = 0;
+    let releaseSimulation: ((value: string) => void) | undefined;
+    const exec = vi.fn(async (file: string) => {
+      if (file === "apt") return "Listing...\ncurl/noble 8.5.0 amd64 [upgradable from: 8.4.0]\n";
+      if (file === "apt-mark") return "";
+      if (file === "apt-get") {
+        simulationCalls += 1;
+        if (simulationCalls === 1) {
+          return "Reading package lists...\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n";
+        }
+        return new Promise<string>((resolve) => { releaseSimulation = resolve; });
+      }
+      if (file === "dpkg") return "amd64\n";
+      throw new Error(`unexpected ${file}`);
+    });
+    const reader = createPackageObservationReader(exec, () => now);
+    const cached = await reader.read();
+    expect(cached.state).toBe("ok");
+    now += PACKAGE_TTL_MS + 1;
+    const refresh = reader.read();
+    vi.useFakeTimers();
+    try {
+      const budget = getAlerts({
+        exec: execFor(ALERT_EXECS), loadavg: loadavgOk,
+        packages: () => refresh, packageSnapshot: () => reader.peek(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(PACKAGE_ALERT_AWAIT_MS);
+      const alerts = await budget;
+      expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "pending" });
+      expect(alerts).not.toContainEqual({ kind: "source", source: "packages", state: "failed" });
+      expect(alerts.find((a) => a.kind === "updates")).toMatchObject({ count: 1, rows: [{ key: "curl:amd64" }] });
+      expect(reader.peek()).toBe(cached);
+      releaseSimulation?.("Reading package lists...\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n");
+      const completedObservation = await refresh;
+      expect(completedObservation.state).toBe("ok");
+      const completed = await getAlerts({
+        exec: execFor(ALERT_EXECS), loadavg: loadavgOk,
+        packages: () => reader.read(), packageSnapshot: () => reader.peek(),
+      });
+      expect(completed).not.toContainEqual({ kind: "source", source: "packages", state: "pending" });
+      expect(completed.find((a) => a.kind === "updates")).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -274,6 +363,36 @@ describe("package parsers — architecture identity (M5 Task 2)", () => {
       "1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
     ].join("\n");
     expect(parseSimulationListing(out)).toEqual({ rows: [{ name: "bar", arch: "all", version: "2" }], recognized: true });
+  });
+
+  it("recognizes apt's kept-back and phasing headers without inventing a deferral reason", () => {
+    const out = [
+      "Reading package lists...",
+      "Building dependency tree...",
+      "Calculating upgrade...",
+      "The following packages will be upgraded:",
+      "  bar",
+      "The following packages have been kept back:",
+      "  dependency-held",
+      "The following upgrades have been deferred due to phasing:",
+      "  phased-update",
+      "Inst bar [1] (2 stable [amd64])",
+      "1 upgraded, 0 newly installed, 0 to remove and 2 not upgraded.",
+    ].join("\n");
+    expect(parseSimulationListing(out)).toEqual({
+      rows: [{ name: "bar", arch: "amd64", version: "2" }],
+      recognized: true,
+    });
+  });
+
+  it("still invalidates the simulation on unsupported prose around those headers", () => {
+    const out = [
+      "The following packages have been kept back:",
+      "  dependency-held",
+      "unexpected vendor banner",
+      "0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.",
+    ].join("\n");
+    expect(parseSimulationListing(out).recognized).toBe(false);
   });
 
   it("recognizes a zero-upgrade summary but never empty/arbitrary prose as proof of zero", () => {

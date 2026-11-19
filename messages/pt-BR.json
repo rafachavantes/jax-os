@@ -206,6 +206,7 @@
       "packagesSecurityCount": "{count} de segurança",
       "packagesMore": "+{count} mais",
       "packagesEmpty": "Nenhuma atualização pendente.",
+      "packagesPending": "Verificação de pacotes pendente",
       "security": "segurança",
       "copy": "copiar",
       "copyCaption": "copiar, não executar",

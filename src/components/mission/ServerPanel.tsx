@@ -57,7 +57,10 @@ function alertRowsOf(data: { ok: true; data: Alert[] } | undefined): Alert[] {
 // Row counts stay exact for zombies/updates; each disk/load/source warning without a row count
 // contributes once so a failing source is never invisible in the compact count.
 function alertCount(rows: Alert[]): number {
-  return rows.reduce((sum, alert) => sum + ("count" in alert && typeof alert.count === "number" ? alert.count : 1), 0);
+  return rows.reduce((sum, alert) => {
+    if (alert.kind === "source" && alert.state === "pending") return sum;
+    return sum + ("count" in alert && typeof alert.count === "number" ? alert.count : 1);
+  }, 0);
 }
 
 // Compact home resource strip (M2 plan Task 5): glanceable CPU/RAM/root disk plus an explicit
@@ -94,6 +97,7 @@ export function ServerPanel() {
       : "—",
   };
   const rows = alertRowsOf(alerts.data);
+  const packagesPending = rows.some((alert) => alert.kind === "source" && alert.source === "packages" && alert.state === "pending");
   const envData = environment.data?.ok ? environment.data.data : null;
   const tmp = envData?.tmp ?? null;
   const tmpPending = environment.data === undefined && !environment.isError;
@@ -141,9 +145,12 @@ export function ServerPanel() {
       ) : !alertsReady ? (
         <span className="h-4 w-20 animate-pulse rounded bg-surface-2" />
       ) : (
-        <a href="/health#alerts" className="ml-auto flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] font-semibold text-body-ink hover:border-line-strong">
-          {t("alertsCount", { count: alertCount(rows) })}
-        </a>
+        <>
+          {packagesPending ? <span className="text-[11px] text-muted">{t("packagesPending")}</span> : null}
+          <a href="/health#alerts" className="ml-auto flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] font-semibold text-body-ink hover:border-line-strong">
+            {t("alertsCount", { count: alertCount(rows) })}
+          </a>
+        </>
       )}
     </section>
   );
@@ -164,8 +171,9 @@ export function ServerAlerts() {
   const updatesAlert = rows.find((a): a is Extract<Alert, { kind: "updates" }> => a.kind === "updates");
   const zombieGroups = zombiesAlert ? groupZombies(zombiesAlert.rows) : [];
   const failedSources = rows
-    .filter((a): a is Extract<Alert, { kind: "source" }> => a.kind === "source")
+    .filter((a): a is Extract<Alert, { kind: "source"; state: "failed" }> => a.kind === "source" && a.state === "failed")
     .map((a) => a.source);
+  const packagesPending = rows.some((a) => a.kind === "source" && a.source === "packages" && a.state === "pending");
   const packages: PackageRow[] = updatesAlert?.rows ?? [];
   const securityNames = packages.filter((p) => p.security).map((p) => p.name);
   const visiblePackages = packages.slice(0, VISIBLE_PACKAGES);
@@ -178,6 +186,7 @@ export function ServerAlerts() {
       {failedSources.map((source) => (
         <SourceWarning key={source} label={t("sourceFailed", { source: t(`sourceNames.${source}`) })} />
       ))}
+      {packagesPending ? <span className="text-[12.5px] text-muted">{t("packagesPending")}</span> : null}
       {pending ? (
         <span className="h-6 animate-pulse rounded bg-surface-2" />
       ) : (
@@ -207,7 +216,7 @@ export function ServerAlerts() {
               ) : null}
             </div>
             {packages.length === 0 ? (
-              <span className="text-[12.5px] text-muted">{t("packagesEmpty")}</span>
+              packagesPending ? null : <span className="text-[12.5px] text-muted">{t("packagesEmpty")}</span>
             ) : (
               <>
                 {visiblePackages.map((p) => (

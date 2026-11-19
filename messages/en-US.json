@@ -206,6 +206,7 @@
       "packagesSecurityCount": "{count} security",
       "packagesMore": "+{count} more",
       "packagesEmpty": "No pending updates.",
+      "packagesPending": "Package check pending",
       "security": "security",
       "copy": "copy",
       "copyCaption": "copy, never runs",
