@@ -31,7 +31,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "executions", href: "/executions", icon: History, phase: 10 },
   { key: "files", href: "/files", icon: FolderGit2, phase: 5 },
   { key: "tokens", href: "/tokens", icon: Coins, phase: 6 },
-  { key: "server", href: "/health", icon: Server, phase: 7, hidden: true },
+  { key: "server", href: "/health", icon: Server, phase: 7 },
   { key: "audit", href: "/audit", icon: ScrollText, phase: 8, hidden: true },
   { key: "tools", href: "/settings", icon: Blocks, phase: 9 },
 ];

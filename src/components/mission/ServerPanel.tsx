@@ -4,15 +4,18 @@ import { useTranslations } from "next-intl";
 import { useQuery } from "@tanstack/react-query";
 import { Cpu, HardDrive, MemoryStick } from "lucide-react";
 import { fetchEnvelope } from "@/lib/api";
-import { meterValuesCompact } from "@/lib/format";
+import { RelativeTime } from "@/components/RelativeTime";
 import type { HealthPayload, HealthLatest } from "@/server/db/metrics";
 import type { Alert, PackageRow, ZombieRow } from "@/server/collectors/alerts";
+import type { ResourcesSection } from "@/server/collectors/environment";
 import { SourceWarning } from "./SourceWarning";
 
 const VISIBLE_PACKAGES = 3;
 
-function fmtGb(mb: number | null | undefined): string {
-  return mb === null || mb === undefined ? "—" : `${(mb / 1024).toFixed(1)} GB`;
+// Binary memory is explicit MiB/GiB; never a decimal "GB" label for RAM.
+function fmtMem(mb: number | null | undefined): string {
+  if (mb === null || mb === undefined) return "—";
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GiB` : `${mb.toFixed(0)} MiB`;
 }
 
 function fmtVal(n: number | null | undefined, digits = 0): string {
@@ -24,7 +27,7 @@ function fmtVal(n: number | null | undefined, digits = 0): string {
 export function meterValues(latest: HealthLatest | null, cores: number | null) {
   return {
     cpu: latest?.cpuPct != null ? `${latest.cpuPct.toFixed(0)}%` : "—",
-    mem: latest ? `${fmtGb(latest.memUsedMb)} / ${fmtGb(latest.memTotalMb)}` : "—",
+    mem: latest ? `${fmtMem(latest.memUsedMb)} / ${fmtMem(latest.memTotalMb)}` : "—",
     disk: `${fmtVal(latest?.diskUsedGb)} / ${fmtVal(latest?.diskTotalGb)} GB`,
     load: latest?.load5 != null ? `${latest.load5.toFixed(2)} / ${cores ?? "—"}` : "—",
   };
@@ -51,8 +54,13 @@ function alertRowsOf(data: { ok: true; data: Alert[] } | undefined): Alert[] {
   return Array.isArray(data?.data) ? data.data : [];
 }
 
+// Row counts stay exact for zombies/updates; each disk/load/source warning without a row count
+// contributes once so a failing source is never invisible in the compact count.
 function alertCount(rows: Alert[]): number {
-  return rows.reduce((sum, alert) => sum + ("count" in alert && typeof alert.count === "number" ? alert.count : 0), 0);
+  return rows.reduce((sum, alert) => {
+    if (alert.kind === "source" && alert.state === "pending") return sum;
+    return sum + ("count" in alert && typeof alert.count === "number" ? alert.count : 1);
+  }, 0);
 }
 
 // Compact home resource strip (M2 plan Task 5): glanceable CPU/RAM/root disk plus an explicit
@@ -71,11 +79,29 @@ export function ServerPanel() {
     queryFn: ({ signal }) => fetchEnvelope<Alert[]>("/api/mission/alerts", signal),
     refetchInterval: 60_000,
   });
+  // M5: the independent actual /tmp observation (never the root disk, never Shmem).
+  const environment = useQuery({
+    queryKey: ["environment", "resources"],
+    queryFn: ({ signal }) => fetchEnvelope<ResourcesSection>("/api/environment?section=resources", signal),
+    refetchInterval: 10_000,
+  });
 
   const healthPending = health.data === undefined && !health.isError;
   const healthData = health.data?.ok ? health.data.data : null;
-  const mv = meterValuesCompact(healthData?.latest ?? null, healthData?.cores ?? null);
+  const latest = healthData?.latest ?? null;
+  const mv = {
+    cpu: latest?.cpuPct != null ? `${latest.cpuPct.toFixed(0)}%` : "—",
+    mem: latest ? `${fmtMem(latest.memUsedMb)} / ${fmtMem(latest.memTotalMb)}` : "—",
+    disk: latest?.diskUsedGb != null && latest?.diskTotalGb != null
+      ? `${Math.round((latest.diskUsedGb / latest.diskTotalGb) * 100)}%`
+      : "—",
+  };
   const rows = alertRowsOf(alerts.data);
+  const packagesPending = rows.some((alert) => alert.kind === "source" && alert.source === "packages" && alert.state === "pending");
+  const envData = environment.data?.ok ? environment.data.data : null;
+  const tmp = envData?.tmp ?? null;
+  const tmpPending = environment.data === undefined && !environment.isError;
+  const tmpStale = envData?.stale === true;
   const alertsReady = alerts.data !== undefined && alerts.data.ok === true;
   const meters = [
     { key: "cpu" as const, icon: Cpu, value: mv.cpu },
@@ -86,31 +112,45 @@ export function ServerPanel() {
   return (
     <section data-testid="server-strip" className="sticky top-0 z-10 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-surface px-3.5 py-2">
       <span className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("title")}</span>
-      {health.isError ? (
-        <SourceWarning label={t("metersUnavailable")} />
-      ) : healthPending ? (
-        <span className="h-4 w-48 animate-pulse rounded bg-surface-2" />
-      ) : (
-        meters.map(({ key, icon: Icon, value }) => (
-          <a key={key} href={`/health#${key}`} className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
-            <Icon className="h-3.5 w-3.5" aria-hidden />
-            <span>{t(`meters.${key}`)}</span>
+      {health.isError ? <SourceWarning label={t("metersUnavailable")} /> : null}
+      {meters.map(({ key, icon: Icon, value }) => (
+        <a key={key} href={`/health#${key}`} className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
+          <Icon className="h-3.5 w-3.5" aria-hidden />
+          <span>{t(`meters.${key}`)}</span>
+          {healthPending ? (
+            <span className="h-4 w-12 animate-pulse rounded bg-surface-2" />
+          ) : (
             <span className="font-semibold text-ink">{value}</span>
-          </a>
-        ))
-      )}
-      <a href="/health#resources" className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
+          )}
+        </a>
+      ))}
+      <a href="/health#tmp" className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
         <span>{t("temp")}</span>
-        <span className="font-semibold text-ink">{t("tempUnavailable")}</span>
+        {tmpPending ? (
+          <span className="h-4 w-24 animate-pulse rounded bg-surface-2" />
+        ) : (
+          <span className="font-semibold text-ink">
+            {tmp ? `${tmp.usedGb.toFixed(1)} / ${tmp.totalGb.toFixed(1)} GB` : t("tempUnavailable")}
+          </span>
+        )}
       </a>
+      {tmpStale && tmp ? (
+        <span className="flex items-center gap-1 text-[11px] text-warning">
+          {t("tempStale")}
+          {envData?.lastGoodAt ? <> · <RelativeTime epochMs={Date.parse(envData.lastGoodAt)} /></> : null}
+        </span>
+      ) : null}
       {alerts.isError ? (
         <SourceWarning label={t("alertsUnavailable")} />
       ) : !alertsReady ? (
         <span className="h-4 w-20 animate-pulse rounded bg-surface-2" />
       ) : (
-        <a href="/health#alerts" className="ml-auto flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] font-semibold text-body-ink hover:border-line-strong">
-          {t("alertsCount", { count: alertCount(rows) })}
-        </a>
+        <>
+          {packagesPending ? <span className="text-[11px] text-muted">{t("packagesPending")}</span> : null}
+          <a href="/health#alerts" className="ml-auto flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] font-semibold text-body-ink hover:border-line-strong">
+            {t("alertsCount", { count: alertCount(rows) })}
+          </a>
+        </>
       )}
     </section>
   );
@@ -130,6 +170,10 @@ export function ServerAlerts() {
   const zombiesAlert = rows.find((a): a is Extract<Alert, { kind: "zombies" }> => a.kind === "zombies");
   const updatesAlert = rows.find((a): a is Extract<Alert, { kind: "updates" }> => a.kind === "updates");
   const zombieGroups = zombiesAlert ? groupZombies(zombiesAlert.rows) : [];
+  const failedSources = rows
+    .filter((a): a is Extract<Alert, { kind: "source"; state: "failed" }> => a.kind === "source" && a.state === "failed")
+    .map((a) => a.source);
+  const packagesPending = rows.some((a) => a.kind === "source" && a.source === "packages" && a.state === "pending");
   const packages: PackageRow[] = updatesAlert?.rows ?? [];
   const securityNames = packages.filter((p) => p.security).map((p) => p.name);
   const visiblePackages = packages.slice(0, VISIBLE_PACKAGES);
@@ -139,6 +183,10 @@ export function ServerAlerts() {
     <section id="alerts" className="flex flex-col gap-4 rounded-lg border border-line bg-surface px-5 py-[18px]">
       <span className="text-sm font-bold text-ink">{t("alertsTitle")}</span>
       {alerts.isError ? <SourceWarning label={t("alertsUnavailable")} /> : null}
+      {failedSources.map((source) => (
+        <SourceWarning key={source} label={t("sourceFailed", { source: t(`sourceNames.${source}`) })} />
+      ))}
+      {packagesPending ? <span className="text-[12.5px] text-muted">{t("packagesPending")}</span> : null}
       {pending ? (
         <span className="h-6 animate-pulse rounded bg-surface-2" />
       ) : (
@@ -168,7 +216,7 @@ export function ServerAlerts() {
               ) : null}
             </div>
             {packages.length === 0 ? (
-              <span className="text-[12.5px] text-muted">{t("packagesEmpty")}</span>
+              packagesPending ? null : <span className="text-[12.5px] text-muted">{t("packagesEmpty")}</span>
             ) : (
               <>
                 {visiblePackages.map((p) => (

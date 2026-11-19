@@ -3083,3 +3083,30 @@ export function getCurrentRunStates(
     };
   });
 }
+
+// M5 Task 2: bounded last-known logical pane context. This is display provenance ONLY: it
+// reads the newest agent event already stored for a validated (pane, server incarnation) key
+// and never proves an OS process owns a run, nor infers a child executor. null means unknown.
+export type LastKnownPaneContext = {
+  project: string;
+  role: string | null;
+  session: string | null;
+  observedAt: string;
+};
+
+export function lastKnownPaneContext(
+  db: Database.Database,
+  pane: string,
+  tmuxIncarnation: string | null,
+): LastKnownPaneContext | null {
+  if (!pane || !tmuxIncarnation) return null;
+  const row = db.prepare(
+    `SELECT project, role, harness_session, ts FROM workflow_events
+     WHERE pane_key = ? AND pane IS NOT NULL AND ${paneAgentFilter()}
+     ORDER BY id DESC LIMIT 1`,
+  ).get(paneKey(pane, tmuxIncarnation)) as
+    | { project: string; role: string | null; harness_session: string | null; ts: string }
+    | undefined;
+  if (!row) return null;
+  return { project: row.project, role: row.role, session: row.harness_session, observedAt: row.ts };
+}

@@ -98,35 +98,66 @@ export function isCodexCommand(cmd: string): boolean {
   return base === "codex" || base.startsWith("codex");
 }
 
-// tmux's own wording for "no server running at all" — the one genuinely quiet-empty case (§7.3).
-// Anything else (missing binary/ENOENT, permission, a corrupt socket, ...) is a real source
-// failure and must propagate, not be swallowed into "zero live panes" (Finding 5).
-const NO_SERVER_RE = /no server running|error connecting/i;
+// tmux's own wording for "no server running at all" or a missing socket — the only genuinely
+// quiet-empty cases (§7.3). Permission denied, corrupt output, a timeout/overflow or a missing
+// binary is a real source failure and must propagate, not become "zero live panes" (Finding 5).
+const NO_SERVER_RE = /no server running|error connecting[^\n]*No such file or directory/i;
 
+// M5 Task 2 (F14): pane PID is its OWN observed fact, inserted before the free command field.
+// It is NOT the server `#{pid}`/`#{start_time}` incarnation pair. Optional in the return type so
+// older injected fixtures (command in the fourth field) keep parsing as command-only.
 export async function listLivePanes(
   run: ExecFile = systemExec,
-): Promise<{ paneIds: Set<string>; incarnation: string | null; paneCommands: Map<string, string> }> {
+): Promise<{
+  paneIds: Set<string>;
+  incarnation: string | null;
+  paneCommands: Map<string, string>;
+  panePids?: Map<string, number>;
+  paneDead?: Map<string, boolean>;
+}> {
   let output: string;
   try {
-    output = await run("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_current_command}"]);
+    output = await run("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (NO_SERVER_RE.test(message)) {
-      return { paneIds: new Set(), incarnation: null, paneCommands: new Map() }; // no tmux server — zero live panes, not an error
+      return { paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map() }; // no tmux server — zero live panes, not an error
     }
     throw e; // genuine command failure — let the caller's error contract surface it
   }
   const paneIds = new Set<string>();
   const paneCommands = new Map<string, string>();
+  const panePids = new Map<string, number>();
+  const paneDead = new Map<string, boolean>();
   let incarnation: string | null = null;
+  let invalid = 0;
   for (const line of output.split("\n")) {
-    const m = LIVE_LINE_RE.exec(line.trim());
-    if (!m) continue;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = LIVE_LINE_RE.exec(trimmed);
+    if (!m) { invalid += 1; continue; }
     paneIds.add(m[1]);
-    if (m[4]) paneCommands.set(m[1], m[4]);
+    // New format: "<pane_pid> <pane_dead> <command…>"; the legacy injected fixtures carry
+    // "<pane_pid> <command…>" or only the command, which keep parsing as before.
+    // Native rows may carry a blank pane_current_command, so the command suffix is optional;
+    // the pinned ambiguous `<pid> 0|1` legacy shape is native pane_dead with no command.
+    const withDeath = /^([0-9]{1,10})\s+([01])(?:\s+(.*))?$/.exec(m[4]);
+    const withPid = withDeath ? null : /^([0-9]{1,10})\s(.*)$/.exec(m[4]);
+    if (withDeath) {
+      panePids.set(m[1], Number(withDeath[1]));
+      paneDead.set(m[1], withDeath[2] === "1");
+      if (withDeath[3]) paneCommands.set(m[1], withDeath[3]);
+    } else if (withPid) {
+      panePids.set(m[1], Number(withPid[1]));
+      if (withPid[2]) paneCommands.set(m[1], withPid[2]);
+    } else if (m[4]) {
+      paneCommands.set(m[1], m[4]);
+    }
     if (incarnation === null) incarnation = `${m[2]}:${m[3]}`; // server-scope — read once, from the first good line
   }
-  return { paneIds, incarnation, paneCommands };
+  // A nonempty snapshot with unparseable rows is corrupt, never a confident pane set.
+  if (invalid > 0) throw new Error("tmux snapshot unreadable");
+  return { paneIds, incarnation, paneCommands, panePids, paneDead };
 }
 
 // Sessions mosaic spec §7 Decision 10: "last N output lines live". `-S -{lines-1}` asks tmux for

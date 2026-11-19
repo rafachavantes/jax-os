@@ -1,0 +1,336 @@
+import { createElement, type ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { NextIntlClientProvider } from "next-intl";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import en from "../../../messages/en-US.json";
+import pt from "../../../messages/pt-BR.json";
+
+const harness = vi.hoisted(() => ({
+  results: new Map<string, { data: unknown; isError: boolean }>(),
+  calls: [] as { queryKey: unknown[] }[],
+}));
+
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: (opts: { queryKey: unknown[] }) => {
+    harness.calls.push(opts);
+    return harness.results.get(opts.queryKey.join(":")) ?? { data: undefined, isError: false };
+  },
+}));
+
+import { EnvironmentDiagnostics } from "./EnvironmentDiagnostics";
+
+const catalogs = { "en-US": en, "pt-BR": pt } as const;
+type Locale = keyof typeof catalogs;
+
+function render(node: ReactElement, locale: Locale = "en-US") {
+  const errors: unknown[] = [];
+  const html = renderToStaticMarkup(createElement(NextIntlClientProvider, {
+    locale, messages: catalogs[locale], timeZone: "UTC", onError: (error: unknown) => errors.push(error), children: node,
+  }));
+  return { html, errors };
+}
+
+const COMPONENTS = {
+  observedAt: "2026-11-19T00:00:00.000Z",
+  components: [
+    { id: "database", state: "healthy", detail: "select-1", observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null },
+    { id: "ttyd", state: "disabled-default", detail: null, observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null },
+    { id: "github", state: "needs-configuration", detail: "cli-missing", observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null },
+    { id: "linear", state: "unknown", detail: "credential-present", observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null },
+  ],
+};
+
+const RESOURCES = {
+  observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: "2026-11-19T00:00:00.000Z",
+  state: "ok", stale: false, warning: null,
+  tmp: { path: "/tmp", mountPath: "/tmp", fsType: "tmpfs", tmpfs: true, sharedRoot: false, usedGb: 1.25, totalGb: 4, availableGb: 2.75 },
+};
+
+const WORKLOADS = {
+  observedAt: "2026-11-19T00:00:00.000Z", state: "ok", totalProcesses: 3, truncated: false,
+  coverage: { ownershipKnown: 2, ownershipUnknown: 1, partial: false, reasons: { "no-pane": 1 } },
+  groups: [
+    {
+      key: "pane:%1:codex", family: "codex", count: 2, running: 1, zombies: 1, rssMb: 120,
+      maxAgeSeconds: 60, owner: { kind: "pane", pane: "%1" }, project: "jax-os", session: "s1",
+      contextObservedAt: "2026-11-18T23:00:00.000Z", purpose: "tmux-pane",
+      pids: [{ pid: 30, ppid: 20, state: "S+", ageSeconds: 60, rssMb: 120, parentCommand: null }], detailsTruncated: true,
+    },
+    {
+      key: "unknown:1000:chrome:1", family: "chrome", count: 1, running: 1, zombies: 0, rssMb: null,
+      maxAgeSeconds: 90, owner: { kind: "unknown", reason: "no-pane" }, project: null, session: null,
+      contextObservedAt: null, purpose: null,
+      pids: [{ pid: 40, ppid: 1, state: "Sl", ageSeconds: 90, rssMb: null, parentCommand: null }], detailsTruncated: false,
+    },
+  ],
+};
+
+const PACKAGES = {
+  observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: "2026-11-19T00:00:00.000Z",
+  state: "ok", truncated: false, warnings: [],
+  counts: { total: 2, shown: 2, remainder: 0, selectedNow: 1, held: 1, deferred: 0, unknown: 0 },
+  candidates: [
+    { key: "openssl:amd64", name: "openssl", arch: "amd64", fromVersion: "1", toVersion: "2", security: true, held: false, selectedNow: true, conflict: false, reason: "selected-now" },
+    { key: "curl:amd64", name: "curl", arch: "amd64", fromVersion: "1", toVersion: "2", security: false, held: true, selectedNow: false, conflict: false, reason: "held" },
+  ],
+};
+
+function setAll() {
+  harness.results.set("environment:components", { data: { ok: true, data: COMPONENTS }, isError: false });
+  harness.results.set("environment:resources", { data: { ok: true, data: RESOURCES }, isError: false });
+  harness.results.set("environment:workloads", { data: { ok: true, data: WORKLOADS }, isError: false });
+  harness.results.set("environment:packages", { data: { ok: true, data: PACKAGES }, isError: false });
+}
+
+beforeEach(() => {
+  harness.calls.length = 0;
+  harness.results.clear();
+});
+
+describe("EnvironmentDiagnostics (M5 Task 4)", () => {
+  it("polls the four sections independently with their own intervals", () => {
+    setAll();
+    render(createElement(EnvironmentDiagnostics));
+    expect(harness.calls.map((c) => c.queryKey.join(":"))).toEqual([
+      "environment:components", "environment:resources", "environment:workloads", "environment:packages",
+    ]);
+  });
+
+  it("renders distinct state explanations and no enable prompt for disabled defaults", () => {
+    setAll();
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Database");
+    expect(html).toContain("Healthy");
+    expect(html).toContain("Own database answered a read query.");
+    expect(html).toContain("Disabled (default)");
+    expect(html).toContain("Needs configuration");
+    expect(html).toContain("CLI executable was not found.");
+    expect(html).toContain("Credential present; remote health not verified.");
+    expect(html).toContain("Unknown");
+    expect(html).toContain("No action needed.");
+    expect(html).toContain("Optional and disabled by default.");
+    expect(html).not.toMatch(/enable it|turn it on/i);
+  });
+
+  it("keeps sibling sections visible while one source fails", () => {
+    setAll();
+    harness.results.set("environment:resources", { data: undefined, isError: true });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Environment data unavailable");
+    expect(html).toContain("Workloads");
+    expect(html).toContain("openssl");
+    expect(html).toContain("Database");
+  });
+
+  it("shows measured tmpfs capacity, backing explanation and decimal units", () => {
+    setAll();
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain('id="tmp"');
+    expect(html).toContain("1.3 GB");
+    expect(html).toContain("4.0 GB");
+    expect(html).toContain("2.8 GB available");
+    expect(html).toContain("Backed by RAM/swap");
+    expect(html).not.toContain("Shmem");
+  });
+
+  it("a failed /tmp observation keeps a visible warning and the last good value", () => {
+    setAll();
+    harness.results.set("environment:resources", {
+      data: { ok: true, data: { ...RESOURCES, state: "unavailable", stale: true, warning: "statfs-failed" } }, isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Temporary capacity unavailable");
+    expect(html).toContain("Showing the last good observation.");
+    expect(html).toContain("Filesystem capacity could not be read");
+    expect(html).toContain("4.0 GB");
+  });
+
+  it("distinguishes a mount-facts failure from a capacity failure in both locales", () => {
+    for (const locale of ["en-US", "pt-BR"] as const) {
+      setAll();
+      harness.results.set("environment:resources", {
+        data: { ok: true, data: { ...RESOURCES, state: "unavailable", stale: false, tmp: null, warning: "mount-facts" } },
+        isError: false,
+      });
+      const { html, errors } = render(createElement(EnvironmentDiagnostics), locale);
+      expect(errors).toEqual([]);
+      expect(html).toContain(locale === "en-US" ? "Mount facts could not be read" : "Fatos de montagem");
+      expect(html).not.toContain(locale === "en-US" ? "Filesystem capacity could not be read" : "capacidade do sistema");
+    }
+  });
+
+  it("explains workloads with proven/unknown origin, approximate RSS and zombie lifecycle", () => {
+    setAll();
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("pane %1 (proven ancestry)");
+    expect(html).toContain("origin unknown");
+    expect(html).toContain("last known project jax-os");
+    expect(html).toContain("1 zombie");
+    expect(html).toContain("RSS is approximate");
+    expect(html).toContain("Purpose unavailable");
+    expect(html).toContain("not reclaimable memory");
+  });
+
+  it("always renders running and zombie counts for mixed, all-zombie and zero-zombie groups in both locales", () => {
+    for (const locale of ["en-US", "pt-BR"] as const) {
+      setAll();
+      harness.results.set("environment:workloads", {
+        data: { ok: true, data: { ...WORKLOADS, groups: [
+          { ...WORKLOADS.groups[0], running: 1, zombies: 1 },
+          { ...WORKLOADS.groups[1], key: "unknown:1000:chrome:zero", running: 0, zombies: 2 },
+          { ...WORKLOADS.groups[1], key: "unknown:1000:chrome:live", running: 2, zombies: 0 },
+        ] } },
+        isError: false,
+      });
+      const { html, errors } = render(createElement(EnvironmentDiagnostics), locale);
+      expect(errors).toEqual([]);
+      const expected = locale === "en-US"
+        ? ["1 running", "1 zombie", "0 running", "2 zombies", "2 running", "0 zombies"]
+        : ["1 em execução", "1 zumbi", "0 em execução", "2 zumbis", "2 em execução", "0 zumbi"];
+      for (const text of expected) expect(html).toContain(text);
+      expect(html).not.toContain(locale === "en-US" ? "2 processes" : "2 processos");
+    }
+  });
+
+  it("shows package candidates, holds and simulation selection with honest counts and no repair command", () => {
+    setAll();
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("2 candidates");
+    expect(html).toContain("1 selected now");
+    expect(html).toContain("1 held");
+    expect(html).toContain("selected by simulation");
+    expect(html).toContain("held");
+    expect(html).toContain("security");
+    expect(html).toContain("install updates manually");
+    expect(html).not.toMatch(/apt(-get)? (upgrade|install)|kill -/i);
+  });
+
+  it("every machine detail code resolves in both catalogs", () => {
+    const cases: [string, string][] = [
+      ["database", "select-1"], ["database", "database-unavailable"], ["database", "database-unverified"],
+      ["projects", "settings-unreadable"], ["projects", "root-readable-unverified"],
+      ["projects", "root-unreadable"], ["projects", "root-unverified"],
+      ["tmux", "snapshot"], ["tmux", "tmux-unavailable"], ["tmux", "tmux-unverified"],
+      ["ttyd", "urls-missing"], ["ttyd", "external-unverified-ro"], ["ttyd", "external-unverified-rw"],
+      ["ttyd", "external-unverified-both"], ["ttyd", "http-ok-ro"], ["ttyd", "http-ok-rw"],
+      ["ttyd", "http-ok-both"], ["ttyd", "http-unreachable"], ["ttyd", "http-unverified"],
+      ["github", "configured-unverified"], ["github", "cli-missing"], ["github", "cli-unverified"],
+      ["linear", "credential-present"], ["linear", "credential-missing"],
+      ["claude", "cli-present"], ["claude", "cli-missing"], ["claude", "cli-unverified"],
+      ["metrics", "database-unverified"], ["metrics", "database-unavailable"], ["metrics", "no-sample"],
+      ["metrics", "fresh"], ["metrics", "stale"],
+      ["host-probes", "not-checked"], ["host-probes", "sections-observed"], ["host-probes", "sections-partial"],
+      ["env-file", "secure"], ["env-file", "missing"], ["env-file", "not-regular"],
+      ["env-file", "wrong-owner"], ["env-file", "bad-mode"],
+    ];
+    for (const locale of ["en-US", "pt-BR"] as const) {
+      for (const [id, detail] of cases) {
+        harness.results.set("environment:components", {
+          data: { ok: true, data: { observedAt: "2026-11-19T00:00:00.000Z", components: [
+            { id, state: "healthy", detail, observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null },
+          ] } },
+          isError: false,
+        });
+        const { errors } = render(createElement(EnvironmentDiagnostics), locale);
+        expect(errors, `${locale} ${id} ${detail}`).toEqual([]);
+      }
+    }
+  });
+
+  it("an unavailable workload source never also says zero processes", () => {
+    setAll();
+    harness.results.set("environment:workloads", {
+      data: { ok: true, data: {
+        ...WORKLOADS, state: "unavailable", groups: [], totalProcesses: 0,
+        coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: true, reasons: {} },
+        warning: "tmux-unavailable",
+      } },
+      isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Workload snapshot unavailable");
+    expect(html).toContain("Live pane snapshot unavailable");
+    expect(html).not.toContain("No processes observed.");
+    expect(html).not.toContain("0 processes observed");
+  });
+
+  it("an unavailable package source never shows a confident zero summary or empty list", () => {
+    setAll();
+    harness.results.set("environment:packages", {
+      data: { ok: true, data: {
+        ...PACKAGES, state: "unavailable", candidates: [], counts: null,
+        warnings: ["package-query-failed"],
+      } },
+      isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Package query unavailable");
+    expect(html).not.toContain("No candidate updates.");
+    expect(html).not.toContain("0 candidates");
+  });
+
+  it("renders healthy resources while the package promise is still pending", () => {
+    harness.results.set("environment:resources", { data: { ok: true, data: RESOURCES }, isError: false });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("1.3 GB");
+    expect(html).toContain("Package candidates");
+    expect(html).toMatch(/animate-pulse/);
+  });
+
+  it("renders a warning for a failed source instead of an endless skeleton, and all-unavailable stays explicit", () => {
+    for (const section of ["components", "resources", "workloads", "packages"]) {
+      harness.results.set(`environment:${section}`, { data: undefined, isError: true });
+    }
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html.match(/Environment data unavailable/g)).toHaveLength(4);
+    expect(html).not.toContain("animate-pulse");
+    expect(html).not.toContain("No processes observed.");
+    expect(html).not.toContain("No candidate updates.");
+  });
+
+  it("shows observation and last-good labels for packages and workloads without relabeling cached data", () => {
+    setAll();
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain("Observed");
+    expect(html).toContain("last good");
+    expect(html).toContain("120 MiB");
+  });
+
+  it("never renders undefined/NaN for null metric-like fields in workload details", () => {
+    setAll();
+    harness.results.set("environment:workloads", {
+      data: { ok: true, data: { ...WORKLOADS, groups: [{
+        ...WORKLOADS.groups[1],
+        rssMb: null,
+        maxAgeSeconds: null,
+        pids: [{ pid: 40, ppid: 1, state: "Sl", ageSeconds: 0, rssMb: null, parentCommand: null }],
+      }] } },
+      isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).not.toContain("undefined");
+    expect(html).not.toContain("NaN");
+    expect(html).toContain("—");
+  });
+
+  it("both actual catalogs resolve every environment key", () => {
+    setAll();
+    for (const locale of ["en-US", "pt-BR"] as const) {
+      const { html, errors } = render(createElement(EnvironmentDiagnostics), locale);
+      expect(errors).toEqual([]);
+      expect(html).not.toMatch(/health\.environment|componentsList\.|nextStep\.|details\./);
+    }
+  });
+
+  it("renders a long package identifier without forcing a nowrap page", () => {
+    setAll();
+    const longName = "very-long-package-name-with-architecture-and-lots-of-segments";
+    harness.results.set("environment:packages", {
+      data: { ok: true, data: { ...PACKAGES, candidates: [{ ...PACKAGES.candidates[0], key: `${longName}:amd64`, name: longName }] } },
+      isError: false,
+    });
+    const { html } = render(createElement(EnvironmentDiagnostics));
+    expect(html).toContain(longName);
+    expect(html).toContain("[overflow-wrap:anywhere]");
+  });
+});

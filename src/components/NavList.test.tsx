@@ -20,14 +20,14 @@ vi.mock("@/lib/settingsQuery", () => ({
 import { NavList } from "./NavList";
 
 describe("NavList — hidden nav items (round-1 F9)", () => {
-  it("omits /health and /audit in both expanded and collapsed mode, expanded keeping every other route", () => {
+  it("shows the Environment (/health) destination and keeps only /audit hidden", () => {
     const expanded = renderToStaticMarkup(createElement(NavList, { mode: "expanded" }));
-    expect(expanded).not.toContain('href="/health"');
+    expect(expanded).toContain('href="/health"');
     expect(expanded).not.toContain('href="/audit"');
     for (const href of ["/", "/kanban", "/tmux", "/executions", "/files", "/tokens", "/settings"]) expect(expanded).toContain(`href="${href}"`);
 
     const collapsed = renderToStaticMarkup(createElement(NavList, { mode: "collapsed" }));
-    expect(collapsed).not.toContain('href="/health"');
+    expect(collapsed).toContain('href="/health"');
     expect(collapsed).not.toContain('href="/audit"');
     expect(collapsed).toContain('href="/"');
   });
