@@ -167,6 +167,9 @@ export type MetricsFacts =
 
 export type EnvironmentDeps = {
   now: () => number;
+  // Elapsed-time seam. The runtime resolves it once and shares it with the source observer,
+  // the persistent identity reader and the workload collection.
+  monotonic?: () => number;
   // Caller-visible deadline seam; tests can supply a controllable sleep.
   sleep?: (ms: number) => Promise<void>;
   readSettingsRaw: () => RawSettingsRead;
@@ -391,8 +394,9 @@ export type Observation<T> =
   | { ok: false; observedAt: number; lastGood: T | null; lastGoodAt: number | null };
 
 type SourceState<T> = {
-  lastGood: { value: T; at: number } | null;
-  pending: { promise: Promise<T>; startedAt: number } | null;
+  // `at`/`expiresAt` are wall observation time and monotonic cache expiry respectively.
+  lastGood: { value: T; at: number; expiresAt: number } | null;
+  pending: { promise: Promise<T>; startedAt: number; deadline: number } | null;
 };
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -407,8 +411,14 @@ function raceDeadline<T>(
 }
 
 // One source = one completed observation plus (at most) the one original pending operation.
-// A caller deadline returns unavailable/last-good without cancelling or duplicating the load.
-export function createSourceObserver(now: () => number, sleep: (ms: number) => Promise<void> = realSleep) {
+// `now` is the WALL clock: only returned observation timestamps use it. Deadlines and cache
+// expiry use the injected monotonic clock, so a wall step never extends either. A caller
+// deadline returns unavailable/last-good without cancelling or duplicating the load.
+export function createSourceObserver(
+  now: () => number,
+  sleep: (ms: number) => Promise<void> = realSleep,
+  monotonic: () => number = () => performance.now(),
+) {
   const states = new Map<string, SourceState<unknown>>();
   const unavailable = <T,>(state: SourceState<T>, at: number): Observation<T> => ({
     ok: false, observedAt: at,
@@ -425,20 +435,22 @@ export function createSourceObserver(now: () => number, sleep: (ms: number) => P
       states.set(key, state as SourceState<unknown>);
     }
     const startedAt = now();
+    const monoAt = monotonic();
     const pending = state.pending;
     if (pending) {
-      const remaining = pending.startedAt + budgetMs - startedAt;
+      const remaining = Math.max(0, pending.deadline - monotonic());
       if (remaining <= 0) return Promise.resolve(unavailable(state, startedAt));
       return raceDeadline(pending.promise, remaining, sleep)
-        .then((out) => out.settled
+        .then((out) => out.settled && monotonic() < pending.deadline
           ? { ok: true, value: out.value, observedAt: pending.startedAt }
           : unavailable(state, now()));
     }
-    if (state.lastGood && startedAt - state.lastGood.at < ttlMs) {
+    if (state.lastGood && monotonic() < state.lastGood.expiresAt) {
       return Promise.resolve({ ok: true, value: state.lastGood.value, observedAt: state.lastGood.at });
     }
     const attemptAt = startedAt;
-    const operation = { promise: Promise.resolve() as Promise<T>, startedAt: attemptAt };
+    // The absolute monotonic deadline and cache expiry are recorded BEFORE the original load.
+    const operation = { promise: Promise.resolve() as Promise<T>, startedAt: attemptAt, deadline: monoAt + budgetMs };
     state.pending = operation;
     const promise = (async () => {
       try {
@@ -449,25 +461,26 @@ export function createSourceObserver(now: () => number, sleep: (ms: number) => P
     })();
     operation.promise = promise;
     promise.then(
-      (value) => { state.lastGood = { value, at: attemptAt }; },
+      (value) => { state.lastGood = { value, at: attemptAt, expiresAt: monoAt + ttlMs }; },
       () => {},
     );
-    // The caller budget starts at the original monotonic start. Loading may have already spent
-    // part of it (worker construction, synchronous setup) before control returns here; that time
-    // is subtracted instead of granting the operation a fresh full allowance.
-    const remaining = Math.max(0, budgetMs - (now() - attemptAt));
+    // Loading may have already spent part of the original allowance (worker construction,
+    // synchronous setup) before control returns here; that time is subtracted instead of
+    // granting the operation a fresh full budget.
+    const remaining = Math.max(0, operation.deadline - monotonic());
     return raceDeadline(promise, remaining, sleep)
-      .then((out) => out.settled
+      .then((out) => out.settled && monotonic() < operation.deadline
         ? { ok: true, value: out.value, observedAt: attemptAt }
         : unavailable(state, now()));
   };
 }
 
 export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRuntime {
-  const observe = createSourceObserver(deps.now, deps.sleep ?? realSleep);
+  const monotonic = deps.monotonic ?? (() => performance.now());
+  const observe = createSourceObserver(deps.now, deps.sleep ?? realSleep, monotonic);
   // One raw-read owner per runtime: caller timeouts and overlapping polls share the same bounded
   // original operations, and only their actual settlement releases capacity.
-  const identityReader = createIdentityReader(deps.readProc);
+  const identityReader = createIdentityReader(deps.readProc, { now: monotonic });
   let lastTmp: TmpCapacity | null = null;
   let lastTmpAt: string | null = null;
   const observedSections: ComponentFacts["hostProbes"] = { resources: null, workloads: null, packages: null };
@@ -505,8 +518,8 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
 
     const ttydEnabled = settings.ok && settings.data.integrations.ttyd;
     const transport = ttydEnabled ? deps.ttydTransport() : { ro: null, rw: null };
-    const roConfigured = typeof transport.ro === "string" && transport.ro.length > 0;
-    const rwConfigured = typeof transport.rw === "string" && transport.rw.length > 0;
+    const roConfigured = httpUrlConfigured(transport.ro);
+    const rwConfigured = httpUrlConfigured(transport.rw);
     // Only validated loopback sides are probed, and only when BOTH sides are configured — the
     // existing viewer needs the pair; an external/invalid side stays unverified.
     const ttydComplete = ttydEnabled && roConfigured && rwConfigured;
@@ -650,6 +663,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
         tmuxWarning,
         verifyPanes: () => deps.listPanes(),
         identityReader,
+        monotonic,
       });
       observedSections.workloads = section.state !== "unavailable";
       return section;
@@ -674,6 +688,18 @@ const execFileAsync = promisify(execFile);
 const C_LOCALE_ENV = { LC_ALL: "C", LANG: "C" } as const;
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+// A configured ttyd side must be a real HTTP(S) URL; an arbitrary nonempty string is incomplete
+// configuration, never a transport claim.
+function httpUrlConfigured(value: string | null): boolean {
+  if (!value) return false;
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 // Ttyd is GET-only, only after a validated loopback base, with no redirects.
 export function loopbackBase(value: string | undefined): string | null {

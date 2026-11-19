@@ -247,6 +247,7 @@ describe("mount parsing and /tmp capacity (AC4)", () => {
     let fail = false;
     const runtime = createEnvironmentRuntime(runtimeDeps({
       now: () => now,
+      monotonic: () => now,
       readMountInfo: async () => "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n23 22 8:1 / /tmp rw - ext4 /dev/sda1 rw",
       statfs: async () => {
         if (fail) throw new Error("statfs failed");
@@ -373,12 +374,13 @@ describe("ttyd transport facts (M5 Task 4)", () => {
     expect(httpOk).toHaveBeenCalledWith("http://localhost:10000");
   });
 
-  it("treats a malformed configured URL as unverified, never missing or healthy", async () => {
+  it("treats a malformed configured URL as missing configuration and starts no probe", async () => {
     const httpOk = vi.fn(async () => true);
     expect(await ttydComponent({
       ttydTransport: () => ({ ro: "not a url", rw: "http://localhost:10000" }),
       httpOk,
-    })).toMatchObject({ state: "unknown", detail: "external-unverified-ro" });
+    })).toMatchObject({ state: "needs-configuration", detail: "urls-missing" });
+    expect(httpOk).not.toHaveBeenCalled();
   });
 
   it("probes both validated loopback sides and one failure cannot be healthy", async () => {
@@ -497,7 +499,7 @@ describe("source observer — one original pending operation (M5 Task 1)", () =>
     let now = 0;
     const sleeps: number[] = [];
     const sleep = (ms: number) => { sleeps.push(ms); return new Promise<void>(() => {}); };
-    const observe = createSourceObserver(() => now, sleep);
+    const observe = createSourceObserver(() => now, sleep, () => now);
     let release!: (value: string) => void;
     const pending = observe("source", 60_000, 200, async () => {
       now += 150;
@@ -517,6 +519,69 @@ describe("source observer — one original pending operation (M5 Task 1)", () =>
     const cached = await observe("value", 60_000, 1_000, async () => "b");
     expect(cached).toMatchObject({ ok: true, value: "a", observedAt: NOW });
   });
+
+  it("uses the monotonic clock, never a wall step, for the public allowance", async () => {
+    let wall = 1_000;
+    let mono = 0;
+    const sleeps: number[] = [];
+    const sleep = (ms: number) => { sleeps.push(ms); return Promise.resolve(); };
+    const observe = createSourceObserver(() => wall, sleep, () => mono);
+    expect(await observe("source", 5_000, 200, () => new Promise<string>(() => {}))).toMatchObject({ ok: false });
+    expect(sleeps).toEqual([200]);
+    wall = 900; // backward wall step neither extends nor shortens the original allowance
+    mono = 150;
+    expect(await observe("source", 5_000, 200, () => new Promise<string>(() => {}))).toMatchObject({ ok: false });
+    expect(sleeps).toEqual([200, 50]);
+  });
+
+  it("expires the retained observation by monotonic time, never by a wall step", async () => {
+    let wall = 1_000;
+    let mono = 0;
+    const observe = createSourceObserver(() => wall, () => new Promise<void>(() => {}), () => mono);
+    const first = await observe("source", 200, 5_000, async () => "a");
+    expect(first).toMatchObject({ ok: true, value: "a", observedAt: 1_000 });
+    wall = 900;
+    mono = 201;
+    const second = await observe("source", 200, 5_000, async () => "b");
+    expect(second).toMatchObject({ ok: true, value: "b", observedAt: 900 });
+  });
+
+  it("fails the attempt when monotonic time passes the budget before a timeout callback", async () => {
+    let mono = 0;
+    const observe = createSourceObserver(() => 1_000, () => new Promise<void>(() => {}), () => mono);
+    const result = await observe("source", 5_000, 200, async () => {
+      mono = 201;
+      return "late";
+    });
+    expect(result).toMatchObject({ ok: false, observedAt: 1_000 });
+  });
+
+  it("reuses the original monotonic deadline for callers with a different budget", async () => {
+    let mono = 0;
+    const sleeps: number[] = [];
+    const sleep = (ms: number) => { sleeps.push(ms); return Promise.resolve(); };
+    const observe = createSourceObserver(() => 1_000, sleep, () => mono);
+    await observe("source", 5_000, 200, () => new Promise<string>(() => {}));
+    expect(sleeps).toEqual([200]);
+    mono = 150;
+    await observe("source", 5_000, 10_000, () => new Promise<string>(() => {}));
+    expect(sleeps).toEqual([200, 50]);
+  });
+
+  it("keeps wall observation timestamps while elapsed decisions use monotonic time", async () => {
+    let wall = 1_000;
+    let mono = 0;
+    const observe = createSourceObserver(() => wall, () => new Promise<void>(() => {}), () => mono);
+    const first = await observe("value", 60_000, 1_000, async () => {
+      mono = 500;
+      wall = 9_000;
+      return "a";
+    });
+    expect(first).toMatchObject({ ok: true, value: "a", observedAt: 1_000 });
+    wall = 12_000;
+    const cached = await observe("value", 60_000, 1_000, async () => "b");
+    expect(cached).toMatchObject({ ok: true, value: "a", observedAt: 1_000 });
+  });
 });
 
 describe("own-DB failure state and original operation (observation completion Task 2)", () => {
@@ -526,7 +591,7 @@ describe("own-DB failure state and original operation (observation completion Ta
     const ownDb = async () => mode === "ok"
       ? { ok: true as const, schemaVersion: 15, latestMetricTs: new Date(now).toISOString(), paneContext: null }
       : { ok: false as const, error: "database-unavailable" as const };
-    const runtime = createEnvironmentRuntime(runtimeDeps({ now: () => now, ownDb }));
+    const runtime = createEnvironmentRuntime(runtimeDeps({ now: () => now, monotonic: () => now, ownDb }));
     expect(byId((await runtime.components()).components, "database")?.state).toBe("healthy");
     const successAt = new Date(now).toISOString();
     now += 6 * 60_000;
@@ -550,7 +615,7 @@ describe("own-DB failure state and original operation (observation completion Ta
     const ownDb = vi.fn(async () => mode === "ok"
       ? { ok: true as const, schemaVersion: 15, latestMetricTs: null, paneContext: null }
       : new Promise<never>(() => {}));
-    const runtime = createEnvironmentRuntime(runtimeDeps({ now: () => now, ownDb, sleep: async () => {} }));
+    const runtime = createEnvironmentRuntime(runtimeDeps({ now: () => now, monotonic: () => now, ownDb, sleep: async () => {} }));
     await runtime.components();
     const afterFirst = ownDb.mock.calls.length;
     now += 10 * 60_000;
