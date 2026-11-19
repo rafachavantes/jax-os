@@ -552,7 +552,7 @@ describe("source observer — one original pending operation (M5 Task 1)", () =>
       mono = 201;
       return "late";
     });
-    expect(result).toMatchObject({ ok: false, observedAt: 1_000 });
+    expect(result).toMatchObject({ ok: false, observedAt: 1_000, cause: "deadline" });
   });
 
   it("reuses the original monotonic deadline for callers with a different budget", async () => {
@@ -624,8 +624,101 @@ describe("own-DB failure state and original operation (observation completion Ta
     const secondFailed = await runtime.components();
     expect(afterSecond - afterFirst).toBe(2); // one original load per own-DB source, never a duplicate
     expect(ownDb.mock.calls.length).toBe(afterSecond);
-    expect(byId(firstFailed.components, "database")?.state).toBe("failed");
-    expect(byId(secondFailed.components, "database")?.state).toBe("failed");
+    expect(byId(firstFailed.components, "database")).toMatchObject({ state: "unknown", detail: "database-unverified" });
+    expect(byId(secondFailed.components, "database")).toMatchObject({ state: "unknown", detail: "database-unverified" });
+  });
+});
+
+describe("unsuccessful observation causes (F3)", () => {
+  it("maps an explicit first tmux rejection to unavailable even without last-good evidence", async () => {
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      listPanes: async () => { throw new Error("tmux refused"); },
+    }));
+    expect(byId((await runtime.components()).components, "tmux")).toMatchObject({
+      state: "unavailable", detail: "tmux-unavailable",
+    });
+    expect((await runtime.workloads()).warning).toBe("tmux-unavailable");
+  });
+
+  it("maps a still-pending tmux deadline to unknown and tmux-unverified", async () => {
+    let mono = 0;
+    let panesCalls = 0;
+    const sleeps: (() => void)[] = [];
+    const sleep = (ms: number) => new Promise<void>((resolve) => { sleeps.push(resolve); });
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      monotonic: () => mono,
+      sleep,
+      listPanes: () => {
+        panesCalls += 1;
+        if (panesCalls === 1) return new Promise(() => {});
+        return Promise.resolve({ paneIds: new Set<string>(), incarnation: null, paneCommands: new Map<string, string>() });
+      },
+    }));
+    const components = runtime.components();
+    await Promise.resolve();
+    expect(sleeps.length).toBeGreaterThan(0);
+    mono = 5_000;
+    sleeps.shift()?.();
+    expect(byId((await components).components, "tmux")).toMatchObject({
+      state: "unknown", detail: "tmux-unverified",
+    });
+
+    mono = 10_000;
+    const workloads = runtime.workloads();
+    await Promise.resolve();
+    expect(sleeps.length).toBeGreaterThan(0);
+    sleeps.shift()?.(); // the cached tmux source deadline expires; ps itself resolves
+    expect((await workloads).warning).toBe("tmux-unverified");
+  });
+
+  it("keeps a prior last-good timestamp when a later own-DB load overruns its allowance", async () => {
+    let mono = 0;
+    let mode: "ok" | "slow" = "ok";
+    const ownDb = async () => {
+      if (mode === "slow") mono += 250; // settles only after the original 200ms allowance
+      return { ok: true as const, schemaVersion: 15, latestMetricTs: null, paneContext: null };
+    };
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      now: () => NOW, monotonic: () => mono, ownDb,
+    }));
+    const first = await runtime.components();
+    expect(byId(first.components, "database")?.state).toBe("healthy");
+    const firstObservedAt = byId(first.components, "database")?.observedAt;
+    mode = "slow";
+    mono += 6 * 60_000;
+    const second = await runtime.components();
+    expect(byId(second.components, "database")).toMatchObject({
+      state: "unknown", detail: "database-unverified", lastGoodAt: firstObservedAt,
+    });
+    expect(byId(second.components, "metrics")).toMatchObject({
+      state: "unknown", detail: "database-unverified",
+    });
+  });
+
+  it("keeps an in-budget own-DB rejection as a failed database", async () => {
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      ownDb: async () => { throw new Error("database-unavailable"); },
+    }));
+    expect(byId((await runtime.components()).components, "database")).toMatchObject({
+      state: "failed", detail: "database-unavailable", lastGoodAt: null,
+    });
+  });
+
+  it("does not turn a retained last-good value into a healthy badge after a deadline", async () => {
+    let mono = 0;
+    let mode: "ok" | "pending" = "ok";
+    const ownDb = () => mode === "ok"
+      ? Promise.resolve({ ok: true as const, schemaVersion: 15, latestMetricTs: null, paneContext: null })
+      : new Promise<never>(() => {});
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      now: () => NOW, monotonic: () => mono, ownDb, sleep: async () => {},
+    }));
+    await runtime.components();
+    mode = "pending";
+    mono += 6 * 60_000;
+    const section = await runtime.components();
+    expect(byId(section.components, "database")?.state).toBe("unknown");
+    expect(byId(section.components, "metrics")?.state).not.toBe("healthy");
   });
 });
 

@@ -159,11 +159,11 @@ export type ProbeState = "ok" | "failed" | "unknown";
 export type DbFacts =
   | { state: "ok"; schemaVersion: number | null }
   | { state: "failed"; error: string; lastGoodAt?: string | null }
-  | { state: "unknown" };
+  | { state: "unknown"; lastGoodAt?: string | null };
 export type MetricsFacts =
   | { state: "ok"; latest: string | null }
   | { state: "failed"; lastGoodAt?: string | null }
-  | { state: "unknown" };
+  | { state: "unknown"; lastGoodAt?: string | null };
 
 export type EnvironmentDeps = {
   now: () => number;
@@ -269,7 +269,7 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
         : result(id, "unknown", "cli-unverified", t);
 
   const metrics = ((): ComponentResult => {
-    if (facts.metrics.state === "unknown") return result("metrics", "unknown", "database-unverified", t);
+    if (facts.metrics.state === "unknown") return result("metrics", "unknown", "database-unverified", t, facts.metrics.lastGoodAt ?? null);
     if (facts.metrics.state === "failed") return result("metrics", "unavailable", "database-unavailable", t, facts.metrics.lastGoodAt ?? null);
     if (facts.metrics.latest === null) return result("metrics", "unavailable", "no-sample", t);
     const ageS = Math.max(0, Math.round((t - Date.parse(facts.metrics.latest)) / 1000));
@@ -288,7 +288,7 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
   const database = ((): ComponentResult => {
     if (facts.db.state === "ok") return result("database", "healthy", "select-1", t);
     if (facts.db.state === "failed") return result("database", "failed", facts.db.error, t, facts.db.lastGoodAt ?? null);
-    return result("database", "unknown", "database-unverified", t);
+    return result("database", "unknown", "database-unverified", t, facts.db.lastGoodAt ?? null);
   })();
 
   const projects = ((): ComponentResult => {
@@ -389,9 +389,11 @@ export type EnvironmentRuntime = {
   workloads: () => Promise<WorkloadsSection>;
 };
 
+// An unsuccessful observation keeps WHY it was unsuccessful: an explicit source rejection is a
+// failure, while a caller deadline only means the still-pending original was not observed yet.
 export type Observation<T> =
   | { ok: true; value: T; observedAt: number }
-  | { ok: false; observedAt: number; lastGood: T | null; lastGoodAt: number | null };
+  | { ok: false; observedAt: number; lastGood: T | null; lastGoodAt: number | null; cause: "rejected" | "deadline" };
 
 type SourceState<T> = {
   // `at`/`expiresAt` are wall observation time and monotonic cache expiry respectively.
@@ -401,12 +403,17 @@ type SourceState<T> = {
 
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+type RaceOutcome<T> =
+  | { kind: "value"; value: T }
+  | { kind: "rejected" }
+  | { kind: "deadline" };
+
 function raceDeadline<T>(
   promise: Promise<T>, ms: number, sleep: (ms: number) => Promise<void>,
-): Promise<{ settled: true; value: T } | { settled: false }> {
+): Promise<RaceOutcome<T>> {
   return Promise.race([
-    promise.then((value) => ({ settled: true as const, value }), () => ({ settled: false as const })),
-    sleep(ms).then(() => ({ settled: false as const })),
+    promise.then((value) => ({ kind: "value" as const, value }), () => ({ kind: "rejected" as const })),
+    sleep(ms).then(() => ({ kind: "deadline" as const })),
   ]);
 }
 
@@ -420,10 +427,11 @@ export function createSourceObserver(
   monotonic: () => number = () => performance.now(),
 ) {
   const states = new Map<string, SourceState<unknown>>();
-  const unavailable = <T,>(state: SourceState<T>, at: number): Observation<T> => ({
+  const unavailable = <T,>(state: SourceState<T>, at: number, cause: "rejected" | "deadline"): Observation<T> => ({
     ok: false, observedAt: at,
     lastGood: state.lastGood?.value ?? null,
     lastGoodAt: state.lastGood?.at ?? null,
+    cause,
   });
 
   return function observe<T>(
@@ -439,11 +447,11 @@ export function createSourceObserver(
     const pending = state.pending;
     if (pending) {
       const remaining = Math.max(0, pending.deadline - monotonic());
-      if (remaining <= 0) return Promise.resolve(unavailable(state, startedAt));
+      if (remaining <= 0) return Promise.resolve(unavailable(state, startedAt, "deadline"));
       return raceDeadline(pending.promise, remaining, sleep)
-        .then((out) => out.settled && monotonic() < pending.deadline
+        .then((out) => out.kind === "value" && monotonic() < pending.deadline
           ? { ok: true, value: out.value, observedAt: pending.startedAt }
-          : unavailable(state, now()));
+          : unavailable(state, now(), out.kind === "rejected" && monotonic() < pending.deadline ? "rejected" : "deadline"));
     }
     if (state.lastGood && monotonic() < state.lastGood.expiresAt) {
       return Promise.resolve({ ok: true, value: state.lastGood.value, observedAt: state.lastGood.at });
@@ -469,9 +477,11 @@ export function createSourceObserver(
     // granting the operation a fresh full budget.
     const remaining = Math.max(0, operation.deadline - monotonic());
     return raceDeadline(promise, remaining, sleep)
-      .then((out) => out.settled && monotonic() < operation.deadline
+      .then((out) => out.kind === "value" && monotonic() < operation.deadline
         ? { ok: true, value: out.value, observedAt: attemptAt }
-        : unavailable(state, now()));
+        // A settlement outside the original allowance is a deadline even when its promise won
+        // the race against the timer callback.
+        : unavailable(state, now(), out.kind === "rejected" && monotonic() < operation.deadline ? "rejected" : "deadline"));
   };
 }
 
@@ -539,13 +549,19 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
 
     // A failed current attempt is projected as failed with the ORIGINAL last-good time; retained
     // last-good data never becomes a healthy badge for a database that just failed.
+    const dbLastGoodAt = dbObs.ok ? null : dbObs.lastGoodAt === null ? null : new Date(dbObs.lastGoodAt).toISOString();
     const db: DbFacts = dbObs.ok
       ? { state: "ok", schemaVersion: dbObs.value.schemaVersion }
-      : { state: "failed", error: "database-unavailable", lastGoodAt: dbObs.lastGoodAt === null ? null : new Date(dbObs.lastGoodAt).toISOString() };
-    const metrics: MetricsFacts = !metricObs.ok
-      ? { state: "failed", lastGoodAt: metricObs.lastGoodAt === null ? null : new Date(metricObs.lastGoodAt).toISOString() }
-      : { state: "ok", latest: metricObs.value.latestMetricTs };
-    const tmux: ProbeState = panesObs.ok ? "ok" : panesObs.lastGood !== null ? "failed" : "unknown";
+      : dbObs.cause === "rejected"
+        ? { state: "failed", error: "database-unavailable", lastGoodAt: dbLastGoodAt }
+        : { state: "unknown", lastGoodAt: dbLastGoodAt };
+    const metricLastGoodAt = metricObs.ok ? null : metricObs.lastGoodAt === null ? null : new Date(metricObs.lastGoodAt).toISOString();
+    const metrics: MetricsFacts = metricObs.ok
+      ? { state: "ok", latest: metricObs.value.latestMetricTs }
+      : metricObs.cause === "rejected"
+        ? { state: "failed", lastGoodAt: metricLastGoodAt }
+        : { state: "unknown", lastGoodAt: metricLastGoodAt };
+    const tmux: ProbeState = panesObs.ok ? "ok" : panesObs.cause === "rejected" ? "failed" : "unknown";
     const projects: ProbeState = projectsObs === null
       ? "unknown"
       : projectsObs.ok ? (projectsObs.value.ok ? "ok" : "failed") : "unknown";
@@ -640,7 +656,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
   async function workloads(): Promise<WorkloadsSection> {
     const panesObs = await observe("tmux", 5_000, 5_000, () => deps.listPanes());
     const panes = panesObs.ok ? panesObs.value : null;
-    const tmuxWarning = panesObs.ok ? null : panesObs.lastGood !== null ? "tmux-unavailable" : "tmux-unverified";
+    const tmuxWarning = panesObs.ok ? null : panesObs.cause === "rejected" ? "tmux-unavailable" : "tmux-unverified";
     const psObs = await observe("ps", 5_000, 5_000, () => deps.ps());
     if (!psObs.ok) {
       observedSections.workloads = false;
