@@ -2257,23 +2257,47 @@ describe("background refresh and genuinely pending work", () => {
     for (let i = 0; i < 70; i += 1) {
       writeClaude(deps, `p${String(i).padStart(2, "0")}/f.jsonl`, [claudeLine(`m-${i}`, { sessionId: `s-${i}` })]);
     }
-    const pass = steppingPass(deps);
+    let clock = NOW;
+    const pass = () => {
+      clock += 61;
+      const at = clock;
+      return runNativeUsagePass({ ...deps, now: () => at });
+    };
     let guard = 0;
     const states: string[] = [];
+    let discoveryPasses = 0;
     while (guard < 200) {
       await pass();
       guard += 1;
+      discoveryPasses += 1;
       const status = statusOf(deps);
       states.push(status?.state ?? "none");
-      const discovery = cycleOf(deps);
-      if (itemTotal(deps) === 70 && status?.state === "available" && discovery?.state === "complete") break;
+      if (cycleOf(deps)?.state === "complete") break;
     }
+    // D: the finite fixture's deterministic discovery depth for one complete cycle.
+    // Every later insertion is measured against this derived bound, not a magic number.
+    const D = discoveryPasses;
+    expect(D).toBeGreaterThan(0);
     expect(states).toContain("indexing");
+    expect(cycleOf(deps)?.state).toBe("complete");
+    while (itemTotal(deps) < 70 && guard < 300) {
+      await pass();
+      guard += 1;
+    }
     expect(itemTotal(deps)).toBe(70);
     expect(statusOf(deps)?.state).toBe("available");
 
-    // The next pass starts a refresh cycle over already-indexed history: it must stay
-    // available, surface the background diagnostic and never fall back to steady indexing.
+    // Public cadence: a sub-minute poll after completion starts no background work and
+    // does not move the last successful refresh.
+    const completedCycle = cycleOf(deps)!.cycle;
+    const completedRefresh = statusOf(deps)!.lastRefresh;
+    await runNativeUsagePass({ ...deps, now: () => clock + 30 });
+    expect(cycleOf(deps)!.cycle).toBe(completedCycle);
+    expect(statusOf(deps)!.lastRefresh).toBe(completedRefresh);
+
+    // The next full-cadence pass starts a refresh cycle over already-indexed history: it
+    // must stay available, surface the background diagnostic and never fall back to
+    // steady indexing.
     const initialCycle = cycleOf(deps)!.cycle;
     while (cycleOf(deps)!.cycle === initialCycle && guard < 400) {
       await pass();
@@ -2298,23 +2322,23 @@ describe("background refresh and genuinely pending work", () => {
     expect(sawBackground).toBe(true);
     expect(refreshPasses).toBeGreaterThan(0);
 
-    // Files added before the final unvisited directory (p69 sorts last) are discovered
-    // within the remaining bounded discovery passes of the next cycle; more than one
-    // ingestion pass of pending files keeps the source indexing until they complete.
-    for (let i = 0; i < 8; i += 1) {
-      writeClaude(deps, `p69/extra${i}.jsonl`, [claudeLine(`m-extra-${i}`, { sessionId: `s-extra-${i}` })]);
-    }
+    // Wait for the next cycle to start, then add files before its final unvisited
+    // directory (p69 sorts last). They must be found within that cycle's D-pass depth.
     while (cycleOf(deps)!.cycle === refreshCycle && guard < 800) {
       await pass();
       guard += 1;
     }
     const discoveryCycle = cycleOf(deps)!.cycle;
-    let discoveryPasses = 0;
+    expect(discoveryCycle).toBeGreaterThan(refreshCycle);
+    for (let i = 0; i < 8; i += 1) {
+      writeClaude(deps, `p69/extra${i}.jsonl`, [claudeLine(`m-extra-${i}`, { sessionId: `s-extra-${i}` })]);
+    }
+    let extraDiscoveryPasses = 0;
     let pendingStateSeen = false;
     while (guard < 1000) {
       await pass();
       guard += 1;
-      discoveryPasses += 1;
+      extraDiscoveryPasses += 1;
       if (statusOf(deps)?.state === "indexing") pendingStateSeen = true;
       const registered = deps.db
         .prepare("SELECT COUNT(*) AS n FROM native_usage_files WHERE source = 'claude' AND identity LIKE 'p69/extra%'")
@@ -2322,7 +2346,7 @@ describe("background refresh and genuinely pending work", () => {
       if (registered.n === 8 && cycleOf(deps)!.state === "complete") break;
       if (cycleOf(deps)!.cycle !== discoveryCycle) break;
     }
-    expect(discoveryPasses).toBeLessThanOrEqual(80);
+    expect(extraDiscoveryPasses).toBeLessThanOrEqual(D);
     expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_files WHERE source = 'claude' AND identity LIKE 'p69/extra%'").get())
       .toEqual({ n: 8 });
     expect(pendingStateSeen).toBe(true);
@@ -2335,15 +2359,20 @@ describe("background refresh and genuinely pending work", () => {
     }
     expect(deps.db.prepare("SELECT 1 AS n FROM native_usage_items WHERE item_id = 'm-extra-0'").get()).toEqual({ n: 1 });
 
-    // An insertion behind the cursor is not found in the remainder of that cycle; the
-    // next cycle re-enumerates the directory and picks it up.
-    while (cycleOf(deps)!.state === "complete" && cycleOf(deps)!.cycle === discoveryCycle && guard < 1200) {
+    // An insertion behind the cursor (p00 already enumerated) is not found in the rest
+    // of that cycle; the following complete cycle re-enumerates it and picks it up.
+    while (!(cycleOf(deps)!.state === "complete" && cycleOf(deps)!.cycle === discoveryCycle) && guard < 1200) {
+      await pass();
+      guard += 1;
+    }
+    while (cycleOf(deps)!.cycle === discoveryCycle && guard < 1400) {
       await pass();
       guard += 1;
     }
     const cursorCycle = cycleOf(deps)!.cycle;
+    expect(cursorCycle).toBeGreaterThan(discoveryCycle);
     let sawDoneDir = false;
-    while (!sawDoneDir && cycleOf(deps)!.cycle === cursorCycle && guard < 1400) {
+    while (!sawDoneDir && cycleOf(deps)!.cycle === cursorCycle && guard < 1600) {
       await pass();
       guard += 1;
       const dir = deps.db.prepare("SELECT state, cycle FROM native_usage_dirs WHERE source = 'claude' AND path = 'p00'").get() as
@@ -2351,28 +2380,32 @@ describe("background refresh and genuinely pending work", () => {
         | undefined;
       sawDoneDir = dir?.cycle === cursorCycle && dir.state === "done";
     }
-    if (cycleOf(deps)!.cycle === cursorCycle) {
-      writeClaude(deps, "p00/behind.jsonl", [claudeLine("m-behind", { sessionId: "s-behind" })]);
-      while (cycleOf(deps)!.cycle === cursorCycle && guard < 1600) {
-        await pass();
-        guard += 1;
-      }
-      expect(deps.db.prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'").get())
-        .toBeUndefined();
-      const nextCycle = cycleOf(deps)!.cycle;
-      let nextPasses = 0;
-      while (nextPasses < 80) {
-        const row = deps.db.prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'").get() as
-          | { n: number }
-          | undefined;
-        if (row) break;
-        if (cycleOf(deps)!.cycle !== nextCycle && cycleOf(deps)!.state === "complete") break;
-        await pass();
-        nextPasses += 1;
-      }
-      expect(deps.db.prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'").get())
-        .toEqual({ n: 1 });
+    expect(sawDoneDir).toBe(true);
+    expect(cycleOf(deps)!.cycle).toBe(cursorCycle);
+    writeClaude(deps, "p00/behind.jsonl", [claudeLine("m-behind", { sessionId: "s-behind" })]);
+    let behindSeenInCycle = false;
+    while (cycleOf(deps)!.cycle === cursorCycle && guard < 1800) {
+      await pass();
+      guard += 1;
+      if (cycleOf(deps)!.cycle !== cursorCycle) break;
+      behindSeenInCycle = deps.db
+        .prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'")
+        .get() !== undefined;
+      if (behindSeenInCycle) break;
     }
+    expect(behindSeenInCycle).toBe(false);
+    expect(cycleOf(deps)!.cycle).toBeGreaterThan(cursorCycle);
+    const behindRow = () => deps.db
+      .prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'")
+      .get() as { n: number } | undefined;
+    let nextPasses = 0;
+    while (!behindRow() && nextPasses < D && guard < 2000) {
+      await pass();
+      guard += 1;
+      nextPasses += 1;
+    }
+    expect(behindRow()).toEqual({ n: 1 });
+    expect(nextPasses).toBeLessThanOrEqual(D);
     deps.db.close();
   }, 120_000);
 
