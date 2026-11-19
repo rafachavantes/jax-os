@@ -162,6 +162,83 @@ describe("collectCodexSnapshot", () => {
   });
 });
 
+describe("collectCodexSnapshot — complete loaded identity proof", () => {
+  const rootId = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+  const childId = "01a1ea73-662c-7c31-9f94-cf1560000000";
+
+  it("retains every loaded UUID, including an excluded exec thread sharing a shortened prefix", async () => {
+    const connector = fakeConnector((method, params) => {
+      if (method === "thread/loaded/list") return { data: [rootId, childId] };
+      if (method === "thread/read") {
+        if (params.threadId === rootId) return { thread: thread({ id: rootId }) };
+        return { thread: thread({ id: childId, source: "exec" }) };
+      }
+      return {};
+    });
+    const snap = await collectCodexSnapshot(connector, { socketPath: "/x", ownerFor: () => null });
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) throw new Error("expected readable native metadata");
+    expect(snap.loadedThreadIds).toEqual([rootId, childId]);
+    expect(snap.threads.map((t) => t.threadId)).toEqual([rootId]);
+    expect(snap.truncated).toBe(false);
+  });
+
+  it("withholds the identity proof when the loaded list carries malformed entries", async () => {
+    for (const data of [[rootId, 42], [rootId, "not-a-uuid"]]) {
+      const connector = fakeConnector((method, params) => {
+        if (method === "thread/loaded/list") return { data };
+        if (method === "thread/read") return { thread: thread({ id: params.threadId }) };
+        return {};
+      });
+      const snap = await collectCodexSnapshot(connector, { socketPath: "/x", ownerFor: () => null });
+      expect(snap.ok).toBe(true);
+      if (snap.ok) expect(snap.loadedThreadIds).toBeUndefined();
+    }
+  });
+
+  it("withholds the identity proof when a thread/read identity differs from the requested one", async () => {
+    const connector = fakeConnector((method, params) => {
+      if (method === "thread/loaded/list") return { data: [rootId] };
+      if (method === "thread/read") return { thread: thread({ id: childId }) };
+      return {};
+    });
+    const snap = await collectCodexSnapshot(connector, { socketPath: "/x", ownerFor: () => null });
+    expect(snap.ok).toBe(true);
+    if (snap.ok) expect(snap.loadedThreadIds).toBeUndefined();
+  });
+
+  it("withholds the identity proof on an unreadable thread or capped pagination", async () => {
+    const unreadable = fakeConnector((method, params) => {
+      if (method === "thread/loaded/list") return { data: [rootId, childId] };
+      if (method === "thread/read") {
+        if (params.threadId === childId) return new Error("evicted");
+        return { thread: thread({ id: rootId }) };
+      }
+      return {};
+    });
+    const unreadableSnap = await collectCodexSnapshot(unreadable, { socketPath: "/x", ownerFor: () => null });
+    expect(unreadableSnap.ok).toBe(true);
+    if (unreadableSnap.ok) {
+      expect(unreadableSnap.truncated).toBe(true);
+      expect(unreadableSnap.loadedThreadIds).toBeUndefined();
+    }
+
+    const capped = fakeConnector((method, params) => {
+      if (method === "thread/loaded/list") {
+        return { data: Array.from({ length: CODEX_LOADED_LIMIT }, (_, i) => `0191f0aa-0000-7000-8000-${String(i).padStart(12, "0")}`) };
+      }
+      if (method === "thread/read") return { thread: thread({ id: params.threadId }) };
+      return {};
+    });
+    const cappedSnap = await collectCodexSnapshot(capped, { socketPath: "/x", ownerFor: () => null });
+    expect(cappedSnap.ok).toBe(true);
+    if (cappedSnap.ok) {
+      expect(cappedSnap.truncated).toBe(true);
+      expect(cappedSnap.loadedThreadIds).toBeUndefined();
+    }
+  });
+});
+
 describe("collectCodexSnapshot — partial discovery tolerance (C1)", () => {
   it("drops only the failed thread/read and flags the snapshot incomplete", async () => {
     const good = "0191f0aa-0000-7000-8000-000000000001";
