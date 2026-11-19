@@ -43,7 +43,12 @@ export type CodexThread = {
 };
 
 export type CodexSnapshot =
-  | { ok: true; ts: string; threads: CodexThread[]; truncated: boolean }
+  | {
+      ok: true; ts: string; threads: CodexThread[]; truncated: boolean;
+      // Every validated loaded-list UUID, including threads excluded from `threads` (exec/subAgent).
+      // Present only when discovery was complete and every identity read matched its request.
+      loadedThreadIds?: string[];
+    }
   | { ok: false; ts: string; error: string };
 
 export type CodexRpc = {
@@ -300,6 +305,7 @@ export async function collectCodexSnapshot(
     });
     rpc.notify("initialized", {}); // JSON-RPC notification — no response is ever sent back
     const ids: string[] = [];
+    let proofComplete = true;
     let cursor: string | null = null;
     let truncated = false;
     for (let page = 0; page < 16; page += 1) {
@@ -308,8 +314,10 @@ export async function collectCodexSnapshot(
       if (!res || typeof res !== "object" || Array.isArray(res) || !Array.isArray((res as { data?: unknown }).data)) {
         throw new Error("malformed thread/loaded/list");
       }
-      const data = (res as { data: unknown[] }).data.filter((x): x is string => typeof x === "string");
-      ids.push(...data);
+      const rawIds = (res as { data: unknown[] }).data;
+      const stringIds = rawIds.filter((x): x is string => typeof x === "string");
+      proofComplete &&= stringIds.length === rawIds.length && stringIds.every((id) => UUID_RE.test(id));
+      ids.push(...stringIds);
       // Cap discovery at CODEX_LOADED_LIMIT root candidates; hitting it is an explicit source
       // warning (conservative: even an exactly-full final page may have more), never a silent
       // completeness claim.
@@ -346,6 +354,10 @@ export async function collectCodexSnapshot(
           const threadRaw = res && typeof res === "object" && "thread" in (res as Record<string, unknown>)
             ? (res as { thread: unknown }).thread
             : res;
+          const returnedId = threadRaw && typeof threadRaw === "object" && !Array.isArray(threadRaw)
+            ? (threadRaw as Record<string, unknown>).id
+            : undefined;
+          if (typeof returnedId !== "string" || !UUID_RE.test(returnedId) || returnedId !== threadId) proofComplete = false;
           const t = codexThreadFromRaw(threadRaw);
           if (t) threads.push(t);
         }
@@ -353,7 +365,8 @@ export async function collectCodexSnapshot(
     );
     await Promise.all(workers);
     await resolveOwners(threads, ownerFor, deadlineAt);
-    return { ok: true, ts, threads, truncated };
+    const loadedThreadIds = proofComplete && !truncated ? unique : undefined;
+    return { ok: true, ts, threads, truncated, ...(loadedThreadIds ? { loadedThreadIds } : {}) };
   } catch {
     return { ok: false, ts, error: "codex runtime unavailable" };
   } finally {

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { PANE_RE, type WorkflowQuestionAnswer, type WorkflowQuestionShape } from "../../lib/workflow";
+import type { CodexTerminalObservation } from "./codex-tmux";
 
 type ExecFile = (file: string, args: string[]) => Promise<string>;
 type Pause = (ms: number) => Promise<void>;
@@ -90,6 +91,33 @@ export async function injectAnswers(
 
 const LIVE_LINE_RE = /^(%[0-9]{1,10}) ([0-9]{1,10}) ([0-9]{1,20}) (.*)$/;
 
+// Hub snapshot (M3b): one fixed tab-delimited command per poll, title last and never trusted as a
+// whole line — a title containing a tab or newline shifts the field count and fails the snapshot.
+export const LIVE_PANES_FORMAT = [
+  "#{pane_id}", "#{pid}", "#{start_time}", "#{pane_pid}", "#{pane_dead}",
+  "#{pane_current_command}", "#{session_name}", "#{pane_title}",
+].join("\t");
+
+const TITLE_CAP = 1024;
+const SESSION_CAP = 256;
+const controlFree = (value: string) => !/[\u0000-\u001f\u007f]/.test(value);
+
+type NativeLiveRow = {
+  pane: string; pid: string; start: string; panePid: string; dead: string;
+  command: string; session: string; title: string;
+};
+
+// Framing failure (null) fails the WHOLE snapshot; invalid title/session metadata only makes the
+// row's observation ineligible (handled by the caller).
+function parseNativeLiveLine(line: string): NativeLiveRow | null {
+  const f = line.split("\t");
+  if (f.length !== 8) return null;
+  const [pane, pid, start, panePid, dead, command, session, title] = f;
+  if (!PANE_RE.test(pane) || !/^[0-9]{1,10}$/.test(pid) || !/^[0-9]{1,20}$/.test(start) || !/^[0-9]{1,10}$/.test(panePid)) return null;
+  if (dead !== "0" && dead !== "1") return null;
+  return { pane, pid, start, panePid, dead, command, session, title };
+}
+
 // Runtime association for a live pane's CURRENT process (MOA-469 §4): positively-Codex commands are
 // runtime evidence; a generic shell or unknown command is NOT proof of a runtime switch — callers
 // flag uncertainty rather than assigning a different session.
@@ -106,22 +134,27 @@ const NO_SERVER_RE = /no server running|error connecting[^\n]*No such file or di
 // M5 Task 2 (F14): pane PID is its OWN observed fact, inserted before the free command field.
 // It is NOT the server `#{pid}`/`#{start_time}` incarnation pair. Optional in the return type so
 // older injected fixtures (command in the fourth field) keep parsing as command-only.
-export async function listLivePanes(
-  run: ExecFile = systemExec,
-): Promise<{
+export type LivePanesResult = {
   paneIds: Set<string>;
   incarnation: string | null;
   paneCommands: Map<string, string>;
   panePids?: Map<string, number>;
   paneDead?: Map<string, boolean>;
-}> {
+  // Native rows only (real production output). Legacy injected fixtures keep their own branch and
+  // produce no binding observations.
+  codexTerminals?: CodexTerminalObservation[];
+};
+
+export async function listLivePanes(
+  run: ExecFile = systemExec,
+): Promise<LivePanesResult> {
   let output: string;
   try {
-    output = await run("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
+    output = await run("tmux", ["list-panes", "-a", "-F", LIVE_PANES_FORMAT]);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (NO_SERVER_RE.test(message)) {
-      return { paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map() }; // no tmux server — zero live panes, not an error
+      return { paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map(), codexTerminals: [] }; // no tmux server — zero live panes, not an error
     }
     throw e; // genuine command failure — let the caller's error contract surface it
   }
@@ -129,11 +162,37 @@ export async function listLivePanes(
   const paneCommands = new Map<string, string>();
   const panePids = new Map<string, number>();
   const paneDead = new Map<string, boolean>();
+  const codexTerminals: CodexTerminalObservation[] = [];
+  let hasNativeRows = false;
   let incarnation: string | null = null;
   let invalid = 0;
-  for (const line of output.split("\n")) {
+  for (const rawLine of output.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line.trim()) continue;
+    if (line.includes("\t")) {
+      hasNativeRows = true;
+      const native = parseNativeLiveLine(line);
+      if (!native) { invalid += 1; continue; }
+      paneIds.add(native.pane);
+      panePids.set(native.pane, Number(native.panePid));
+      paneDead.set(native.pane, native.dead === "1");
+      if (native.command) paneCommands.set(native.pane, native.command);
+      if (incarnation === null) incarnation = `${native.pid}:${native.start}`;
+      const eligible = native.session.length > 0 && Buffer.byteLength(native.session, "utf8") <= SESSION_CAP
+        && controlFree(native.session) && native.title.length > 0 && controlFree(native.title)
+        && Buffer.byteLength(native.title, "utf8") <= TITLE_CAP;
+      codexTerminals.push({
+        pane: native.pane,
+        tmuxIncarnation: `${native.pid}:${native.start}`,
+        session: native.session,
+        command: native.command,
+        dead: native.dead === "1",
+        eligible,
+        title: eligible ? native.title : "",
+      });
+      continue;
+    }
     const trimmed = line.trim();
-    if (!trimmed) continue;
     const m = LIVE_LINE_RE.exec(trimmed);
     if (!m) { invalid += 1; continue; }
     paneIds.add(m[1]);
@@ -157,7 +216,8 @@ export async function listLivePanes(
   }
   // A nonempty snapshot with unparseable rows is corrupt, never a confident pane set.
   if (invalid > 0) throw new Error("tmux snapshot unreadable");
-  return { paneIds, incarnation, paneCommands, panePids, paneDead };
+  const base = { paneIds, incarnation, paneCommands, panePids, paneDead };
+  return hasNativeRows ? { ...base, codexTerminals } : base;
 }
 
 // Sessions mosaic spec §7 Decision 10: "last N output lines live". `-S -{lines-1}` asks tmux for

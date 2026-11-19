@@ -86,6 +86,29 @@ describe("Mosaic — grouping and stale-pane exclusion (spec §5 rows 1-3, round
   });
 });
 
+describe("Mosaic — proven native Codex terminals (M3b)", () => {
+  it("renders the Codex terminal as a normal cell with native state and no tmux answer path", () => {
+    const ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+    const codexCard: MissionCard = {
+      ...cardBase,
+      sessions: [{
+        transport: "codex", threadId: ID, state: "needs-you", lastEventTs: null, subagentCount: 0,
+        capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null,
+        terminal: { pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead" },
+      }],
+    };
+    const html = renderToStaticMarkup(createElement(Mosaic, {
+      readiness: readyEmpty, cards: [codexCard], panesTail: null, busy: false,
+      onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
+    }));
+    expect(html).toContain('data-cell-pane="%183"');
+    expect(html).toContain("openPane");
+    expect(html).toContain("jax-breathe"); // native needs-you folds to waiting-for-input
+    expect(html).not.toContain("actions.respond");
+    expect(html).not.toContain("/api/workflow/answer");
+  });
+});
+
 describe("Mosaic — spotlight span/dim (spec §8 D14, round-2 F3)", () => {
   it("exactly one spotlight cell dims every other cell but keeps its own bar color", () => {
     const needsYou = pane({ pane: "%1", state: "needs-you", capsuleStatus: "blocked" });

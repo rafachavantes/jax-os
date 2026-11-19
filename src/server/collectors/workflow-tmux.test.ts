@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { WorkflowQuestionAnswer, WorkflowQuestionShape } from "../../lib/workflow";
-import { buildAnswerActions, capturePaneTail, injectAnswers, isCodexCommand, listLivePanes, KEY_INTERVAL_MS } from "./workflow-tmux";
+import { buildAnswerActions, capturePaneTail, injectAnswers, isCodexCommand, listLivePanes, KEY_INTERVAL_MS, LIVE_PANES_FORMAT } from "./workflow-tmux";
 
 const PANE = "%1";
 const INCARNATION = "234790:1787586213";
@@ -75,7 +75,7 @@ describe("injectAnswers", () => {
     });
     const pause = vi.fn(async (ms: number) => { pauses.push(ms); });
     await injectAnswers(PANE, SHAPES, ANSWERS, INCARNATION, run, pause);
-    expect(calls[0]).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
+    expect(calls[0]).toEqual(["list-panes", "-a", "-F", LIVE_PANES_FORMAT]);
     const sends = calls.slice(1);
     expect(sends[0]).toEqual(["send-keys", "-t", PANE, "Down"]);
     expect(sends.at(-1)).toEqual(["send-keys", "-t", PANE, "Enter"]);
@@ -151,7 +151,7 @@ describe("runtime command association (MOA-469)", () => {
 
   it("records the pane PID separately from the server incarnation and keeps the command (M5 F14)", async () => {
     const run = vi.fn(async (_file: string, args: string[]) => {
-      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
+      expect(args).toEqual(["list-panes", "-a", "-F", LIVE_PANES_FORMAT]);
       return "%1 234790 1787586213 234800 codex\n%2 234790 1787586213 234801 bash\n";
     });
     const live = await listLivePanes(run);
@@ -163,7 +163,7 @@ describe("runtime command association (MOA-469)", () => {
 
   it("reads the additive pane_dead fact while keeping legacy fixtures compatible", async () => {
     const run = vi.fn(async (_file: string, args: string[]) => {
-      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
+      expect(args).toEqual(["list-panes", "-a", "-F", LIVE_PANES_FORMAT]);
       return "%1 234790 1787586213 234800 0 codex\n%2 234790 1787586213 234801 1 bash\n";
     });
     const live = await listLivePanes(run);
@@ -193,7 +193,7 @@ describe("runtime command association (MOA-469)", () => {
 
   it("records the pane_current_command per pane in the live snapshot", async () => {
     const run = vi.fn(async (_file: string, args: string[]) => {
-      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
+      expect(args).toEqual(["list-panes", "-a", "-F", LIVE_PANES_FORMAT]);
       return "%1 234790 1787586213 codex\n%2 234790 1787586213 bash\n";
     });
     const live = await listLivePanes(run);
@@ -203,10 +203,80 @@ describe("runtime command association (MOA-469)", () => {
   });
 });
 
+describe("listLivePanes — native title observations", () => {
+  const native = (over: Partial<Record<string, string>> = {}) => {
+    const fields = {
+      pane: "%1", pid: "234790", start: "1787586213", panePid: "234800", dead: "0",
+      command: "codex", session: "jax-os-lead", title: "⠹ jax-os | jax-os | 01a1ea73-662c-7c31-9f94-cf156...", ...over,
+    };
+    return [fields.pane, fields.pid, fields.start, fields.panePid, fields.dead, fields.command, fields.session, fields.title].join("\t");
+  };
+
+  it("reads the fixed 8-field tab frame and keeps the raw title server-side", async () => {
+    const run = vi.fn(async (_file: string, args: string[]) => {
+      expect(args[0]).toBe("list-panes");
+      expect(args[3]).toContain("\t#{pane_title}");
+      return `${native()}\n`;
+    });
+    const live = await listLivePanes(run);
+    expect(live.incarnation).toBe("234790:1787586213");
+    expect(live.paneIds).toEqual(new Set(["%1"]));
+    expect(live.paneDead).toEqual(new Map([["%1", false]]));
+    expect(live.codexTerminals).toEqual([{
+      pane: "%1", tmuxIncarnation: "234790:1787586213", session: "jax-os-lead", command: "codex",
+      dead: false, eligible: true, title: "⠹ jax-os | jax-os | 01a1ea73-662c-7c31-9f94-cf156...",
+    }]);
+  });
+
+  it("keeps literal pipes as title data and preserves duplicate pane rows", async () => {
+    const run = vi.fn(async () => `${native({ title: "thread | name | jax-os | other" })}\n${native({ dead: "1" })}\n`);
+    const live = await listLivePanes(run);
+    expect(live.codexTerminals).toHaveLength(2);
+    expect(live.codexTerminals?.[0].title).toBe("thread | name | jax-os | other");
+    expect(live.codexTerminals?.[1]).toMatchObject({ pane: "%1", dead: true });
+    expect(live.paneDead).toEqual(new Map([["%1", true]]));
+  });
+
+  it("discards an invalid/oversized title or session without erasing pane liveness", async () => {
+    const run = vi.fn(async () => [
+      native({ title: "ok\u0000title" }),
+      native({ pane: "%2", title: "x".repeat(1025) }),
+      native({ pane: "%3", session: "bad\u0007name" }),
+      native({ pane: "%4", session: "n".repeat(257) }),
+      native({ pane: "%5", title: "" }),
+    ].join("\n") + "\n");
+    const live = await listLivePanes(run);
+    expect(live.paneIds).toEqual(new Set(["%1", "%2", "%3", "%4", "%5"]));
+    expect(live.codexTerminals?.map((r) => r.eligible)).toEqual([false, false, false, false, false]);
+    expect(live.codexTerminals?.map((r) => r.title)).toEqual(["", "", "", "", ""]);
+    expect(live.codexTerminals?.[4].title).toBe("");
+    expect(live.paneCommands.get("%1")).toBe("codex");
+  });
+
+  it("retains each row's own incarnation and rejects mixed/invalid framing", async () => {
+    const run = vi.fn(async () => `${native()}\n${native({ pane: "%2", start: "1787599999" })}\n`);
+    const live = await listLivePanes(run);
+    expect(live.incarnation).toBe("234790:1787586213");
+    expect(live.codexTerminals?.map((r) => r.tmuxIncarnation)).toEqual(["234790:1787586213", "234790:1787599999"]);
+
+    const tabbed = vi.fn(async () => `${native({ title: "tab\tinside" })}\n`);
+    await expect(listLivePanes(tabbed)).rejects.toThrow("tmux snapshot unreadable");
+    const newline = vi.fn(async () => `${native({ title: "line\nbreak" })}\n`);
+    await expect(listLivePanes(newline)).rejects.toThrow("tmux snapshot unreadable");
+  });
+
+  it("keeps a legacy injected fixture on its established branch with no native observations", async () => {
+    const legacy = vi.fn(async () => "%1 234790 1787586213 234800 0 codex\n");
+    const live = await listLivePanes(legacy);
+    expect(live.codexTerminals).toBeUndefined();
+    expect(live.paneCommands.get("%1")).toBe("codex");
+  });
+});
+
 describe("listLivePanes", () => {
   it("returns pane-id membership plus the ONE server-wide incarnation string", async () => {
     const run = vi.fn(async (_file: string, args: string[]) => {
-      expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
+      expect(args).toEqual(["list-panes", "-a", "-F", LIVE_PANES_FORMAT]);
       return "%1 234790 1787586213 bash\n%2 234790 1787586213 bash\n"; // pid/start_time identical on every line
     });
     const live = await listLivePanes(run);
@@ -215,12 +285,12 @@ describe("listLivePanes", () => {
 
   it("returns an empty set and null incarnation when tmux has no server (never throws)", async () => {
     const run = vi.fn(async () => { throw new Error("no server running on /tmp/tmux-1000/default"); });
-    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map() });
+    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map(), codexTerminals: [] });
   });
 
   it("also reads an 'error connecting' failure as no-server (never throws)", async () => {
     const run = vi.fn(async () => { throw new Error("error connecting to /tmp/tmux-1000/default (No such file or directory)"); });
-    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map() });
+    expect(await listLivePanes(run)).toEqual({ paneIds: new Set(), incarnation: null, paneCommands: new Map(), panePids: new Map(), paneDead: new Map(), codexTerminals: [] });
   });
 
   it("a genuine tmux command failure (missing binary, permission, ...) throws instead of reading as an empty snapshot (branch review Finding 5)", async () => {

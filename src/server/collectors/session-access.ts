@@ -7,10 +7,11 @@ import { promisify } from "node:util";
 import { INCARNATION_RE, PANE_RE, SESSION_NAME_CAP, TARGET_RE } from "../../lib/sessionAccess";
 
 export const SESSION_ACCESS_FORMAT =
-  "#{pane_id}\t#{session_id}\t#{window_id}\t#{pid}\t#{start_time}\t#{pane_dead}\t#{window_active}\t#{pane_active}\t#{session_name}";
+  "#{pane_id}\t#{session_id}\t#{window_id}\t#{pid}\t#{start_time}\t#{pane_dead}\t#{window_active}\t#{pane_active}\t#{session_name}\t#{pane_current_command}\t#{pane_title}";
 
 const MAX_ROWS = 256;
 const MAX_BYTES = 128 * 1024;
+const TITLE_CAP = 1024;
 const SESSION_ID_RE = /^\$[0-9]{1,10}$/;
 const WINDOW_ID_RE = /^@[0-9]{1,10}$/;
 
@@ -24,6 +25,10 @@ export type SessionAccessRow = {
   windowActive: boolean;
   paneActive: boolean;
   sessionName: string;
+  // Optional for older typed injection fixtures. Real parser output always includes them; an
+  // invalid/oversized title is discarded (absent here) and proves no native Codex binding.
+  command?: string;
+  title?: string;
   // "" when the row's native IDs are malformed; `eligible` is the only field a resolver may trust.
   target: string;
   incarnation: string;
@@ -55,17 +60,19 @@ export function parseSessionAccessSnapshot(stdout: string): SessionAccessSnapsho
 
   const parsed = lines.map((line) => {
     const fields = line.split("\t");
-    if (fields.length !== 9) unreadable();
-    const [pane, sessionId, windowId, serverPid, serverStart, dead, windowActive, paneActive, sessionName] = fields;
+    if (fields.length !== 11) unreadable();
+    const [pane, sessionId, windowId, serverPid, serverStart, dead, windowActive, paneActive, sessionName, command, title] = fields;
     if (dead !== "0" && dead !== "1") unreadable();
     if (windowActive !== "0" && windowActive !== "1") unreadable();
     if (paneActive !== "0" && paneActive !== "1") unreadable();
     const validIncarnation = /^[0-9]{1,10}$/.test(serverPid) && /^[0-9]{1,20}$/.test(serverStart);
     const validIds = PANE_RE.test(pane) && SESSION_ID_RE.test(sessionId) && WINDOW_ID_RE.test(windowId);
     const validName = sessionName.length > 0 && byteLength(sessionName) <= SESSION_NAME_CAP && !/[\u0000-\u001f]/.test(sessionName);
+    const validTitle = byteLength(title) <= TITLE_CAP && !/[\u0000-\u001f\u007f]/.test(title);
     return {
       pane, sessionId, windowId, serverPid, serverStart,
       dead: dead === "1", windowActive: windowActive === "1", paneActive: paneActive === "1", sessionName,
+      command, title: validTitle ? title : undefined,
       validIncarnation, validIds, validName,
     };
   });
@@ -83,6 +90,8 @@ export function parseSessionAccessSnapshot(stdout: string): SessionAccessSnapsho
     return {
       pane: r.pane, sessionId: r.sessionId, windowId: r.windowId, serverPid: r.serverPid, serverStart: r.serverStart,
       dead: r.dead, windowActive: r.windowActive, paneActive: r.paneActive, sessionName: r.sessionName,
+      command: r.command,
+      ...(r.title !== undefined ? { title: r.title } : {}),
       target,
       incarnation: r.validIncarnation ? `${r.serverPid}:${r.serverStart}` : "",
       eligible: r.validIds && r.validIncarnation && r.validName && (paneCounts.get(r.pane) ?? 0) === 1 && TARGET_RE.test(target),

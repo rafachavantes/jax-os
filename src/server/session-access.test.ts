@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { HubPane } from "./db/workflows";
+import { getCodexSessions } from "./db/workflows";
 import type { SessionAccessRow, SessionAccessSnapshot } from "./collectors/session-access";
+import type { CodexSnapshot } from "./collectors/workflow-codex";
 import { resolveSessionAccess, takenSessionAccess, type SessionAccessConfig, type SessionAccessDeps } from "./session-access";
 import { SessionAccessError, type SessionAccessSelector } from "../lib/sessionAccess";
 
@@ -25,13 +27,19 @@ function pane(overrides: Partial<HubPane> = {}): HubPane {
   };
 }
 
-function deps(snapshot: SessionAccessSnapshot, panes: HubPane[], config: SessionAccessConfig = { enabled: true, roUrl: "http://127.0.0.1:10000/ro", rwUrl: "http://127.0.0.1:10001/rw" }) {
-  const calls = { collect: 0, projectPanes: 0 };
+function deps(
+  snapshot: SessionAccessSnapshot,
+  panes: HubPane[],
+  config: SessionAccessConfig = { enabled: true, roUrl: "http://127.0.0.1:10000/ro", rwUrl: "http://127.0.0.1:10001/rw" },
+  codex: Partial<SessionAccessDeps> = {},
+) {
+  const calls = { collect: 0, projectPanes: 0, codex: 0 };
   const value: SessionAccessDeps & { calls: typeof calls } = {
     collect: async () => { calls.collect += 1; return snapshot; },
     projectPanes: () => { calls.projectPanes += 1; return panes; },
     config: () => config,
     now: () => 1_700_000_100_000,
+    ...codex,
     calls,
   };
   return value;
@@ -243,6 +251,161 @@ describe("resolveSessionAccess — generic tmux selector", () => {
     const ambiguous = { rows: [row(), row({ pane: "%8", sessionId: "$5", windowActive: false, paneActive: false, target: "$5:@3.%8" })], serverIncarnation: "1234:1700000000" };
     await expect(resolveSessionAccess({ kind: "tmux", session: "project agent" }, undefined, deps(ambiguous, [])))
       .rejects.toMatchObject({ code: "unavailable" });
+  });
+});
+
+describe("resolveSessionAccess — fresh native Codex card binding (M3b)", () => {
+  const CODEX_ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+  const OTHER_ID = "0191f0aa-bbbb-7000-8000-00000000000a";
+  const CODEX_INC = "3421408:1793045754";
+  const SHORT = `${CODEX_ID.slice(0, 29)}...`;
+  const codexSelector: SessionAccessSelector = {
+    kind: "card", project: "p1", harnessSession: CODEX_ID, pane: "%183", incarnation: CODEX_INC,
+  };
+  const expected = { target: "$2:@3.%183", incarnation: CODEX_INC };
+
+  const codexRow = (over: Partial<SessionAccessRow> = {}): SessionAccessRow => row({
+    pane: "%183", sessionName: "p1-lead", target: "$2:@3.%183", incarnation: CODEX_INC,
+    command: "codex", title: `⠹ p1 | p1 | ${SHORT}`, ...over,
+  });
+  const snapshot = (...rows: SessionAccessRow[]): SessionAccessSnapshot => ({ rows, serverIncarnation: CODEX_INC });
+  const codexSnapshot = (over: Partial<Extract<CodexSnapshot, { ok: true }>> = {}): CodexSnapshot => ({
+    ok: true, ts: "2026-11-19T14:00:00.000Z", truncated: false, loadedThreadIds: [CODEX_ID],
+    threads: [{ threadId: CODEX_ID, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+    ...over,
+  });
+  const membership = (ids: string[] = [CODEX_ID]): ReturnType<typeof getCodexSessions> => ({
+    sessions: ids.map((threadId) => ({ threadId })), sourceOk: true, untracked: false,
+  }) as unknown as ReturnType<typeof getCodexSessions>;
+  const codexDeps = (over: Partial<SessionAccessDeps> = {}): Partial<SessionAccessDeps> => ({
+    codexEnabled: () => true,
+    codexSnapshot: async () => codexSnapshot(),
+    codexSessions: () => membership(),
+    ...over,
+  });
+
+  it("resolves the proven native Codex terminal with runtime codex and no Claude fallback", async () => {
+    const d = deps(snapshot(codexRow()), [pane({ runtime: "claude", harnessSession: "sess-a" })], undefined, {});
+    d.codexEnabled = () => true;
+    d.codexSnapshot = async () => codexSnapshot();
+    d.codexSessions = () => membership();
+    const resolved = await resolveSessionAccess(codexSelector, undefined, d);
+    expect(resolved.expected).toEqual(expected);
+    expect(resolved.sessionName).toBe("p1-lead");
+    expect(resolved.runtime).toBe("codex");
+    expect(d.calls.projectPanes).toBe(0); // never consults a historical Claude seat
+    const url = new URL(resolved.roUrl);
+    expect(url.searchParams.getAll("arg")).toEqual(["$2:@3.%183"]);
+  });
+
+  it("refuses a stale Claude registration on a current Codex command", async () => {
+    const selector: SessionAccessSelector = { ...codexSelector, harnessSession: "sess-a" };
+    const d = deps(snapshot(codexRow()), [pane()], undefined, {});
+    Object.assign(d, codexDeps());
+    await expect(resolveSessionAccess(selector, undefined, d)).rejects.toMatchObject({ code: "unavailable" });
+    expect(d.calls.projectPanes).toBe(0);
+  });
+
+  it("refuses a full-UUID mismatch, a project owner mismatch and missing event membership", async () => {
+    await expect(resolveSessionAccess({ ...codexSelector, harnessSession: OTHER_ID }, undefined, deps(snapshot(codexRow()), [pane()], undefined, codexDeps())))
+      .rejects.toMatchObject({ code: "unavailable" });
+
+    const foreignOwner = deps(snapshot(codexRow()), [pane()], undefined, codexDeps({
+      codexSnapshot: async () => codexSnapshot({
+        threads: [{ threadId: CODEX_ID, cwd: "/home/rafa/repos/p2", owner: "p2", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+      }),
+    }));
+    await expect(resolveSessionAccess(codexSelector, undefined, foreignOwner)).rejects.toMatchObject({ code: "unavailable" });
+
+    const unmembered = deps(snapshot(codexRow()), [pane()], undefined, codexDeps({ codexSessions: () => membership([]) }));
+    await expect(resolveSessionAccess(codexSelector, undefined, unmembered)).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("reports a switched title/conversation as unavailable initially and lost-target when pinned", async () => {
+    const switched = snapshot(codexRow({ title: `⠹ p1 | p1 | ${OTHER_ID}` }));
+    await expect(resolveSessionAccess(codexSelector, undefined, deps(switched, [pane()], undefined, { ...codexDeps() })))
+      .rejects.toMatchObject({ code: "unavailable" });
+    await expect(resolveSessionAccess(codexSelector, expected, deps(switched, [pane()], undefined, { ...codexDeps() })))
+      .rejects.toMatchObject({ code: "lost-target" });
+  });
+
+  it("checks all native panes before binding a Codex card", async () => {
+    const claimedTwice = snapshot(codexRow(), codexRow({ pane: "%184", target: "$2:@3.%184" }));
+    const d = deps(claimedTwice, [pane()], undefined, codexDeps());
+    await expect(resolveSessionAccess(codexSelector, undefined, d)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(resolveSessionAccess(codexSelector, expected, d)).rejects.toMatchObject({ code: "lost-target" });
+    expect(d.calls.projectPanes).toBe(0);
+  });
+
+  it("treats dead/moved/incarnation-changed panes as lost-target when pinned", async () => {
+    const dead = snapshot(codexRow({ dead: true }));
+    await expect(resolveSessionAccess(codexSelector, expected, deps(dead, [pane()], undefined, codexDeps())))
+      .rejects.toMatchObject({ code: "lost-target" });
+
+    const moved = snapshot(codexRow({ pane: "%184", target: "$2:@3.%184" }));
+    await expect(resolveSessionAccess(codexSelector, expected, deps(moved, [pane()], undefined, codexDeps())))
+      .rejects.toMatchObject({ code: "lost-target" });
+
+    const restarted = snapshot(codexRow({ incarnation: "3421408:1793045755" }));
+    await expect(resolveSessionAccess(codexSelector, expected, deps(restarted, [pane()], undefined, codexDeps())))
+      .rejects.toMatchObject({ code: "lost-target" });
+  });
+
+  it("maps a failed, truncated, proof-less or disabled Codex source to source-failure/unavailable", async () => {
+    for (const codex of [
+      { codexSnapshot: async () => ({ ok: false as const, ts: "x", error: "no socket" }) },
+      { codexSnapshot: async () => codexSnapshot({ truncated: true }) },
+      { codexSnapshot: async () => codexSnapshot({ loadedThreadIds: undefined }) },
+      { codexSnapshot: async () => { throw new Error("timeout"); } },
+    ]) {
+      const pinned = deps(snapshot(codexRow()), [pane()], undefined, codexDeps(codex));
+      await expect(resolveSessionAccess(codexSelector, expected, pinned)).rejects.toMatchObject({ code: "source-failure" });
+    }
+
+    const disabled = deps(snapshot(codexRow()), [pane()], undefined, codexDeps({ codexEnabled: () => false }));
+    await expect(resolveSessionAccess(codexSelector, undefined, disabled)).rejects.toMatchObject({ code: "unavailable" });
+
+    const absent = deps(snapshot(codexRow()), [pane()]);
+    await expect(resolveSessionAccess(codexSelector, undefined, absent)).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("forwards a budget reduced by the elapsed native tmux read and refuses an exhausted one", async () => {
+    let clock = 1_000;
+    let seen: number | null = null;
+    const withElapsed = (elapsed: number) => deps(snapshot(codexRow()), [pane()], undefined, {
+      ...codexDeps(),
+      now: () => clock,
+      collect: async () => { clock += elapsed; return snapshot(codexRow()); },
+      codexSnapshot: async (ms) => { seen = ms; return codexSnapshot(); },
+    });
+
+    await resolveSessionAccess(codexSelector, undefined, withElapsed(500));
+    expect(seen).toBe(3_000); // capped by the 3s ceiling
+
+    clock = 1_000; seen = null;
+    await resolveSessionAccess(codexSelector, undefined, withElapsed(2_500));
+    expect(seen).toBe(2_000); // 4_500 - 2_500 elapsed
+
+    clock = 1_000; seen = null;
+    const exhausted = withElapsed(5_000);
+    await expect(resolveSessionAccess(codexSelector, undefined, exhausted)).rejects.toMatchObject({ code: "source-failure" });
+    expect(seen).toBeNull(); // no RPC starts on a nonpositive budget
+  });
+
+  it("keeps ordinary Claude access and explicit native-session selection off the Codex RPC", async () => {
+    const claude = deps(snapshot(row({ command: "claude" })), [pane()], undefined, {
+      ...codexDeps(),
+      codexSnapshot: async () => { throw new Error("must not read Codex"); },
+    });
+    const resolved = await resolveSessionAccess(cardSelector, undefined, claude);
+    expect(resolved.runtime).toBe("claude");
+
+    const generic = deps(snapshot(row({ command: "codex", title: `p1 | ${SHORT}` })), [], undefined, {
+      ...codexDeps(),
+      codexSnapshot: async () => { throw new Error("must not read Codex"); },
+    });
+    const named = await resolveSessionAccess({ kind: "tmux", session: "project agent" }, undefined, generic);
+    expect(named.expected.target).toBe("$2:@3.%7");
   });
 });
 

@@ -14,6 +14,7 @@ import { projectPayload } from "../collectors/workflow-events";
 import { isCodexCommand } from "../collectors/workflow-tmux";
 import { isAnswerWatcherAlive } from "../collectors/workflow-callbacks";
 import type { CodexSnapshot, CodexThread } from "../collectors/workflow-codex";
+import { codexTerminalBindings, type CodexTerminal, type CodexTerminalObservation } from "../collectors/codex-tmux";
 import type { LedgerRow } from "../collectors/worktrees";
 import { deriveCapsule, hasPendingQuestion, paneAgentFilter, type PaneRef } from "./derive";
 import { finishMutation, insertMutation } from "./mutations";
@@ -880,7 +881,11 @@ export function abandonInjectingAnswers(db: Database.Database): number {
 // getProjectTimeline filters nothing, so synthetic rows render once a project is already a member
 // on its own merits (§7.1b).
 
-export type LiveSnapshot = { paneIds: Set<string>; incarnation: string | null; paneCommands: Map<string, string> };
+export type LiveSnapshot = {
+  paneIds: Set<string>; incarnation: string | null; paneCommands: Map<string, string>;
+  // Optional native title observations from the same tmux snapshot; absent on legacy fixtures.
+  codexTerminals?: CodexTerminalObservation[];
+};
 
 export type Capsule = { status: string; minutes: number | null; declaredAt: string; eventId: number; mergeAsk: number | null; question: string | null; answerable?: boolean; mergeBranch?: string; mergeTarget?: string };
 
@@ -953,6 +958,9 @@ export type HubCodexSession = {
   capsule: Capsule | null;
   lastEventTs: string | null;
   subagentCount: number;
+  // A PROVEN existing physical terminal (M3b correction). Absent means no terminal action; this is
+  // a view of an observed pane, never a fabricated seat or a transport reclassification.
+  terminal?: CodexTerminal;
 };
 
 export type HubCodexSource = "ok" | "failed" | "truncated" | "absent";
@@ -2650,10 +2658,15 @@ export function getHubData(
   // be resolved once ALL open seats are known (spec: bindings are derived after assembly).
   const panesByProject = new Map<string, HubPane[]>();
   const codexByProject = new Map<string, { sessions: HubCodexSession[]; untracked: boolean }>();
+  const terminals = codexTerminalBindings(codex, tmuxSourceOk ? live.codexTerminals ?? [] : []);
   for (const project of projects) {
     panesByProject.set(project, getProjectPanes(db, project, live, now));
     const codexProj = getCodexSessions(db, project, codex, now);
-    codexByProject.set(project, { sessions: codexProj.sessions, untracked: codexProj.untracked });
+    const sessions = codexProj.sessions.map((session) => {
+      const binding = terminals.get(session.threadId);
+      return binding?.project === project ? { ...session, terminal: binding.terminal } : session;
+    });
+    codexByProject.set(project, { sessions, untracked: codexProj.untracked });
   }
   const bindings = buildRunBindings(
     db, projects,

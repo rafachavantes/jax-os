@@ -442,6 +442,7 @@
     "unmanaged": "no project",
     "attached": "attached",
     "detached": "detached",
+    "created": "Created",
     "windows": "{count, plural, one {# window} other {# windows}}",
     "readOnly": "read-only",
     "writable": "control active",

@@ -248,6 +248,15 @@ describe("focused deep links", () => {
     expect(query.get("expectedTarget")).toBe("$2:@3.%7");
     expect(selectorIdentity(cardSelector)).toBe("card|jax-os|sess-a|%7|1234:1700000000");
     expect(selectorIdentity({ kind: "tmux", session: "a" })).toBe("tmux|a");
+    // M3b: a native Codex card carries the SAME wire shape — full harness UUID, pane, incarnation.
+    const codexSelector: SessionAccessSelector = {
+      kind: "card", project: "jax-os", harnessSession: "01a1ea73-662c-7c31-9f94-cf1567bd851e",
+      pane: "%183", incarnation: "3421408:1793045754",
+    };
+    const parsedCodex = parseFocusedLocation(sessionAccessHref(codexSelector, "home").slice("/tmux".length));
+    expect(parsedCodex).toMatchObject({ kind: "focus", origin: "home", selector: codexSelector });
+    expect(selectorIdentity(parsedCodex.kind === "focus" ? parsedCodex.selector : cardSelector))
+      .toBe("card|jax-os|01a1ea73-662c-7c31-9f94-cf1567bd851e|%183|3421408:1793045754");
   });
 });
 
