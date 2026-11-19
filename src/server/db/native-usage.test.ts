@@ -22,6 +22,8 @@ import {
   UNKNOWN_MODEL_FILTER,
   upsertNativeUsageItem,
   type FileCheckpoint,
+  type NativeUsageSnapshot,
+  type UsageSlice,
 } from "./native-usage";
 import {
   parseClaudeLine,
@@ -273,12 +275,19 @@ describe("OpenCode projection reconciliation", () => {
     upsertNativeUsageItem(db, opencode({ projection: "v2" }));
     snap = queryNativeUsage(db, { period: 30, now: NOW });
     expect(snap.totalTokens).toBe(153);
+    // The V1 row mirrors the same native message, so it is not a coverage gap.
+    expect(snap.mixedProjectionSessions).toBe(0);
+    expect(snap.excludedV1Items).toBe(0);
+    expect(snap.warnings).not.toContain("mixed-projection");
+
+    upsertNativeUsageItem(db, opencode({
+      projection: "v1", message_id: "msg-unmatched", input: 1, output: 1, reasoning: 0, cache_read: 0, cache_write: 0,
+    }));
+    snap = queryNativeUsage(db, { period: 30, now: NOW });
+    expect(snap.totalTokens).toBe(153);
     expect(snap.mixedProjectionSessions).toBe(1);
     expect(snap.excludedV1Items).toBe(1);
     expect(snap.warnings).toContain("mixed-projection");
-
-    upsertNativeUsageItem(db, opencode({ projection: "v1", input: 1, output: 1, reasoning: 0, cache_read: 0, cache_write: 0 }));
-    expect(queryNativeUsage(db, { period: 30, now: NOW }).totalTokens).toBe(153);
     db.close();
   });
 
@@ -685,3 +694,360 @@ function dbFor(items: NativeUsageItem[]) {
   for (const item of items) upsertNativeUsageItem(db, item);
   return db;
 }
+
+// ---------------------------------------------------------------------------
+// Frozen parity oracle: the pre-change 342 JS reduction, kept test-only.
+
+type LegacyQuery = { period: 7 | 30 | 90; agent?: string | null; model?: string | null; now: number };
+
+type LegacyRow = {
+  harness: string;
+  session_id: string;
+  child_id: string;
+  is_child: number;
+  agent: string;
+  model: string | null;
+  day: string;
+  all_input: number;
+  all_output: number;
+  cache_read: number | null;
+  cache_write: number | null;
+  reasoning: number | null;
+  cost_amount: number | null;
+  cost_currency: string | null;
+  identity_conflict: number;
+};
+
+type LegacySlice = { name: string; allInput: number; allOutput: number; tokens: number; cost: number | null; currency: string | null; items: number };
+
+function legacySliceCost(rows: LegacyRow[]): { amount: number | null; currency: string | null; measured: number } {
+  const costed = rows.filter((r) => r.cost_amount !== null);
+  const usable = costed.filter((r) => r.cost_currency !== null);
+  if (usable.length === 0) return { amount: null, currency: null, measured: 0 };
+  const currencies = new Set(usable.map((r) => r.cost_currency));
+  if (currencies.size !== 1) return { amount: null, currency: null, measured: 0 };
+  let amount = 0;
+  for (const row of usable) amount += row.cost_amount as number;
+  return { amount, currency: [...currencies][0], measured: usable.length };
+}
+
+function legacySlice(name: string, rows: LegacyRow[]): LegacySlice {
+  const allInput = rows.reduce((total, r) => total + r.all_input, 0);
+  const allOutput = rows.reduce((total, r) => total + r.all_output, 0);
+  const cost = legacySliceCost(rows);
+  return { name, allInput, allOutput, tokens: allInput + allOutput, cost: cost.amount, currency: cost.currency, items: rows.length };
+}
+
+function legacyDetail(rows: LegacyRow[], key: "cache_read" | "cache_write" | "reasoning"): number | null {
+  const values = rows.map((r) => r[key]).filter((v): v is number => v !== null);
+  return values.length > 0 ? values.reduce((total, v) => total + v, 0) : null;
+}
+
+function legacyDaysBetween(startDay: string, endDay: string): string[] {
+  const out: string[] = [];
+  const start = Date.parse(`${startDay}T00:00:00Z`);
+  const end = Date.parse(`${endDay}T00:00:00Z`);
+  for (let ms = start; ms <= end; ms += 86400_000) out.push(new Date(ms).toISOString().slice(0, 10));
+  return out;
+}
+
+// Independently stated F1 expectation: only selected V1 rows whose same session has a
+// canonical V2 and whose own native message has no same-session V2 mirror are a gap.
+function unmatchedV1(db: ReturnType<typeof openDb>, opts: LegacyQuery): { items: number; sessions: number } {
+  const endDay = utcDay(opts.now);
+  const startDay = utcDay(opts.now - (opts.period - 1) * 86400);
+  const params: unknown[] = [startDay, endDay];
+  let filter = "";
+  if (opts.agent) {
+    filter += " AND i.agent = ?";
+    params.push(opts.agent);
+  }
+  if (opts.model !== undefined && opts.model !== null) {
+    if (opts.model === UNKNOWN_MODEL_FILTER) filter += " AND i.model IS NULL";
+    else {
+      filter += " AND i.model = ?";
+      params.push(opts.model);
+    }
+  }
+  return db
+    .prepare(
+      `SELECT COUNT(*) AS items, COUNT(DISTINCT i.session_id) AS sessions
+         FROM native_usage_items i
+        WHERE i.harness = 'opencode' AND i.projection = 'v1'
+          AND substr(i.item_id, -3) = '|v1'
+          AND i.day >= ? AND i.day <= ?${filter}
+          AND EXISTS (
+            SELECT 1 FROM native_usage_items v2
+             WHERE v2.harness = 'opencode' AND v2.projection = 'v2' AND v2.session_id = i.session_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM native_usage_items mirror
+             WHERE mirror.harness = 'opencode' AND mirror.projection = 'v2'
+               AND mirror.session_id = i.session_id
+               AND mirror.item_id = substr(i.item_id, 1, length(i.item_id) - 3) || '|v2'
+          )`,
+    )
+    .get(...params) as { items: number; sessions: number };
+}
+
+function legacySnapshot(db: ReturnType<typeof openDb>, opts: LegacyQuery) {
+  const days = opts.period;
+  const endDay = utcDay(opts.now);
+  const startDay = utcDay(opts.now - (days - 1) * 86400);
+  const params: unknown[] = [startDay, endDay];
+  let where = `i.day >= ? AND i.day <= ? AND (i.harness <> 'opencode' OR i.projection = 'v2' OR NOT EXISTS (
+    SELECT 1 FROM native_usage_items v2
+     WHERE v2.harness = 'opencode' AND v2.projection = 'v2' AND v2.session_id = i.session_id
+  ))`;
+  if (opts.agent) {
+    where += " AND i.agent = ?";
+    params.push(opts.agent);
+  }
+  if (opts.model !== undefined && opts.model !== null) {
+    if (opts.model === UNKNOWN_MODEL_FILTER) where += " AND i.model IS NULL";
+    else {
+      where += " AND i.model = ?";
+      params.push(opts.model);
+    }
+  }
+  const rows = db
+    .prepare(
+      `SELECT i.harness, i.session_id, i.child_id, i.is_child, i.agent, i.model, i.day,
+              i.all_input, i.all_output, i.cache_read, i.cache_write, i.reasoning,
+              i.cost_amount, i.cost_currency, i.identity_conflict
+         FROM native_usage_items i
+        WHERE ${where}`,
+    )
+    .all(...params) as LegacyRow[];
+
+  const daily = legacyDaysBetween(startDay, endDay).map((date) => ({ date, input: 0, output: 0, tokens: 0 }));
+  const byDate = new Map(daily.map((d) => [d.date, d]));
+  const agents = new Map<string, LegacyRow[]>();
+  const models = new Map<string, LegacyRow[]>();
+  const lead = new Set<string>();
+  const child = new Set<string>();
+  for (const row of rows) {
+    const bucket = byDate.get(row.day);
+    if (bucket) {
+      bucket.input += row.all_input;
+      bucket.output += row.all_output;
+      bucket.tokens = bucket.input + bucket.output;
+    }
+    const agentRows = agents.get(row.agent) ?? [];
+    agentRows.push(row);
+    agents.set(row.agent, agentRows);
+    const modelName = row.model ?? UNKNOWN_MODEL_FILTER;
+    const modelRows = models.get(modelName) ?? [];
+    modelRows.push(row);
+    models.set(modelName, modelRows);
+    if (row.is_child === 1) child.add(`${row.session_id}|${row.child_id}`);
+    else lead.add(row.session_id);
+  }
+  const totalCost = legacySliceCost(rows);
+  const unknownUnit = rows.filter((r) => r.cost_amount !== null && r.cost_currency === null).length;
+  const sources = getSourceStatuses(db);
+  const warnings = new Set(sources.flatMap((s) => s.warnings));
+  const f1 = unmatchedV1(db, opts);
+  if (f1.sessions > 0) warnings.add("mixed-projection");
+  if (rows.some((r) => r.identity_conflict === 1)) warnings.add("identity-conflict");
+  const totalInput = rows.reduce((total, r) => total + r.all_input, 0);
+  const totalOutput = rows.reduce((total, r) => total + r.all_output, 0);
+  return {
+    totalInput,
+    totalOutput,
+    totalTokens: totalInput + totalOutput,
+    totalCacheRead: legacyDetail(rows, "cache_read"),
+    totalCacheWrite: legacyDetail(rows, "cache_write"),
+    totalReasoning: legacyDetail(rows, "reasoning"),
+    totalCost: totalCost.amount,
+    costCurrency: totalCost.currency,
+    costCoverage: { measured: totalCost.measured, total: rows.length, unknownUnit },
+    daily,
+    byModel: [...models.entries()]
+      .map(([name, grouped]) => legacySlice(name, grouped))
+      .sort((a, b) => b.tokens - a.tokens || (a.name === UNKNOWN_MODEL_FILTER ? 1 : b.name === UNKNOWN_MODEL_FILTER ? -1 : 0)),
+    byAgent: [...agents.entries()].map(([name, grouped]) => legacySlice(name, grouped)).sort((a, b) => b.tokens - a.tokens),
+    sessions: { lead: lead.size, child: child.size },
+    mixedProjectionSessions: f1.sessions,
+    excludedV1Items: f1.items,
+    warnings: [...warnings].sort(),
+  };
+}
+
+function expectSlices(actual: UsageSlice[], expected: LegacySlice[]): void {
+  expect(actual.map((s) => s.name)).toEqual(expected.map((s) => s.name));
+  expect(actual.map((s) => ({
+    name: s.name, allInput: s.allInput, allOutput: s.allOutput, tokens: s.tokens, items: s.items, currency: s.currency,
+  }))).toEqual(expected.map((s) => ({
+    name: s.name, allInput: s.allInput, allOutput: s.allOutput, tokens: s.tokens, items: s.items, currency: s.currency,
+  })));
+  actual.forEach((slice, index) => {
+    const expectedCost = expected[index].cost;
+    if (expectedCost === null) expect(slice.cost).toBeNull();
+    else expect(slice.cost as number).toBeCloseTo(expectedCost, 10);
+  });
+}
+
+function expectMatchesLegacy(snap: NativeUsageSnapshot, legacy: ReturnType<typeof legacySnapshot>): void {
+  expect(snap.totalInput).toBe(legacy.totalInput);
+  expect(snap.totalOutput).toBe(legacy.totalOutput);
+  expect(snap.totalTokens).toBe(legacy.totalTokens);
+  expect(snap.totalCacheRead).toBe(legacy.totalCacheRead);
+  expect(snap.totalCacheWrite).toBe(legacy.totalCacheWrite);
+  expect(snap.totalReasoning).toBe(legacy.totalReasoning);
+  if (legacy.totalCost === null) expect(snap.totalCost).toBeNull();
+  else expect(snap.totalCost as number).toBeCloseTo(legacy.totalCost, 10);
+  expect(snap.costCurrency).toBe(legacy.costCurrency);
+  expect(snap.costCoverage).toEqual(legacy.costCoverage);
+  expect(snap.daily).toEqual(legacy.daily);
+  expectSlices(snap.byModel, legacy.byModel);
+  expectSlices(snap.byAgent, legacy.byAgent);
+  expect(snap.sessions).toEqual(legacy.sessions);
+  expect(snap.mixedProjectionSessions).toBe(legacy.mixedProjectionSessions);
+  expect(snap.excludedV1Items).toBe(legacy.excludedV1Items);
+  expect(snap.warnings).toEqual(legacy.warnings);
+}
+
+const DAY_MS = 86400_000;
+const createdAt = (daysAgo: number) => Date.parse("2026-11-17T10:00:00Z") - daysAgo * DAY_MS;
+
+function seedAggregationFixture(db: ReturnType<typeof openDb>): void {
+  const claudeAt = (daysAgo: number) =>
+    claude({ timestamp: new Date(createdAt(daysAgo)).toISOString(), message: { id: `c-${daysAgo}`, model: "claude-sonnet-5-5", usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 2 } } });
+  upsertNativeUsageItem(db, claudeAt(0));
+  upsertNativeUsageItem(db, claudeAt(3));
+  upsertNativeUsageItem(db, claudeAt(40));
+  const child = parseClaudeLine(JSON.stringify({
+    type: "assistant", sessionId: "sess-child", agentId: "agent-7", timestamp: "2026-11-17T10:00:00Z",
+    message: { id: "child-1", usage: { input_tokens: 1, output_tokens: 1 } },
+  }), { child: true, now: NOW });
+  if (!("item" in child)) throw new Error("expected child item");
+  upsertNativeUsageItem(db, child.item);
+
+  upsertNativeUsageItem(db, codex("r.jsonl", { response_id: "resp-a" }));
+  upsertNativeUsageItem(db, codex("r.jsonl", { response_id: "resp-b" }, { input_tokens: 5, output_tokens: 2, total_tokens: 7 }));
+
+  const oc = (over: Record<string, unknown>) => opencode({ created: createdAt(1), ...over });
+  upsertNativeUsageItem(db, oc({ session_id: "ses-usd", message_id: "m-usd", model_id: "model-x", created: createdAt(2) }));
+  upsertNativeUsageItem(db, oc({ session_id: "ses-unit", message_id: "m-unit", model_id: "model-x", cost: 2.5 }));
+  upsertNativeUsageItem(db, oc({ session_id: "ses-mirror", message_id: "m-mirror", projection: "v1", cost: null, input: 4, output: 2 }));
+  upsertNativeUsageItem(db, oc({ session_id: "ses-mirror", message_id: "m-mirror", projection: "v2", created: createdAt(35) }));
+  upsertNativeUsageItem(db, oc({ session_id: "ses-gap", message_id: "m-gap-v1", projection: "v1", cost: null, input: 9, output: 1 }));
+  upsertNativeUsageItem(db, oc({ session_id: "ses-gap", message_id: "m-gap-v2", projection: "v2", model_id: "model-y", created: createdAt(30) }));
+  db.prepare("UPDATE native_usage_items SET cost_currency = 'USD' WHERE harness = 'opencode' AND session_id = 'ses-usd'").run();
+  db.prepare("UPDATE native_usage_items SET cost_currency = 'EUR' WHERE harness = 'opencode' AND session_id = 'ses-gap' AND projection = 'v2'").run();
+  upsertNativeUsageItem(db, claude({ sessionId: "c-conflict", timestamp: "2026-11-17T10:00:00Z", message: { id: "c-0", usage: { input_tokens: 1, output_tokens: 1 } } }));
+}
+
+describe("scoped projection diagnostics and reduced SQL aggregation", () => {
+  it("parity-matches the frozen 342 reduction across periods, agents and models", () => {
+    const db = openDb(":memory:");
+    seedAggregationFixture(db);
+    setSourceStatus(db, { source: "claude", state: "available", lastRefresh: NOW - 5, progress: { filesDone: 4, filesTotal: 4 }, warnings: ["unsupported-layout"] }, NOW);
+    setSourceStatus(db, { source: "opencode", state: "available", lastRefresh: NOW - 5, progress: null, warnings: [] }, NOW);
+    const queries: LegacyQuery[] = [
+      { period: 30, now: NOW },
+      { period: 7, now: NOW },
+      { period: 90, now: NOW },
+      { period: 30, agent: "Claude Code", now: NOW },
+      { period: 30, agent: "build", now: NOW },
+      { period: 30, model: "model-x", now: NOW },
+      { period: 30, model: UNKNOWN_MODEL_FILTER, now: NOW },
+      { period: 90, agent: "build", model: "model-x", now: NOW },
+    ];
+    for (const opts of queries) {
+      expectMatchesLegacy(queryNativeUsage(db, opts), legacySnapshot(db, opts));
+    }
+    db.close();
+  });
+
+  it("counts only an unmatched selected V1 as a projection gap", () => {
+    const db = openDb(":memory:");
+    upsertNativeUsageItem(db, opencode({ projection: "v1", message_id: "mirror", input: 1, output: 1 }));
+    upsertNativeUsageItem(db, opencode({ projection: "v2", message_id: "mirror" }));
+    let snap = queryNativeUsage(db, { period: 30, now: NOW });
+    expect(snap.excludedV1Items).toBe(0);
+    expect(snap.mixedProjectionSessions).toBe(0);
+
+    upsertNativeUsageItem(db, opencode({ projection: "v1", message_id: "unmatched", input: 1, output: 1 }));
+    snap = queryNativeUsage(db, { period: 30, now: NOW });
+    expect(snap.excludedV1Items).toBe(1);
+    expect(snap.mixedProjectionSessions).toBe(1);
+
+    upsertNativeUsageItem(db, opencode({ projection: "v1", message_id: "other-session", session_id: "ses-2", input: 2, output: 2 }));
+    upsertNativeUsageItem(db, opencode({ projection: "v2", message_id: "other-v2", session_id: "ses-2", model_id: "model-z", agent: "plan" }));
+    snap = queryNativeUsage(db, { period: 30, now: NOW });
+    expect(snap.excludedV1Items).toBe(2);
+    expect(snap.mixedProjectionSessions).toBe(2);
+    expect(queryNativeUsage(db, { period: 30, agent: "build", now: NOW }).excludedV1Items).toBe(2);
+    expect(queryNativeUsage(db, { period: 30, agent: "plan", now: NOW }).excludedV1Items).toBe(0);
+    expect(queryNativeUsage(db, { period: 30, model: "model-z", now: NOW }).excludedV1Items).toBe(0);
+    expect(queryNativeUsage(db, { period: 30, model: "model-x", now: NOW }).excludedV1Items).toBe(2);
+    db.close();
+  });
+
+  it("keeps a cross-period canonical V2 able to suppress a selected V1", () => {
+    const db = openDb(":memory:");
+    upsertNativeUsageItem(db, opencode({ projection: "v1", message_id: "old-v1", input: 50, output: 50, created: createdAt(0) }));
+    upsertNativeUsageItem(db, opencode({ projection: "v2", message_id: "old-v2", created: createdAt(20) }));
+    const snap = queryNativeUsage(db, { period: 7, now: NOW });
+    expect(snap.totalTokens).toBe(0);
+    expect(snap.excludedV1Items).toBe(1);
+    expect(snap.mixedProjectionSessions).toBe(1);
+    db.close();
+  });
+
+  it("accepts an aggregate exactly at the safe limit and rejects one above it", () => {
+    const db = openDb(":memory:");
+    db.prepare(
+      `INSERT INTO native_usage_items (harness, item_id, session_id, provenance, agent, ts, updated_ts, day, all_input, all_output)
+       VALUES ('claude', 'max', 'sess-max', 'lead', 'Claude Code', ?, ?, ?, ?, 0)`,
+    ).run(NOW, NOW, utcDay(NOW), Number.MAX_SAFE_INTEGER);
+    const snap = queryNativeUsage(db, { period: 7, now: NOW });
+    expect(snap.totalTokens).toBe(Number.MAX_SAFE_INTEGER);
+    expect(snap.daily.at(-1)?.tokens).toBe(Number.MAX_SAFE_INTEGER);
+    db.prepare("UPDATE native_usage_items SET all_input = all_input + 1 WHERE item_id = 'max'").run();
+    expect(() => queryNativeUsage(db, { period: 7, now: NOW })).toThrow("aggregate-overflow");
+    db.close();
+  });
+
+  it("reduces transfer to returned day and facet groups instead of items", () => {
+    const db = openDb(":memory:");
+    const insert = db.prepare(
+      `INSERT INTO native_usage_items
+         (harness, item_id, session_id, provenance, agent, model, ts, updated_ts, day, all_input, all_output, cost_amount, cost_currency)
+       VALUES ('opencode', ?, ?, 'v2', ?, ?, ?, ?, ?, 100, 20, ?, ?)`,
+    );
+    db.transaction(() => {
+      for (let i = 0; i < 2000; i += 1) {
+        insert.run(
+          `item-${i}`, `sess-${i}`,
+          `agent-${i % 3}`, `model-${i % 4}`,
+          NOW, NOW, utcDay(NOW - (i % 5) * DAY),
+          1.5, i % 2 === 0 ? "USD" : null,
+        );
+      }
+    })();
+    const original = db.prepare.bind(db);
+    let transferred = 0;
+    (db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
+      const statement = original(sql);
+      if (/GROUP BY/i.test(sql) && /native_usage_items/i.test(sql)) {
+        const all = statement.all.bind(statement);
+        statement.all = ((...args: unknown[]) => {
+          const rows = all(...args) as unknown[];
+          transferred += rows.length;
+          return rows;
+        }) as typeof statement.all;
+      }
+      return statement;
+    }) as typeof db.prepare;
+    // Fixture observation: 2000 items collapse to 5 day groups + facet groups; the
+    // measured row transfer stays far below the item count (groups, not items).
+    const snap = queryNativeUsage(db, { period: 7, now: NOW });
+    expect(snap.totalTokens).toBe(2000 * 120);
+    expect(transferred).toBeLessThan(100);
+    expect(db.prepare).not.toBe(original);
+    db.close();
+  });
+});

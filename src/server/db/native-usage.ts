@@ -895,22 +895,35 @@ const CANONICAL = `(i.harness <> 'opencode' OR i.projection = 'v2' OR NOT EXISTS
    WHERE v2.harness = 'opencode' AND v2.projection = 'v2' AND v2.session_id = i.session_id
 ))`;
 
-type AggRow = {
-  harness: Harness;
-  session_id: string;
-  child_id: string;
-  is_child: number;
-  agent: string;
-  model: string | null;
-  day: string;
-  all_input: number;
-  all_output: number;
+type TotalRow = {
+  items: number;
+  all_input: number | null;
+  all_output: number | null;
   cache_read: number | null;
   cache_write: number | null;
   reasoning: number | null;
-  cost_amount: number | null;
+  identity_conflict: number | null;
+};
+
+type DailyRow = { day: string; all_input: number | null; all_output: number | null };
+
+type FacetRow = {
+  agent: string;
+  model: string | null;
   cost_currency: string | null;
-  identity_conflict?: number;
+  cost_present: number;
+  items: number;
+  all_input: number | null;
+  all_output: number | null;
+  cost_sum: number | null;
+};
+
+type SliceAcc = {
+  items: number;
+  allInput: number;
+  allOutput: number;
+  costByCurrency: Map<string, number>;
+  costItemsByCurrency: Map<string, number>;
 };
 
 function checkedAdd(total: number, value: number): number {
@@ -926,40 +939,49 @@ export function sumChecked(values: number[]): number {
   return total;
 }
 
-function sliceCost(rows: AggRow[]): { amount: number | null; currency: string | null; measured: number } {
-  const costed = rows.filter((r) => r.cost_amount !== null);
-  const usable = costed.filter((r) => r.cost_currency !== null);
-  if (usable.length === 0) return { amount: null, currency: null, measured: 0 };
-  const currencies = new Set(usable.map((r) => r.cost_currency));
-  if (currencies.size !== 1) return { amount: null, currency: null, measured: 0 };
-  let amount = 0;
-  for (const row of usable) {
-    const value = row.cost_amount as number;
-    if (!Number.isFinite(value) || value < 0) throw new Error("aggregate-overflow");
-    amount += value;
-    if (!Number.isFinite(amount)) throw new Error("aggregate-overflow");
-  }
-  return { amount, currency: [...currencies][0], measured: usable.length };
+function checkedMoney(total: number, value: number): number {
+  if (!Number.isFinite(value) || value < 0) throw new Error("aggregate-overflow");
+  const next = total + value;
+  if (!Number.isFinite(next)) throw new Error("aggregate-overflow");
+  return next;
 }
 
-function toSlice(name: string, rows: AggRow[]): UsageSlice {
-  const allInput = sumChecked(rows.map((r) => r.all_input));
-  const allOutput = sumChecked(rows.map((r) => r.all_output));
-  const cost = sliceCost(rows);
+function emptySlice(name: string): SliceAcc & { name: string } {
   return {
     name,
-    allInput,
-    allOutput,
-    tokens: checkedAdd(allInput, allOutput),
-    cost: cost.amount,
-    currency: cost.currency,
-    items: rows.length,
+    items: 0,
+    allInput: 0,
+    allOutput: 0,
+    costByCurrency: new Map(),
+    costItemsByCurrency: new Map(),
   };
 }
 
-function detailTotal(rows: AggRow[], key: "cache_read" | "cache_write" | "reasoning"): number | null {
-  const values = rows.map((r) => r[key]).filter((v): v is number => v !== null);
-  return values.length > 0 ? sumChecked(values) : null;
+function addToSlice(acc: SliceAcc, row: FacetRow): void {
+  const items = checkedAdd(0, row.items);
+  const input = checkedAdd(0, row.all_input ?? 0);
+  const output = checkedAdd(0, row.all_output ?? 0);
+  acc.items = checkedAdd(acc.items, items);
+  acc.allInput = checkedAdd(acc.allInput, input);
+  acc.allOutput = checkedAdd(acc.allOutput, output);
+  if (row.cost_present !== 1 || row.cost_currency === null) return;
+  const currency = row.cost_currency;
+  acc.costByCurrency.set(currency, checkedMoney(acc.costByCurrency.get(currency) ?? 0, row.cost_sum ?? 0));
+  acc.costItemsByCurrency.set(currency, checkedAdd(acc.costItemsByCurrency.get(currency) ?? 0, items));
+}
+
+function sliceFrom(name: string, acc: SliceAcc): UsageSlice {
+  const currencies = [...acc.costByCurrency.keys()];
+  const compatible = currencies.length === 1;
+  return {
+    name,
+    allInput: acc.allInput,
+    allOutput: acc.allOutput,
+    tokens: checkedAdd(acc.allInput, acc.allOutput),
+    cost: compatible ? acc.costByCurrency.get(currencies[0]) as number : null,
+    currency: compatible ? currencies[0] : null,
+    items: acc.items,
+  };
 }
 
 function daysBetween(startDay: string, endDay: string): string[] {
@@ -977,56 +999,127 @@ export function queryNativeUsage(
   const days = opts.period;
   const endDay = utcDay(opts.now);
   const startDay = utcDay(opts.now - (days - 1) * 86400);
-  const params: unknown[] = [startDay, endDay];
-  let where = `i.day >= ? AND i.day <= ? AND ${CANONICAL}`;
+  let filterSql = "";
+  const filterParams: unknown[] = [];
   if (opts.agent) {
-    where += " AND i.agent = ?";
-    params.push(opts.agent);
+    filterSql += " AND i.agent = ?";
+    filterParams.push(opts.agent);
   }
   if (opts.model !== undefined && opts.model !== null) {
-    if (opts.model === UNKNOWN_MODEL_FILTER) where += " AND i.model IS NULL";
+    if (opts.model === UNKNOWN_MODEL_FILTER) filterSql += " AND i.model IS NULL";
     else {
-      where += " AND i.model = ?";
-      params.push(opts.model);
+      filterSql += " AND i.model = ?";
+      filterParams.push(opts.model);
     }
   }
-  const rows = db
+  const where = `i.day >= ? AND i.day <= ? AND ${CANONICAL}${filterSql}`;
+  const params = [startDay, endDay, ...filterParams];
+
+  const totalRow = db
     .prepare(
-      `SELECT i.harness, i.session_id, i.child_id, i.is_child, i.agent, i.model, i.day,
-              i.all_input, i.all_output, i.cache_read, i.cache_write, i.reasoning,
-              i.cost_amount, i.cost_currency, i.identity_conflict
+      `SELECT COUNT(*) AS items, SUM(i.all_input) AS all_input, SUM(i.all_output) AS all_output,
+              SUM(i.cache_read) AS cache_read, SUM(i.cache_write) AS cache_write,
+              SUM(i.reasoning) AS reasoning, MAX(i.identity_conflict) AS identity_conflict
          FROM native_usage_items i
         WHERE ${where}`,
     )
-    .all(...params) as AggRow[];
+    .get(...params) as TotalRow;
+
+  const dailyRows = db
+    .prepare(
+      `SELECT i.day AS day, SUM(i.all_input) AS all_input, SUM(i.all_output) AS all_output
+         FROM native_usage_items i
+        WHERE ${where}
+        GROUP BY i.day`,
+    )
+    .all(...params) as DailyRow[];
+
+  // One reduced projection feeds every agent/model slice and the total cost coverage:
+  // the row count follows groups, never items.
+  const facetRows = db
+    .prepare(
+      `SELECT i.agent AS agent, i.model AS model, i.cost_currency AS cost_currency,
+              CASE WHEN i.cost_amount IS NULL THEN 0 ELSE 1 END AS cost_present,
+              COUNT(*) AS items, SUM(i.all_input) AS all_input, SUM(i.all_output) AS all_output,
+              SUM(i.cost_amount) AS cost_sum
+         FROM native_usage_items i
+        WHERE ${where}
+        GROUP BY i.agent, i.model, i.cost_currency, CASE WHEN i.cost_amount IS NULL THEN 0 ELSE 1 END`,
+    )
+    .all(...params) as FacetRow[];
 
   const daily = daysBetween(startDay, endDay).map((date) => ({ date, input: 0, output: 0, tokens: 0 }));
   const byDate = new Map(daily.map((d) => [d.date, d]));
-  const agents = new Map<string, AggRow[]>();
-  const models = new Map<string, AggRow[]>();
-  const lead = new Set<string>();
-  const child = new Set<string>();
-  for (const row of rows) {
+  for (const row of dailyRows) {
     const bucket = byDate.get(row.day);
-    if (bucket) {
-      bucket.input = checkedAdd(bucket.input, row.all_input);
-      bucket.output = checkedAdd(bucket.output, row.all_output);
-      bucket.tokens = checkedAdd(bucket.input, bucket.output);
-    }
-    const agentRows = agents.get(row.agent) ?? [];
-    agentRows.push(row);
-    agents.set(row.agent, agentRows);
-    const modelName = row.model ?? UNKNOWN_MODEL_FILTER;
-    const modelRows = models.get(modelName) ?? [];
-    modelRows.push(row);
-    models.set(modelName, modelRows);
-    if (row.is_child === 1) child.add(`${row.session_id}|${row.child_id}`);
-    else lead.add(row.session_id);
+    if (!bucket) continue;
+    bucket.input = checkedAdd(bucket.input, row.all_input ?? 0);
+    bucket.output = checkedAdd(bucket.output, row.all_output ?? 0);
+    bucket.tokens = checkedAdd(bucket.input, bucket.output);
   }
 
-  const totalCost = sliceCost(rows);
-  const costed = rows.filter((r) => r.cost_amount !== null);
-  const unknownUnit = costed.filter((r) => r.cost_currency === null).length;
+  const agents = new Map<string, SliceAcc>();
+  const models = new Map<string, SliceAcc>();
+  const totalCostByCurrency = new Map<string, number>();
+  const totalCostItems = new Map<string, number>();
+  let unknownUnit = 0;
+  for (const row of facetRows) {
+    const items = checkedAdd(0, row.items);
+    const agentAcc = agents.get(row.agent) ?? emptySlice(row.agent);
+    addToSlice(agentAcc, row);
+    agents.set(row.agent, agentAcc);
+    const modelName = row.model ?? UNKNOWN_MODEL_FILTER;
+    const modelAcc = models.get(modelName) ?? emptySlice(modelName);
+    addToSlice(modelAcc, row);
+    models.set(modelName, modelAcc);
+    if (row.cost_present !== 1) continue;
+    if (row.cost_currency === null) {
+      unknownUnit = checkedAdd(unknownUnit, items);
+      continue;
+    }
+    totalCostByCurrency.set(
+      row.cost_currency,
+      checkedMoney(totalCostByCurrency.get(row.cost_currency) ?? 0, row.cost_sum ?? 0),
+    );
+    totalCostItems.set(
+      row.cost_currency,
+      checkedAdd(totalCostItems.get(row.cost_currency) ?? 0, items),
+    );
+  }
+
+  const sessionRow = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(DISTINCT i.session_id) FROM native_usage_items i WHERE ${where} AND i.is_child = 0) AS lead,
+         (SELECT COUNT(*) FROM (
+            SELECT 1 FROM native_usage_items i WHERE ${where} AND i.is_child = 1
+             GROUP BY i.session_id, i.child_id
+          )) AS child`,
+    )
+    .get(...params, ...params) as { lead: number; child: number };
+
+  // F1: only a selected V1 with no same-session mirror of its own native message is a
+  // coverage gap. The candidate keeps the selected range/agent/model; both lookups are
+  // global and the canonical predicate never applies to the candidate itself.
+  const diagnosticRow = db
+    .prepare(
+      `SELECT COUNT(*) AS items, COUNT(DISTINCT i.session_id) AS sessions
+         FROM native_usage_items i
+        WHERE i.harness = 'opencode' AND i.projection = 'v1'
+          AND substr(i.item_id, -3) = '|v1'
+          AND i.day >= ? AND i.day <= ?${filterSql}
+          AND EXISTS (
+            SELECT 1 FROM native_usage_items v2
+             WHERE v2.harness = 'opencode' AND v2.projection = 'v2' AND v2.session_id = i.session_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM native_usage_items mirror
+             WHERE mirror.harness = 'opencode' AND mirror.projection = 'v2'
+               AND mirror.session_id = i.session_id
+               AND mirror.item_id = substr(i.item_id, 1, length(i.item_id) - 3) || '|v2'
+          )`,
+    )
+    .get(startDay, endDay, ...filterParams) as { items: number; sessions: number };
 
   const filterEnd = utcDay(opts.now);
   const filterStart = utcDay(opts.now - 90 * 86400);
@@ -1043,28 +1136,6 @@ export function queryNativeUsage(
     )
     .all(filterStart, filterEnd) as { name: string | null }[];
 
-  const mixed = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM (
-         SELECT session_id FROM native_usage_items
-          WHERE harness = 'opencode' AND day >= ? AND day <= ?
-          GROUP BY session_id
-         HAVING SUM(CASE WHEN projection = 'v2' THEN 1 ELSE 0 END) > 0
-            AND SUM(CASE WHEN projection = 'v1' THEN 1 ELSE 0 END) > 0
-       )`,
-    )
-    .get(startDay, endDay) as { n: number };
-  const excludedV1 = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM native_usage_items i
-        WHERE i.harness = 'opencode' AND i.projection = 'v1' AND i.day >= ? AND i.day <= ?
-          AND EXISTS (
-            SELECT 1 FROM native_usage_items v2
-             WHERE v2.harness = 'opencode' AND v2.projection = 'v2' AND v2.session_id = i.session_id
-          )`,
-    )
-    .get(startDay, endDay) as { n: number };
-
   const sourceRows = getSourceStatuses(db);
   const sources: SourceCoverage[] = (["claude", "codex", "opencode"] as const).map((source) =>
     sourceRows.find((s) => s.source === source) ?? {
@@ -1076,11 +1147,15 @@ export function queryNativeUsage(
     },
   );
   const warnings = new Set(sources.flatMap((s) => s.warnings));
-  if (mixed.n > 0) warnings.add("mixed-projection");
-  if (rows.some((r) => r.identity_conflict === 1)) warnings.add("identity-conflict");
+  if (diagnosticRow.sessions > 0) warnings.add("mixed-projection");
+  if ((totalRow.identity_conflict ?? 0) === 1) warnings.add("identity-conflict");
 
-  const totalInput = sumChecked(rows.map((r) => r.all_input));
-  const totalOutput = sumChecked(rows.map((r) => r.all_output));
+  const totalInput = checkedAdd(0, totalRow.all_input ?? 0);
+  const totalOutput = checkedAdd(0, totalRow.all_output ?? 0);
+  const detail = (value: number | null) => (value === null ? null : checkedAdd(0, value));
+  const costCurrencies = [...totalCostByCurrency.keys()];
+  const compatibleCurrency = costCurrencies.length === 1;
+  const totalCost = compatibleCurrency ? (totalCostByCurrency.get(costCurrencies[0]) as number) : null;
 
   return {
     period: opts.period,
@@ -1089,25 +1164,29 @@ export function queryNativeUsage(
     totalInput,
     totalOutput,
     totalTokens: checkedAdd(totalInput, totalOutput),
-    totalCacheRead: detailTotal(rows, "cache_read"),
-    totalCacheWrite: detailTotal(rows, "cache_write"),
-    totalReasoning: detailTotal(rows, "reasoning"),
-    totalCost: totalCost.amount,
-    costCurrency: totalCost.currency,
-    costCoverage: { measured: totalCost.measured, total: rows.length, unknownUnit },
+    totalCacheRead: detail(totalRow.cache_read),
+    totalCacheWrite: detail(totalRow.cache_write),
+    totalReasoning: detail(totalRow.reasoning),
+    totalCost,
+    costCurrency: compatibleCurrency ? costCurrencies[0] : null,
+    costCoverage: {
+      measured: compatibleCurrency ? (totalCostItems.get(costCurrencies[0]) as number) : 0,
+      total: checkedAdd(0, totalRow.items),
+      unknownUnit,
+    },
     daily,
     byModel: [...models.entries()]
-      .map(([name, grouped]) => toSlice(name, grouped))
+      .map(([name, acc]) => sliceFrom(name, acc))
       .sort((a, b) => b.tokens - a.tokens || (a.name === UNKNOWN_MODEL_FILTER ? 1 : b.name === UNKNOWN_MODEL_FILTER ? -1 : 0)),
-    byAgent: [...agents.entries()].map(([name, grouped]) => toSlice(name, grouped)).sort((a, b) => b.tokens - a.tokens),
-    sessions: { lead: lead.size, child: child.size },
+    byAgent: [...agents.entries()].map(([name, acc]) => sliceFrom(name, acc)).sort((a, b) => b.tokens - a.tokens),
+    sessions: { lead: sessionRow.lead, child: sessionRow.child },
     sources,
     filters: {
       agents: agentNames.map((r) => r.name),
       models: modelNames.map((r) => r.name ?? UNKNOWN_MODEL_FILTER),
     },
-    mixedProjectionSessions: mixed.n,
-    excludedV1Items: excludedV1.n,
+    mixedProjectionSessions: diagnosticRow.sessions,
+    excludedV1Items: diagnosticRow.items,
     history: {
       cutoffDay: utcDay(opts.now - 90 * 86400),
       indexing: sources.some((s) => s.state === "indexing"),
