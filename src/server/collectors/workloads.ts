@@ -289,6 +289,9 @@ export type AttributeInput = {
   live: LivePaneSnapshot | null;
   // Native `pane_dead` fact from the INITIAL snapshot; the fresh snapshot carries its own map.
   paneDead?: Map<string, boolean>;
+  // A successfully observed initial pane snapshot (even an empty one). Only a known snapshot can
+  // prove that a complete root-terminating chain has no pane; unknown keeps the existing reasons.
+  paneSnapshotKnown?: boolean;
   partial: boolean;
 };
 
@@ -313,6 +316,22 @@ export function attributeOwners(input: AttributeInput): Attribution {
   const rootByPid = new Map<number, number>();
   const reasonByPid = new Map<number, OwnerReason>();
   let partial = input.partial || before.deadlineHit || after.deadlineHit;
+  const attemptedBoth = (pid: number): boolean => before.attempted.has(pid) && after.attempted.has(pid);
+  // Ordinary unlinked ancestry: a complete ps chain that terminates at uid0 PID1 without ever
+  // reaching an initial pane PID. Only a KNOWN initial pane snapshot makes that absence meaningful.
+  const noPaneRoot = (proc: ProcRow): number | null => {
+    const seen = new Set<number>();
+    let current: ProcRow | undefined = proc;
+    for (let depth = 0; depth < MAX_ANCESTORS; depth += 1) {
+      if (!current || seen.has(current.pid)) return null;
+      seen.add(current.pid);
+      if (paneByPid.has(current.pid)) return null;
+      if (current.uid === 0 && current.pid === 1) return current.pid;
+      if (current.ppid <= 0 || current.ppid === current.pid) return null;
+      current = byPid.get(current.ppid);
+    }
+    return null;
+  };
 
   for (const proc of snapshot.processes) {
     const unknown = (reason: OwnerReason, root = proc.pid) => {
@@ -326,11 +345,12 @@ export function attributeOwners(input: AttributeInput): Attribution {
     }
     const leafLeaf = consistent(proc.pid, before.stats, after.stats, byPid.get(proc.pid)?.ppid);
     if (leafLeaf === "missing") {
-      const attempted = before.attempted.has(proc.pid) || after.attempted.has(proc.pid);
-      unknown(attempted ? "missing" : "budget");
+      unknown(attemptedBoth(proc.pid) ? "missing" : "budget");
       continue;
     }
     if (leafLeaf === "race") { unknown("race"); continue; }
+    const ordinaryRoot = input.paneSnapshotKnown === true ? noPaneRoot(proc) : null;
+    if (ordinaryRoot !== null) { unknown("no-pane", ordinaryRoot); continue; }
 
     const seen = new Set<number>();
     let currentPid = proc.pid;
@@ -346,13 +366,15 @@ export function attributeOwners(input: AttributeInput): Attribution {
       if (paneName !== undefined) { pane = paneName; panePid = currentPid; break; }
       const psRow = byPid.get(currentPid);
       const stat = before.stats.get(currentPid);
-      if (!psRow || !stat) { failed = "missing"; break; }
+      if (!psRow) { failed = "missing"; break; }
+      if (!stat) { failed = attemptedBoth(currentPid) ? "missing" : "budget"; break; }
       if (stat.ppid <= 0 || stat.ppid === currentPid) { failed = "no-pane"; break; }
       const parentRow = byPid.get(stat.ppid);
       if (!parentRow) { failed = stat.ppid <= 1 ? "no-pane" : "missing"; break; }
       if (parentRow.uid !== proc.uid) { failed = "cross-uid"; break; }
       const relation = consistent(stat.ppid, before.stats, after.stats, parentRow.ppid);
-      if (relation === "missing") { failed = "missing"; break; }
+      // A missing required identity is only proven missing when BOTH phases attempted it.
+      if (relation === "missing") { failed = attemptedBoth(stat.ppid) ? "missing" : "budget"; break; }
       if (relation === "race") { failed = "race"; break; }
       currentPid = stat.ppid;
     }
@@ -361,7 +383,7 @@ export function attributeOwners(input: AttributeInput): Attribution {
       continue;
     }
     const paneStat = consistent(panePid, before.stats, after.stats, byPid.get(panePid)?.ppid);
-    if (paneStat !== "ok") { unknown(paneStat === "missing" ? "missing" : "race"); continue; }
+    if (paneStat !== "ok") { unknown(paneStat === "missing" ? (attemptedBoth(panePid) ? "missing" : "budget") : "race"); continue; }
     // The new diagnostic owner path requires an explicit alive fact in BOTH native observations;
     // a missing or dead fact is unknown even when the ancestry itself is stable.
     if (live === null
@@ -575,6 +597,8 @@ export async function collectWorkloads(input: CollectWorkloadsInput): Promise<Wo
     after,
     live,
     paneDead: input.paneDead,
+    // The runtime sets tmuxWarning to null only for a successfully observed initial pane snapshot.
+    paneSnapshotKnown: input.tmuxWarning === null,
     partial: snapshot.partial || warning !== null,
   });
   const contexts = new Map<string, LastKnownPaneContext>();

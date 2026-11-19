@@ -223,6 +223,104 @@ describe("proven ancestry (AC6)", () => {
     expect(cross.reasonByPid.get(50)).toBe("cross-uid");
   });
 
+  it("proves ordinary no-pane ancestry from a complete uid0 root chain only when the pane snapshot is known", async () => {
+    const psOutput = ["  1 0 0 Ss 100 100 init", " 40 1 1000 Sl 100 512 chrome"].join("\n");
+    const readProc = chain({
+      1: { ppid: 0, start: 1, comm: "init" },
+      40: { ppid: 1, start: 2, comm: "chrome" },
+    });
+    const known = await collectWorkloads({
+      nowMs: 1, psOutput, panePids: PANE, readProc,
+      paneContext: () => null, incarnation: "10:20", verifyPanes: async () => LIVE,
+      tmuxWarning: null, monotonic: () => 0,
+    });
+    expect(known.groups.find((g) => g.family === "chrome")).toMatchObject({
+      owner: { kind: "unknown", reason: "no-pane" },
+    });
+    expect(known.coverage.reasons["cross-uid"]).toBeUndefined();
+    expect(known.coverage.reasons["no-pane"]).toBe(2);
+    expect(known.coverage.partial).toBe(false);
+    expect(known.state).toBe("ok");
+
+    const unknownFlag = await collectWorkloads({
+      nowMs: 1, psOutput, panePids: PANE, readProc,
+      paneContext: () => null, incarnation: "10:20", verifyPanes: async () => LIVE,
+      tmuxWarning: "tmux-unverified", monotonic: () => 0,
+    });
+    expect(unknownFlag.groups.find((g) => g.family === "chrome")).toMatchObject({
+      owner: { kind: "unknown", reason: "cross-uid" },
+    });
+    expect(unknownFlag.coverage.partial).toBe(true);
+  });
+
+  it("uses the direct AttributeInput paneSnapshotKnown fact, defaulting to the previous reasons", async () => {
+    const snapshot = parsePs(["  1 0 0 Ss 100 100 init", " 40 1 1000 Sl 100 512 chrome"].join("\n"));
+    const entries = { 1: { ppid: 0, start: 1 }, 40: { ppid: 1, start: 2 } };
+    const before = await readIdentityPhase(
+      orderIdentityPids(snapshot, new Map()),
+      createIdentityReader(chain(entries), { now: () => 0 }).read,
+      { deadline: 1e9, now: () => 0 },
+    );
+    const after = await readIdentityPhase(
+      orderIdentityPids(snapshot, new Map()),
+      createIdentityReader(chain(entries), { now: () => 0 }).read,
+      { deadline: 1e9, now: () => 0 },
+    );
+    const known = attributeOwners({
+      snapshot, panePids: new Map(), paneIncarnation: null, before, after, live: null,
+      paneSnapshotKnown: true, partial: false,
+    });
+    expect(known.reasonByPid.get(40)).toBe("no-pane");
+    const unknownFlag = attributeOwners({
+      snapshot, panePids: new Map(), paneIncarnation: null, before, after, live: null,
+      partial: false,
+    });
+    expect(unknownFlag.reasonByPid.get(40)).toBe("cross-uid");
+  });
+
+  it("keeps a cross-UID chain that reaches a real pane as cross-uid even with a known snapshot", async () => {
+    const psOutput = [" 20 1 1000 Sl 1 1 tmux", " 50 20 0 S 1 1 sudo"].join("\n");
+    const result = await collectWorkloads({
+      nowMs: 1, psOutput, panePids: new Map([["%1", 20]]),
+      readProc: chain({ 20: { ppid: 1, start: 1, comm: "tmux" }, 50: { ppid: 20, start: 2, comm: "sudo" } }),
+      paneContext: () => null, incarnation: "10:20", verifyPanes: async () => LIVE,
+      tmuxWarning: null, monotonic: () => 0,
+    });
+    expect(result.groups.find((g) => g.family === "sudo")).toMatchObject({
+      owner: { kind: "unknown", reason: "cross-uid" },
+    });
+    expect(result.coverage.partial).toBe(true);
+  });
+
+  it("keeps incomplete and depth-limited ps chains out of the ordinary no-pane proof", async () => {
+    const incomplete = await collectWorkloads({
+      nowMs: 1, psOutput: " 40 999 1000 Sl 100 512 chrome", panePids: PANE,
+      readProc: chain({ 40: { ppid: 999, start: 1, comm: "chrome" } }),
+      paneContext: () => null, incarnation: "10:20", verifyPanes: async () => LIVE,
+      tmuxWarning: null, monotonic: () => 0,
+    });
+    expect(incomplete.groups.find((g) => g.family === "chrome")).toMatchObject({
+      owner: { kind: "unknown", reason: "missing" },
+    });
+
+    const lines = ["  1 0 0 Ss 100 100 init"];
+    const entries: Record<number, ChainEntry> = { 1: { ppid: 0, start: 1 } };
+    for (let i = 0; i < 70; i += 1) {
+      const pid = 100 + i;
+      lines.push(` ${pid} ${pid === 169 ? 1 : pid + 1} 1000 S 1 1 p${i}`);
+      entries[pid] = { ppid: pid === 169 ? 1 : pid + 1, start: 1 };
+    }
+    const deep = await collectWorkloads({
+      nowMs: 1, psOutput: lines.join("\n"), panePids: new Map(),
+      readProc: chain(entries), paneContext: () => null, incarnation: "10:20",
+      verifyPanes: async () => ({ paneIds: new Set<string>(), incarnation: "10:20", panePids: new Map() }),
+      tmuxWarning: null, monotonic: () => 0,
+    });
+    expect(deep.groups.find((g) => g.family === "p0")).toMatchObject({
+      owner: { kind: "unknown", reason: "depth" },
+    });
+  });
+
   it("an explicit dead pane cannot establish a live owner even with a stable recycled PID", async () => {
     const result = await collectWorkloads({
       nowMs: 1, psOutput: PS_LINES, panePids: PANE, readProc: chain(STABLE),
@@ -254,6 +352,67 @@ describe("proven ancestry (AC6)", () => {
     expect(result.groups.every((g) => g.owner.kind === "unknown")).toBe(true);
     expect(result.warning).toBe("tmux-unavailable");
     expect(result.state).toBe("partial");
+  });
+});
+
+describe("phase budget provenance (F7)", () => {
+  function phase(
+    stats: Record<number, { ppid: number; start?: number }>,
+    attempted: number[],
+    deadlineHit = false,
+  ) {
+    return {
+      stats: new Map(Object.entries(stats).map(([pid, value]) => [Number(pid), {
+        pid: Number(pid), comm: "proc", state: "S", ppid: value.ppid, startTime: value.start ?? 1,
+      }])),
+      attempted: new Set(attempted),
+      deadlineHit,
+    };
+  }
+
+  it("classifies a leaf only one phase attempted as budget, never missing", () => {
+    const snapshot = parsePs(" 40 1 1000 Sl 1 1 chrome");
+    const onePhase = attributeOwners({
+      snapshot, panePids: new Map(), paneIncarnation: null,
+      before: phase({ 40: { ppid: 1 } }, [40]), after: phase({}, []), live: null, partial: false,
+    });
+    expect(onePhase.reasonByPid.get(40)).toBe("budget");
+
+    const bothPhases = attributeOwners({
+      snapshot, panePids: new Map(), paneIncarnation: null,
+      before: phase({ 40: { ppid: 1 } }, [40]), after: phase({}, [40]), live: null, partial: false,
+    });
+    expect(bothPhases.reasonByPid.get(40)).toBe("missing");
+  });
+
+  it("requires a required ancestor attempt in both phases before calling it missing", () => {
+    const snapshot = parsePs([" 40 1 1000 Sl 1 1 chrome", "  1 0 1000 Ss 1 1 init"].join("\n"));
+    const onePhase = attributeOwners({
+      snapshot, panePids: new Map(), paneIncarnation: null,
+      before: phase({ 40: { ppid: 1 } }, [40]),
+      after: phase({ 40: { ppid: 1 } }, [40, 1]),
+      live: null, partial: false,
+    });
+    expect(onePhase.reasonByPid.get(40)).toBe("budget");
+
+    const bothPhases = attributeOwners({
+      snapshot, panePids: new Map(), paneIncarnation: null,
+      before: phase({ 40: { ppid: 1 } }, [40, 1]),
+      after: phase({ 40: { ppid: 1 } }, [40, 1]),
+      live: null, partial: false,
+    });
+    expect(bothPhases.reasonByPid.get(40)).toBe("missing");
+  });
+
+  it("keeps a changed identity a race even when both phases attempted it", () => {
+    const snapshot = parsePs(" 40 1 1000 Sl 1 1 chrome");
+    const raced = attributeOwners({
+      snapshot, panePids: new Map(), paneIncarnation: null,
+      before: phase({ 40: { ppid: 1, start: 1 } }, [40]),
+      after: phase({ 40: { ppid: 1, start: 2 } }, [40]),
+      live: null, partial: false,
+    });
+    expect(raced.reasonByPid.get(40)).toBe("race");
   });
 });
 
