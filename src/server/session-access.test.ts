@@ -48,10 +48,16 @@ describe("resolveSessionAccess — configuration and source", () => {
     expect(d.calls.collect).toBe(0);
   });
 
-  it("rejects a configured base with query/fragment/userinfo as unconfigured", async () => {
+  it.each([
+    "http://host/ro?x=1",
+    "https://host/ro#fragment",
+    "ftp://host/ro",
+    "not-a-url",
+  ])("rejects the invalid RO base %s before any native collection", async (roUrl) => {
     const d = deps({ rows: [row()], serverIncarnation: "1234:1700000000" }, [pane()],
-      { enabled: true, roUrl: "http://host/ro?x=1", rwUrl: "http://host/rw" });
+      { enabled: true, roUrl, rwUrl: "http://host/rw" });
     await expect(resolveSessionAccess(cardSelector, undefined, d)).rejects.toMatchObject({ code: "unconfigured" });
+    expect(d.calls.collect).toBe(0);
   });
 
   it("maps a genuine collector failure to source-failure, but a quiet no-server snapshot is not one", async () => {
@@ -98,6 +104,23 @@ describe("resolveSessionAccess — card binding", () => {
     );
     expect(resolved.runtime).toBe("unknown");
     expect(resolved.expected.target).toBe("$2:@3.%7");
+  });
+
+  it("does not treat an omitted harnessSession as the explicit null identity", async () => {
+    const unrecorded = pane();
+    delete (unrecorded as unknown as Record<string, unknown>).harnessSession;
+    await expect(resolveSessionAccess(
+      { ...cardSelector, harnessSession: null },
+      undefined,
+      deps(snapshot, [unrecorded], { enabled: true, roUrl: "http://127.0.0.1:10000/ro" }),
+    )).rejects.toMatchObject({ code: "unavailable" });
+
+    const resolved = await resolveSessionAccess(
+      { ...cardSelector, harnessSession: null },
+      undefined,
+      deps(snapshot, [pane({ harnessSession: null })], { enabled: true, roUrl: "http://127.0.0.1:10000/ro" }),
+    );
+    expect(resolved.roUrl).toContain("http://127.0.0.1:10000/ro");
   });
 
   it("resolves the requested unlinked pane beside unrelated linked and over-cap rows", async () => {

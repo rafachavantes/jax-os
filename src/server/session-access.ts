@@ -49,6 +49,18 @@ function pof(code: ConstructorParameters<typeof SessionAccessError>[0]): never {
   throw new SessionAccessError(code);
 }
 
+// Configuration is validated with the SAME URL grammar that builds the frame, before any native
+// read — a malformed base is unconfigured, never a source failure.
+function usableBase(base: unknown): base is string {
+  if (typeof base !== "string" || base.length === 0) return false;
+  try {
+    buildTtydFrameUrl(base, "$0:@0.%0");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function requireExpectedBinding(
   expected: ExpectedSessionTarget | undefined,
   target: string,
@@ -63,7 +75,8 @@ export async function resolveSessionAccess(
   deps: SessionAccessDeps = systemDeps,
 ): Promise<ResolvedSessionAccess> {
   const config = deps.config();
-  if (!config.enabled || typeof config.roUrl !== "string" || config.roUrl.length === 0) pof("unconfigured");
+  const roBase = config.roUrl;
+  if (!config.enabled || !usableBase(roBase)) pof("unconfigured");
 
   const snapshot = await deps.collect().catch(() => pof("source-failure"));
   const live = liveSnapshot(snapshot);
@@ -79,8 +92,9 @@ export async function resolveSessionAccess(
       (p) => p.pane === selector.pane && p.tmuxIncarnation === selector.incarnation && p.live,
     );
     if (!hub) pof("unavailable");
-    // An explicit null is the unidentified-pane seat, never a wildcard.
-    if ((hub.harnessSession ?? null) !== selector.harnessSession) pof("unavailable");
+    // Strict identity: an unrecorded harness (undefined) is not the explicit unidentified seat
+    // (null), and neither is a wildcard for the other.
+    if (hub.harnessSession !== selector.harnessSession) pof("unavailable");
     const seat = sessionSeats(panes, []).find(
       (s) => s.transport === "tmux"
         && s.panes.some((r) => r.pane === selector.pane && r.tmuxIncarnation === selector.incarnation),
@@ -120,7 +134,7 @@ export async function resolveSessionAccess(
 
   let roUrl: string;
   try {
-    roUrl = buildTtydFrameUrl(config.roUrl, target);
+    roUrl = buildTtydFrameUrl(roBase, target);
   } catch {
     pof("unconfigured");
   }

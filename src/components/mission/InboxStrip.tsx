@@ -4,7 +4,7 @@ import { AlertCircle, Flag, GitPullRequest, HelpCircle } from "lucide-react";
 import { useTranslations } from "next-intl";
 import Link from "next/link";
 import { sessionAccessHref } from "@/lib/sessionAccess";
-import { answerEventId, attentionRespondTarget, boardCardKeyFor, cancelAction, cardKey, confirmCancel, paneAccessSelector, postWorkflowAction, sessionDisplay, stripPresentation, stuckBoardCards, type InboxRow, type Mission, type MissionCard } from "@/lib/mission";
+import { answerEventId, attentionRespondTarget, boardCardKeyFor, cancelAction, cardKey, confirmCancel, paneAccessSelector, postWorkflowAction, sessionDisplay, stripPresentation, stuckBoardCards, type InboxRow, type Mission, type MissionCard, type MissionPane } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "./SourceWarning";
 import { actionEventId, bareCapsuleStatus, CancelDialog, pendingUiAction, PendingActionButtons } from "./ProjectCard";
@@ -12,21 +12,40 @@ import { useState } from "react";
 
 type Props = { mission: Mission; onExpand: (dir: string) => void };
 
-// M3b: the row's own live tmux pane/incarnation, with its proven harness identity, is the ONLY
-// terminal target — never a display session string, and no link when it cannot be proven.
+// M3b: the row's own live tmux pane AND the event it names, with its proven harness identity, is
+// the ONLY terminal target — never a display session string, never a superseded/foreign event on a
+// reused pane. A question row has no incarnation of its own: only the pane's CURRENT pending
+// question with the same event proves ownership. Missing, unanswerable or ambiguous ownership
+// yields no link (the caller keeps generic sessions navigation).
+function inboxOwnerPane(card: MissionCard, row: Extract<InboxRow, { kind: "question" | "attention" }>): MissionPane | null {
+  const matches: MissionPane[] = [];
+  for (const session of card.sessions) {
+    if (session.transport !== "tmux") continue;
+    for (const p of session.panes) {
+      if (p.pane !== row.pane || p.live !== true || p.harnessSession === undefined) continue;
+      if (row.kind === "question") {
+        const q = p.pendingQuestion;
+        if (q !== null && q.eventId === row.eventId && q.pane === row.pane && q.answerable !== false) matches.push(p);
+      } else if (
+        p.tmuxIncarnation === row.tmuxIncarnation
+        && row.capsuleEventId !== null
+        && p.capsuleEventId === row.capsuleEventId
+        && p.capsuleAnswerable !== false
+      ) {
+        matches.push(p);
+      }
+    }
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function inboxAccessHref(card: MissionCard | undefined, row: InboxRow): string | null {
   if (!card || (row.kind !== "question" && row.kind !== "attention")) return null;
   if (row.kind === "attention" && row.transport !== "tmux") return null;
-  for (const session of card.sessions) {
-    if (session.transport !== "tmux") continue;
-    const pane = session.panes.find((p) => p.pane === row.pane
-      && (row.kind === "question" || p.tmuxIncarnation === row.tmuxIncarnation));
-    if (pane) {
-      const selector = paneAccessSelector(card.dir, pane);
-      if (selector) return sessionAccessHref(selector, "home");
-    }
-  }
-  return null;
+  const pane = inboxOwnerPane(card, row);
+  if (!pane) return null;
+  const selector = paneAccessSelector(card.dir, pane);
+  return selector ? sessionAccessHref(selector, "home") : null;
 }
 
 function RowIcon({ kind }: { kind: InboxRow["kind"] }) {

@@ -17,7 +17,7 @@ vi.mock("@/lib/mission", async (importOriginal) => {
   return { ...actual, postWorkflowAction: postSpy };
 });
 
-import type { InboxRow, Mission, MissionCard } from "@/lib/mission";
+import type { InboxRow, Mission, MissionCard, MissionPane } from "@/lib/mission";
 import { expandAndScroll, runQuestionAction, runStuckCancel, InboxStrip } from "./InboxStrip";
 
 function missionOf(inbox: InboxRow[]): Mission {
@@ -64,14 +64,14 @@ describe("InboxStrip — transport-aware attention rows (MOA-469 §4)", () => {
       ...cardBase,
       sessions: [{ transport: "tmux", session: "s", panes: [{
         pane: "%1", tmuxIncarnation: "1:1", session: "s", role: "lead", state: "needs-you", lastEventTs: null,
-        pendingQuestion: null, capsuleEventId: null, capsuleStatus: "blocked", capsuleMinutes: null,
+        pendingQuestion: null, capsuleEventId: 5, capsuleStatus: "blocked", capsuleMinutes: null,
         capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: "s",
         subagentCount: 0, harnessSession: "sess-a",
       }] }],
     };
     const html = renderToStaticMarkup(createElement(InboxStrip, {
       mission: missionWithCards([
-        { kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "1:1", capsuleEventId: null },
+        { kind: "attention", dir: "p1", name: "p1", status: "blocked", transport: "tmux", pane: "%1", tmuxIncarnation: "1:1", capsuleEventId: 5 },
       ], [card]),
       onExpand: () => {},
     }));
@@ -88,6 +88,57 @@ describe("InboxStrip — transport-aware attention rows (MOA-469 §4)", () => {
     }));
     expect(html).toContain('href="/tmux"');
     expect(html).not.toContain('href="/tmux?kind=card');
+  });
+});
+
+describe("InboxStrip — exact event ownership before an exact target link (M3b corrections)", () => {
+  const owned = (overrides: Partial<MissionPane> = {}): MissionPane => ({
+    pane: "%1", tmuxIncarnation: "1:1", session: "s", role: "lead", state: "needs-you",
+    lastEventTs: null, pendingQuestion: null, capsuleEventId: 22, capsuleStatus: "needs_input",
+    capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: "Current capsule",
+    live: true, tmuxSession: "s", subagentCount: 0, harnessSession: "sess-a", ...overrides,
+  });
+  const cardWith = (paneOverrides: Partial<MissionPane> = {}): MissionCard => ({
+    ...cardBase,
+    sessions: [{ transport: "tmux", session: "s", panes: [owned(paneOverrides)] }],
+  });
+  const question = (eventId: number): InboxRow => ({ kind: "question", dir: "p1", name: "p1", pane: "%1", eventId, question: "Old question" });
+  const attention = (eventId: number | null): InboxRow => ({ kind: "attention", dir: "p1", name: "p1", status: "needs_input", transport: "tmux", pane: "%1", tmuxIncarnation: "1:1", capsuleEventId: eventId });
+  const href = (row: InboxRow, card: MissionCard) =>
+    renderToStaticMarkup(createElement(InboxStrip, { mission: missionWithCards([row], [card]), onExpand: () => {} }));
+
+  it("links a question only to its own current pending question on that pane", () => {
+    const card = cardWith({ pendingQuestion: { pane: "%1", eventId: 11, questions: [{ question: "Current question", multiSelect: false, options: [] }] } });
+    expect(href(question(11), card)).toContain('href="/tmux?kind=card');
+    expect(href(question(12), card)).not.toContain('href="/tmux?kind=card');
+  });
+
+  it("links attention only to the row's non-null current capsule event", () => {
+    const card = cardWith();
+    expect(href(attention(22), card)).toContain('href="/tmux?kind=card');
+    expect(href(attention(11), card)).not.toContain('href="/tmux?kind=card');
+    expect(href(attention(null), card)).not.toContain('href="/tmux?kind=card');
+  });
+
+  it("keeps generic navigation for superseded question events, unanswerable ownership and dead panes", () => {
+    const superseded = cardWith({ pendingQuestion: { pane: "%1", eventId: 22, questions: [] } });
+    expect(href(question(11), superseded)).not.toContain('href="/tmux?kind=card');
+    const unanswerable = cardWith({ pendingQuestion: { pane: "%1", eventId: 11, questions: [], answerable: false } });
+    expect(href(question(11), unanswerable)).not.toContain('href="/tmux?kind=card');
+    expect(href(question(11), cardWith({ pendingQuestion: { pane: "%9", eventId: 11, questions: [] } }))).not.toContain('href="/tmux?kind=card');
+    expect(href(attention(22), cardWith({ capsuleAnswerable: false }))).not.toContain('href="/tmux?kind=card');
+    expect(href(question(11), cardWith({ live: false, pendingQuestion: { pane: "%1", eventId: 11, questions: [] } }))).not.toContain('href="/tmux?kind=card');
+  });
+
+  it("keeps generic navigation when the harness identity is unrecorded and links the explicit null seat", () => {
+    const unrecorded = cardWith({ pendingQuestion: { pane: "%1", eventId: 11, questions: [] } });
+    delete (unrecorded.sessions[0].panes[0] as unknown as Record<string, unknown>).harnessSession;
+    expect(href(question(11), unrecorded)).not.toContain('href="/tmux?kind=card');
+
+    const unidentified = cardWith({ harnessSession: null, pendingQuestion: { pane: "%1", eventId: 11, questions: [] } });
+    const html = href(question(11), unidentified);
+    expect(html).toContain('href="/tmux?kind=card');
+    expect(html).toContain("harnessSession=");
   });
 });
 
@@ -197,7 +248,7 @@ describe("InboxStrip — question row actions (spec §6, Decision 9)", () => {
     expect(html).toContain(">no<");
   });
   it("an empty-text question row (structured but blank) renders the bare-capsule fallback, no quoted text or button (round-1 F8)", () => {
-    const card = { ...cardBase, headline: "needs-you" as const, sessions: [{ transport: "tmux" as const, session: "s", panes: [{ pane: "%1", tmuxIncarnation: "1:1", session: "s", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: null, capsuleEventId: 5, capsuleStatus: "blocked" as const, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0, harnessSession: "sess-a" }] }] };
+    const card = { ...cardBase, headline: "needs-you" as const, sessions: [{ transport: "tmux" as const, session: "s", panes: [{ pane: "%1", tmuxIncarnation: "1:1", session: "s", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: { pane: "%1", eventId: 1, questions: [{ question: "", multiSelect: false, options: [] }] }, capsuleEventId: 5, capsuleStatus: "blocked" as const, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0, harnessSession: "sess-a" }] }] };
     const html = renderToStaticMarkup(createElement(InboxStrip, { mission: missionWithCards([{ kind: "question", dir: "p1", name: "p1", pane: "%1", eventId: 1, question: "" }], [card]), onExpand: () => {} }));
     expect(html).not.toContain("actions.respond");
     expect(html).not.toContain("actions.approveMerge");
