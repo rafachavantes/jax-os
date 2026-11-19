@@ -273,20 +273,50 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX native_usage_items_session ON native_usage_items (harness, session_id);
   CREATE INDEX native_usage_items_model ON native_usage_items (model);
   CREATE INDEX native_usage_items_agent ON native_usage_items (agent);
+  CREATE INDEX native_usage_items_context_ref ON native_usage_items (file_identity, turn_id, root_turn_id);
 
+  -- File registry: one row per discovered supported file. Discovery registers at
+  -- offset zero; ingestion advances offset/discarding atomically with the items.
+  -- visit_ord is the persisted fair-selection cursor (no wall-clock tiebreak).
   CREATE TABLE native_usage_files (
     source       TEXT NOT NULL,
     identity     TEXT NOT NULL,
-    generation   TEXT NOT NULL,
+    child        INTEGER NOT NULL DEFAULT 0,
+    generation   TEXT NOT NULL DEFAULT '',
     dev          TEXT,
     ino          TEXT,
     size         INTEGER,
     mtime        INTEGER,
     offset       INTEGER NOT NULL DEFAULT 0,
+    discarding   INTEGER NOT NULL DEFAULT 0,
     done         INTEGER NOT NULL DEFAULT 0,
+    failed_until INTEGER NOT NULL DEFAULT 0,
+    visit_ord    INTEGER NOT NULL DEFAULT 0,
     processed_at INTEGER,
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (source, identity)
+  );
+  CREATE INDEX native_usage_files_selection ON native_usage_files (source, failed_until, visit_ord);
+
+  -- Durable bounded discovery: the pending/completed directory registry plus the
+  -- one unfinished directory per source. Entries are validated root-relative paths.
+  CREATE TABLE native_usage_dirs (
+    source TEXT NOT NULL,
+    path   TEXT NOT NULL,
+    child  INTEGER NOT NULL DEFAULT 0,
+    state  TEXT NOT NULL CHECK (state IN ('pending', 'done')),
+    cycle  INTEGER NOT NULL,
+    PRIMARY KEY (source, path)
+  );
+
+  CREATE TABLE native_usage_discovery (
+    source        TEXT PRIMARY KEY,
+    cycle         INTEGER NOT NULL DEFAULT 0,
+    state         TEXT NOT NULL CHECK (state IN ('active', 'complete')),
+    current_dir   TEXT,
+    visit_seq     INTEGER NOT NULL DEFAULT 0,
+    last_complete INTEGER,
+    updated_at    INTEGER NOT NULL
   );
 
   CREATE TABLE native_usage_contexts (

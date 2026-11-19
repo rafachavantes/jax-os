@@ -35,7 +35,7 @@ function snapshot(over: Partial<NativeUsageSnapshot> = {}): NativeUsageSnapshot 
     totalReasoning: 7,
     totalCost: null,
     costCurrency: null,
-    costCoverage: { measured: 0, total: 2 },
+    costCoverage: { measured: 0, total: 2, unknownUnit: 0 },
     daily: [{ date: "2026-11-18", input: 130, output: 38, tokens: 168 }],
     byModel: [{ name: "__unknown__", allInput: 10, allOutput: 5, tokens: 15, cost: null, currency: null, items: 1 }],
     byAgent: [
@@ -85,6 +85,7 @@ describe("UsageSection", () => {
       data: { ok: true, data: snapshot({
         totalInput: 0, totalOutput: 0, totalTokens: 0, totalCacheRead: null, totalCacheWrite: null, totalReasoning: null,
         daily: [], byModel: [], byAgent: [], sessions: { lead: 0, child: 0 },
+        costCoverage: { measured: 0, total: 0, unknownUnit: 0 },
         sources: [
           { source: "claude", state: "unavailable", lastRefresh: null, progress: null, warnings: [] },
           { source: "codex", state: "incompatible", lastRefresh: null, progress: null, warnings: [] },
@@ -107,6 +108,7 @@ describe("UsageSection", () => {
       data: { ok: true, data: snapshot({
         totalInput: 0, totalOutput: 0, totalTokens: 0, totalCacheRead: null, totalCacheWrite: null, totalReasoning: null,
         daily: [], byModel: [], byAgent: [],
+        costCoverage: { measured: 0, total: 0, unknownUnit: 0 },
         sources: [
           { source: "claude", state: "disabled", lastRefresh: null, progress: null, warnings: [] },
           { source: "codex", state: "disabled", lastRefresh: null, progress: null, warnings: [] },
@@ -118,6 +120,7 @@ describe("UsageSection", () => {
     };
     const allDisabled = render();
     expect(allDisabled).not.toContain("allUnavailable");
+    expect(allDisabled).toContain("allDisabled");
     expect(allDisabled).toContain("state.disabled");
   });
 
@@ -160,6 +163,45 @@ describe("UsageSection", () => {
     expect(usagePath("90d", "", "__unknown__")).toBe("usage?range=90d&model=__unknown__");
   });
 
+  it("keeps retained rows and comparisons visible when every source is unavailable", () => {
+    harness.query = {
+      data: { ok: true, data: snapshot({
+        sources: [
+          { source: "claude", state: "unavailable", lastRefresh: 1_794_000_000, progress: null, warnings: ["read-failed"] },
+          { source: "codex", state: "incompatible", lastRefresh: null, progress: null, warnings: [] },
+          { source: "opencode", state: "disabled", lastRefresh: null, progress: null, warnings: [] },
+        ],
+      }) },
+      isError: false,
+      dataUpdatedAt: 0,
+    };
+    const html = render();
+    expect(html).toContain("allUnavailable");
+    expect(html).toContain("retainedData");
+    expect(html).toContain("dailyBurn");
+    expect(html).toContain("byModel");
+  });
+
+  it("localizes the period buttons while keeping 7d/30d/90d internal keys", () => {
+    harness.query = { data: { ok: true, data: snapshot() }, isError: false, dataUpdatedAt: 0 };
+    const html = render();
+    expect(html).toContain("period.7d");
+    expect(html).toContain("period.30d");
+    expect(html).toContain("period.90d");
+    expect(usagePath("7d", "", "")).toContain("range=7d");
+  });
+
+  it("labels source-reported cost with an unverified unit instead of a currency subtotal", () => {
+    harness.query = {
+      data: { ok: true, data: snapshot({ costCoverage: { measured: 0, total: 2, unknownUnit: 2 } }) },
+      isError: false,
+      dataUpdatedAt: 0,
+    };
+    const html = render();
+    expect(html).toContain("unknownUnitCost");
+    expect(html).not.toContain("$0.00");
+  });
+
   it("renders only whitelisted fields and never a sentinel payload", () => {
     const raw = { ...snapshot(), rawTranscript: "SENTINEL_SECRET_TEXT" } as NativeUsageSnapshot;
     harness.query = { data: { ok: true, data: raw }, isError: false, dataUpdatedAt: 0 };
@@ -170,7 +212,7 @@ describe("UsageSection", () => {
 
   it("explains UTC partial days, the retained window and mixed projections", () => {
     harness.query = {
-      data: { ok: true, data: snapshot({ mixedProjectionSessions: 2, costCoverage: { measured: 1, total: 2 } }) },
+      data: { ok: true, data: snapshot({ mixedProjectionSessions: 2, costCoverage: { measured: 1, total: 2, unknownUnit: 0 } }) },
       isError: false,
       dataUpdatedAt: 0,
     };

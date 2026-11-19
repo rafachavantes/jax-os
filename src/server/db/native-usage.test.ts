@@ -19,6 +19,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseOpenCodeRow,
+  utcDay,
   type NativeUsageItem,
 } from "../collectors/native-usage";
 
@@ -101,7 +102,11 @@ describe("migration 15 native usage tables", () => {
     expect(tables).toEqual(expect.arrayContaining([
       "native_usage_items", "native_usage_files", "native_usage_contexts",
       "native_usage_session_facts", "native_usage_sources",
+      "native_usage_dirs", "native_usage_discovery",
     ]));
+    const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[])
+      .map((i) => i.name);
+    expect(indexes).toContain("native_usage_items_context_ref");
     expect(db.pragma("user_version", { simple: true })).toBe(15);
     db.close();
   });
@@ -278,6 +283,93 @@ describe("OpenCode projection reconciliation", () => {
   });
 });
 
+describe("retention, CAS and cost coverage", () => {
+  it("rejects an item older than the 91-day cutoff inside ingestion while advancing the offset", () => {
+    const db = openDb(":memory:");
+    const old = claude({ timestamp: "2026-07-01T10:00:00Z", message: { id: "old", usage: { input_tokens: 5, output_tokens: 5 } } });
+    const recent = claude({ timestamp: "2026-11-17T10:00:00Z", message: { id: "recent", usage: { input_tokens: 1, output_tokens: 1 } } });
+    const result = applyFileBatch(db, {
+      checkpoint: checkpoint({ offset: 50 }),
+      expectedOffset: 0,
+      items: [old, recent],
+      now: NOW,
+    });
+    expect(result.rejected).toBe(1);
+    expect(getFileCheckpoint(db, "claude", "p/one.jsonl")?.offset).toBe(50);
+    expect(db.prepare("SELECT item_id FROM native_usage_items").all()).toEqual([{ item_id: "recent" }]);
+    db.close();
+  });
+
+  it("refuses to overwrite newer progress and to reuse a completed transition", () => {
+    const db = openDb(":memory:");
+    applyFileBatch(db, { checkpoint: checkpoint({ offset: 50 }), expectedOffset: 0, items: [], now: NOW });
+    expect(() => applyFileBatch(db, {
+      checkpoint: checkpoint({ offset: 60 }),
+      expectedOffset: 0,
+      items: [],
+      now: NOW,
+    })).toThrow("checkpoint-conflict");
+    applyFileBatch(db, {
+      checkpoint: checkpoint({ generation: "2:2", dev: "2", ino: "2", offset: 10 }),
+      expectedOffset: 0,
+      expectNewGeneration: true,
+      items: [],
+      now: NOW,
+    });
+    expect(() => applyFileBatch(db, {
+      checkpoint: checkpoint({ generation: "2:2", dev: "2", ino: "2", offset: 20 }),
+      expectedOffset: 0,
+      expectNewGeneration: true,
+      items: [],
+      now: NOW,
+    })).toThrow("checkpoint-conflict");
+    expect(getFileCheckpoint(db, "claude", "p/one.jsonl")).toMatchObject({ generation: "2:2", offset: 10 });
+    db.close();
+  });
+
+  it("retains referenced old contexts and prunes unreferenced ones", () => {
+    const db = openDb(":memory:");
+    db.prepare(
+      `INSERT INTO native_usage_items (harness, item_id, session_id, provenance, agent, ts, updated_ts, day, all_input, all_output, file_identity, turn_id, root_turn_id)
+       VALUES ('codex', 'thread-1|resp-1', 'thread-1', 'root-1', 'Codex', ?, ?, ?, 1, 1, 'r.jsonl', 'turn-1', 'turn-1')`,
+    ).run(NOW, NOW, utcDay(NOW - 200 * DAY));
+    insertNativeContext(db, { fileIdentity: "r.jsonl", turnId: "turn-1", rootTurnId: "turn-1", model: "gpt-5.6-luna" }, NOW - 200 * DAY);
+    insertNativeContext(db, { fileIdentity: "gone.jsonl", turnId: "turn-x", rootTurnId: "turn-x", model: "gpt-5.6-luna" }, NOW - 200 * DAY);
+    db.prepare("UPDATE native_usage_items SET day = ? WHERE item_id = 'thread-1|resp-1'").run(utcDay(NOW));
+    pruneNativeUsage(db, NOW);
+    const contexts = db.prepare("SELECT file_identity FROM native_usage_contexts ORDER BY file_identity").all() as { file_identity: string }[];
+    expect(contexts).toEqual([{ file_identity: "r.jsonl" }]);
+    db.close();
+  });
+
+  it("counts compatible cost coverage separately from unknown-unit amounts", () => {
+    const db = openDb(":memory:");
+    upsertNativeUsageItem(db, opencode({}));
+    upsertNativeUsageItem(db, claude({}));
+    let snap = queryNativeUsage(db, { period: 30, now: NOW });
+    expect(snap.totalCost).toBeNull();
+    expect(snap.costCoverage).toEqual({ measured: 0, total: 2, unknownUnit: 1 });
+    db.prepare("UPDATE native_usage_items SET cost_currency = 'USD' WHERE harness = 'opencode'").run();
+    snap = queryNativeUsage(db, { period: 30, now: NOW });
+    expect(snap.totalCost).toBe(12.5);
+    expect(snap.costCoverage).toEqual({ measured: 1, total: 2, unknownUnit: 0 });
+    db.close();
+  });
+
+  it("fails the query envelope on an unrepresentable aggregate instead of wrapping", () => {
+    const db = openDb(":memory:");
+    const huge = 5_000_000_000_000_000;
+    for (const id of ["m1", "m2"]) {
+      db.prepare(
+        `INSERT INTO native_usage_items (harness, item_id, session_id, provenance, agent, ts, updated_ts, day, all_input, all_output)
+         VALUES ('claude', ?, 'sess-1', 'lead', 'Claude Code', ?, ?, ?, ?, 0)`,
+      ).run(id, NOW, NOW, utcDay(NOW), huge);
+    }
+    expect(() => queryNativeUsage(db, { period: 7, now: NOW })).toThrow("aggregate-overflow");
+    db.close();
+  });
+});
+
 describe("queryNativeUsage", () => {
   it("uses UTC calendar buckets including the current partial day and a long-running session landing today", () => {
     const db = openDb(":memory:");
@@ -320,14 +412,14 @@ describe("queryNativeUsage", () => {
     upsertNativeUsageItem(db, opencode({}));
     let snap = queryNativeUsage(db, { period: 30, now: NOW });
     expect(snap.totalCost).toBeNull();
-    expect(snap.costCoverage).toEqual({ measured: 1, total: 1 });
+    expect(snap.costCoverage).toEqual({ measured: 0, total: 1, unknownUnit: 1 });
     db.prepare("UPDATE native_usage_items SET cost_currency = 'USD' WHERE harness = 'opencode'").run();
     snap = queryNativeUsage(db, { period: 30, now: NOW });
     expect(snap.totalCost).toBe(12.5);
     upsertNativeUsageItem(db, claude({}));
     snap = queryNativeUsage(db, { period: 30, now: NOW });
     expect(snap.totalCost).toBe(12.5);
-    expect(snap.costCoverage).toEqual({ measured: 1, total: 2 });
+    expect(snap.costCoverage).toEqual({ measured: 1, total: 2, unknownUnit: 0 });
     db.close();
   });
 
@@ -347,14 +439,16 @@ describe("queryNativeUsage", () => {
   it("prunes only history before the 91-day cutoff and keeps data when a source file disappears", () => {
     const db = openDb(":memory:");
     const old = claude({ timestamp: "2026-08-18T10:00:00Z", message: { id: "old", usage: { input_tokens: 5, output_tokens: 5 } } });
+    const boundary = claude({ timestamp: "2026-08-20T00:00:00Z", message: { id: "boundary", usage: { input_tokens: 1, output_tokens: 0 } } });
     const recent = claude({ timestamp: "2026-08-21T10:00:00Z", message: { id: "recent", usage: { input_tokens: 2, output_tokens: 2 } } });
     upsertNativeUsageItem(db, old);
+    upsertNativeUsageItem(db, boundary);
     upsertNativeUsageItem(db, recent);
     expect(queryNativeUsage(db, { period: 90, now: NOW }).history.cutoffDay).toBe("2026-08-20");
     pruneNativeUsage(db, NOW);
     const snap = queryNativeUsage(db, { period: 90, now: NOW });
     expect(snap.totalTokens).toBe(4);
-    expect(db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 2 });
     db.close();
   });
 

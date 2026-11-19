@@ -36,7 +36,7 @@ export type NativeUsageSnapshot = {
   totalReasoning: number | null;
   totalCost: number | null;
   costCurrency: string | null;
-  costCoverage: { measured: number; total: number };
+  costCoverage: { measured: number; total: number; unknownUnit: number };
   daily: { date: string; input: number; output: number; tokens: number }[];
   byModel: UsageSlice[];
   byAgent: UsageSlice[];
@@ -59,6 +59,8 @@ export type FileCheckpoint = {
   offset: number;
   done: boolean;
   processedAt: number;
+  child?: boolean;
+  discarding?: boolean;
 };
 
 export const UNKNOWN_MODEL_FILTER = "__unknown__";
@@ -276,12 +278,14 @@ export function getFileCheckpoint(
     | {
         source: Harness;
         identity: string;
+        child: number;
         generation: string;
         dev: string | null;
         ino: string | null;
         size: number | null;
         mtime: number | null;
         offset: number;
+        discarding: number;
         done: number;
         processed_at: number | null;
       }
@@ -298,28 +302,34 @@ export function getFileCheckpoint(
     offset: row.offset,
     done: row.done === 1,
     processedAt: row.processed_at ?? 0,
+    child: row.child === 1,
+    discarding: row.discarding === 1,
   };
 }
 
 function writeFileCheckpoint(db: Database.Database, cp: FileCheckpoint, now: number): void {
   db.prepare(
     `INSERT INTO native_usage_files
-       (source, identity, generation, dev, ino, size, mtime, offset, done, processed_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (source, identity, child, generation, dev, ino, size, mtime, offset, discarding, done, processed_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (source, identity) DO UPDATE SET
+       child = excluded.child,
        generation = excluded.generation, dev = excluded.dev, ino = excluded.ino,
        size = excluded.size, mtime = excluded.mtime, offset = excluded.offset,
-       done = excluded.done, processed_at = excluded.processed_at,
-       updated_at = excluded.updated_at`,
+       discarding = excluded.discarding, done = excluded.done,
+       processed_at = excluded.processed_at, updated_at = excluded.updated_at,
+       failed_until = 0`,
   ).run(
     cp.source,
     cp.identity,
+    cp.child ? 1 : 0,
     cp.generation,
     cp.dev,
     cp.ino,
     cp.size,
     cp.mtime,
     cp.offset,
+    cp.discarding ? 1 : 0,
     cp.done ? 1 : 0,
     cp.processedAt,
     now,
@@ -335,67 +345,357 @@ export function listFileCheckpoints(db: Database.Database, source: Harness): Fil
     .filter((r): r is FileCheckpoint => r !== undefined);
 }
 
+// ---------------------------------------------------------------------------
+// Durable discovery registry and fair ingestion selection.
+
+export type DiscoveryStateRow = {
+  source: Harness;
+  cycle: number;
+  state: "active" | "complete";
+  currentDir: string | null;
+  visitSeq: number;
+  lastComplete: number | null;
+};
+
+function readDiscovery(db: Database.Database, source: Harness): DiscoveryStateRow | undefined {
+  const row = db
+    .prepare("SELECT * FROM native_usage_discovery WHERE source = ?")
+    .get(source) as
+    | {
+        source: Harness;
+        cycle: number;
+        state: "active" | "complete";
+        current_dir: string | null;
+        visit_seq: number;
+        last_complete: number | null;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    source: row.source,
+    cycle: row.cycle,
+    state: row.state,
+    currentDir: row.current_dir,
+    visitSeq: row.visit_seq,
+    lastComplete: row.last_complete,
+  };
+}
+
+// Starts a cycle when none exists, or when the previous complete cycle is older
+// than the refresh cadence. Completed directory state is retained within a cycle.
+export function ensureDiscoveryCycle(
+  db: Database.Database,
+  source: Harness,
+  now: number,
+  cadenceSeconds: number,
+): DiscoveryStateRow {
+  return db.transaction(() => {
+    const existing = readDiscovery(db, source);
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO native_usage_discovery (source, cycle, state, current_dir, visit_seq, last_complete, updated_at)
+         VALUES (?, 1, 'active', NULL, 0, NULL, ?)`,
+      ).run(source, now);
+      db.prepare("INSERT OR IGNORE INTO native_usage_dirs (source, path, child, state, cycle) VALUES (?, '.', 0, 'pending', 1)").run(source);
+      return readDiscovery(db, source)!;
+    }
+    if (existing.state === "complete" && now - (existing.lastComplete ?? 0) >= cadenceSeconds) {
+      const cycle = existing.cycle + 1;
+      db.prepare("DELETE FROM native_usage_dirs WHERE source = ?").run(source);
+      db.prepare("INSERT INTO native_usage_dirs (source, path, child, state, cycle) VALUES (?, '.', 0, 'pending', ?)").run(source, cycle);
+      db.prepare(
+        `UPDATE native_usage_discovery SET cycle = ?, state = 'active', current_dir = NULL, updated_at = ? WHERE source = ?`,
+      ).run(cycle, now, source);
+    }
+    return readDiscovery(db, source)!;
+  }).immediate();
+}
+
+export function addPendingDir(
+  db: Database.Database,
+  source: Harness,
+  path: string,
+  child: boolean,
+  cycle: number,
+  now: number,
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO native_usage_dirs (source, path, child, state, cycle) VALUES (?, ?, ?, 'pending', ?)`,
+  ).run(source, path, child ? 1 : 0, cycle);
+  db.prepare("UPDATE native_usage_discovery SET updated_at = ? WHERE source = ?").run(now, source);
+}
+
+export function nextPendingDir(db: Database.Database, source: Harness): string | null {
+  const order = source === "codex" ? "path DESC" : "path ASC";
+  const row = db
+    .prepare(
+      `SELECT path FROM native_usage_dirs WHERE source = ? AND state = 'pending'
+        ORDER BY (length(path) - length(replace(path, '/', ''))) ASC, ${order} LIMIT 1`,
+    )
+    .get(source) as { path: string } | undefined;
+  return row?.path ?? null;
+}
+
+export function setDiscoveryCurrentDir(
+  db: Database.Database,
+  source: Harness,
+  currentDir: string | null,
+  now: number,
+): void {
+  db.prepare("UPDATE native_usage_discovery SET current_dir = ?, updated_at = ? WHERE source = ?").run(
+    currentDir,
+    now,
+    source,
+  );
+}
+
+export function markDirDone(db: Database.Database, source: Harness, path: string, now: number): void {
+  db.transaction(() => {
+    db.prepare("UPDATE native_usage_dirs SET state = 'done' WHERE source = ? AND path = ?").run(source, path);
+    db.prepare("UPDATE native_usage_discovery SET current_dir = NULL, updated_at = ? WHERE source = ?").run(now, source);
+  }).immediate();
+}
+
+export function hasPendingDirs(db: Database.Database, source: Harness): boolean {
+  const row = db
+    .prepare("SELECT 1 AS n FROM native_usage_dirs WHERE source = ? AND state = 'pending' LIMIT 1")
+    .get(source) as { n: number } | undefined;
+  return row !== undefined;
+}
+
+export function finishDiscoveryCycle(db: Database.Database, source: Harness, now: number): void {
+  db.prepare(
+    `UPDATE native_usage_discovery SET state = 'complete', last_complete = ?, current_dir = NULL, updated_at = ? WHERE source = ?`,
+  ).run(now, now, source);
+}
+
+export function registerNativeFile(
+  db: Database.Database,
+  source: Harness,
+  identity: string,
+  child: boolean,
+  now: number,
+): boolean {
+  return db.transaction(() => {
+    const result = db
+      .prepare(
+        `INSERT OR IGNORE INTO native_usage_files
+           (source, identity, child, generation, offset, discarding, done, failed_until, visit_ord, updated_at)
+         VALUES (?, ?, ?, '', 0, 0, 0, 0, 0, ?)`,
+      )
+      .run(source, identity, child ? 1 : 0, now);
+    if (result.changes === 0) {
+      db.prepare("UPDATE native_usage_files SET child = ?, updated_at = ? WHERE source = ? AND identity = ?").run(
+        child ? 1 : 0,
+        now,
+        source,
+        identity,
+      );
+    }
+    return result.changes > 0;
+  }).immediate();
+}
+
+export type IngestionCandidate = {
+  identity: string;
+  child: boolean;
+  mtime: number | null;
+};
+
+// Fixed indexed selection: up to two recently-active tails plus a fair rotation
+// over every readable registered file. visit_ord advances even for already-done
+// files, so a frozen wall clock cannot pin the same selection forever.
+export function selectIngestionCandidates(
+  db: Database.Database,
+  source: Harness,
+  todayStart: number,
+  now: number,
+  max = 6,
+): IngestionCandidate[] {
+  return db.transaction(() => {
+    const hotLimit = Math.min(2, max);
+    const hot = db
+      .prepare(
+        `SELECT identity FROM native_usage_files
+          WHERE source = ? AND failed_until <= ?
+            AND ((mtime IS NOT NULL AND mtime >= ?) OR (processed_at IS NOT NULL AND processed_at >= ?))
+          ORDER BY visit_ord ASC, identity ASC LIMIT ?`,
+      )
+      .all(source, now, todayStart, now - 120, hotLimit) as { identity: string }[];
+    const hotSet = new Set(hot.map((r) => r.identity));
+    const fair = db
+      .prepare(
+        `SELECT identity FROM native_usage_files
+          WHERE source = ? AND failed_until <= ?
+          ORDER BY visit_ord ASC, identity ASC LIMIT ?`,
+      )
+      .all(source, now, max) as { identity: string }[];
+    const chosen: string[] = [...hotSet];
+    for (const row of fair) {
+      if (chosen.length >= max) break;
+      if (!chosen.includes(row.identity)) chosen.push(row.identity);
+    }
+    const state = readDiscovery(db, source);
+    let seq = state?.visitSeq ?? 0;
+    const bump = db.prepare("UPDATE native_usage_files SET visit_ord = ? WHERE source = ? AND identity = ?");
+    for (const identity of chosen) {
+      seq += 1;
+      bump.run(seq, source, identity);
+    }
+    if (state) {
+      db.prepare("UPDATE native_usage_discovery SET visit_seq = ?, updated_at = ? WHERE source = ?").run(seq, now, source);
+    }
+    return chosen.map((identity) => {
+      const row = db
+        .prepare("SELECT child, mtime FROM native_usage_files WHERE source = ? AND identity = ?")
+        .get(source, identity) as { child: number; mtime: number | null } | undefined;
+      return { identity, child: row?.child === 1, mtime: row?.mtime ?? null };
+    });
+  }).immediate();
+}
+
+export function markFileFailure(
+  db: Database.Database,
+  source: Harness,
+  identity: string,
+  retryAt: number,
+  now: number,
+): void {
+  db.prepare("UPDATE native_usage_files SET failed_until = ?, updated_at = ? WHERE source = ? AND identity = ?").run(
+    retryAt,
+    now,
+    source,
+    identity,
+  );
+}
+
+export function markFileCurrent(
+  db: Database.Database,
+  source: Harness,
+  identity: string,
+  size: number,
+  mtime: number,
+  now: number,
+): void {
+  db.prepare(
+    "UPDATE native_usage_files SET size = ?, mtime = ?, failed_until = 0, updated_at = ? WHERE source = ? AND identity = ?",
+  ).run(size, mtime, now, source, identity);
+}
+
+export function getRegistryCounts(
+  db: Database.Database,
+  source: Harness,
+  now: number,
+): { total: number; done: number; pending: number } {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN done = 1 THEN 1 ELSE 0 END) AS done,
+              SUM(CASE WHEN done = 0 AND failed_until <= ? THEN 1 ELSE 0 END) AS pending
+         FROM native_usage_files WHERE source = ?`,
+    )
+    .get(now, source) as { total: number; done: number | null; pending: number | null };
+  return { total: row.total, done: row.done ?? 0, pending: row.pending ?? 0 };
+}
+
+export function countRegisteredFiles(db: Database.Database, source: Harness): number {
+  return (db.prepare("SELECT COUNT(*) AS n FROM native_usage_files WHERE source = ?").get(source) as { n: number }).n;
+}
+
+// ---------------------------------------------------------------------------
+// Atomic ingestion.
+
 export type FileBatch = {
   checkpoint: FileCheckpoint;
   expectedOffset: number | null;
+  expectNewGeneration?: boolean;
   items: NativeUsageItem[];
   contexts?: NativeContextRow[];
   now: number;
 };
 
-// Item/projection upserts and the consumed offset advance share one immediate
-// transaction: a crash or retry can never advance the offset without the items.
+// Item/projection/context upserts, the retention filter and the consumed offset
+// advance share one immediate transaction: a crash or retry can never advance the
+// checkpoint without its items, and an old item never re-enters the retained set.
 export function applyFileBatch(
   db: Database.Database,
   batch: FileBatch,
-): { inserted: number; updated: number; checkpointAdvanced: boolean } {
+): { inserted: number; updated: number; rejected: number; checkpointAdvanced: boolean } {
+  const cutoffDay = utcDay(batch.now - 90 * 86400);
   return db.transaction(() => {
-    if (batch.expectedOffset !== null) {
-      const existing = getFileCheckpoint(db, batch.checkpoint.source, batch.checkpoint.identity);
+    const existing = getFileCheckpoint(db, batch.checkpoint.source, batch.checkpoint.identity);
+    if (batch.expectNewGeneration) {
+      if (existing && existing.generation === batch.checkpoint.generation) throw new Error("checkpoint-conflict");
+    } else if (batch.expectedOffset !== null) {
       if (!existing) {
         if (batch.expectedOffset !== 0) throw new Error("checkpoint-conflict");
-      } else if (
-        existing.generation !== batch.checkpoint.generation ||
-        existing.offset !== batch.expectedOffset
-      ) {
+      } else if (existing.generation !== batch.checkpoint.generation || existing.offset !== batch.expectedOffset) {
         throw new Error("checkpoint-conflict");
       }
     }
     for (const context of batch.contexts ?? []) insertNativeContext(db, context, batch.now);
     let inserted = 0;
     let updated = 0;
+    let rejected = 0;
     for (const item of batch.items) {
+      if (item.day < cutoffDay) {
+        rejected += 1;
+        continue;
+      }
       if (upsertNativeUsageItem(db, item) === "inserted") inserted += 1;
       else updated += 1;
     }
     writeFileCheckpoint(db, batch.checkpoint, batch.now);
-    return { inserted, updated, checkpointAdvanced: true };
-  })();
+    return { inserted, updated, rejected, checkpointAdvanced: true };
+  }).immediate();
 }
 
-export type OpenCodeTableCursor = { after: number; ceiling: number; done: boolean };
+// ---------------------------------------------------------------------------
+// OpenCode cursor state: canonical decimal rowid strings, never JS numbers.
+
+export type OpenCodeTableCursor = { after: string | null; ceiling: string | null; done: boolean };
 export type OpenCodeCursorState = { v: 1; v1: OpenCodeTableCursor; v2: OpenCodeTableCursor };
 
-const FRESH_CURSOR = (): OpenCodeCursorState => ({
-  v: 1,
-  v1: { after: 0, ceiling: 0, done: false },
-  v2: { after: 0, ceiling: 0, done: false },
-});
+const ROWID_RE = /^-?\d{1,20}$/;
+
+export function canonicalRowId(value: unknown): string | null {
+  if (typeof value !== "string" || !ROWID_RE.test(value)) return null;
+  try {
+    const numeric = BigInt(value);
+    if (numeric < BigInt("-9223372036854775808") || numeric > BigInt("9223372036854775807")) return null;
+  } catch {
+    return null;
+  }
+  return value;
+}
+
+export function freshOpenCodeCursor(): OpenCodeCursorState {
+  return {
+    v: 1,
+    v1: { after: null, ceiling: null, done: false },
+    v2: { after: null, ceiling: null, done: false },
+  };
+}
+
+function sanitizeCursor(raw: unknown): OpenCodeTableCursor | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const t = raw as Record<string, unknown>;
+  const after = t.after === null || t.after === undefined ? null : canonicalRowId(t.after);
+  if (after === null && t.after !== null && t.after !== undefined) return null;
+  const ceiling = t.ceiling === null || t.ceiling === undefined ? null : canonicalRowId(t.ceiling);
+  if (ceiling === null && t.ceiling !== null && t.ceiling !== undefined) return null;
+  if (after !== null && ceiling !== null && BigInt(after) > BigInt(ceiling)) return null;
+  return { after, ceiling, done: t.done === true };
+}
 
 function parseCursorState(raw: unknown): OpenCodeCursorState {
-  const out = FRESH_CURSOR();
+  const out = freshOpenCodeCursor();
   if (typeof raw !== "object" || raw === null) return out;
   const state = raw as Record<string, unknown>;
   if (state.v !== 1) return out;
   for (const key of ["v1", "v2"] as const) {
-    const table = state[key];
-    if (typeof table !== "object" || table === null) continue;
-    const t = table as Record<string, unknown>;
-    const after = t.after;
-    const ceiling = t.ceiling;
-    if (typeof after === "number" && Number.isSafeInteger(after) && after >= 0) out[key].after = after;
-    if (typeof ceiling === "number" && Number.isSafeInteger(ceiling) && ceiling >= 0) out[key].ceiling = ceiling;
-    out[key].done = t.done === true;
+    const parsed = sanitizeCursor(state[key]);
+    if (parsed) out[key] = parsed;
   }
   return out;
 }
@@ -404,11 +704,11 @@ export function getOpenCodeCursor(db: Database.Database): OpenCodeCursorState {
   const row = db
     .prepare("SELECT progress FROM native_usage_sources WHERE source = 'opencode'")
     .get() as { progress: string } | undefined;
-  if (!row) return FRESH_CURSOR();
+  if (!row) return freshOpenCodeCursor();
   try {
     return parseCursorState(JSON.parse(row.progress));
   } catch {
-    return FRESH_CURSOR();
+    return freshOpenCodeCursor();
   }
 }
 
@@ -429,12 +729,27 @@ export function persistOpenCodeBatch(
   items: NativeUsageItem[],
   state: OpenCodeCursorState,
   now: number,
-): void {
-  db.transaction(() => {
-    for (const item of items) upsertNativeUsageItem(db, item);
+): { inserted: number; updated: number; rejected: number } {
+  const cutoffDay = utcDay(now - 90 * 86400);
+  return db.transaction(() => {
+    let inserted = 0;
+    let updated = 0;
+    let rejected = 0;
+    for (const item of items) {
+      if (item.day < cutoffDay) {
+        rejected += 1;
+        continue;
+      }
+      if (upsertNativeUsageItem(db, item) === "inserted") inserted += 1;
+      else updated += 1;
+    }
     setOpenCodeCursor(db, state, now);
-  })();
+    return { inserted, updated, rejected };
+  }).immediate();
 }
+
+// ---------------------------------------------------------------------------
+// Source coverage.
 
 export function setSourceStatus(
   db: Database.Database,
@@ -512,8 +827,12 @@ export function pruneNativeUsage(db: Database.Database, now: number): { itemsDel
         )`,
     ).run();
     return { itemsDeleted: deleted.changes };
-  })();
+  }).immediate();
 }
+
+// ---------------------------------------------------------------------------
+// Honest aggregation. Every addition is checked: an unrepresentable sum fails the
+// safe envelope instead of rounding, wrapping or silently saturating.
 
 const CANONICAL = `(i.harness <> 'opencode' OR i.projection = 'v2' OR NOT EXISTS (
   SELECT 1 FROM native_usage_items v2
@@ -538,38 +857,53 @@ type AggRow = {
   identity_conflict?: number;
 };
 
-function sliceCost(rows: AggRow[]): { amount: number | null; currency: string | null } {
+function checkedAdd(total: number, value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("aggregate-overflow");
+  const next = total + value;
+  if (!Number.isSafeInteger(next)) throw new Error("aggregate-overflow");
+  return next;
+}
+
+export function sumChecked(values: number[]): number {
+  let total = 0;
+  for (const value of values) total = checkedAdd(total, value);
+  return total;
+}
+
+function sliceCost(rows: AggRow[]): { amount: number | null; currency: string | null; measured: number } {
   const costed = rows.filter((r) => r.cost_amount !== null);
-  if (costed.length === 0) return { amount: null, currency: null };
-  const currencies = new Set(costed.map((r) => r.cost_currency));
-  if (currencies.size !== 1 || currencies.has(null)) return { amount: null, currency: null };
-  return {
-    amount: costed.reduce((sum, r) => sum + (r.cost_amount ?? 0), 0),
-    currency: [...currencies][0],
-  };
+  const usable = costed.filter((r) => r.cost_currency !== null);
+  if (usable.length === 0) return { amount: null, currency: null, measured: 0 };
+  const currencies = new Set(usable.map((r) => r.cost_currency));
+  if (currencies.size !== 1) return { amount: null, currency: null, measured: 0 };
+  let amount = 0;
+  for (const row of usable) {
+    const value = row.cost_amount as number;
+    if (!Number.isFinite(value) || value < 0) throw new Error("aggregate-overflow");
+    amount += value;
+    if (!Number.isFinite(amount)) throw new Error("aggregate-overflow");
+  }
+  return { amount, currency: [...currencies][0], measured: usable.length };
 }
 
 function toSlice(name: string, rows: AggRow[]): UsageSlice {
-  const allInput = rows.reduce((s, r) => s + r.all_input, 0);
-  const allOutput = rows.reduce((s, r) => s + r.all_output, 0);
+  const allInput = sumChecked(rows.map((r) => r.all_input));
+  const allOutput = sumChecked(rows.map((r) => r.all_output));
   const cost = sliceCost(rows);
   return {
-    name, allInput, allOutput, tokens: allInput + allOutput,
-    cost: cost.amount, currency: cost.currency, items: rows.length,
+    name,
+    allInput,
+    allOutput,
+    tokens: checkedAdd(allInput, allOutput),
+    cost: cost.amount,
+    currency: cost.currency,
+    items: rows.length,
   };
 }
 
 function detailTotal(rows: AggRow[], key: "cache_read" | "cache_write" | "reasoning"): number | null {
-  let any = false;
-  let sum = 0;
-  for (const row of rows) {
-    const value = row[key];
-    if (value !== null) {
-      any = true;
-      sum += value;
-    }
-  }
-  return any ? sum : null;
+  const values = rows.map((r) => r[key]).filter((v): v is number => v !== null);
+  return values.length > 0 ? sumChecked(values) : null;
 }
 
 function daysBetween(startDay: string, endDay: string): string[] {
@@ -619,9 +953,9 @@ export function queryNativeUsage(
   for (const row of rows) {
     const bucket = byDate.get(row.day);
     if (bucket) {
-      bucket.input += row.all_input;
-      bucket.output += row.all_output;
-      bucket.tokens += row.all_input + row.all_output;
+      bucket.input = checkedAdd(bucket.input, row.all_input);
+      bucket.output = checkedAdd(bucket.output, row.all_output);
+      bucket.tokens = checkedAdd(bucket.input, bucket.output);
     }
     const agentRows = agents.get(row.agent) ?? [];
     agentRows.push(row);
@@ -634,8 +968,9 @@ export function queryNativeUsage(
     else lead.add(row.session_id);
   }
 
-  const costed = rows.filter((r) => r.cost_amount !== null);
   const totalCost = sliceCost(rows);
+  const costed = rows.filter((r) => r.cost_amount !== null);
+  const unknownUnit = costed.filter((r) => r.cost_currency === null).length;
 
   const filterEnd = utcDay(opts.now);
   const filterStart = utcDay(opts.now - 90 * 86400);
@@ -688,19 +1023,22 @@ export function queryNativeUsage(
   if (mixed.n > 0) warnings.add("mixed-projection");
   if (rows.some((r) => r.identity_conflict === 1)) warnings.add("identity-conflict");
 
+  const totalInput = sumChecked(rows.map((r) => r.all_input));
+  const totalOutput = sumChecked(rows.map((r) => r.all_output));
+
   return {
     period: opts.period,
     startDay,
     endDay,
-    totalInput: rows.reduce((s, r) => s + r.all_input, 0),
-    totalOutput: rows.reduce((s, r) => s + r.all_output, 0),
-    totalTokens: rows.reduce((s, r) => s + r.all_input + r.all_output, 0),
+    totalInput,
+    totalOutput,
+    totalTokens: checkedAdd(totalInput, totalOutput),
     totalCacheRead: detailTotal(rows, "cache_read"),
     totalCacheWrite: detailTotal(rows, "cache_write"),
     totalReasoning: detailTotal(rows, "reasoning"),
     totalCost: totalCost.amount,
     costCurrency: totalCost.currency,
-    costCoverage: { measured: costed.length, total: rows.length },
+    costCoverage: { measured: totalCost.measured, total: rows.length, unknownUnit },
     daily,
     byModel: [...models.entries()]
       .map(([name, grouped]) => toSlice(name, grouped))

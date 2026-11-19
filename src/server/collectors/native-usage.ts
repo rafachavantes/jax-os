@@ -1,17 +1,30 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync as nodeStat, writeFileSync } from "node:fs";
+import { mkdir, readFile, stat as nodeStatAsync, realpath as nodeRealpathAsync, opendir as nodeOpendirAsync, open as nodeOpenAsync, writeFile, access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { promisify } from "node:util";
 import type Database from "better-sqlite3";
 import {
+  addPendingDir,
   applyFileBatch,
+  countRegisteredFiles,
+  ensureDiscoveryCycle,
+  finishDiscoveryCycle,
   getFileCheckpoint,
   getOpenCodeCursor,
+  getRegistryCounts,
   getSourceStatuses,
+  hasPendingDirs,
+  markDirDone,
+  markFileCurrent,
+  markFileFailure,
+  nextPendingDir,
   persistOpenCodeBatch,
   pruneNativeUsage,
+  registerNativeFile,
+  selectIngestionCandidates,
+  setDiscoveryCurrentDir,
   setSourceStatus,
   type FileCheckpoint,
   type NativeContextRow,
@@ -413,14 +426,20 @@ export function accountingSummary(items: NativeUsageItem[]): {
   for (const item of items) {
     allInput += item.allInput;
     allOutput += item.allOutput;
+    if (!Number.isSafeInteger(allInput) || !Number.isSafeInteger(allOutput)) {
+      throw new Error("aggregate-overflow");
+    }
   }
-  return { allInput, allOutput, headline: allInput + allOutput };
+  const headline = allInput + allOutput;
+  if (!Number.isSafeInteger(headline)) throw new Error("aggregate-overflow");
+  return { allInput, allOutput, headline };
 }
 
 // ---------------------------------------------------------------------------
 // Bounded native discovery and incremental collection.
-// System access is injected: tests never read real transcript roots or run the
-// installed OpenCode binary.
+// System access is injected and asynchronous: tests never read real transcript
+// roots, run the installed OpenCode binary, or perform synchronous native IO in
+// the request-triggered after() callback.
 
 export const OPENCODE_EXECUTABLE = "/home/rafa/.opencode/bin/opencode";
 export const OPENCODE_EXECUTABLE_SHA256 =
@@ -432,11 +451,16 @@ const JSONL_BUDGET = {
   stepBytes: 2 * 1024 * 1024,
   chunkBytes: 32 * 1024,
   softDeadlineMs: 200,
+  startLineDeadlineMs: 150,
   wallDeadlineMs: 1200,
+  lineDeadlineMs: 1000,
   maxLineBytes: 1024 * 1024,
-  maxDiscoveryEntries: 64,
+  discoveryEntriesPerPass: 64,
+  discoveryMsPerPass: 50,
+  refreshMs: 60_000,
+  failureRetryMs: 60_000,
 };
-const OPENCODE_BUDGET = { timeoutMs: 2000, maxReplyBytes: 256 * 1024, refreshMs: 60_000 };
+const OPENCODE_BUDGET = { timeoutMs: 2000, maxReplyBytes: 256 * 1024 };
 
 export type StatLike = {
   dev: number | bigint;
@@ -453,13 +477,20 @@ export type DirEntryLike = {
   isDirectory(): boolean;
   isSymbolicLink(): boolean;
 };
+export type DirHandleLike = {
+  read(): Promise<DirEntryLike | null>;
+  close(): Promise<void>;
+};
+export type FileHandleLike = {
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+  close(): Promise<void>;
+  stat?(): Promise<StatLike>;
+};
 export type NativeFs = {
-  statSync(path: string): StatLike;
-  realpathSync(path: string): string;
-  readdirSync(path: string): DirEntryLike[];
-  openSync(path: string): number;
-  readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number): number;
-  closeSync(fd: number): void;
+  stat(path: string): Promise<StatLike>;
+  realpath(path: string): Promise<string>;
+  opendir(path: string): Promise<DirHandleLike>;
+  open(path: string): Promise<FileHandleLike>;
 };
 export type NativeExecResult = { stdout: string };
 export type NativeExec = (
@@ -480,37 +511,22 @@ export type NativeCollectorDeps = {
     cwd: string;
     configPath: string;
     xdgConfigHome: string;
+    ensureAdapter?: () => Promise<void>;
     exec: NativeExec;
-    stat: (path: string) => StatLike | null;
-    hash: (path: string) => string | null;
+    stat: (path: string) => Promise<StatLike | null>;
+    hash: (path: string) => Promise<string | null>;
   };
 };
 
-export type DiscoveryCandidate = {
+type DiscoveryCandidate = {
   identity: string;
-  path: string;
   child: boolean;
-  mtimeMs: number;
 };
 
 const base = (p: string) => (p.endsWith(sep) ? p : p + sep);
 
-function insideRealRoot(fs: NativeFs, root: string, path: string): string | null {
-  try {
-    const realRoot = fs.realpathSync(root);
-    const real = fs.realpathSync(path);
-    return real === realRoot || real.startsWith(base(realRoot)) ? real : null;
-  } catch {
-    return null;
-  }
-}
-
-function dirEntries(fs: NativeFs, path: string): DirEntryLike[] {
-  try {
-    return fs.readdirSync(path).sort((a, b) => a.name.localeCompare(b.name));
-  } catch {
-    return [];
-  }
+function insideRealRoot(realRoot: string, real: string): boolean {
+  return real === realRoot || real.startsWith(base(realRoot));
 }
 
 function warningBag(): { add(code: string): void; values: string[] } {
@@ -523,332 +539,747 @@ function warningBag(): { add(code: string): void; values: string[] } {
   };
 }
 
-export function discoverJsonlFiles(
-  fs: NativeFs,
-  source: "claude" | "codex",
-  root: string,
-): { files: DiscoveryCandidate[]; warnings: string[]; truncated: boolean } {
-  const warnings = warningBag();
-  const files: DiscoveryCandidate[] = [];
-  let visited = 0;
-  const stat = (path: string) => {
-    try {
-      return fs.statSync(path);
-    } catch {
-      return null;
-    }
-  };
-  const push = (path: string, identity: string, child: boolean) => {
-    const info = stat(path);
-    if (!info || !info.isFile()) {
-      warnings.add("unsupported-layout");
-      return;
-    }
-    files.push({ path, identity, child, mtimeMs: info.mtimeMs });
-  };
-
-  if (source === "claude") {
-    for (const project of dirEntries(fs, root)) {
-      if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
-      visited += 1;
-      const projectPath = join(root, project.name);
-      if (!project.isDirectory() || !insideRealRoot(fs, root, projectPath)) {
-        warnings.add("unsupported-layout");
-        continue;
-      }
-      for (const entry of dirEntries(fs, projectPath)) {
-        if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
-        visited += 1;
-        const entryPath = join(projectPath, entry.name);
-        if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".jsonl")) {
-          const real = insideRealRoot(fs, root, entryPath);
-          if (!real) warnings.add("symlink-escape");
-          else push(real, `${project.name}/${entry.name}`, false);
-        } else if (entry.isDirectory()) {
-          const subagents = join(entryPath, "subagents");
-          if (!insideRealRoot(fs, root, subagents)) {
-            warnings.add("unsupported-layout");
-            continue;
-          }
-          for (const child of dirEntries(fs, subagents)) {
-            if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
-            visited += 1;
-            if ((!child.isFile() && !child.isSymbolicLink()) || !child.name.endsWith(".jsonl")) {
-              warnings.add("unsupported-layout");
-              continue;
-            }
-            const childPath = join(subagents, child.name);
-            const real = insideRealRoot(fs, root, childPath);
-            if (!real) warnings.add("symlink-escape");
-            else push(real, `${project.name}/${entry.name}/subagents/${child.name}`, true);
-          }
-        } else {
-          warnings.add("unsupported-layout");
-        }
-      }
-    }
-  } else {
-    const queue: { path: string; depth: number }[] = [{ path: root, depth: 0 }];
-    while (queue.length > 0 && visited < JSONL_BUDGET.maxDiscoveryEntries) {
-      const current = queue.shift()!;
-      for (const entry of dirEntries(fs, current.path)) {
-        if (visited >= JSONL_BUDGET.maxDiscoveryEntries) break;
-        visited += 1;
-        const entryPath = join(current.path, entry.name);
-        if (current.depth < 3 && entry.isDirectory()) {
-          queue.push({ path: entryPath, depth: current.depth + 1 });
-          continue;
-        }
-        if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
-          const real = insideRealRoot(fs, root, entryPath);
-          if (!real) warnings.add("symlink-escape");
-          else push(real, real.slice(base(fs.realpathSync(root)).length), false);
-        } else {
-          warnings.add("unsupported-layout");
-        }
-      }
-    }
-  }
-  return {
-    files,
-    warnings: warnings.values,
-    truncated: visited >= JSONL_BUDGET.maxDiscoveryEntries,
-  };
+function errorCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
 }
 
-type ParsedJsonl = {
-  items: NativeUsageItem[];
-  contexts: NativeContextRow[];
+class IoTimeout extends Error {
+  constructor() {
+    super("io-timeout");
+  }
+}
+
+function isTimeout(error: unknown): boolean {
+  return error instanceof IoTimeout;
+}
+
+async function boundedIo<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  if (!(timeoutMs > 0)) throw new IoTimeout();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new IoTimeout()), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+// Per-source single-flight runtime: at most one directory iterator and one JSONL
+// handle, plus the latch that retains ownership of a timed-out unabortable op.
+type OwnedOp = { done: boolean };
+type SourceRuntime = {
+  iterator: { dir: DirHandleLike; path: string } | null;
+  pending: OwnedOp | null;
+  discoveryFirstNext: boolean;
+};
+
+const runtimes = new WeakMap<Database.Database, Map<"claude" | "codex", SourceRuntime>>();
+
+function runtimeFor(db: Database.Database, source: "claude" | "codex"): SourceRuntime {
+  let map = runtimes.get(db);
+  if (!map) {
+    map = new Map();
+    runtimes.set(db, map);
+  }
+  let runtime = map.get(source);
+  if (!runtime) {
+    runtime = { iterator: null, pending: null, discoveryFirstNext: false };
+    map.set(source, runtime);
+  }
+  return runtime;
+}
+
+function ownPending(runtime: SourceRuntime, promise: Promise<unknown>, cleanup?: () => Promise<void> | void): void {
+  const record: OwnedOp = { done: false };
+  runtime.pending = record;
+  promise
+    .then(async () => {
+      if (cleanup) await cleanup();
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      record.done = true;
+      if (runtime.pending === record) runtime.pending = null;
+    });
+}
+
+const joinRel = (a: string, b: string) => (a === "." ? b : `${a}/${b}`);
+const relDepth = (rel: string) => (rel === "." ? 0 : rel.split("/").length);
+const absOf = (root: string, rel: string) => (rel === "." ? root : join(root, ...rel.split("/")));
+
+async function containReal(
+  fs: NativeFs,
+  realRoot: string,
+  absPath: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  try {
+    const real = await boundedIo(fs.realpath(absPath), timeoutMs);
+    return insideRealRoot(realRoot, real) ? real : null;
+  } catch (error) {
+    if (error instanceof IoTimeout) throw error;
+    return null;
+  }
+}
+
+type RootState = { ok: true; realRoot: string } | { ok: false; missing: boolean };
+
+async function resolveRoot(deps: NativeCollectorDeps, root: string, timeoutMs: number): Promise<RootState> {
+  try {
+    const info = await boundedIo(deps.fs.stat(root), timeoutMs);
+    if (!info.isDirectory()) return { ok: false, missing: false };
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return { ok: false, missing: true };
+    return { ok: false, missing: false };
+  }
+  try {
+    const realRoot = await boundedIo(deps.fs.realpath(root), timeoutMs);
+    return { ok: true, realRoot };
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return { ok: false, missing: true };
+    return { ok: false, missing: false };
+  }
+}
+
+type DiscoveryOutcome = {
+  rootUnavailable: boolean;
   warnings: string[];
 };
 
-function parseJsonlContent(
-  content: string,
-  source: "claude" | "codex",
-  opts: { child: boolean; fileIdentity: string; now: number },
-): ParsedJsonl {
-  const warnings = warningBag();
-  const items: NativeUsageItem[] = [];
-  const contexts: NativeContextRow[] = [];
-  for (const line of content.split("\n")) {
-    if (line.trim() === "") continue;
-    if (source === "claude") {
-      const out = parseClaudeLine(line, { child: opts.child, now: opts.now });
-      if ("item" in out) items.push(out.item);
-      else if (out.skip !== "not-assistant") warnings.add(out.skip);
-    } else {
-      const out = parseCodexLine(line, { fileIdentity: opts.fileIdentity, now: opts.now });
-      if ("item" in out) items.push(out.item);
-      else if ("context" in out) contexts.push(out.context);
-      else warnings.add(out.skip);
+type DiscoveryContext = {
+  deps: NativeCollectorDeps;
+  runtime: SourceRuntime;
+  source: "claude" | "codex";
+  realRoot: string;
+  cycle: number;
+  warnings: ReturnType<typeof warningBag>;
+};
+
+async function registerEntry(
+  ctx: DiscoveryContext,
+  dirPath: string,
+  entry: DirEntryLike,
+  dirChild: boolean,
+  remainingMs: number,
+): Promise<void> {
+  const { deps, source } = ctx;
+  const rel = joinRel(dirPath, entry.name);
+  const abs = absOf(deps.roots[source], rel);
+  const depth = relDepth(rel);
+  const safeDir = async (): Promise<boolean> => {
+    if (!entry.isDirectory()) return false;
+    const real = await containReal(deps.fs, ctx.realRoot, abs, remainingMs);
+    return real !== null;
+  };
+  const safeFile = async (): Promise<boolean> => {
+    const real = await containReal(deps.fs, ctx.realRoot, abs, remainingMs);
+    if (real === null) {
+      ctx.warnings.add("symlink-escape");
+      return false;
+    }
+    return true;
+  };
+
+  if (source === "claude") {
+    if (depth === 1) {
+      if (await safeDir()) addPendingDir(deps.db, source, rel, false, ctx.cycle, deps.now());
+      else ctx.warnings.add("unsupported-layout");
+      return;
+    }
+    if (depth === 2) {
+      if (entry.isDirectory()) {
+        if (await safeDir()) addPendingDir(deps.db, source, `${rel}/subagents`, true, ctx.cycle, deps.now());
+        else ctx.warnings.add("unsupported-layout");
+        return;
+      }
+      if (entry.isFile() || entry.isSymbolicLink()) {
+        if (!entry.name.endsWith(".jsonl")) {
+          ctx.warnings.add("unsupported-layout");
+          return;
+        }
+        if (await safeFile()) registerNativeFile(deps.db, source, rel, false, deps.now());
+        return;
+      }
+      ctx.warnings.add("unsupported-layout");
+      return;
+    }
+    if (depth === 4 && dirChild) {
+      if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".jsonl")) {
+        if (await safeFile()) registerNativeFile(deps.db, source, rel, true, deps.now());
+        return;
+      }
+      ctx.warnings.add("unsupported-layout");
+      return;
+    }
+    ctx.warnings.add("unsupported-layout");
+    return;
+  }
+
+  if (depth <= 3) {
+    if (!entry.isDirectory()) {
+      ctx.warnings.add("unsupported-layout");
+      return;
+    }
+    const okName = depth === 1 ? /^\d{4}$/.test(entry.name) : /^\d{2}$/.test(entry.name);
+    if (!okName || !(await safeDir())) {
+      ctx.warnings.add("unsupported-layout");
+      return;
+    }
+    addPendingDir(deps.db, source, rel, false, ctx.cycle, deps.now());
+    return;
+  }
+  if (depth === 4) {
+    if (
+      (entry.isFile() || entry.isSymbolicLink()) &&
+      entry.name.startsWith("rollout-") &&
+      entry.name.endsWith(".jsonl")
+    ) {
+      if (await safeFile()) registerNativeFile(deps.db, source, rel, false, deps.now());
+      return;
     }
   }
-  return { items, contexts, warnings: warnings.values };
+  ctx.warnings.add("unsupported-layout");
 }
 
-export type JsonlPassResult = {
+async function discoveryPass(
+  deps: NativeCollectorDeps,
+  runtime: SourceRuntime,
+  source: "claude" | "codex",
+  realRoot: string,
+  budgetMs: number,
+  warnings: ReturnType<typeof warningBag>,
+): Promise<boolean> {
+  const state = ensureDiscoveryCycle(deps.db, source, deps.now(), JSONL_BUDGET.refreshMs / 1000);
+  if (state.state === "complete") return false;
+  const ctx: DiscoveryContext = {
+    deps, runtime, source, realRoot, cycle: state.cycle, warnings,
+  };
+  const start = deps.nowMs();
+  let entries = 0;
+  let rootUnavailable = false;
+  let activeDir: string | null = state.currentDir;
+
+  while (entries < JSONL_BUDGET.discoveryEntriesPerPass && deps.nowMs() - start < budgetMs) {
+    const current = activeDir ?? nextPendingDir(deps.db, source);
+    if (current === null) {
+      finishDiscoveryCycle(deps.db, source, deps.now());
+      break;
+    }
+    if (!runtime.iterator || runtime.iterator.path !== current) {
+      if (runtime.iterator) {
+        try {
+          await boundedIo(runtime.iterator.dir.close(), JSONL_BUDGET.wallDeadlineMs);
+        } catch {
+          /* the replaced iterator is released best-effort */
+        }
+        runtime.iterator = null;
+      }
+      const openPromise = deps.fs.opendir(absOf(deps.roots[source], current));
+      try {
+        const dir = await boundedIo(openPromise, JSONL_BUDGET.wallDeadlineMs);
+        runtime.iterator = { dir, path: current };
+        setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+      } catch (error) {
+        if (current === ".") {
+          if (errorCode(error) === "ENOENT") {
+            finishDiscoveryCycle(deps.db, source, deps.now());
+            break;
+          }
+          if (isTimeout(error)) {
+            warnings.add("io-timeout");
+            ownPending(runtime, openPromise.then((dir) => dir.close()).catch(() => undefined));
+          } else {
+            warnings.add("root-unavailable");
+          }
+          rootUnavailable = true;
+          break;
+        }
+        if (errorCode(error) === "ENOENT" && current.endsWith("/subagents")) {
+          markDirDone(deps.db, source, current, deps.now());
+          continue;
+        }
+        if (isTimeout(error)) {
+          warnings.add("io-timeout");
+          ownPending(runtime, openPromise.then((dir) => dir.close()).catch(() => undefined));
+          return rootUnavailable;
+        }
+        warnings.add("subdir-failed");
+        markDirDone(deps.db, source, current, deps.now());
+        continue;
+      }
+    }
+    const iterator = runtime.iterator;
+    if (!iterator) break;
+    const dirChild = current !== "." && current.endsWith("/subagents");
+    let exhausted = false;
+    while (entries < JSONL_BUDGET.discoveryEntriesPerPass && deps.nowMs() - start < budgetMs) {
+      const readPromise = iterator.dir.read();
+      let entry: DirEntryLike | null;
+      try {
+        entry = await boundedIo(readPromise, JSONL_BUDGET.wallDeadlineMs);
+      } catch (error) {
+        ownPending(runtime, readPromise, () => iterator.dir.close());
+        runtime.iterator = null;
+        setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+        warnings.add(isTimeout(error) ? "io-timeout" : "discovery-failed");
+        return rootUnavailable;
+      }
+      if (entry === null) {
+        exhausted = true;
+        break;
+      }
+      entries += 1;
+      try {
+        await registerEntry(ctx, current, entry, dirChild, JSONL_BUDGET.wallDeadlineMs);
+      } catch (error) {
+        if (isTimeout(error)) {
+          warnings.add("io-timeout");
+          setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+          return rootUnavailable;
+        }
+        warnings.add("unsupported-layout");
+      }
+    }
+    if (exhausted) {
+      const closePromise = iterator.dir.close();
+      try {
+        await boundedIo(closePromise, JSONL_BUDGET.wallDeadlineMs);
+      } catch {
+        ownPending(runtime, closePromise);
+      }
+      runtime.iterator = null;
+      markDirDone(deps.db, source, current, deps.now());
+      activeDir = null;
+      continue;
+    }
+    setDiscoveryCurrentDir(deps.db, source, current, deps.now());
+    return rootUnavailable;
+  }
+  if (!hasPendingDirs(deps.db, source) && runtime.iterator === null) {
+    finishDiscoveryCycle(deps.db, source, deps.now());
+  }
+  return rootUnavailable;
+}
+
+type IngestionOutcome = {
+  filesProcessed: number;
+  items: number;
+  bytes: number;
+  overranReserve: boolean;
+  rootUnavailable: boolean;
+};
+
+async function ingestFile(
+  deps: NativeCollectorDeps,
+  runtime: SourceRuntime,
+  candidate: DiscoveryCandidate,
+  source: "claude" | "codex",
+  realRoot: string,
+  passStart: number,
+  maxSourceBytes: number,
+  warnings: ReturnType<typeof warningBag>,
+): Promise<{ processed: boolean; items: number; bytes: number }> {
+  const cp = getFileCheckpoint(deps.db, source, candidate.identity);
+  const abs = absOf(deps.roots[source], candidate.identity);
+  let real: string | null;
+  try {
+    real = await containReal(deps.fs, realRoot, abs, JSONL_BUDGET.wallDeadlineMs);
+  } catch (error) {
+    if (isTimeout(error)) {
+      warnings.add("io-timeout");
+      ownPending(runtime, deps.fs.realpath(abs));
+      return { processed: false, items: 0, bytes: 0 };
+    }
+    real = null;
+  }
+  if (real === null) {
+    warnings.add("symlink-escape");
+    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
+    return { processed: false, items: 0, bytes: 0 };
+  }
+  let info: StatLike;
+  try {
+    info = await boundedIo(deps.fs.stat(real), JSONL_BUDGET.wallDeadlineMs);
+  } catch (error) {
+    if (isTimeout(error)) {
+      warnings.add("io-timeout");
+      ownPending(runtime, deps.fs.stat(real));
+      return { processed: false, items: 0, bytes: 0 };
+    }
+    warnings.add("missing-file");
+    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
+    return { processed: false, items: 0, bytes: 0 };
+  }
+  if (!info.isFile()) {
+    warnings.add("missing-file");
+    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
+    return { processed: false, items: 0, bytes: 0 };
+  }
+  const generation = `${info.dev}:${info.ino}`;
+  const sameGeneration = cp !== undefined && cp.generation === generation;
+  const mtime = Math.floor(info.mtimeMs / 1000);
+  const current = sameGeneration && cp!.done && !cp!.discarding && cp!.size === info.size && cp!.mtime === mtime;
+  if (current) {
+    markFileCurrent(deps.db, source, candidate.identity, info.size, mtime, deps.now());
+    return { processed: false, items: 0, bytes: 0 };
+  }
+
+  const startOffset = sameGeneration && cp!.offset <= info.size ? cp!.offset : 0;
+  let offset = startOffset;
+  let lineStart = startOffset;
+  let carry = Buffer.alloc(0);
+  let discarding = sameGeneration && cp!.offset <= info.size ? cp!.discarding === true : false;
+  if (discarding) warnings.add("line-too-long");
+  let done = false;
+  let fileBytes = 0;
+  let sourceBytes = 0;
+  let deadlineHit = false;
+  const items: NativeUsageItem[] = [];
+  const contexts: NativeContextRow[] = [];
+  let handle: FileHandleLike | null = null;
+  let handleOwnedByPending = false;
+  const openPromise = deps.fs.open(real);
+  try {
+    handle = await boundedIo(openPromise, JSONL_BUDGET.wallDeadlineMs);
+  } catch (error) {
+    if (isTimeout(error)) {
+      warnings.add("io-timeout");
+      ownPending(runtime, openPromise.then((opened) => opened.close()).catch(() => undefined));
+      return { processed: false, items: 0, bytes: 0 };
+    }
+    warnings.add("read-failed");
+    markFileFailure(deps.db, source, candidate.identity, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now());
+    return { processed: false, items: 0, bytes: 0 };
+  }
+  if (handle.stat) {
+    try {
+      const opened = await boundedIo(handle.stat(), JSONL_BUDGET.wallDeadlineMs);
+      if (`${opened.dev}:${opened.ino}` !== generation) {
+        warnings.add("file-replaced");
+        await handle.close().catch(() => undefined);
+        return { processed: false, items: 0, bytes: 0 };
+      }
+    } catch {
+      /* identity is re-checked before commit */
+    }
+  }
+
+  try {
+    while (fileBytes < JSONL_BUDGET.stepBytes && sourceBytes < maxSourceBytes) {
+      const elapsed = deps.nowMs() - passStart;
+      if (deadlineHit) break;
+      if (carry.length === 0 && elapsed >= JSONL_BUDGET.startLineDeadlineMs) {
+        deadlineHit = true;
+        break;
+      }
+      if (elapsed >= JSONL_BUDGET.softDeadlineMs) {
+        deadlineHit = true;
+        break;
+      }
+      const remainingLineMs = JSONL_BUDGET.lineDeadlineMs;
+      const bounded = Math.max(
+        1,
+        Math.min(JSONL_BUDGET.chunkBytes, JSONL_BUDGET.stepBytes - fileBytes, maxSourceBytes - sourceBytes),
+      );
+      const chunk = Buffer.alloc(bounded);
+      const activeHandle = handle;
+      const readPromise = activeHandle.read(chunk, 0, bounded, offset);
+      let read: { bytesRead: number };
+      try {
+        read = await boundedIo(readPromise, remainingLineMs);
+      } catch (error) {
+        if (isTimeout(error)) {
+          warnings.add("io-timeout");
+          handleOwnedByPending = true;
+          ownPending(runtime, readPromise, () => activeHandle.close());
+          return { processed: false, items: 0, bytes: sourceBytes };
+        }
+        warnings.add("read-failed");
+        break;
+      }
+      if (read.bytesRead <= 0) {
+        done = true;
+        break;
+      }
+      offset += read.bytesRead;
+      fileBytes += read.bytesRead;
+      sourceBytes += read.bytesRead;
+      carry = Buffer.concat([carry, chunk.subarray(0, read.bytesRead)]);
+      for (;;) {
+        const newline = carry.indexOf(10);
+        if (newline < 0) {
+          if (carry.length > JSONL_BUDGET.maxLineBytes) {
+            warnings.add("line-too-long");
+            carry = Buffer.alloc(0);
+            lineStart = offset;
+            discarding = true;
+          }
+          break;
+        }
+        const nextLineStart = offset - carry.length + newline + 1;
+        if (discarding) {
+          discarding = false;
+          carry = carry.subarray(newline + 1);
+          lineStart = nextLineStart;
+          continue;
+        }
+        const lineBytes = carry.subarray(0, newline);
+        carry = carry.subarray(newline + 1);
+        lineStart = nextLineStart;
+        if (lineBytes.length > JSONL_BUDGET.maxLineBytes) {
+          warnings.add("line-too-long");
+        } else {
+          const text = lineBytes.toString("utf8");
+          for (const line of text.split("\n")) {
+            if (line.trim() === "") continue;
+            if (source === "claude") {
+              const out = parseClaudeLine(line, { child: candidate.child, now: deps.now() });
+              if ("item" in out) items.push(out.item);
+              else if (out.skip !== "not-assistant") warnings.add(out.skip);
+            } else {
+              const out = parseCodexLine(line, { fileIdentity: candidate.identity, now: deps.now() });
+              if ("item" in out) items.push(out.item);
+              else if ("context" in out) contexts.push(out.context);
+              else warnings.add(out.skip);
+            }
+          }
+        }
+        if (deps.nowMs() - passStart >= JSONL_BUDGET.startLineDeadlineMs) {
+          deadlineHit = true;
+          break;
+        }
+      }
+      if (deadlineHit) break;
+    }
+  } finally {
+    if (handle && !handleOwnedByPending) {
+      try {
+        await boundedIo(handle.close(), JSONL_BUDGET.wallDeadlineMs);
+      } catch {
+        /* the process exit path releases the descriptor */
+      }
+    }
+  }
+
+  if (done) {
+    if (discarding) {
+      // EOF inside an oversized line: keep the discard marker so a later append
+      // continues discarding instead of parsing a fragment as a new line.
+      lineStart = offset;
+    } else if (carry.length > 0) {
+      done = false;
+    }
+  }
+  const consumed = done ? offset : discarding ? offset : lineStart;
+  const completeAtEof = done && carry.length === 0;
+
+  const expectedOffset = sameGeneration ? cp!.offset : 0;
+  const expectNewGeneration = cp !== undefined && !sameGeneration;
+  const checkpoint: FileCheckpoint = {
+    source,
+    identity: candidate.identity,
+    child: candidate.child,
+    generation,
+    dev: String(info.dev),
+    ino: String(info.ino),
+    size: info.size,
+    mtime,
+    offset: consumed,
+    discarding,
+    done: completeAtEof,
+    processedAt: deps.now(),
+  };
+  try {
+    const verify = await boundedIo(deps.fs.stat(real), JSONL_BUDGET.wallDeadlineMs);
+    if (`${verify.dev}:${verify.ino}` !== generation) {
+      warnings.add("file-replaced");
+      return { processed: false, items: 0, bytes: sourceBytes };
+    }
+  } catch {
+    warnings.add("read-failed");
+    return { processed: false, items: 0, bytes: sourceBytes };
+  }
+  try {
+    applyFileBatch(deps.db, {
+      checkpoint,
+      expectedOffset,
+      expectNewGeneration,
+      items,
+      contexts,
+      now: deps.now(),
+    });
+  } catch {
+    warnings.add("checkpoint-conflict");
+    return { processed: false, items: 0, bytes: sourceBytes };
+  }
+  return { processed: true, items: items.length, bytes: sourceBytes };
+}
+
+async function ingestionPass(
+  deps: NativeCollectorDeps,
+  source: "claude" | "codex",
+  realRoot: string,
+  passStart: number,
+  warnings: ReturnType<typeof warningBag>,
+): Promise<IngestionOutcome> {
+  const outcome: IngestionOutcome = {
+    filesProcessed: 0,
+    items: 0,
+    bytes: 0,
+    overranReserve: false,
+    rootUnavailable: false,
+  };
+  const now = deps.now();
+  const today = utcDay(now);
+  const todayStart = Date.parse(`${today}T00:00:00Z`) / 1000;
+  const candidates = selectIngestionCandidates(deps.db, source, todayStart, now, JSONL_BUDGET.maxFilesPerPass);
+  for (const candidate of candidates) {
+    if (outcome.filesProcessed >= JSONL_BUDGET.maxFilesPerPass) break;
+    if (outcome.bytes >= JSONL_BUDGET.maxBytesPerSource) break;
+    const elapsed = deps.nowMs() - passStart;
+    if (elapsed >= JSONL_BUDGET.startLineDeadlineMs) {
+      outcome.overranReserve = true;
+      break;
+    }
+    const result = await ingestFile(
+      deps,
+      runtimeFor(deps.db, source),
+      candidate,
+      source,
+      realRoot,
+      passStart,
+      JSONL_BUDGET.maxBytesPerSource - outcome.bytes,
+      warnings,
+    );
+    outcome.filesProcessed += result.processed ? 1 : 0;
+    outcome.items += result.items;
+    outcome.bytes += result.bytes;
+  }
+  return outcome;
+}
+
+function stateFor(
+  source: "claude" | "codex",
+  db: Database.Database,
+  now: number,
+  coverageFailure: boolean,
+): SourceState {
+  const counts = getRegistryCounts(db, source, now);
+  const discovery = db
+    .prepare("SELECT state FROM native_usage_discovery WHERE source = ?")
+    .get(source) as { state: "active" | "complete" } | undefined;
+  const discoveryActive = discovery?.state === "active";
+  if (discoveryActive || counts.pending > 0) return "indexing";
+  if (counts.total === 0) return coverageFailure ? "unavailable" : "empty";
+  return "available";
+}
+
+const coverageFailureCodes = new Set(["subdir-failed", "discovery-failed", "io-timeout"]);
+
+async function runJsonlSourcePass(
+  deps: NativeCollectorDeps,
+  source: "claude" | "codex",
+): Promise<{
   items: number;
   filesProcessed: number;
   filesTotal: number;
   filesDone: number;
   warnings: string[];
-  indexing: boolean;
-};
-
-export function runJsonlSourcePass(
-  deps: NativeCollectorDeps,
-  source: "claude" | "codex",
-): JsonlPassResult {
-  const root = source === "claude" ? deps.roots.claude : deps.roots.codex;
+  state: SourceState;
+  stalled: boolean;
+}> {
+  const root = deps.roots[source];
   const warnings = warningBag();
-  const discovery = discoverJsonlFiles(deps.fs, source, root);
-  for (const warning of discovery.warnings) warnings.add(warning);
-  if (discovery.truncated) warnings.add("discovery-truncated");
+  const runtime = runtimeFor(deps.db, source);
+  const passStart = deps.nowMs();
 
-  const known = new Map<string, DiscoveryCandidate>();
-  for (const candidate of discovery.files) known.set(candidate.identity, candidate);
-  for (const checkpoint of (deps.db.prepare("SELECT identity FROM native_usage_files WHERE source = ?").all(source) as { identity: string }[])) {
-    if (known.has(checkpoint.identity)) continue;
-    const path = join(root, checkpoint.identity);
-    const real = insideRealRoot(deps.fs, root, path);
-    if (!real) {
-      warnings.add("missing-file");
-      continue;
-    }
-    try {
-      const info = deps.fs.statSync(real);
-      if (info.isFile()) known.set(checkpoint.identity, { identity: checkpoint.identity, path: real, child: false, mtimeMs: info.mtimeMs });
-    } catch {
-      warnings.add("missing-file");
-    }
-  }
-
-  const today = utcDay(deps.now());
-  const todayStart = Date.parse(`${today}T00:00:00Z`);
-  const evaluated = [...known.values()].flatMap((candidate) => {
-    const cp = getFileCheckpoint(deps.db, source, candidate.identity);
-    let info: StatLike;
-    try {
-      info = deps.fs.statSync(candidate.path);
-    } catch {
-      warnings.add("missing-file");
-      return [];
-    }
-    const current =
-      cp !== undefined && cp.generation === `${info.dev}:${info.ino}` && cp.done &&
-      cp.size === info.size && cp.mtime === Math.floor(info.mtimeMs / 1000);
-    return [{ candidate, cp, info, current, processedAt: cp?.processedAt ?? 0 }];
-  });
-  const pending = evaluated
-    .filter((entry) => !entry.current)
-    .sort((a, b) => {
-      const at = a.candidate.mtimeMs >= todayStart ? 1 : 0;
-      const bt = b.candidate.mtimeMs >= todayStart ? 1 : 0;
-      if (at !== bt) return bt - at;
-      return a.processedAt - b.processedAt;
-    });
-
-  const wallStart = deps.nowMs();
-  let bytes = 0;
-  let filesProcessed = 0;
-  let itemCount = 0;
-  const maxFiles = JSONL_BUDGET.maxFilesPerPass;
-  for (const { candidate, cp, info } of pending) {
-    if (filesProcessed >= maxFiles) break;
-    if (bytes >= JSONL_BUDGET.maxBytesPerSource) break;
-    if (deps.nowMs() - wallStart >= JSONL_BUDGET.wallDeadlineMs) break;
-    const generation = `${info.dev}:${info.ino}`;
-    const sameGeneration = cp !== undefined && cp.generation === generation;
-    const startOffset = sameGeneration && cp.offset <= info.size ? cp.offset : 0;
-    let offset = startOffset;
-    let lineStart = startOffset;
-    let carry = Buffer.alloc(0);
-    let carryStart = startOffset;
-    let done = false;
-    let discarding = false;
-    let deadlineHit = false;
-    let readFailed = false;
-    let fileBytes = 0;
-    let fd: number | null = null;
-    const items: NativeUsageItem[] = [];
-    const contexts: NativeContextRow[] = [];
-    try {
-      fd = deps.fs.openSync(candidate.path);
-      while (fileBytes < JSONL_BUDGET.stepBytes && bytes < JSONL_BUDGET.maxBytesPerSource) {
-        const size = Math.min(
-          JSONL_BUDGET.chunkBytes,
-          JSONL_BUDGET.stepBytes - fileBytes,
-          JSONL_BUDGET.maxBytesPerSource - bytes,
-        );
-        if (size <= 0) break;
-        const chunk = Buffer.alloc(size);
-        const read = deps.fs.readSync(fd, chunk, 0, size, offset);
-        if (read <= 0) {
-          done = true;
-          break;
-        }
-        const chunkStart = offset;
-        offset += read;
-        fileBytes += read;
-        bytes += read;
-        if (carry.length === 0) carryStart = chunkStart;
-        carry = Buffer.concat([carry, chunk.subarray(0, read)]);
-        for (;;) {
-          const newline = carry.indexOf(10);
-          if (newline < 0) {
-            if (carry.length > JSONL_BUDGET.maxLineBytes) {
-              warnings.add("line-too-long");
-              carry = Buffer.alloc(0);
-              carryStart = offset;
-              discarding = true;
-            }
-            break;
-          }
-          const nextLineStart = carryStart + newline + 1;
-          if (discarding) {
-            discarding = false;
-            carry = carry.subarray(newline + 1);
-            carryStart = nextLineStart;
-            lineStart = nextLineStart;
-            continue;
-          }
-          const lineBytes = carry.subarray(0, newline);
-          carry = carry.subarray(newline + 1);
-          lineStart = nextLineStart;
-          carryStart = nextLineStart;
-          if (lineBytes.length > JSONL_BUDGET.maxLineBytes) {
-            warnings.add("line-too-long");
-          } else {
-            const parsed = parseJsonlContent(lineBytes.toString("utf8"), source, {
-              child: candidate.child,
-              fileIdentity: candidate.identity,
-              now: deps.now(),
-            });
-            items.push(...parsed.items);
-            contexts.push(...parsed.contexts);
-            for (const warning of parsed.warnings) warnings.add(warning);
-          }
-          if (deps.nowMs() - wallStart > JSONL_BUDGET.softDeadlineMs) {
-            deadlineHit = true;
-            break;
-          }
-        }
-        if (deadlineHit) break;
-        if (deps.nowMs() - wallStart >= JSONL_BUDGET.wallDeadlineMs) break;
-      }
-    } catch {
-      warnings.add("read-failed");
-      readFailed = true;
-    } finally {
-      if (fd !== null) {
-        try {
-          deps.fs.closeSync(fd);
-        } catch {
-          /* released by the process exit path */
-        }
-      }
-    }
-    if (readFailed) continue;
-    const completeAtEof = done && carry.length === 0 && !discarding;
-    const consumed = completeAtEof ? offset : lineStart;
-    const checkpoint: FileCheckpoint = {
-      source,
-      identity: candidate.identity,
-      generation,
-      dev: String(info.dev),
-      ino: String(info.ino),
-      size: info.size,
-      mtime: Math.floor(info.mtimeMs / 1000),
-      offset: consumed,
-      done: completeAtEof,
-      processedAt: deps.now(),
+  if (runtime.pending) {
+    warnings.add("io-pending");
+    const counts = getRegistryCounts(deps.db, source, deps.now());
+    return {
+      items: 0,
+      filesProcessed: 0,
+      filesTotal: counts.total,
+      filesDone: counts.done,
+      warnings: warnings.values,
+      state: "indexing",
+      stalled: true,
     };
-    try {
-      applyFileBatch(deps.db, {
-        checkpoint,
-        expectedOffset: sameGeneration ? cp!.offset : null,
-        items,
-        contexts,
-        now: deps.now(),
-      });
-    } catch {
-      warnings.add("checkpoint-conflict");
-      continue;
-    }
-    filesProcessed += 1;
-    itemCount += items.length;
   }
 
-  const indexing = pending.length - filesProcessed > 0 || discovery.truncated;
+  const rootState = await resolveRoot(deps, root, Math.max(1, JSONL_BUDGET.wallDeadlineMs));
+  if (!rootState.ok) {
+    if (rootState.missing) {
+      const counts = getRegistryCounts(deps.db, source, deps.now());
+      return {
+        items: 0,
+        filesProcessed: 0,
+        filesTotal: counts.total,
+        filesDone: counts.done,
+        warnings: warnings.values,
+        state: counts.total === 0 ? "empty" : "indexing",
+        stalled: false,
+      };
+    }
+    return {
+      items: 0,
+      filesProcessed: 0,
+      filesTotal: countRegisteredFiles(deps.db, source),
+      filesDone: getRegistryCounts(deps.db, source, deps.now()).done,
+      warnings: ["root-unavailable"],
+      state: "unavailable",
+      stalled: false,
+    };
+  }
+
+  const knownCount = countRegisteredFiles(deps.db, source);
+  const discoveryFirst = runtime.discoveryFirstNext || knownCount === 0;
+  runtime.discoveryFirstNext = false;
+  let rootUnavailable = false;
+  let ingestion: IngestionOutcome | null = null;
+
+  const runDiscovery = async (budget: number) => {
+    const unavailable = await discoveryPass(deps, runtime, source, rootState.realRoot, Math.max(0, budget), warnings);
+    if (unavailable) rootUnavailable = true;
+  };
+
+  if (discoveryFirst) {
+    await runDiscovery(JSONL_BUDGET.discoveryMsPerPass);
+    ingestion = await ingestionPass(deps, source, rootState.realRoot, passStart, warnings);
+    if (ingestion.overranReserve) runtime.discoveryFirstNext = true;
+  } else {
+    ingestion = await ingestionPass(deps, source, rootState.realRoot, passStart, warnings);
+    if (ingestion.overranReserve) runtime.discoveryFirstNext = true;
+    // The final 50 ms of the scheduling window is reserved for discovery.
+    const elapsed = deps.nowMs() - passStart;
+    const remaining = JSONL_BUDGET.softDeadlineMs - elapsed;
+    if (remaining > 0) await runDiscovery(Math.min(JSONL_BUDGET.discoveryMsPerPass, remaining));
+  }
+
+  const counts = getRegistryCounts(deps.db, source, deps.now());
+  const coverageFailure = warnings.values.some((code) => coverageFailureCodes.has(code));
+  const state = rootUnavailable
+    ? "unavailable"
+    : stateFor(source, deps.db, deps.now(), coverageFailure);
   return {
-    items: itemCount,
-    filesProcessed,
-    filesTotal: evaluated.length,
-    filesDone: evaluated.length - pending.length + filesProcessed,
+    items: ingestion?.items ?? 0,
+    filesProcessed: ingestion?.filesProcessed ?? 0,
+    filesTotal: counts.total,
+    filesDone: counts.done,
     warnings: warnings.values,
-    indexing,
+    state,
+    stalled: false,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Fixed OpenCode metadata helper. Raw rowid pages are selected BEFORE
+// assistant/type/JSON filtering; BLOBs are fetched one bounded row at a time.
 
 export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
   function emit(value){ process.stdout.write(JSON.stringify(value)); }
@@ -861,7 +1292,12 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
   if (typeof stateRaw !== "string" || Buffer.byteLength(stateRaw, "utf8") > 16384) { fail("bad-state"); return; }
   var state;
   try { state = JSON.parse(stateRaw); } catch (e) { fail("bad-state"); return; }
-  if (!state || state.v !== 1 || typeof state.v1 !== "object" || typeof state.v2 !== "object") { fail("bad-state"); return; }
+  if (!state || state.v !== 1) { fail("bad-state"); return; }
+  var MIN_ROWID = "-9223372036854775808";
+  function rowId(v){ if (typeof v !== "string" || !/^-?\d{1,20}$/.test(v)) return null; try { var n = BigInt(v); if (n < BigInt(MIN_ROWID) || n > BigInt("9223372036854775807")) return null; return v; } catch (e) { return null; } }
+  function cursorOf(c){ if (!c || typeof c !== "object") return null; var after = c.after === null || c.after === undefined ? null : rowId(c.after); if (c.after !== null && c.after !== undefined && after === null) return null; var ceiling = c.ceiling === null || c.ceiling === undefined ? null : rowId(c.ceiling); if (c.ceiling !== null && c.ceiling !== undefined && ceiling === null) return null; if (after !== null && ceiling !== null && BigInt(after) > BigInt(ceiling)) return null; return { after: after, ceiling: ceiling, done: c.done === true }; }
+  var v1 = cursorOf(state.v1), v2 = cursorOf(state.v2);
+  if (!v1 || !v2) { fail("bad-state"); return; }
   var Database;
   try { Database = require("bun:sqlite").Database; } catch (e) { fail("runtime-fail"); return; }
   var db;
@@ -882,28 +1318,22 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
     catch (e) { fail("schema-fail-closed"); return; }
     for (var ci = 0; ci < need[nt].length; ci += 1) { if (cols.indexOf(need[nt][ci]) < 0) { fail("schema-fail-closed"); return; } }
   }
-  var MAX_ROWS = 256, PAGE_BYTES = 245760, TOTAL_CAP = 262144, MAX_ID = 256, MAX_ROW = 8192;
+  var MAX_ROWS = 256, TABLE_BYTES = 122880, MAX_SINGLE_ROW = 16384, MAX_ID = 256, MAX_ROW = 1048576;
   function safeCount(v){ return typeof v === "number" && isFinite(v) && Math.floor(v) === v && v >= 0 && v <= 9007199254740991 ? v : null; }
   function idOk(v){ if (typeof v !== "string" || v.length === 0) return false; var n = 0; for (var i = 0; i < v.length; i += 1) { var c = v.charCodeAt(i); if (c >= 0xD800 && c <= 0xDBFF && i + 1 < v.length) { var d = v.charCodeAt(i + 1); if (d >= 0xDC00 && d <= 0xDFFF) i += 1; } n += 1; if (n > MAX_ID) return false; } return n > 0; }
   function obj(v){ return v && typeof v === "object" && !Array.isArray(v) ? v : null; }
   function num(v){ return typeof v === "number" && isFinite(v) && v >= 0 ? v : null; }
   var warnings = { malformed: 0, overlength: 0, unsupported: 0, budget: 0 };
   var rows = [];
-  var rids = [];
-  var bytesOut = 0;
-  function project(projection, row){
-    if (typeof row.data !== "string" || Buffer.byteLength(row.data, "utf8") > 1048576) { warnings.unsupported += 1; return null; }
-    var data;
-    try { data = JSON.parse(row.data); } catch (e) { warnings.malformed += 1; return null; }
-    if (!obj(data)) { warnings.malformed += 1; return null; }
-    var modelId = null, providerId = null, agent = null, cost = null, tokens = null, created = null;
+  function project(projection, meta, data){
+    var tokens = null, modelId = null, providerId = null, agent = null, cost = null, created = null;
     if (projection === "v2") {
       var model = obj(data.model); tokens = obj(data.tokens); var time = obj(data.time);
       modelId = model && typeof model.id === "string" ? model.id : null;
       providerId = model && typeof model.providerID === "string" ? model.providerID : null;
       agent = typeof data.agent === "string" ? data.agent : null;
       cost = num(data.cost);
-      created = time && typeof time.created === "number" ? time.created : row.time_created;
+      created = time && typeof time.created === "number" ? time.created : meta.time_created;
     } else {
       if (data.role !== "assistant") return null;
       tokens = obj(data.tokens);
@@ -911,9 +1341,9 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
       providerId = typeof data.providerID === "string" ? data.providerID : null;
       agent = typeof data.agent === "string" ? data.agent : null;
       cost = num(data.cost);
-      created = typeof data.created === "number" ? data.created : row.time_created;
+      created = typeof data.created === "number" ? data.created : meta.time_created;
     }
-    if (!idOk(row.id) || !idOk(row.session_id)) { warnings.overlength += 1; return null; }
+    if (!idOk(meta.id) || !idOk(meta.session_id)) { warnings.overlength += 1; return null; }
     if (!tokens) { warnings.unsupported += 1; return null; }
     var input, output, reasoning, cacheRead, cacheWrite;
     if (projection === "v2") {
@@ -932,14 +1362,14 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
     if (typeof created !== "number" || !isFinite(created) || created <= 0) { warnings.unsupported += 1; return null; }
     return {
       projection: projection,
-      session_id: row.session_id,
-      message_id: row.id,
-      parent_session_id: row.parent_id === undefined ? null : row.parent_id,
+      session_id: meta.session_id,
+      message_id: meta.id,
+      parent_session_id: meta.parent_id === undefined ? null : meta.parent_id,
       model_id: modelId,
       provider_id: providerId,
       agent: agent,
       created: created,
-      updated: typeof row.time_updated === "number" ? row.time_updated : created,
+      updated: typeof meta.time_updated === "number" ? meta.time_updated : created,
       cost: cost,
       input: input,
       output: output,
@@ -948,39 +1378,59 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
       cache_write: cacheWrite
     };
   }
-  function ceilingOf(tableName){
-    try { var row = db.prepare("SELECT MAX(rowid) AS c FROM " + tableName).get(); return row && typeof row.c === "number" ? row.c : 0; }
-    catch (e) { return 0; }
-  }
   function pageOnce(projection, tableName, cursor){
-    var next = { after: cursor.after, ceiling: cursor.ceiling, done: cursor.done };
-    if (!next.ceiling) next.ceiling = ceilingOf(tableName);
-    if (next.done) { return next; }
-    var sql = projection === "v2"
-      ? "SELECT m.rowid AS rid, m.id AS id, m.session_id AS session_id, m.time_created AS time_created, m.time_updated AS time_updated, m.data AS data, s.parent_id AS parent_id FROM session_message m LEFT JOIN session s ON s.id = m.session_id WHERE m.type = 'assistant' AND m.rowid > ? AND m.rowid <= ? ORDER BY m.rowid LIMIT 256"
-      : "SELECT m.rowid AS rid, m.id AS id, m.session_id AS session_id, m.time_created AS time_created, m.time_updated AS time_updated, m.data AS data, s.parent_id AS parent_id FROM message m LEFT JOIN session s ON s.id = m.session_id WHERE m.rowid > ? AND m.rowid <= ? ORDER BY m.rowid LIMIT 256";
-    var page;
-    try { page = db.prepare(sql).all(cursor.after, next.ceiling); }
-    catch (e) { throw new Error("query-failed"); }
-    if (!page || page.length === 0) { next.done = true; return next; }
-    for (var i = 0; i < page.length; i += 1) {
-      var row = page[i];
-      var projected = project(projection, row);
+    var tableBytes = 0;
+    var page = { after: cursor.after, ceiling: cursor.ceiling, done: cursor.done };
+    if (page.done) return page;
+    if (page.ceiling === null) {
+      var maxRow;
+      try { maxRow = db.prepare("SELECT CAST(MAX(rowid) AS TEXT) AS c FROM " + tableName).get(); }
+      catch (e) { throw new Error("query-failed"); }
+      page.ceiling = maxRow && typeof maxRow.c === "string" ? rowId(maxRow.c) : null;
+      if (page.ceiling === null) { page.done = true; return page; }
+    }
+    var metaSql = projection === "v2"
+      ? "SELECT CAST(m.rowid AS TEXT) AS rid, m.id AS id, m.session_id AS session_id, m.type AS type, m.time_created AS time_created, m.time_updated AS time_updated, typeof(m.data) AS dtype, length(CAST(m.data AS BLOB)) AS dlen, s.parent_id AS parent_id FROM session_message m LEFT JOIN session s ON s.id = m.session_id WHERE m.rowid > CAST(? AS INTEGER) AND m.rowid <= CAST(? AS INTEGER) ORDER BY m.rowid LIMIT " + MAX_ROWS
+      : "SELECT CAST(m.rowid AS TEXT) AS rid, m.id AS id, m.session_id AS session_id, 'assistant' AS type, m.time_created AS time_created, m.time_updated AS time_updated, typeof(m.data) AS dtype, length(CAST(m.data AS BLOB)) AS dlen, s.parent_id AS parent_id FROM message m LEFT JOIN session s ON s.id = m.session_id WHERE m.rowid > CAST(? AS INTEGER) AND m.rowid <= CAST(? AS INTEGER) ORDER BY m.rowid LIMIT " + MAX_ROWS;
+    var raw;
+    try {
+      raw = page.after === null
+        ? db.prepare(metaSql.replace("m.rowid > CAST(? AS INTEGER)", "m.rowid >= CAST(? AS INTEGER)")).all(MIN_ROWID, page.ceiling)
+        : db.prepare(metaSql).all(page.after, page.ceiling);
+    } catch (e) { throw new Error("query-failed"); }
+    if (!raw || raw.length === 0) { page.done = true; return page; }
+    var prev = page.after;
+    var dataSql = "SELECT data FROM " + tableName + " WHERE rowid = CAST(? AS INTEGER)";
+    for (var i = 0; i < raw.length; i += 1) {
+      var meta = raw[i];
+      if (typeof meta.rid !== "string") { throw new Error("query-failed"); }
+      if (projection === "v2" && meta.type !== "assistant") { prev = meta.rid; page.after = meta.rid; continue; }
+      if (meta.dtype !== "text") { warnings.unsupported += 1; prev = meta.rid; page.after = meta.rid; continue; }
+      if (typeof meta.dlen !== "number" || meta.dlen > MAX_ROW) { warnings.unsupported += 1; prev = meta.rid; page.after = meta.rid; continue; }
+      if (!idOk(meta.id) || !idOk(meta.session_id)) { warnings.overlength += 1; prev = meta.rid; page.after = meta.rid; continue; }
+      var data;
+      try { data = JSON.parse(db.prepare(dataSql).get(meta.rid).data); } catch (e) { warnings.malformed += 1; prev = meta.rid; page.after = meta.rid; continue; }
+      if (!obj(data)) { warnings.malformed += 1; prev = meta.rid; page.after = meta.rid; continue; }
+      if (projection === "v1" && data.role !== "assistant") { prev = meta.rid; page.after = meta.rid; continue; }
+      var projected = project(projection, meta, data);
       if (projected) {
         var encoded = JSON.stringify(projected);
         var size = Buffer.byteLength(encoded, "utf8");
-        if (size > MAX_ROW) { warnings.unsupported += 1; }
-        else if (bytesOut + size > PAGE_BYTES) { warnings.budget += 1; return next; }
-        else { rows.push(projected); rids.push({ projection: projection, rid: row.rid }); bytesOut += size; }
+        if (size > MAX_SINGLE_ROW) { warnings.unsupported += 1; prev = meta.rid; page.after = meta.rid; continue; }
+        if (tableBytes + size > TABLE_BYTES) { warnings.budget += 1; page.after = prev; page.done = false; return page; }
+        rows.push(projected);
+        tableBytes += size;
       }
-      next.after = row.rid;
+      prev = meta.rid;
+      page.after = meta.rid;
     }
-    if (next.after >= next.ceiling) next.done = true;
-    return next;
+    if (page.after === null || BigInt(page.after) >= BigInt(page.ceiling)) page.done = true;
+    else if (raw.length < MAX_ROWS) page.done = true;
+    return page;
   }
   var nextState;
   try {
-    nextState = { v1: pageOnce("v1", "message", state.v1), v2: pageOnce("v2", "session_message", state.v2) };
+    nextState = { v1: pageOnce("v1", "message", v1), v2: pageOnce("v2", "session_message", v2) };
   } catch (e) { fail("query-failed"); return; }
   var reply = {
     v: 1,
@@ -991,37 +1441,28 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
     next: nextState,
     warnings: warnings
   };
-  var encodedReply = JSON.stringify(reply);
-  while (Buffer.byteLength(encodedReply, "utf8") > TOTAL_CAP && reply.rows.length > 0) {
-    var dropped = rids.pop();
-    reply.rows.pop();
-    if (dropped) {
-      var last = 0;
-      for (var ri = 0; ri < rids.length; ri += 1) { if (rids[ri].projection === dropped.projection) last = rids[ri].rid; }
-      nextState[dropped.projection].after = last;
-      nextState[dropped.projection].done = false;
-    }
-    encodedReply = JSON.stringify(reply);
-  }
-  if (Buffer.byteLength(encodedReply, "utf8") > TOTAL_CAP) { fail("output-overflow"); return; }
+  if (Buffer.byteLength(JSON.stringify(reply), "utf8") > 262144) { fail("output-overflow"); return; }
   emit(reply);
 })();`;
 
+export const OPENCODE_RUNTIME = "Bun 1.3.14";
+export const OPENCODE_SCHEMA = "1.18.34";
+
 const executableIdentityCache = new Map<string, string>();
 
-function openCodeExecutableState(
+async function openCodeExecutableState(
   deps: NativeCollectorDeps,
-): { ok: true } | { ok: false; state: SourceState; warning: string } {
+): Promise<{ ok: true } | { ok: false; state: SourceState; warning: string }> {
   let info: StatLike | null;
   try {
-    info = deps.opencode.stat(deps.opencode.executable);
+    info = await deps.opencode.stat(deps.opencode.executable);
   } catch {
     info = null;
   }
   if (!info || !info.isFile()) return { ok: false, state: "unavailable", warning: "executable-missing" };
   const identity = `${deps.opencode.executable}:${info.dev}:${info.ino}:${info.size}:${Math.floor(info.mtimeMs)}`;
   const cachedHash = executableIdentityCache.get(identity);
-  const hash = cachedHash ?? deps.opencode.hash(deps.opencode.executable) ?? null;
+  const hash = cachedHash ?? (await deps.opencode.hash(deps.opencode.executable)) ?? null;
   if (hash !== null && cachedHash === undefined) executableIdentityCache.set(identity, hash);
   if (hash !== OPENCODE_EXECUTABLE_SHA256) {
     return { ok: false, state: "incompatible", warning: "executable-mismatch" };
@@ -1039,7 +1480,10 @@ type OpenCodeReply = {
   warnings: Record<string, number>;
 };
 
-function parseOpenCodeReply(stdout: string): OpenCodeReply | null {
+export function parseOpenCodeReply(
+  stdout: string,
+  previous: OpenCodeCursorState,
+): OpenCodeReply | null {
   if (Buffer.byteLength(stdout, "utf8") > OPENCODE_BUDGET.maxReplyBytes) return null;
   let raw: unknown;
   try {
@@ -1048,16 +1492,27 @@ function parseOpenCodeReply(stdout: string): OpenCodeReply | null {
     return null;
   }
   if (!isObj(raw) || raw.v !== 1 || raw.ok !== true || !Array.isArray(raw.rows)) return null;
+  if (raw.runtime !== OPENCODE_RUNTIME || raw.schema !== OPENCODE_SCHEMA) return null;
   const next = raw.next;
   if (!isObj(next) || !isObj(next.v1) || !isObj(next.v2)) return null;
-  const sanitize = (cursor: Record<string, unknown>): OpenCodeCursorState["v1"] | null => {
-    const { after, ceiling, done } = cursor;
-    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) return null;
-    if (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 0) return null;
-    return { after, ceiling, done: done === true };
+  const sanitize = (
+    cursor: Record<string, unknown>,
+    prior: OpenCodeCursorState["v1"],
+  ): OpenCodeCursorState["v1"] | null => {
+    const after = cursor.after === null ? null : canonicalDecimal(cursor.after);
+    if (after === null && cursor.after !== null) return null;
+    const ceiling = cursor.ceiling === null ? null : canonicalDecimal(cursor.ceiling);
+    if (ceiling === null && cursor.ceiling !== null) return null;
+    if (after !== null && ceiling !== null && BigInt(after) > BigInt(ceiling)) return null;
+    if (prior.ceiling !== null && ceiling !== null && BigInt(ceiling) !== BigInt(prior.ceiling)) return null;
+    if (prior.after !== null && after !== null && BigInt(after) < BigInt(prior.after)) return null;
+    if (prior.after !== null && after === null && !(prior.done && cursor.done === true)) return null;
+    if (prior.ceiling !== null && ceiling === null && !(prior.done && cursor.done === true)) return null;
+    if (prior.done && !cursor.done && after !== null && prior.after !== null && BigInt(after) <= BigInt(prior.after)) return null;
+    return { after, ceiling, done: cursor.done === true };
   };
-  const v1 = sanitize(next.v1);
-  const v2 = sanitize(next.v2);
+  const v1 = sanitize(next.v1, previous.v1);
+  const v2 = sanitize(next.v2, previous.v2);
   if (!v1 || !v2) return null;
   const warnings: Record<string, number> = {};
   if (isObj(raw.warnings)) {
@@ -1065,7 +1520,26 @@ function parseOpenCodeReply(stdout: string): OpenCodeReply | null {
       if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) warnings[key] = value;
     }
   }
-  return { v: 1, ok: true, runtime: typeof raw.runtime === "string" ? raw.runtime : "", schema: typeof raw.schema === "string" ? raw.schema : "", rows: raw.rows, next: { v1, v2 }, warnings };
+  return {
+    v: 1,
+    ok: true,
+    runtime: raw.runtime,
+    schema: raw.schema,
+    rows: raw.rows,
+    next: { v1, v2 },
+    warnings,
+  };
+}
+
+function canonicalDecimal(value: unknown): string | null {
+  if (typeof value !== "string" || !/^-?\d{1,20}$/.test(value)) return null;
+  try {
+    const numeric = BigInt(value);
+    if (numeric < BigInt("-9223372036854775808") || numeric > BigInt("9223372036854775807")) return null;
+  } catch {
+    return null;
+  }
+  return value;
 }
 
 export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<{
@@ -1075,7 +1549,8 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   lastRefresh: number;
   progress: { filesDone: number; filesTotal: number } | null;
 }> {
-  const executable = openCodeExecutableState(deps);
+  if (deps.opencode.ensureAdapter) await deps.opencode.ensureAdapter();
+  const executable = await openCodeExecutableState(deps);
   if (!executable.ok) {
     return { items: 0, warnings: [executable.warning], state: executable.state, lastRefresh: 0, progress: null };
   }
@@ -1084,12 +1559,19 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
     return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
   }
   try {
-    const info = deps.fs.statSync(dbPath);
+    const info = await deps.fs.stat(dbPath);
     if (!info.isFile()) throw new Error("not-file");
   } catch {
     return { items: 0, warnings: ["db-missing"], state: "unavailable", lastRefresh: 0, progress: null };
   }
-  const real = insideRealRoot(deps.fs, deps.roots.opencodeDataRoot, dbPath);
+  let real: string | null;
+  try {
+    const realRoot = await deps.fs.realpath(deps.roots.opencodeDataRoot);
+    const realDb = await deps.fs.realpath(dbPath);
+    real = insideRealRoot(realRoot, realDb) ? realDb : null;
+  } catch {
+    real = null;
+  }
   if (!real) return { items: 0, warnings: ["db-invalid"], state: "unavailable", lastRefresh: 0, progress: null };
 
   const cursor = getOpenCodeCursor(deps.db);
@@ -1126,7 +1608,7 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
     const state: SourceState = error === "schema-fail-closed" || error === "runtime-fail" ? "incompatible" : "unavailable";
     return { items: 0, warnings: [error], state, lastRefresh: 0, progress: null };
   }
-  const reply = parseOpenCodeReply(stdout);
+  const reply = parseOpenCodeReply(stdout, cursor);
   if (!reply) {
     return { items: 0, warnings: ["malformed-reply"], state: "unavailable", lastRefresh: 0, progress: null };
   }
@@ -1143,15 +1625,16 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   }
   const next: OpenCodeCursorState = { v: 1, v1: reply.next.v1, v2: reply.next.v2 };
   const complete = next.v1.done && next.v2.done;
-  persistOpenCodeBatch(deps.db, items, complete ? { v: 1, v1: { after: 0, ceiling: 0, done: false }, v2: { after: 0, ceiling: 0, done: false } } : next, deps.now());
-  const doneRows = next.v1.after + next.v2.after;
-  const totalRows = next.v1.ceiling + next.v2.ceiling;
+  const persisted: OpenCodeCursorState = complete
+    ? { v: 1, v1: { after: null, ceiling: null, done: false }, v2: { after: null, ceiling: null, done: false } }
+    : next;
+  persistOpenCodeBatch(deps.db, items, persisted, deps.now());
   return {
     items: items.length,
     warnings: warnings.values,
     state: complete ? "available" : "indexing",
     lastRefresh: deps.now(),
-    progress: totalRows > 0 ? { filesDone: doneRows, filesTotal: totalRows } : null,
+    progress: null,
   };
 }
 
@@ -1175,7 +1658,7 @@ async function runOneSource(deps: NativeCollectorDeps, source: Harness, enabled:
     previous &&
     previous.state === "available" &&
     previous.lastRefresh !== null &&
-    now - previous.lastRefresh < OPENCODE_BUDGET.refreshMs / 1000
+    now - previous.lastRefresh < JSONL_BUDGET.refreshMs / 1000
   ) {
     return;
   }
@@ -1209,19 +1692,14 @@ async function runOneSource(deps: NativeCollectorDeps, source: Harness, enabled:
     return;
   }
   try {
-    const result = runJsonlSourcePass(deps, source);
-    const state: SourceState =
-      result.indexing
-        ? "indexing"
-        : result.filesTotal === 0
-          ? "empty"
-          : "available";
+    const result = await runJsonlSourcePass(deps, source);
     setSourceStatus(
       deps.db,
       {
         source,
-        state,
-        lastRefresh: now,
+        state: result.state,
+        lastRefresh:
+          result.state === "unavailable" || result.stalled ? previous?.lastRefresh ?? null : now,
         progress: { filesDone: result.filesDone, filesTotal: result.filesTotal },
         warnings: result.warnings,
       },
@@ -1272,11 +1750,11 @@ export async function runNativeUsagePass(deps: NativeCollectorDeps): Promise<voi
   );
 }
 
-function nativeRootsOverride(): { claude: string; codex: string; opencode: string } | null {
+async function nativeRootsOverride(): Promise<{ claude: string; codex: string; opencode: string } | null> {
   const root = jaxosHome();
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(join(root, "native-roots.json"), "utf8"));
+    raw = JSON.parse(await readFile(join(root, "native-roots.json"), "utf8"));
   } catch {
     return null;
   }
@@ -1291,9 +1769,9 @@ function nativeRootsOverride(): { claude: string; codex: string; opencode: strin
     if (typeof raw[key] !== "string" || !isAbsolute(raw[key])) return invalid;
   }
   try {
-    const boundary = realpathSync(root);
+    const boundary = await nodeRealpathAsync(root);
     for (const key of keys) {
-      const resolved = realpathSync(raw[key] as string);
+      const resolved = await nodeRealpathAsync(raw[key] as string);
       if (resolved !== boundary && !resolved.startsWith(base(boundary))) return invalid;
     }
   } catch {
@@ -1302,25 +1780,27 @@ function nativeRootsOverride(): { claude: string; codex: string; opencode: strin
   return { claude: raw.claude as string, codex: raw.codex as string, opencode: raw.opencode as string };
 }
 
-export function defaultNativeCollectorDeps(db: Database.Database): NativeCollectorDeps {
+export async function defaultNativeCollectorDeps(db: Database.Database): Promise<NativeCollectorDeps> {
   const home = homedir();
   const dataRoot = process.env.XDG_DATA_HOME || join(home, ".local", "share");
   const adapterRoot = join(jaxosHome(), "native-opencode");
   const cwd = join(adapterRoot, "cwd");
   const configPath = join(adapterRoot, "empty.toml");
   const xdgConfigHome = join(adapterRoot, "config");
-  mkdirSync(cwd, { recursive: true });
-  mkdirSync(xdgConfigHome, { recursive: true });
-  if (!existsSync(configPath)) writeFileSync(configPath, "", "utf8");
-  const override = nativeRootsOverride();
+  const override = await nativeRootsOverride();
   const pExecFile = promisify(execFile);
   const fs: NativeFs = {
-    statSync: (path) => nodeStat(path),
-    realpathSync: (path) => realpathSync(path),
-    readdirSync: (path) => readdirSync(path, { withFileTypes: true }) as DirEntryLike[],
-    openSync: (path) => openSync(path, "r"),
-    readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
-    closeSync: (fd) => closeSync(fd),
+    stat: (path) => nodeStatAsync(path),
+    realpath: (path) => nodeRealpathAsync(path),
+    opendir: async (path) => (await nodeOpendirAsync(path)) as DirHandleLike,
+    open: async (path) => {
+      const handle = await nodeOpenAsync(path, "r");
+      return {
+        read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
+        close: () => handle.close(),
+        stat: () => handle.stat(),
+      };
+    },
   };
   return {
     db,
@@ -1341,6 +1821,15 @@ export function defaultNativeCollectorDeps(db: Database.Database): NativeCollect
       cwd,
       configPath,
       xdgConfigHome,
+      ensureAdapter: async () => {
+        await mkdir(cwd, { recursive: true });
+        await mkdir(xdgConfigHome, { recursive: true });
+        try {
+          await access(configPath);
+        } catch {
+          await writeFile(configPath, "", "utf8");
+        }
+      },
       exec: async (file, args, opts) => {
         const { stdout } = await pExecFile(file, args, {
           cwd: opts.cwd,
@@ -1351,16 +1840,16 @@ export function defaultNativeCollectorDeps(db: Database.Database): NativeCollect
         });
         return { stdout: String(stdout) };
       },
-      stat: (path) => {
+      stat: async (path) => {
         try {
-          return nodeStat(path);
+          return await nodeStatAsync(path);
         } catch {
           return null;
         }
       },
-      hash: (path) => {
+      hash: async (path) => {
         try {
-          return createHash("sha256").update(readFileSync(path)).digest("hex");
+          return createHash("sha256").update(await readFile(path)).digest("hex");
         } catch {
           return null;
         }

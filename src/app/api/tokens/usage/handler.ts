@@ -27,7 +27,7 @@ export async function handleTokensUsage(
   const deps: UsageRouteDeps = {
     db: getDb,
     after: () => undefined,
-    collect: async (db) => runNativeUsagePass(defaultNativeCollectorDeps(db)),
+    collect: async (db) => runNativeUsagePass(await defaultNativeCollectorDeps(db)),
     ...overrides,
   };
   const url = new URL(req.url);

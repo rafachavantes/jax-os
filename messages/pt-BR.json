@@ -740,11 +740,25 @@
         "output-overflow": "saída do adaptador excedeu o limite",
         "query-failed": "consulta de metadados falhou",
         "open-failed": "banco nativo ilegível",
-        "pass-failed": "passada de coleta falhou"
+        "pass-failed": "passada de coleta falhou",
+        "io-pending": "aguardando operação de arquivo pendente",
+        "io-timeout": "operação de arquivo expirou",
+        "file-replaced": "arquivo substituído durante a leitura",
+        "subdir-failed": "subdiretório ilegível",
+        "discovery-failed": "descoberta falhou",
+        "root-unavailable": "raiz nativa ilegível"
       },
       "cacheRead": "leitura de cache",
       "cacheWrite": "escrita de cache",
-      "reasoning": "raciocínio"
+      "reasoning": "raciocínio",
+      "period": {
+        "7d": "7 dias",
+        "30d": "30 dias",
+        "90d": "90 dias"
+      },
+      "allDisabled": "Todas as fontes nativas de uso estão desativadas. Ative-as nas Configurações.",
+      "retainedData": "Algumas fontes estão indisponíveis; exibindo os dados retidos da última coleta bem-sucedida.",
+      "unknownUnitCost": "{count} item(ns) de uso reportam custo com unidade não verificada; excluídos dos totais em moeda."
     },
     "hermes": {
       "promptTitle": "Prompt budget",

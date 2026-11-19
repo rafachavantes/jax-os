@@ -63,6 +63,21 @@ describe("handleTokensUsage", () => {
       .toEqual({ ok: false, error: "bad model filter" });
   });
 
+  it("fails the safe envelope on an unrepresentable aggregate instead of rendering a wrapped total", async () => {
+    const db = openDb(":memory:");
+    const huge = 5_000_000_000_000_000;
+    for (const itemId of ["m1", "m2"]) {
+      db.prepare(
+        `INSERT INTO native_usage_items (harness, item_id, session_id, provenance, agent, ts, updated_ts, day, all_input, all_output)
+         VALUES ('claude', ?, 'sess-1', 'lead', 'Claude Code', ?, ?, '2026-11-17', ?, 0)`,
+      ).run(itemId, NOW, NOW, huge);
+    }
+    const routeDeps = { db: () => db, after: () => undefined, collect: async () => {} };
+    const body = await (await handleTokensUsage(get("?range=7d"), routeDeps)).json();
+    expect(body).toEqual({ ok: false, error: "usage unavailable" });
+    db.close();
+  });
+
   it("turns a snapshot query failure into the safe error envelope", async () => {
     const routeDeps = deps({ db: () => { throw new Error("boom"); } });
     expect(await (await handleTokensUsage(get("?range=7d"), routeDeps)).json())

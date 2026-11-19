@@ -44,7 +44,7 @@ describe("tokens usage facade", () => {
     expect(claude.byAgent).toEqual([expect.objectContaining({ name: "Claude Code", tokens: 15, currency: null })]);
     const model = getTokensUsage(db, { range: "30d", model: "model-x" }, NOW);
     expect(model.totalTokens).toBe(153);
-    expect(model.costCoverage).toEqual({ measured: 1, total: 1 });
+    expect(model.costCoverage).toEqual({ measured: 0, total: 1, unknownUnit: 1 });
     expect(model.totalCost).toBeNull();
     db.close();
   });

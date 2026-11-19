@@ -289,29 +289,37 @@ describe("OpenCode accounting", () => {
 import {
   mkdirSync,
   mkdtempSync,
-  openSync,
-  readSync,
-  closeSync,
   realpathSync as fsRealpathSync,
-  readdirSync as fsReaddirSync,
   rmSync,
   statSync as fsStatSync,
   symlinkSync,
   truncateSync,
   writeFileSync,
   appendFileSync,
+  utimesSync,
 } from "node:fs";
+import {
+  open as fsOpenAsync,
+  opendir as fsOpendirAsync,
+  realpath as fsRealpathAsync,
+  stat as fsStatAsync,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
 import BetterSqlite3 from "better-sqlite3";
 import { parseSettings, type SettingsResult } from "../settings";
-import { getSourceStatuses, queryNativeUsage } from "../db/native-usage";
+import {
+  getFileCheckpoint,
+  getOpenCodeCursor,
+  getSourceStatuses,
+  queryNativeUsage,
+} from "../db/native-usage";
 import { openDb } from "../db";
 import {
   defaultNativeCollectorDeps,
-  discoverJsonlFiles,
   OPENCODE_EXECUTABLE_SHA256,
   OPENCODE_HELPER_SOURCE,
+  parseOpenCodeReply,
   runNativeUsagePass,
   type NativeCollectorDeps,
   type NativeFs,
@@ -322,12 +330,17 @@ const VERIFY_HOME = process.env.JAXOS_HOME || join(process.cwd(), ".local/verify
 mkdirSync(VERIFY_HOME, { recursive: true });
 
 const nativeFs: NativeFs = {
-  statSync: (p) => fsStatSync(p),
-  realpathSync: (p) => fsRealpathSync(p),
-  readdirSync: (p) => fsReaddirSync(p, { withFileTypes: true }) as never,
-  openSync: (p) => openSync(p, "r"),
-  readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
-  closeSync: (fd) => closeSync(fd),
+  stat: (p) => fsStatAsync(p),
+  realpath: (p) => fsRealpathAsync(p),
+  opendir: async (p) => fsOpendirAsync(p) as never,
+  open: async (p) => {
+    const handle = await fsOpenAsync(p, "r");
+    return {
+      read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
+      close: () => handle.close(),
+      stat: () => handle.stat(),
+    };
+  },
 };
 
 type MakeDepsOptions = {
@@ -335,8 +348,8 @@ type MakeDepsOptions = {
   settings?: () => SettingsResult;
   fs?: NativeFs;
   exec?: NativeCollectorDeps["opencode"]["exec"];
-  stat?: (path: string) => StatLike | null;
-  hash?: (path: string) => string | null;
+  stat?: (path: string) => Promise<StatLike | null>;
+  hash?: (path: string) => Promise<string | null>;
   base?: string;
   nowOffset?: number;
 };
@@ -350,15 +363,15 @@ function makeDeps(opts: MakeDepsOptions = {}): NativeCollectorDeps {
   mkdirSync(codex, { recursive: true });
   mkdirSync(data, { recursive: true });
   const enabled = opts.enabled ?? { claude: true, codex: true, opencode: true };
-  const hash = opts.hash ?? (() => OPENCODE_EXECUTABLE_SHA256);
-  const stat = opts.stat ?? (() => ({
+  const hash = opts.hash ?? (async () => OPENCODE_EXECUTABLE_SHA256);
+  const stat = opts.stat ?? (async () => ({
     dev: 1, ino: 1, size: 100, mtimeMs: Date.parse("2026-11-18T10:00:00Z"),
     isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
   }));
   let clock = Date.parse("2026-11-18T12:00:00Z") + (opts.nowOffset ?? 0);
   const emptyReply = JSON.stringify({
     v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows: [],
-    next: { v1: { after: 0, ceiling: 0, done: true }, v2: { after: 0, ceiling: 0, done: true } },
+    next: { v1: { after: null, ceiling: null, done: true }, v2: { after: null, ceiling: null, done: true } },
     warnings: {},
   });
   return {
@@ -496,9 +509,9 @@ describe("bounded JSONL collection", () => {
     writeClaude(deps, "p/bad.jsonl", [claudeLine("msg-bad")]);
     const failingFs: NativeFs = {
       ...nativeFs,
-      openSync: (path) => {
+      open: async (path) => {
         if (path.endsWith("bad.jsonl")) throw new Error("EACCES");
-        return openSync(path, "r");
+        return nativeFs.open(path);
       },
     };
     deps.fs = failingFs;
@@ -506,7 +519,7 @@ describe("bounded JSONL collection", () => {
     expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
     const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
     expect(status?.warnings).toContain("read-failed");
-    expect(status?.state).toBe("indexing");
+    expect(status?.state).toBe("available");
     deps.db.close();
   });
 
@@ -514,9 +527,9 @@ describe("bounded JSONL collection", () => {
     const deps = makeDeps({ enabled: { claude: false, codex: false, opencode: false } });
     const spy: NativeFs = {
       ...nativeFs,
-      statSync: () => { throw new Error("must not stat"); },
-      realpathSync: () => { throw new Error("must not realpath"); },
-      readdirSync: () => { throw new Error("must not readdir"); },
+      stat: async () => { throw new Error("must not stat"); },
+      realpath: async () => { throw new Error("must not realpath"); },
+      opendir: async () => { throw new Error("must not opendir"); },
     };
     deps.fs = spy;
     await runNativeUsagePass(deps);
@@ -534,7 +547,7 @@ describe("bounded JSONL collection", () => {
 });
 
 describe("startup-only synthetic native roots", () => {
-  it("accepts roots beneath JAXOS_HOME and fails closed on an escaping root", () => {
+  it("accepts roots beneath JAXOS_HOME and fails closed on an escaping root", async () => {
     const base = mkdtempSync(join(VERIFY_HOME, "roots-"));
     const claude = join(base, "claude");
     const codex = join(base, "codex");
@@ -547,14 +560,14 @@ describe("startup-only synthetic native roots", () => {
     process.env.JAXOS_HOME = base;
     try {
       const db = openDb(":memory:");
-      const deps = defaultNativeCollectorDeps(db);
+      const deps = await defaultNativeCollectorDeps(db);
       expect(deps.roots).toMatchObject({
         claude, codex, opencodeDataRoot: opencode, opencodeDb: join(opencode, "opencode.db"),
       });
       db.close();
       writeFileSync(join(base, "native-roots.json"), JSON.stringify({ claude: "/tmp", codex, opencode }));
       const escapedDb = openDb(":memory:");
-      const escaped = defaultNativeCollectorDeps(escapedDb);
+      const escaped = await defaultNativeCollectorDeps(escapedDb);
       expect(escaped.roots.claude).toContain("native-invalid");
       expect(escaped.roots.claude).not.toBe("/tmp");
       escapedDb.close();
@@ -567,15 +580,16 @@ describe("startup-only synthetic native roots", () => {
 });
 
 describe("Codex discovery", () => {
-  it("accepts only the sessions/YYYY/MM/DD rollout layout", () => {
+  it("accepts only the sessions/YYYY/MM/DD rollout layout", async () => {
     const deps = makeDeps();
     const dir = join(deps.roots.codex, "2026", "11", "17");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "rollout-2026-11-17.jsonl"), codexLine("r1"));
     writeFileSync(join(dir, "not-a-rollout.jsonl"), codexLine("r2"));
-    const found = discoverJsonlFiles(nativeFs, "codex", deps.roots.codex);
-    expect(found.files.map((f) => f.identity)).toEqual(["2026/11/17/rollout-2026-11-17.jsonl"]);
-    expect(found.warnings).toContain("unsupported-layout");
+    await runNativeUsagePass(deps);
+    const registered = deps.db.prepare("SELECT identity FROM native_usage_files WHERE source = 'codex'").all() as { identity: string }[];
+    expect(registered.map((f) => f.identity)).toEqual(["2026/11/17/rollout-2026-11-17.jsonl"]);
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "codex")?.warnings).toContain("unsupported-layout");
     deps.db.close();
   });
 
@@ -595,17 +609,22 @@ describe("Codex discovery", () => {
   });
 });
 
-function runHelper(dbPath: string, state: unknown): { reply: Record<string, unknown>; opts: Record<string, unknown> } {
+function runHelper(
+  dbPath: string,
+  state: unknown,
+): { reply: Record<string, unknown>; opts: Record<string, unknown>; sql: string[] } {
   let stdout = "";
   let opts: Record<string, unknown> = {};
+  const sql: string[] = [];
   class ShimDatabase {
     db: BetterSqlite3.Database;
     constructor(path: string, o: { readonly?: boolean; strict?: boolean }) {
       opts = o as Record<string, unknown>;
       this.db = new BetterSqlite3(path, { readonly: o.readonly === true, fileMustExist: true });
     }
-    prepare(sql: string) {
-      return this.db.prepare(sql);
+    prepare(statement: string) {
+      sql.push(statement);
+      return this.db.prepare(statement);
     }
   }
   const sandbox = {
@@ -629,7 +648,7 @@ function runHelper(dbPath: string, state: unknown): { reply: Record<string, unkn
   } catch (error) {
     if ((error as Error).message !== "__exit__") throw error;
   }
-  return { reply: JSON.parse(stdout) as Record<string, unknown>, opts };
+  return { reply: JSON.parse(stdout) as Record<string, unknown>, opts, sql };
 }
 
 function nativeOpenCodeDb(base: string, rows = 300): string {
@@ -664,7 +683,11 @@ function nativeOpenCodeDb(base: string, rows = 300): string {
   return path;
 }
 
-const freshCursor = { v: 1, v1: { after: 0, ceiling: 0, done: false }, v2: { after: 0, ceiling: 0, done: false } };
+const freshCursor = {
+  v: 1 as const,
+  v1: { after: null, ceiling: null, done: false },
+  v2: { after: null, ceiling: null, done: false },
+};
 
 describe("fixed OpenCode helper (NodeVM with a bun:sqlite shim)", () => {
   it("pages both projections by rowid, stays readonly and emits no message text", () => {
@@ -673,7 +696,7 @@ describe("fixed OpenCode helper (NodeVM with a bun:sqlite shim)", () => {
     const first = runHelper(path, freshCursor);
     expect(first.opts).toEqual({ readonly: true, strict: true });
     const reply = first.reply as {
-      ok: boolean; rows: { projection: string }[]; next: { v1: { after: number; done: boolean }; v2: { done: boolean } };
+      ok: boolean; rows: { projection: string }[]; next: { v1: { after: string; done: boolean }; v2: { done: boolean } };
       warnings: Record<string, number>;
     };
     expect(reply.ok).toBe(true);
@@ -716,13 +739,13 @@ describe("fixed OpenCode helper (NodeVM with a bun:sqlite shim)", () => {
     })();
     db.close();
     const reply = runHelper(path, freshCursor).reply as {
-      ok: boolean; rows: unknown[]; next: { v1: { after: number; ceiling: number; done: boolean } };
+      ok: boolean; rows: unknown[]; next: { v1: { after: string; ceiling: string; done: boolean } };
     };
     expect(reply.ok).toBe(true);
     expect(reply.rows.length).toBeGreaterThan(0);
     expect(reply.rows.length).toBeLessThan(300);
-    expect(reply.next.v1.after).toBeGreaterThan(0);
-    expect(reply.next.v1.after).toBeLessThan(reply.next.v1.ceiling);
+    expect(BigInt(reply.next.v1.after)).toBeGreaterThan(0n);
+    expect(BigInt(reply.next.v1.after)).toBeLessThan(BigInt(reply.next.v1.ceiling));
     expect(reply.next.v1.done).toBe(false);
     expect(Buffer.byteLength(JSON.stringify(reply), "utf8")).toBeLessThanOrEqual(262144);
     rmSync(base, { recursive: true, force: true });
@@ -745,9 +768,9 @@ describe("fixed OpenCode helper (NodeVM with a bun:sqlite shim)", () => {
     const db = new BetterSqlite3(path);
     db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('bad', 'ses-1', 1, 1, '{not-json')").run();
     db.close();
-    const reply = runHelper(path, freshCursor).reply as { warnings: Record<string, number>; next: { v1: { after: number } } };
+    const reply = runHelper(path, freshCursor).reply as { warnings: Record<string, number>; next: { v1: { after: string } } };
     expect(reply.warnings.malformed).toBe(1);
-    expect(reply.next.v1.after).toBeGreaterThan(0);
+    expect(BigInt(reply.next.v1.after)).toBeGreaterThan(0n);
     rmSync(base, { recursive: true, force: true });
   });
 });
@@ -761,7 +784,7 @@ describe("OpenCode source pass through the injected executor", () => {
   };
   const reply = JSON.stringify({
     v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows: [v2Row],
-    next: { v1: { after: 0, ceiling: 0, done: true }, v2: { after: 1, ceiling: 1, done: true } },
+    next: { v1: { after: null, ceiling: null, done: true }, v2: { after: "1", ceiling: "1", done: true } },
     warnings: {},
   });
 
@@ -804,11 +827,11 @@ describe("OpenCode source pass through the injected executor", () => {
     let size = 100;
     const deps = withDbFile({
       exec: async () => { calls += 1; return { stdout: reply }; },
-      stat: () => ({
+      stat: async () => ({
         dev: 1, ino: 1, size, mtimeMs: Date.parse("2026-11-18T10:00:00Z"),
         isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
       }),
-      hash: () => { hashCalls += 1; return size === 100 ? OPENCODE_EXECUTABLE_SHA256 : "deadbeef"; },
+      hash: async () => { hashCalls += 1; return size === 100 ? OPENCODE_EXECUTABLE_SHA256 : "deadbeef"; },
     });
     await runNativeUsagePass(deps);
     expect(calls).toBe(1);
@@ -866,6 +889,413 @@ describe("OpenCode source pass through the injected executor", () => {
 });
 
 
+describe("durable discovery and fair selection", () => {
+  it("indexes 100+ Claude files across projects in a finite number of passes", async () => {
+    const deps = makeDeps();
+    for (let project = 0; project < 4; project += 1) {
+      for (let i = 0; i < 30; i += 1) {
+        writeClaude(deps, `proj-${project}/s${i}.jsonl`, [
+          claudeLine(`m-${project}-${i}`, { sessionId: `sess-${project}-${i}` }),
+        ]);
+      }
+    }
+    let passes = 0;
+    while (passes < 80) {
+      await runNativeUsagePass(deps);
+      passes += 1;
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+      if (row.n === 120) break;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 120 });
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "claude")?.state).toBe("available");
+    deps.db.close();
+  }, 60_000);
+
+  it("indexes 90+ Codex date directories without enumerating every parent forever", async () => {
+    const deps = makeDeps();
+    for (let month = 9; month <= 11; month += 1) {
+      for (let day = 1; day <= 30; day += 1) {
+        const dir = join(deps.roots.codex, "2026", String(month).padStart(2, "0"), String(day).padStart(2, "0"));
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "rollout-x.jsonl"), `${codexLine(`r-${month}-${day}`)}\n`);
+      }
+    }
+    let passes = 0;
+    while (passes < 60) {
+      await runNativeUsagePass(deps);
+      passes += 1;
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+      if (row.n === 90) break;
+    }
+    expect(passes).toBeLessThan(60);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 90 });
+    expect(getSourceStatuses(deps.db).find((s) => s.source === "codex")?.state).toBe("available");
+    deps.db.close();
+  }, 60_000);
+
+  it("resumes a mid-cycle restart from persisted registry state and keeps child classification", async () => {
+    const deps = makeDeps();
+    for (let i = 0; i < 40; i += 1) writeClaude(deps, `p/f${i}.jsonl`, [claudeLine(`m${i}`)]);
+    writeClaude(deps, "p/session/subagents/agent-1.jsonl", [claudeLine("child-1", { agentId: "agent-1" })]);
+    for (let pass = 0; pass < 4; pass += 1) await runNativeUsagePass(deps);
+    const registered = deps.db
+      .prepare("SELECT identity, child FROM native_usage_files WHERE source = 'claude' AND identity LIKE '%subagents%'")
+      .get() as { identity: string; child: number } | undefined;
+    expect(registered?.child).toBe(1);
+
+    const restarted = { ...deps };
+    let passes = 0;
+    while (passes < 20) {
+      await runNativeUsagePass(restarted);
+      passes += 1;
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+      if (row.n === 41) break;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 41 });
+    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).sessions).toEqual({ lead: 1, child: 1 });
+    deps.db.close();
+  }, 60_000);
+
+  it("reports a root permission failure as unavailable, never as empty", async () => {
+    const deps = makeDeps();
+    const denied: NativeFs = {
+      ...nativeFs,
+      opendir: async (path) => {
+        if (path === deps.roots.claude) {
+          const error = new Error("EACCES") as Error & { code: string };
+          error.code = "EACCES";
+          throw error;
+        }
+        return nativeFs.opendir(path);
+      },
+    };
+    deps.fs = denied;
+    await runNativeUsagePass(deps);
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.state).toBe("unavailable");
+    expect(status?.warnings).toContain("root-unavailable");
+    deps.db.close();
+  });
+
+  it("keeps advancing a known file while discovery is still incomplete", async () => {
+    const deps = makeDeps();
+    for (let i = 0; i < 100; i += 1) writeClaude(deps, `p/f${i}.jsonl`, [claudeLine(`m${i}`)]);
+    await runNativeUsagePass(deps);
+    const first = deps.db
+      .prepare("SELECT identity FROM native_usage_files WHERE source = 'claude' ORDER BY identity LIMIT 1")
+      .get() as { identity: string };
+    appendFileSync(join(deps.roots.claude, first.identity), `${claudeLine("m-appended", { sessionId: "sess-appended" })}\n`);
+    await runNativeUsagePass(deps);
+    const appended = deps.db
+      .prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-appended'")
+      .get() as { n: number };
+    expect(appended.n).toBe(1);
+    deps.db.close();
+  }, 60_000);
+
+  it("reaches a changed non-hot file within 126 passes and a hot tail within two", async () => {
+    const deps = makeDeps();
+    const files = Array.from({ length: 500 }, (_, i) => {
+      const path = writeClaude(deps, `p/f${i}.jsonl`, [claudeLine(`m${i}`)]);
+      utimesSync(path, new Date("2026-11-10T00:00:00Z"), new Date("2026-11-10T00:00:00Z"));
+      return path;
+    });
+    let clock = NOW;
+    const tick = () => {
+      clock += 61;
+      return clock;
+    };
+    let passes = 0;
+    while (passes < 140) {
+      await runNativeUsagePass({ ...deps, now: () => tick(), nowMs: () => Date.now() });
+      passes += 1;
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+      if (row.n === 500) break;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 500 });
+
+    const last = deps.db
+      .prepare("SELECT identity FROM native_usage_files WHERE source = 'claude' ORDER BY visit_ord DESC LIMIT 1")
+      .get() as { identity: string };
+    const targetPath = join(deps.roots.claude, last.identity);
+    appendFileSync(targetPath, `${claudeLine("m-tail", { sessionId: "sess-tail" })}\n`);
+    utimesSync(targetPath, new Date("2026-11-10T00:00:00Z"), new Date("2026-11-10T00:00:00Z"));
+    let tailPasses = 0;
+    while (tailPasses < 126) {
+      await runNativeUsagePass({ ...deps, now: () => tick(), nowMs: () => Date.now() });
+      tailPasses += 1;
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-tail'").get() as { n: number };
+      if (row.n === 1) break;
+    }
+    expect(tailPasses).toBeLessThanOrEqual(126);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-tail'").get()).toEqual({ n: 1 });
+
+    const hotPath = files[0];
+    appendFileSync(hotPath, `${claudeLine("m-hot", { sessionId: "sess-hot" })}\n`);
+    let hotPasses = 0;
+    while (hotPasses < 2) {
+      await runNativeUsagePass({ ...deps, now: () => tick(), nowMs: () => Date.now() });
+      hotPasses += 1;
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-hot'").get() as { n: number };
+      if (row.n === 1) break;
+    }
+    expect(hotPasses).toBeLessThanOrEqual(2);
+    deps.db.close();
+  }, 120_000);
+
+  it("stops starting new lines at the scheduling deadline and finishes later", async () => {
+    const deps = makeDeps();
+    const lines = Array.from({ length: 2000 }, (_, i) => claudeLine(`m${i}`, { sessionId: `sess-${i}` }));
+    writeClaude(deps, "p/many.jsonl", lines);
+    await runNativeUsagePass(deps);
+    const first = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+    expect(first.n).toBeLessThan(2000);
+    expect(first.n).toBeGreaterThan(0);
+    let passes = 1;
+    while (passes < 20) {
+      await runNativeUsagePass(deps);
+      passes += 1;
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+      if (row.n === 2000) break;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 2000 });
+    deps.db.close();
+  }, 60_000);
+
+  it("discovers a new file after the completed cycle and refresh cadence", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/first.jsonl", [claudeLine("m-first")]);
+    let passes = 0;
+    while (passes < 6) {
+      await runNativeUsagePass(deps);
+      passes += 1;
+      if (getSourceStatuses(deps.db).find((s) => s.source === "claude")?.state === "available") break;
+    }
+    writeClaude(deps, "p/second.jsonl", [claudeLine("m-second", { sessionId: "sess-2" })]);
+    for (let extra = 0; extra < 3; extra += 1) {
+      await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+      const row = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-second'").get() as { n: number };
+      if (row.n === 1) break;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-second'").get()).toEqual({ n: 1 });
+    deps.db.close();
+  }, 60_000);
+
+  it("retains ownership of a timed-out filesystem operation instead of accumulating reads", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/blocked.jsonl", [claudeLine("m-blocked")]);
+    let openCalls = 0;
+    const blocked: NativeFs = {
+      ...nativeFs,
+      open: async (path) => {
+        openCalls += 1;
+        if (openCalls === 1) return new Promise<never>(() => {});
+        return nativeFs.open(path);
+      },
+    };
+    deps.fs = blocked;
+    await runNativeUsagePass(deps);
+    expect(openCalls).toBe(1);
+    await runNativeUsagePass(deps);
+    expect(openCalls).toBe(1);
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.warnings).toContain("io-pending");
+    deps.db.close();
+  });
+});
+
+describe("oversized-line discard progress", () => {
+  it("discards a 3 MiB line across passes and ingests the valid tail", async () => {
+    const deps = makeDeps();
+    const path = join(deps.roots.claude, "p/huge.jsonl");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${"x".repeat(3 * 1024 * 1024)}\n${claudeLine("m-tail-after-discard")}\n`);
+    await runNativeUsagePass(deps);
+    let cp = getFileCheckpoint(deps.db, "claude", "p/huge.jsonl");
+    expect(cp).toMatchObject({ discarding: true, done: false });
+    expect(cp!.offset).toBeGreaterThan(0);
+    await runNativeUsagePass(deps);
+    cp = getFileCheckpoint(deps.db, "claude", "p/huge.jsonl");
+    expect(cp).toMatchObject({ discarding: false, done: true });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+    const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+    expect(status?.warnings).toContain("line-too-long");
+    deps.db.close();
+  }, 60_000);
+
+  it("resumes discard state after a restart and resets it on truncation", async () => {
+    const deps = makeDeps();
+    const path = join(deps.roots.claude, "p/huge.jsonl");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${"y".repeat(3 * 1024 * 1024)}\n${claudeLine("m-after-restart")}\n`);
+    await runNativeUsagePass(deps);
+    expect(getFileCheckpoint(deps.db, "claude", "p/huge.jsonl")?.discarding).toBe(true);
+    const restarted = { ...deps };
+    await runNativeUsagePass(restarted);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+
+    writeFileSync(path, `${"z".repeat(3 * 1024 * 1024)}\n`);
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+    expect(getFileCheckpoint(deps.db, "claude", "p/huge.jsonl")?.discarding).toBe(true);
+    writeFileSync(path, `${claudeLine("m-after-truncate")}\n`);
+    await runNativeUsagePass({ ...deps, now: () => NOW + 122 });
+    const cp = getFileCheckpoint(deps.db, "claude", "p/huge.jsonl");
+    expect(cp?.discarding).toBe(false);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-after-truncate'").get()).toEqual({ n: 1 });
+    deps.db.close();
+  }, 120_000);
+});
+
+describe("OpenCode rowid and raw-page regressions", () => {
+  function baseDb(path: string): BetterSqlite3.Database {
+    const db = new BetterSqlite3(path);
+    db.exec(`
+      CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER, time_updated INTEGER, data TEXT);
+      CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+      CREATE TABLE migration (id INTEGER PRIMARY KEY);
+      INSERT INTO session (id, parent_id) VALUES ('ses-1', NULL);
+    `);
+    return db;
+  }
+
+  it("handles signed MIN, zero and unsafe rowids as canonical decimal strings", () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-rowid-"));
+    const path = join(base, "rowid.db");
+    const db = baseDb(path);
+    const data = JSON.stringify({
+      role: "assistant", modelID: "model-x", agent: "build",
+      created: 1_794_909_600_000, tokens: { input: 1, output: 1 },
+    });
+    db.prepare("INSERT INTO message (rowid, id, session_id, time_created, time_updated, data) VALUES (-9223372036854775808, 'm-min', 'ses-1', 1, 1, ?)").run(data);
+    db.prepare("INSERT INTO message (rowid, id, session_id, time_created, time_updated, data) VALUES (0, 'm-zero', 'ses-1', 1, 1, ?)").run(data);
+    db.prepare("INSERT INTO message (rowid, id, session_id, time_created, time_updated, data) VALUES (9223372036854775806, 'm-unsafe', 'ses-1', 1, 1, ?)").run(data);
+    db.close();
+    const reply = runHelper(path, freshCursor).reply as {
+      ok: boolean;
+      rows: { message_id: string }[];
+      next: { v1: { after: string; ceiling: string; done: boolean } };
+    };
+    expect(reply.ok).toBe(true);
+    expect(reply.rows.map((r) => r.message_id)).toEqual(["m-min", "m-zero", "m-unsafe"]);
+    expect(reply.next.v1.after).toBe("9223372036854775806");
+    expect(reply.next.v1.ceiling).toBe("9223372036854775806");
+    expect(reply.next.v1.done).toBe(true);
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it("advances only through one raw page before filtering a 300-row user prefix", () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-prefix-"));
+    const path = join(base, "prefix.db");
+    const db = baseDb(path);
+    const insert = db.prepare(
+      "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, 'ses-1', ?, ?, 1, 1, ?)",
+    );
+    for (let i = 1; i <= 300; i += 1) insert.run(`u${i}`, "user", i, JSON.stringify({ type: "user" }));
+    insert.run("a1", "assistant", 301, JSON.stringify({
+      type: "assistant", agent: "build", model: { id: "model-y", providerID: "p" },
+      time: { created: 1_794_909_600_000 }, tokens: { input: 2, output: 3 },
+    }));
+    db.close();
+    const first = runHelper(path, freshCursor).reply as {
+      rows: unknown[];
+      next: { v2: { after: string; ceiling: string; done: boolean } };
+    };
+    expect(first.rows).toHaveLength(0);
+    expect(first.next.v2.after).toBe("256");
+    expect(first.next.v2.done).toBe(false);
+    const second = runHelper(path, { v: 1, v1: { after: null, ceiling: null, done: true }, v2: first.next.v2 }).reply as {
+      rows: { message_id: string }[];
+      next: { v2: { done: boolean } };
+    };
+    expect(second.rows.map((r) => r.message_id)).toEqual(["a1"]);
+    expect(second.next.v2.done).toBe(true);
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it("skips a >1 MiB BLOB by length before fetching data", () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-blob-"));
+    const path = join(base, "blob.db");
+    const db = baseDb(path);
+    const small = JSON.stringify({
+      role: "assistant", modelID: "model-x", agent: "build",
+      created: 1_794_909_600_000, tokens: { input: 1, output: 1 },
+    });
+    const huge = JSON.stringify({
+      role: "assistant", modelID: "model-x", agent: "build", padding: "p".repeat(1024 * 1024 + 32),
+      created: 1_794_909_600_000, tokens: { input: 1, output: 1 },
+    });
+    const insert = db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, 'ses-1', 1, 1, ?)");
+    insert.run("small-1", small);
+    insert.run("huge", huge);
+    insert.run("small-2", small.replace('"input":1,"output":1', '"input":2,"output":2'));
+    db.close();
+    const result = runHelper(path, freshCursor);
+    const reply = result.reply as { ok: boolean; rows: { message_id: string }[]; warnings: Record<string, number> };
+    expect(reply.ok).toBe(true);
+    expect(reply.rows.map((r) => r.message_id)).toEqual(["small-1", "small-2"]);
+    expect(reply.warnings.unsupported).toBe(1);
+    expect(result.sql.filter((statement) => statement.startsWith("SELECT data FROM"))).toHaveLength(2);
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it("rejects malformed reply identity, cursor regressions and ceiling changes", () => {
+    const previous = {
+      v: 1 as const,
+      v1: { after: "10", ceiling: "20", done: false },
+      v2: { after: null, ceiling: null, done: false },
+    };
+    const valid = {
+      v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows: [],
+      next: { v1: { after: "12", ceiling: "20", done: false }, v2: { after: null, ceiling: null, done: false } },
+      warnings: {},
+    };
+    expect(parseOpenCodeReply(JSON.stringify(valid), previous)).not.toBeNull();
+    expect(parseOpenCodeReply(JSON.stringify({ ...valid, runtime: "Bun 9.9.9" }), previous)).toBeNull();
+    expect(parseOpenCodeReply(JSON.stringify({ ...valid, schema: "9.9.9" }), previous)).toBeNull();
+    const regressed = { ...valid, next: { ...valid.next, v1: { after: "9", ceiling: "20", done: false } } };
+    expect(parseOpenCodeReply(JSON.stringify(regressed), previous)).toBeNull();
+    const movedCeiling = { ...valid, next: { ...valid.next, v1: { after: "12", ceiling: "21", done: false } } };
+    expect(parseOpenCodeReply(JSON.stringify(movedCeiling), previous)).toBeNull();
+    const unsafe = { ...valid, next: { ...valid.next, v1: { after: "9223372036854775808", ceiling: "9223372036854775808", done: false } } };
+    expect(parseOpenCodeReply(JSON.stringify(unsafe), previous)).toBeNull();
+  });
+
+  it("completes a cap-throttled page sequence without duplicates or rewind", () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-cap-seq-"));
+    const path = join(base, "cap-seq.db");
+    const db = baseDb(path);
+    const insert = db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, 'ses-1', 1, 1, ?)");
+    db.transaction(() => {
+      for (let i = 1; i <= 300; i += 1) {
+        insert.run(`m${i}`, JSON.stringify({
+          role: "assistant", modelID: "model-x", agent: "a".repeat(3000),
+          created: 1_794_909_600_000, tokens: { input: 1, output: 1 },
+        }));
+      }
+    })();
+    db.close();
+    let state: { v: 1; v1: { after: string | null; ceiling: string | null; done: boolean }; v2: { after: string | null; ceiling: string | null; done: boolean } } = freshCursor;
+    const seen: string[] = [];
+    let passes = 0;
+    do {
+      const reply = runHelper(path, state).reply as {
+        ok: boolean;
+        rows: { message_id: string }[];
+        next: { v1: typeof state.v1; v2: typeof state.v2 };
+      };
+      expect(reply.ok).toBe(true);
+      seen.push(...reply.rows.map((r) => r.message_id));
+      state = { v: 1, v1: reply.next.v1, v2: reply.next.v2 };
+      passes += 1;
+    } while (!(state.v1.done && state.v2.done) && passes < 50);
+    expect(passes).toBeLessThan(50);
+    expect(seen).toHaveLength(300);
+    expect(new Set(seen).size).toBe(300);
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
 describe("Fixture A: 50k rows per projection table", () => {
   it("completes one captured cycle within 200 successful helper passes", () => {
     const base = mkdtempSync(join(VERIFY_HOME, "helper-cycle-"));
@@ -890,7 +1320,7 @@ describe("Fixture A: 50k rows per projection table", () => {
     })();
     db.close();
 
-    let state: { v: 1; v1: { after: number; ceiling: number; done: boolean }; v2: { after: number; ceiling: number; done: boolean } } = freshCursor as never;
+    let state: { v: 1; v1: { after: string | null; ceiling: string | null; done: boolean }; v2: { after: string | null; ceiling: string | null; done: boolean } } = freshCursor;
     let passes = 0;
     let replied = 0;
     do {
@@ -905,9 +1335,10 @@ describe("Fixture A: 50k rows per projection table", () => {
       passes += 1;
       expect(passes).toBeLessThanOrEqual(200);
     } while (!(state.v1.done && state.v2.done));
+    expect(passes).toBeGreaterThanOrEqual(196);
     expect(passes).toBeLessThanOrEqual(200);
-    expect(state.v1.after).toBe(50_000);
-    expect(state.v2.after).toBe(50_000);
+    expect(BigInt(state.v1.after ?? "0")).toBe(50_000n);
+    expect(BigInt(state.v2.after ?? "0")).toBe(50_000n);
     expect(replied).toBe(100_000);
     rmSync(base, { recursive: true, force: true });
   }, 120_000);

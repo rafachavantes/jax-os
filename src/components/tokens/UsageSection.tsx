@@ -156,11 +156,17 @@ export function UsageSection() {
     envelope?.data?.history.indexing ? 1_000 : 60_000,
   );
   const snapshot = data?.ok ? data.data : undefined;
-  const healthySources =
-    snapshot?.sources.some((s) => s.state === "available" || s.state === "empty") ?? false;
-  const everySourceUnavailable =
-    snapshot !== undefined &&
-    snapshot.sources.every((s) => s.state === "unavailable" || s.state === "incompatible");
+  const sources = snapshot?.sources ?? [];
+  const healthySources = sources.some((s) => s.state === "available" || s.state === "empty");
+  const hasRetainedData = (snapshot?.costCoverage.total ?? 0) > 0;
+  const allDisabled = sources.length > 0 && sources.every((s) => s.state === "disabled");
+  const reporting = sources.some(
+    (s) => s.state === "available" || s.state === "empty" || s.state === "indexing",
+  );
+  const anyFailed = sources.some((s) => s.state === "unavailable" || s.state === "incompatible");
+  const everySourceUnavailable = !reporting && anyFailed;
+  const showTotals = snapshot !== undefined && (hasRetainedData || reporting);
+  const showData = snapshot !== undefined && (hasRetainedData || reporting);
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
@@ -172,7 +178,7 @@ export function UsageSection() {
               onClick={() => setRange(r)}
               className={`h-[30px] rounded-full px-4 text-xs font-semibold ${range === r ? "bg-brand text-on-brand" : "text-muted"}`}
             >
-              {r}
+              {t(`period.${r}`)}
             </button>
           ))}
         </div>
@@ -204,7 +210,7 @@ export function UsageSection() {
             ))}
           </select>
         </label>
-        {snapshot ? (
+        {snapshot && showTotals ? (
           <div className="ml-auto flex min-w-0 flex-wrap items-baseline gap-2.5">
             <span className="text-[13px] text-muted">{t("total")}</span>
             <span className="font-display text-[26px] font-black text-ink">{fmtTokens(snapshot.totalTokens, locale)}</span>
@@ -222,7 +228,7 @@ export function UsageSection() {
         ) : null}
       </div>
 
-      {isError ? (
+      {isError || (data !== undefined && !data.ok) ? (
         <SourceWarning
           label={t("unavailable")}
           aside={dataUpdatedAt ? <RelativeTime epochMs={dataUpdatedAt} /> : undefined}
@@ -238,9 +244,12 @@ export function UsageSection() {
             ))}
           </div>
 
-          {everySourceUnavailable ? (
-            <SourceWarning label={t("allUnavailable")} />
-          ) : (
+          {everySourceUnavailable ? <SourceWarning label={t("allUnavailable")} /> : null}
+          {allDisabled ? <SourceWarning label={t("allDisabled")} /> : null}
+          {anyFailed && hasRetainedData ? (
+            <span className="text-[11.5px] text-muted">{t("retainedData")}</span>
+          ) : null}
+          {showData ? (
             <>
               <div className="flex min-w-0 flex-col gap-[18px] rounded-lg border border-line bg-surface px-[22px] py-5">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -258,7 +267,7 @@ export function UsageSection() {
                 <BreakdownPanel title={t("byAgent")} slices={snapshot.byAgent} locale={locale} currency={snapshot.costCurrency} unknownLabel={t("unknownModel")} />
               </div>
             </>
-          )}
+          ) : null}
 
           <div className="flex flex-col gap-1 text-[11px] text-muted">
             <span>{t("utcNote")}</span>
@@ -271,6 +280,9 @@ export function UsageSection() {
             <span>{t("cacheNote")}</span>
             {snapshot.costCoverage.measured > 0 ? (
               <span>{t("costCoverage", { measured: snapshot.costCoverage.measured, total: snapshot.costCoverage.total })}</span>
+            ) : null}
+            {snapshot.costCoverage.unknownUnit > 0 ? (
+              <span>{t("unknownUnitCost", { count: snapshot.costCoverage.unknownUnit })}</span>
             ) : null}
             {snapshot.mixedProjectionSessions > 0 ? (
               <span>{t("mixedProjection", { count: snapshot.mixedProjectionSessions })}</span>

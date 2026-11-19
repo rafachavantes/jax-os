@@ -740,11 +740,25 @@
         "output-overflow": "adapter output overflow",
         "query-failed": "metadata query failed",
         "open-failed": "native database unreadable",
-        "pass-failed": "collection pass failed"
+        "pass-failed": "collection pass failed",
+        "io-pending": "waiting for a pending filesystem operation",
+        "io-timeout": "filesystem operation timed out",
+        "file-replaced": "file replaced while reading",
+        "subdir-failed": "subdirectory unreadable",
+        "discovery-failed": "discovery failed",
+        "root-unavailable": "native root unreadable"
       },
       "cacheRead": "cache read",
       "cacheWrite": "cache write",
-      "reasoning": "reasoning"
+      "reasoning": "reasoning",
+      "period": {
+        "7d": "7 days",
+        "30d": "30 days",
+        "90d": "90 days"
+      },
+      "allDisabled": "All native usage sources are disabled. Enable them in Settings.",
+      "retainedData": "Some sources are unavailable; showing retained data from the last successful collection.",
+      "unknownUnitCost": "{count} usage item(s) report a cost with an unverified unit; excluded from currency totals."
     },
     "hermes": {
       "promptTitle": "Prompt budget",
