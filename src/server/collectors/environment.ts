@@ -2,18 +2,20 @@
 // candidates. Every external fact comes through an injected async seam; pure parsers carry the
 // fixture tests. Nothing here mutates host state: no cleanup, no package execution, no config.
 import { execFile } from "node:child_process";
-import { readFile, statfs } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { access, readFile, stat, statfs } from "node:fs/promises";
+import { constants as fsConstants, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { envFileStatus, type EnvFileState } from "../envFile";
-import { getDb } from "../db";
-import { checkOwnDatabase, type OwnDbCheck } from "../db/environment";
-import { lastKnownPaneContext, type LastKnownPaneContext } from "../db/workflows";
+import {
+  createOwnDbReader, ownPaneKey, readOwnDb,
+  type OwnDbRequest, type OwnDbSnapshot, type OwnDbWorkerRunner,
+} from "../db/environment";
+import type { LastKnownPaneContext } from "../db/workflows";
 import {
   parseSettings, readRawSettings, settingsKeyPresence, type KeyPresence, type RawSettingsRead, type SettingsResult,
 } from "../settings";
-import { isCliPresent } from "./cli-presence";
-import { getProjects } from "./projects";
 import {
   getPackageObservation, packageKey, parseHoldRows, parseSimulationRows,
   type PackageObservation,
@@ -23,7 +25,7 @@ import { collectWorkloads, readProcStat, type WorkloadsSection } from "./workloa
 
 export const COMPONENT_IDS = [
   "database", "projects", "tmux", "ttyd", "github", "linear",
-  "claude", "codex", "opencode", "metrics", "env-file",
+  "claude", "codex", "opencode", "metrics", "host-probes", "env-file",
 ] as const;
 export type ComponentId = (typeof COMPONENT_IDS)[number];
 
@@ -109,11 +111,16 @@ export type TmpCapacity = {
 
 export function capacityFromStatfs(facts: StatfsFacts): Pick<TmpCapacity, "usedGb" | "totalGb" | "availableGb"> | null {
   const values = [facts.bsize, facts.blocks, facts.bfree, facts.bavail];
-  if (values.some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0)) return null;
+  if (values.some((v) => typeof v !== "number" || !Number.isFinite(v))) return null;
+  // Internally consistent counters only: an invented negative/clamped value is never shown.
+  if (!(facts.bsize > 0) || !(facts.blocks > 0)) return null;
+  if (facts.bavail < 0 || facts.bfree < 0 || facts.bavail > facts.bfree || facts.bfree > facts.blocks) return null;
   const total = facts.blocks * facts.bsize;
+  const used = (facts.blocks - facts.bfree) * facts.bsize;
+  const available = facts.bavail * facts.bsize;
+  if (!Number.isFinite(total) || !Number.isFinite(used) || !Number.isFinite(available)) return null;
   if (total <= 0) return null;
-  const used = Math.max(0, (facts.blocks - facts.bfree) * facts.bsize);
-  return { usedGb: used / 1e9, totalGb: total / 1e9, availableGb: (facts.bavail * facts.bsize) / 1e9 };
+  return { usedGb: used / 1e9, totalGb: total / 1e9, availableGb: available / 1e9 };
 }
 
 export type ResourcesSection = {
@@ -147,17 +154,29 @@ export type PackagesSection = {
   warning: "hold-unavailable" | "simulation-unavailable" | "package-query-failed" | null;
 };
 
+export type CliState = "present" | "missing" | "unknown";
+export type ProbeState = "ok" | "failed" | "unknown";
+export type DbFacts =
+  | { state: "ok"; schemaVersion: number | null }
+  | { state: "failed"; error: string }
+  | { state: "unknown" };
+export type MetricsFacts =
+  | { state: "ok"; latest: string | null }
+  | { state: "failed" }
+  | { state: "unknown" };
+
 export type EnvironmentDeps = {
   now: () => number;
+  // Caller-visible deadline seam; tests can supply a controllable sleep.
+  sleep?: (ms: number) => Promise<void>;
   readSettingsRaw: () => RawSettingsRead;
-  checkDatabase: () => OwnDbCheck;
-  checkProjects: (root: string) => { ok: boolean };
+  ownDb: (req?: OwnDbRequest) => Promise<OwnDbSnapshot>;
+  checkProjects: (root: string) => Promise<{ ok: boolean }>;
   listPanes: typeof listLivePanes;
-  ttydBase: () => string | null;
+  ttydTransport: () => { ro: string | null; rw: string | null };
   httpOk: (url: string) => Promise<boolean>;
-  cli: (name: string) => boolean;
+  cli: (name: string) => Promise<CliState>;
   linearCredential: () => boolean;
-  metricsLatest: () => string | null;
   envFile: () => EnvFileState;
   readMountInfo: () => Promise<string>;
   statfs: (path: string) => Promise<StatfsFacts>;
@@ -166,22 +185,22 @@ export type EnvironmentDeps = {
   exec: (file: string, args: readonly string[], opts: { timeout: number; maxBuffer: number }) => Promise<string>;
   ps: () => Promise<string>;
   readProc: (pid: number) => Promise<string>;
-  paneContext: (pane: string, incarnation: string | null) => LastKnownPaneContext | null;
 };
 
 export type ComponentFacts = {
   nowMs: number;
   settings: SettingsResult;
   presence: KeyPresence | null;
-  db: OwnDbCheck;
-  projects: { ok: boolean };
-  tmux: { ok: boolean };
-  ttyd: { configured: boolean; reachable: boolean | null };
-  clis: { claude: boolean; codex: boolean; opencode: boolean };
-  githubCli: boolean;
+  db: DbFacts;
+  projects: ProbeState;
+  tmux: ProbeState;
+  ttyd: { roConfigured: boolean; rwConfigured: boolean; probeBase: string | null; reachable: boolean | null };
+  clis: { claude: CliState; codex: CliState; opencode: CliState };
+  githubCli: CliState;
   linearCredential: boolean;
-  metricsLatest: string | null;
+  metrics: MetricsFacts;
   envFile: EnvFileState;
+  hostProbes: { resources: boolean | null; workloads: boolean | null; packages: boolean | null };
 };
 
 export const METRICS_STALE_S = 180;
@@ -195,6 +214,19 @@ function result(
 function disabledState(enabled: boolean, explicit: boolean): ComponentState {
   if (enabled) return "healthy";
   return explicit ? "disabled-explicit" : "disabled-default";
+}
+
+function ttydSide(facts: ComponentFacts["ttyd"]): "ro" | "rw" | "both" | null {
+  if (facts.roConfigured && facts.rwConfigured) return "both";
+  if (facts.roConfigured) return "ro";
+  if (facts.rwConfigured) return "rw";
+  return null;
+}
+
+function hostProbesState(probes: ComponentFacts["hostProbes"]): ComponentResult["state"] {
+  const observed = [probes.resources, probes.workloads, probes.packages].filter((v): v is boolean => v !== null);
+  if (observed.length === 0) return "unknown";
+  return observed.every(Boolean) ? "healthy" : "unavailable";
 }
 
 // Pure matrix projection: every state and detail is fixture-testable without touching the host.
@@ -215,9 +247,18 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
     return whenEnabled();
   };
 
+  const cliResult = (id: ComponentId, state: CliState, whenPresentDetail: string): ComponentResult =>
+    state === "present"
+      ? result(id, "healthy", whenPresentDetail, t)
+      : state === "missing"
+        ? result(id, "needs-configuration", "cli-missing", t)
+        : result(id, "unknown", "cli-unverified", t);
+
   const metrics = ((): ComponentResult => {
-    if (facts.metricsLatest === null) return result("metrics", "unavailable", "no-sample", t);
-    const ageS = Math.max(0, Math.round((t - Date.parse(facts.metricsLatest)) / 1000));
+    if (facts.metrics.state === "unknown") return result("metrics", "unknown", "database-unverified", t);
+    if (facts.metrics.state === "failed") return result("metrics", "unavailable", "database-unavailable", t);
+    if (facts.metrics.latest === null) return result("metrics", "unavailable", "no-sample", t);
+    const ageS = Math.max(0, Math.round((t - Date.parse(facts.metrics.latest)) / 1000));
     if (!Number.isFinite(ageS)) return result("metrics", "unavailable", "no-sample", t);
     return ageS <= METRICS_STALE_S
       ? result("metrics", "healthy", "fresh", t)
@@ -230,47 +271,61 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
     return result("env-file", "needs-configuration", facts.envFile, t);
   })();
 
+  const database = ((): ComponentResult => {
+    if (facts.db.state === "ok") return result("database", "healthy", "select-1", t);
+    if (facts.db.state === "failed") return result("database", "failed", facts.db.error, t);
+    return result("database", "unknown", "database-unverified", t);
+  })();
+
+  const projects = ((): ComponentResult => {
+    if (!settingsOk) return result("projects", "unknown", "settings-unreadable", t);
+    if (facts.projects === "ok") return result("projects", "healthy", "root-readable-unverified", t);
+    if (facts.projects === "failed") return result("projects", "failed", "root-unreadable", t);
+    return result("projects", "unknown", "root-unverified", t);
+  })();
+
+  const tmux = ((): ComponentResult => {
+    if (facts.tmux === "ok") return result("tmux", "healthy", "snapshot", t);
+    if (facts.tmux === "failed") return result("tmux", "unavailable", "tmux-unavailable", t);
+    return result("tmux", "unknown", "tmux-unverified", t);
+  })();
+
+  const probes = ((): ComponentResult => {
+    const state = hostProbesState(facts.hostProbes);
+    if (state === "unknown") return result("host-probes", "unknown", "not-checked", t);
+    return state === "healthy"
+      ? result("host-probes", "healthy", "sections-observed", t)
+      : result("host-probes", "unavailable", "sections-partial", t);
+  })();
+
   return [
-    facts.db.ok
-      ? result("database", "healthy", "select-1", t)
-      : result("database", "failed", facts.db.error ?? "database-unavailable", t),
-    !settingsOk
-      ? result("projects", "unknown", "settings-unreadable", t)
-      : facts.projects.ok
-        ? result("projects", "healthy", "root-readable", t)
-        : result("projects", "failed", "root-unreadable", t),
-    facts.tmux.ok
-      ? result("tmux", "healthy", "snapshot", t)
-      : result("tmux", "unavailable", "tmux-unavailable", t),
-    integration("ttyd", integrations?.ttyd ?? false, explicit?.ttyd ?? false, () =>
-      !facts.ttyd.configured
-        ? result("ttyd", "needs-configuration", "urls-missing", t)
-        : facts.ttyd.reachable === true
-          ? result("ttyd", "healthy", "http-ok", t)
-          : facts.ttyd.reachable === false
-            ? result("ttyd", "failed", "http-unreachable", t)
-            : result("ttyd", "unknown", "http-unverified", t)),
+    database,
+    projects,
+    tmux,
+    integration("ttyd", integrations?.ttyd ?? false, explicit?.ttyd ?? false, () => {
+      const side = ttydSide(facts.ttyd);
+      if (side === null) return result("ttyd", "needs-configuration", "urls-missing", t);
+      if (facts.ttyd.probeBase === null) return result("ttyd", "unknown", `external-unverified-${side}`, t);
+      if (facts.ttyd.reachable === true) return result("ttyd", "healthy", `http-ok-${side}`, t);
+      if (facts.ttyd.reachable === false) return result("ttyd", "failed", "http-unreachable", t);
+      return result("ttyd", "unknown", "http-unverified", t);
+    }),
     integration("github", integrations?.github ?? false, explicit?.github ?? false, () =>
-      facts.githubCli
+      facts.githubCli === "present"
         ? result("github", "unknown", "configured-unverified", t)
-        : result("github", "needs-configuration", "cli-missing", t)),
+        : cliResult("github", facts.githubCli, "configured-unverified")),
     integration("linear", integrations?.linear ?? false, explicit?.linear ?? false, () =>
       facts.linearCredential
         ? result("linear", "unknown", "credential-present", t)
         : result("linear", "needs-configuration", "credential-missing", t)),
     integration("claude", integrations?.agents.claude ?? false, explicit?.agents.claude ?? false, () =>
-      facts.clis.claude
-        ? result("claude", "healthy", "cli-present", t)
-        : result("claude", "needs-configuration", "cli-missing", t)),
+      cliResult("claude", facts.clis.claude, "cli-present")),
     integration("codex", integrations?.agents.codex ?? false, explicit?.agents.codex ?? false, () =>
-      facts.clis.codex
-        ? result("codex", "healthy", "cli-present", t)
-        : result("codex", "needs-configuration", "cli-missing", t)),
+      cliResult("codex", facts.clis.codex, "cli-present")),
     integration("opencode", integrations?.agents.opencode ?? false, explicit?.agents.opencode ?? false, () =>
-      facts.clis.opencode
-        ? result("opencode", "healthy", "cli-present", t)
-        : result("opencode", "needs-configuration", "cli-missing", t)),
+      cliResult("opencode", facts.clis.opencode, "cli-present")),
     metrics,
+    probes,
     envFile,
   ];
 }
@@ -351,72 +406,195 @@ export type EnvironmentRuntime = {
   workloads: () => Promise<WorkloadsSection>;
 };
 
-type Cache<T> = { at: number; value: T } | null;
+export type Observation<T> =
+  | { ok: true; value: T; observedAt: number }
+  | { ok: false; observedAt: number; lastGood: T | null; lastGoodAt: number | null };
 
-function cached<T>(holder: { cache: Cache<T> }, ttlMs: number, nowMs: number, load: () => Promise<T>): Promise<T> {
-  if (holder.cache && nowMs - holder.cache.at < ttlMs) return Promise.resolve(holder.cache.value);
-  return load().then((value) => {
-    holder.cache = { at: nowMs, value };
-    return value;
+type SourceState<T> = {
+  lastGood: { value: T; at: number } | null;
+  pending: { promise: Promise<T>; startedAt: number } | null;
+};
+
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function raceDeadline<T>(
+  promise: Promise<T>, ms: number, sleep: (ms: number) => Promise<void>,
+): Promise<{ settled: true; value: T } | { settled: false }> {
+  return Promise.race([
+    promise.then((value) => ({ settled: true as const, value }), () => ({ settled: false as const })),
+    sleep(ms).then(() => ({ settled: false as const })),
+  ]);
+}
+
+// One source = one completed observation plus (at most) the one original pending operation.
+// A caller deadline returns unavailable/last-good without cancelling or duplicating the load.
+export function createSourceObserver(now: () => number, sleep: (ms: number) => Promise<void> = realSleep) {
+  const states = new Map<string, SourceState<unknown>>();
+  const unavailable = <T,>(state: SourceState<T>, at: number): Observation<T> => ({
+    ok: false, observedAt: at,
+    lastGood: state.lastGood?.value ?? null,
+    lastGoodAt: state.lastGood?.at ?? null,
   });
+
+  return function observe<T>(
+    key: string, ttlMs: number, budgetMs: number, load: () => Promise<T>,
+  ): Promise<Observation<T>> {
+    let state = states.get(key) as SourceState<T> | undefined;
+    if (!state) {
+      state = { lastGood: null, pending: null };
+      states.set(key, state as SourceState<unknown>);
+    }
+    const startedAt = now();
+    const pending = state.pending;
+    if (pending) {
+      const remaining = pending.startedAt + budgetMs - startedAt;
+      if (remaining <= 0) return Promise.resolve(unavailable(state, startedAt));
+      return raceDeadline(pending.promise, remaining, sleep)
+        .then((out) => out.settled
+          ? { ok: true, value: out.value, observedAt: pending.startedAt }
+          : unavailable(state, now()));
+    }
+    if (state.lastGood && startedAt - state.lastGood.at < ttlMs) {
+      return Promise.resolve({ ok: true, value: state.lastGood.value, observedAt: state.lastGood.at });
+    }
+    const attemptAt = startedAt;
+    const operation = { promise: Promise.resolve() as Promise<T>, startedAt: attemptAt };
+    state.pending = operation;
+    const promise = (async () => {
+      try {
+        return await load();
+      } finally {
+        if (state.pending === operation) state.pending = null;
+      }
+    })();
+    operation.promise = promise;
+    promise.then(
+      (value) => { state.lastGood = { value, at: attemptAt }; },
+      () => {},
+    );
+    return raceDeadline(promise, budgetMs, sleep)
+      .then((out) => out.settled
+        ? { ok: true, value: out.value, observedAt: attemptAt }
+        : unavailable(state, now()));
+  };
 }
 
 export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRuntime {
-  const panesCache: { cache: Cache<{ ok: boolean }> } = { cache: null };
-  const ttydCache: { cache: Cache<boolean | null> } = { cache: null };
-  const dbCache: { cache: Cache<OwnDbCheck> } = { cache: null };
-  const mountCache: { cache: Cache<MountInfo[]> } = { cache: null };
-  const statfsCache: { cache: Cache<StatfsFacts> } = { cache: null };
+  const observe = createSourceObserver(deps.now, deps.sleep ?? realSleep);
   let lastTmp: TmpCapacity | null = null;
   let lastTmpAt: string | null = null;
+  const observedSections: ComponentFacts["hostProbes"] = { resources: null, workloads: null, packages: null };
+
+  async function paneContext(pane: string, incarnation: string | null): Promise<LastKnownPaneContext | null> {
+    const key = ownPaneKey(pane, incarnation);
+    if (key === null) return null;
+    const observed = await observe(`pane-context:${key}`, 5_000, 200, () => deps.ownDb({ pane, incarnation }));
+    return observed.ok && observed.value.ok ? observed.value.paneContext : null;
+  }
 
   async function components(): Promise<ComponentsSection> {
     const nowMs = deps.now();
     const raw = deps.readSettingsRaw();
     const settings: SettingsResult = raw.ok ? parseSettings(raw.raw) : raw;
     const presence = raw.ok && settings.ok ? settingsKeyPresence(raw.raw) : null;
-    const panes = await cached(panesCache, 5_000, nowMs, async () => {
-      try {
-        await deps.listPanes();
-        return { ok: true as const };
-      } catch {
-        return { ok: false as const };
-      }
-    });
-    const db = await cached(dbCache, 5 * 60_000, nowMs, async () => deps.checkDatabase());
+
+    const panesObs = await observe("tmux", 5_000, 5_000, () => deps.listPanes());
+    const dbObs = await observe("own-db", 5 * 60_000, 200, () => deps.ownDb());
+    const metricObs = await observe("own-db-metric", 5_000, 200, () => deps.ownDb());
+    const [claude, codex, opencode, gh] = await Promise.all([
+      observe("cli:claude", 30_000, 200, () => deps.cli("claude")),
+      observe("cli:codex", 30_000, 200, () => deps.cli("codex")),
+      observe("cli:opencode", 30_000, 200, () => deps.cli("opencode")),
+      observe("cli:gh", 30_000, 200, () => deps.cli("gh")),
+    ]);
+
     const ttydEnabled = settings.ok && settings.data.integrations.ttyd;
-    const base = ttydEnabled ? deps.ttydBase() : null;
-    const reachable = base === null ? null : await cached(ttydCache, 30_000, nowMs, () => deps.httpOk(base));
+    const transport = ttydEnabled ? deps.ttydTransport() : { ro: null, rw: null };
+    const roConfigured = typeof transport.ro === "string" && transport.ro.length > 0;
+    const rwConfigured = typeof transport.rw === "string" && transport.rw.length > 0;
+    const probeBase = ttydEnabled ? (loopbackBase(transport.ro ?? undefined) ?? loopbackBase(transport.rw ?? undefined)) : null;
+    const ttydObs = probeBase === null
+      ? null
+      : await observe(`ttyd:${probeBase}`, 30_000, 2_000, () => deps.httpOk(probeBase));
+
     const root = settings.ok ? settings.data.reposRoot : null;
-    let projects = { ok: false };
-    if (root !== null) {
-      try { projects = deps.checkProjects(root); } catch { projects = { ok: false }; }
-    }
+    const projectsObs = root === null
+      ? null
+      : await observe(`projects:${root}`, 30_000, 1_000, () => deps.checkProjects(root));
+
+    const dbSnapshot = dbObs.ok ? dbObs.value : dbObs.lastGood;
+    const db: DbFacts = dbSnapshot === null
+      ? { state: "unknown" }
+      : dbSnapshot.ok
+        ? { state: "ok", schemaVersion: dbSnapshot.schemaVersion }
+        : { state: "failed", error: "database-unavailable" };
+    const metricSnapshot = metricObs.ok ? metricObs.value : metricObs.lastGood;
+    const metrics: MetricsFacts = metricSnapshot === null
+      ? { state: "unknown" }
+      : metricSnapshot.ok
+        ? { state: "ok", latest: metricSnapshot.latestMetricTs }
+        : { state: "failed" };
+    const tmux: ProbeState = panesObs.ok ? "ok" : panesObs.lastGood !== null ? "failed" : "unknown";
+    const projects: ProbeState = projectsObs === null
+      ? "unknown"
+      : projectsObs.ok ? (projectsObs.value.ok ? "ok" : "failed") : "unknown";
+
     const facts: ComponentFacts = {
       nowMs,
       settings,
       presence,
       db,
       projects,
-      tmux: panes,
-      ttyd: { configured: base !== null, reachable },
-      clis: { claude: deps.cli("claude"), codex: deps.cli("codex"), opencode: deps.cli("opencode") },
-      githubCli: deps.cli("gh"),
+      tmux,
+      ttyd: {
+        roConfigured, rwConfigured, probeBase,
+        reachable: ttydObs === null ? null : ttydObs.ok ? ttydObs.value : null,
+      },
+      clis: {
+        claude: claude.ok ? claude.value : "unknown",
+        codex: codex.ok ? codex.value : "unknown",
+        opencode: opencode.ok ? opencode.value : "unknown",
+      },
+      githubCli: gh.ok ? gh.value : "unknown",
       linearCredential: deps.linearCredential(),
-      metricsLatest: deps.metricsLatest(),
+      metrics,
       envFile: deps.envFile(),
+      hostProbes: { ...observedSections },
     };
-    return { observedAt: new Date(nowMs).toISOString(), components: buildComponents(facts) };
+    const observedAtById: Partial<Record<ComponentId, number>> = {
+      database: dbObs.observedAt,
+      metrics: metricObs.observedAt,
+      tmux: panesObs.observedAt,
+      projects: projectsObs?.observedAt ?? nowMs,
+      ttyd: ttydObs?.observedAt ?? nowMs,
+      claude: claude.observedAt,
+      codex: codex.observedAt,
+      opencode: opencode.observedAt,
+      github: gh.observedAt,
+      "host-probes": nowMs,
+    };
+    const built = buildComponents(facts).map((component) => {
+      const at = observedAtById[component.id];
+      return at === undefined ? component : { ...component, observedAt: new Date(at).toISOString() };
+    });
+    return { observedAt: new Date(nowMs).toISOString(), components: built };
   }
 
   async function resources(): Promise<ResourcesSection> {
     const nowMs = deps.now();
+    let stage: "mount-facts" | "statfs-failed" = "mount-facts";
     try {
       const path = deps.realpath("/tmp");
-      const mounts = await cached(mountCache, 5_000, nowMs, async () => parseMountInfo(await deps.readMountInfo()));
+      const mountsObs = await observe("mountinfo", 5_000, 2_000, () => deps.readMountInfo());
+      if (!mountsObs.ok) throw new Error("mount-facts");
+      const mounts = parseMountInfo(mountsObs.value);
+      if (mounts.length === 0) throw new Error("mount-facts");
       const mount = selectMount(mounts, path);
       if (!mount) throw new Error("mount-facts");
-      const capacity = capacityFromStatfs(await cached(statfsCache, 5_000, nowMs, () => deps.statfs(path)));
+      stage = "statfs-failed";
+      const statsObs = await observe("statfs", 5_000, 1_000, () => deps.statfs(path));
+      if (!statsObs.ok) throw new Error("statfs-failed");
+      const capacity = capacityFromStatfs(statsObs.value);
       if (!capacity) throw new Error("statfs-failed");
       const root = selectMount(mounts, "/");
       const tmp: TmpCapacity = {
@@ -428,35 +606,53 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
         ...capacity,
       };
       lastTmp = tmp;
-      lastTmpAt = new Date(nowMs).toISOString();
+      lastTmpAt = new Date(Math.max(mountsObs.observedAt, statsObs.observedAt)).toISOString();
+      observedSections.resources = true;
       return { observedAt: lastTmpAt, lastGoodAt: lastTmpAt, state: "ok", stale: false, tmp, warning: null };
-    } catch (err) {
-      const warning = err instanceof Error && err.message === "mount-facts" ? "mount-facts" : "statfs-failed";
+    } catch {
+      observedSections.resources = false;
       return {
         observedAt: new Date(nowMs).toISOString(), lastGoodAt: lastTmpAt,
-        state: "unavailable", stale: lastTmp !== null, tmp: lastTmp, warning,
+        state: "unavailable", stale: lastTmp !== null, tmp: lastTmp, warning: stage,
       };
     }
   }
 
   async function packages(): Promise<PackagesSection> {
     const observation = await deps.packages();
-    return buildPackageSection(observation, deps);
+    const section = await buildPackageSection(observation, deps);
+    observedSections.packages = section.state !== "unavailable";
+    return section;
   }
 
   async function workloads(): Promise<WorkloadsSection> {
-    const panes = await deps.listPanes();
-    const panePids = panes.panePids ?? new Map<string, number>();
+    const panesObs = await observe("tmux", 5_000, 5_000, () => deps.listPanes());
+    const panes = panesObs.ok ? panesObs.value : panesObs.lastGood;
+    const tmuxWarning = panesObs.ok ? null : panesObs.lastGood !== null ? "tmux-unavailable" : "tmux-unverified";
+    const psObs = await observe("ps", 5_000, 5_000, () => deps.ps());
+    if (!psObs.ok) {
+      observedSections.workloads = false;
+      const nowMs = deps.now();
+      return {
+        observedAt: new Date(nowMs).toISOString(), state: "unavailable", groups: [],
+        totalProcesses: 0, truncated: false,
+        coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: true },
+      };
+    }
     try {
-      return await collectWorkloads({
+      const section = await collectWorkloads({
         nowMs: deps.now(),
-        psOutput: await deps.ps(),
-        panePids,
+        psOutput: psObs.value,
+        panePids: panes?.panePids ?? new Map<string, number>(),
         readProc: deps.readProc,
-        paneContext: deps.paneContext,
-        incarnation: panes.incarnation,
+        paneContext,
+        incarnation: panes?.incarnation ?? null,
+        tmuxWarning,
       });
+      observedSections.workloads = section.state !== "unavailable";
+      return section;
     } catch {
+      observedSections.workloads = false;
       const nowMs = deps.now();
       return {
         observedAt: new Date(nowMs).toISOString(), state: "unavailable", groups: [],
@@ -473,10 +669,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
 
 const execFileAsync = promisify(execFile);
 
-const systemExec: EnvironmentDeps["exec"] = async (file, args, opts) => {
-  const { stdout } = await execFileAsync(file, args, { encoding: "utf8", ...opts });
-  return stdout;
-};
+const C_LOCALE_ENV = { LC_ALL: "C", LANG: "C" } as const;
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
@@ -512,47 +705,137 @@ async function boundedHttpOk(url: string): Promise<boolean> {
   }
 }
 
-function latestMetricTs(): string | null {
+export const MAX_PATH_SEGMENTS = 32;
+export const CLI_CHECK_TIMEOUT_MS = 200;
+
+const CLI_NAMES = ["claude", "codex", "opencode", "gh"] as const;
+export type CliName = (typeof CLI_NAMES)[number];
+
+export type CliFs = {
+  stat: (path: string) => Promise<{ isFile(): boolean }>;
+  access: (path: string) => Promise<void>;
+};
+
+const realCliFs: CliFs = {
+  stat: (path) => stat(path),
+  access: (path) => access(path, fsConstants.X_OK),
+};
+
+function timeoutAfter(ms: number): Promise<never> {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), ms);
+    timer.unref?.();
+  });
+}
+
+function isPermissionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EACCES" || code === "EPERM";
+}
+
+// Fixed executable names only; never launches the CLI/provider. A permission or budget problem
+// cannot prove the CLI missing, so it reports `unknown` instead of a false absence.
+export async function probeCliPresence(
+  name: CliName,
+  env: NodeJS.ProcessEnv = process.env,
+  fs: CliFs = realCliFs,
+  timeoutMs: number = CLI_CHECK_TIMEOUT_MS,
+): Promise<CliState> {
+  if (!(CLI_NAMES as readonly string[]).includes(name)) return "unknown";
+  const dirs = (env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
+  if (dirs.length > MAX_PATH_SEGMENTS) return "unknown";
+  const candidates = dirs.map((dir) => join(dir, name));
+  if (name === "opencode") candidates.push(join(env.HOME || homedir(), ".opencode", "bin", "opencode"));
+  let inconclusive = false;
+  for (const candidate of candidates) {
+    try {
+      const info = await Promise.race([fs.stat(candidate), timeoutAfter(timeoutMs)]);
+      if (!info.isFile()) continue;
+      await Promise.race([fs.access(candidate), timeoutAfter(timeoutMs)]);
+      return "present";
+    } catch (error) {
+      if (isPermissionError(error)) inconclusive = true;
+      else if (error instanceof Error && error.message === "timeout") return "unknown";
+    }
+  }
+  return inconclusive ? "unknown" : "missing";
+}
+
+export const MOUNTINFO_LIMITS = { timeoutMs: 2_000, maxBytes: 256 * 1024 };
+
+export async function readBoundedText(
+  path: string,
+  limits: { timeoutMs: number; maxBytes: number },
+  read: (path: string, signal: AbortSignal) => Promise<string> = (p, signal) =>
+    readFile(p, { encoding: "utf8", signal }),
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), limits.timeoutMs);
   try {
-    const row = getDb().prepare("SELECT ts FROM metrics ORDER BY ts DESC, id DESC LIMIT 1").get() as { ts?: string } | undefined;
-    return typeof row?.ts === "string" ? row.ts : null;
-  } catch {
-    return null;
+    const text = await read(path, controller.signal);
+    if (Buffer.byteLength(text, "utf8") > limits.maxBytes) throw new Error("read-too-large");
+    return text;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-export function systemEnvironmentDeps(): EnvironmentDeps {
+export type SystemEnvironmentOptions = {
+  env?: NodeJS.ProcessEnv;
+  execFileImpl?: (
+    file: string, args: readonly string[],
+    options: { encoding: "utf8"; timeout: number; maxBuffer: number; env: NodeJS.ProcessEnv },
+  ) => Promise<{ stdout: string }>;
+  ownDbRunner?: OwnDbWorkerRunner;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+};
+
+export function systemEnvironmentDeps(options: SystemEnvironmentOptions = {}): EnvironmentDeps {
+  const env = options.env ?? process.env;
+  const run = options.execFileImpl ?? execFileAsync;
+  const ownDb = options.ownDbRunner ? createOwnDbReader(options.ownDbRunner) : readOwnDb;
+  const exec: EnvironmentDeps["exec"] = async (file, args, opts) => {
+    const { stdout } = await run(file, args, {
+      encoding: "utf8", timeout: opts.timeout, maxBuffer: opts.maxBuffer,
+      env: { ...env, ...C_LOCALE_ENV },
+    });
+    return stdout;
+  };
+  const boundedProc = (pid: number) => Promise.race([readProcStat(pid), timeoutAfter(2_000)]);
   return {
-    now: Date.now,
+    now: options.now ?? Date.now,
+    sleep: options.sleep,
     readSettingsRaw: () => readRawSettings(),
-    checkDatabase: () => checkOwnDatabase(getDb()),
-    checkProjects: (root) => {
-      getProjects(root);
-      return { ok: true };
+    ownDb,
+    checkProjects: async (root) => {
+      const observed = await observeProjectRoot(root);
+      return observed;
     },
     listPanes: () => listLivePanes(),
-    ttydBase: () => loopbackBase(process.env.TTYD_RO_URL),
+    ttydTransport: () => ({ ro: env.TTYD_RO_URL ?? null, rw: env.TTYD_RW_URL ?? null }),
     httpOk: boundedHttpOk,
-    cli: (name) => isCliPresent(name),
-    linearCredential: () => Boolean(process.env.LINEAR_API_KEY),
-    metricsLatest: latestMetricTs,
+    cli: (name) => probeCliPresence(name as CliName, env),
+    linearCredential: () => Boolean(env.LINEAR_API_KEY),
     envFile: () => envFileStatus().state,
-    readMountInfo: async () => {
-      const text = await readFile("/proc/self/mountinfo", "utf8");
-      if (Buffer.byteLength(text, "utf8") > 256 * 1024) throw new Error("mount-facts");
-      return text;
-    },
+    readMountInfo: () => readBoundedText("/proc/self/mountinfo", MOUNTINFO_LIMITS),
     statfs: async (path) => {
       const stats = await statfs(path);
       return { bsize: stats.bsize, blocks: stats.blocks, bfree: stats.bfree, bavail: stats.bavail };
     },
     realpath: (path) => realpathSync(path),
     packages: () => getPackageObservation(),
-    exec: systemExec,
-    ps: () => systemExec("ps", ["-eo", "pid=,ppid=,uid=,stat=,etimes=,rss=,comm="], { timeout: 5_000, maxBuffer: 2 * 1024 * 1024 }),
-    readProc: readProcStat,
-    paneContext: (pane, incarnation) => {
-      try { return lastKnownPaneContext(getDb(), pane, incarnation); } catch { return null; }
-    },
+    exec,
+    ps: () => exec("ps", ["-eo", "pid=,ppid=,uid=,stat=,etimes=,rss=,comm="], { timeout: 5_000, maxBuffer: 2 * 1024 * 1024 }),
+    readProc: boundedProc,
   };
+}
+
+async function observeProjectRoot(root: string): Promise<{ ok: boolean }> {
+  try {
+    const info = await Promise.race([stat(root), timeoutAfter(1_000)]);
+    return { ok: info.isDirectory() };
+  } catch {
+    return { ok: false };
+  }
 }

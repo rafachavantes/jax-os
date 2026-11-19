@@ -122,14 +122,19 @@ export type PackageObservation = {
   error: "package-query-failed" | null;
 };
 
-export type AsyncExec = (file: string, args: readonly string[]) => Promise<string>;
+export type FixedExecOptions = { timeout?: number; maxBuffer?: number; env?: NodeJS.ProcessEnv };
+export type AsyncExec = (file: string, args: readonly string[], opts?: FixedExecOptions) => Promise<string>;
 
 const execFileAsync = promisify(execFile);
-const systemAsyncExec: AsyncExec = async (file, args) => {
+const DEFAULT_EXEC = { timeout: 5_000, maxBuffer: 1024 * 1024 } as const;
+// Every fixed subprocess runs in the C locale so apt/dpkg/ps wording never depends on the host.
+const C_LOCALE = { LC_ALL: "C", LANG: "C" } as const;
+const systemAsyncExec: AsyncExec = async (file, args, opts = {}) => {
   const { stdout } = await execFileAsync(file, args, {
     encoding: "utf8",
-    timeout: 5_000,
-    maxBuffer: 1024 * 1024,
+    timeout: opts.timeout ?? DEFAULT_EXEC.timeout,
+    maxBuffer: opts.maxBuffer ?? DEFAULT_EXEC.maxBuffer,
+    env: { ...process.env, ...C_LOCALE, ...opts.env },
   });
   return stdout;
 };
@@ -149,7 +154,7 @@ export function createPackageObservationReader(exec: AsyncExec = systemAsyncExec
       if (inflight) return inflight;
       inflight = (async (): Promise<PackageObservation> => {
         try {
-          const rows = parsePackageRows(await exec("apt", ["list", "--upgradable"]));
+          const rows = parsePackageRows(await exec("apt", ["list", "--upgradable"], { timeout: 5_000, maxBuffer: 1024 * 1024 }));
           const obs: PackageObservation = {
             rows, state: "ok", observedAt: new Date(t).toISOString(),
             lastGoodAt: new Date(t).toISOString(), stale: false, error: null,
@@ -186,19 +191,19 @@ export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]
   const packages = options.packages ?? getPackageObservation;
   const alerts: Alert[] = [];
   try {
-    alerts.push(...parseDfAlerts(await exec("df", ["-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"])));
+    alerts.push(...parseDfAlerts(await exec("df", ["-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"], DEFAULT_EXEC)));
   } catch {
     alerts.push({ kind: "source", source: "disk", state: "failed" });
   }
   try {
-    const cores = Number((await exec("nproc", [])).trim());
+    const cores = Number((await exec("nproc", [], DEFAULT_EXEC)).trim());
     const load = parseLoadAlert(await readFile("/proc/loadavg", "utf8"), cores);
     if (load) alerts.push(load);
   } catch {
     alerts.push({ kind: "source", source: "load", state: "failed" });
   }
   try {
-    const rows = parseZombieRows(await exec("ps", ["-eo", "pid,ppid,stat,etimes,comm"]));
+    const rows = parseZombieRows(await exec("ps", ["-eo", "pid,ppid,stat,etimes,comm"], { timeout: 5_000, maxBuffer: 2 * 1024 * 1024 }));
     if (rows.length > 0) alerts.push({ kind: "zombies", count: rows.length, rows });
   } catch {
     alerts.push({ kind: "source", source: "zombies", state: "failed" });

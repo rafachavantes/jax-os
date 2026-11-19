@@ -91,7 +91,7 @@ describe("getAlerts — explicit source states (M5 Task 3)", () => {
     const psOut = "  PID  PPID STAT ELAPSED COMMAND\n41822     1  Ssl    7260 node\n48211 41822  Z+     7260 node\n";
     const exec = execFor({ df: DF, nproc: "8\n", ps: psOut });
     const alerts = await getAlerts({ exec, packages: emptyPackages });
-    expect(exec).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,stat,etimes,comm"]);
+    expect(exec).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,stat,etimes,comm"], { timeout: 5_000, maxBuffer: 2 * 1024 * 1024 });
     expect(alerts.find((a) => a.kind === "zombies")).toEqual({
       kind: "zombies", count: 1,
       rows: [{ pid: 48211, ppid: 41822, ageSeconds: 7260, parentCommand: "node" }],

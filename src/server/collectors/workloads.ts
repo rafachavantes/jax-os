@@ -218,6 +218,7 @@ export type WorkloadsSection = {
   totalProcesses: number;
   truncated: boolean;
   coverage: { ownershipKnown: number; ownershipUnknown: number; partial: boolean };
+  warning?: "tmux-unavailable" | "tmux-unverified" | null;
 };
 
 export function executableFamily(comm: string): string {
@@ -303,8 +304,9 @@ export type CollectWorkloadsInput = {
   psOutput: string;
   panePids: Map<string, number>;
   readProc: (pid: number) => Promise<string>;
-  paneContext: (pane: string, incarnation: string | null) => LastKnownPaneContext | null;
+  paneContext: (pane: string, incarnation: string | null) => LastKnownPaneContext | null | Promise<LastKnownPaneContext | null>;
   incarnation?: string | null;
+  tmuxWarning?: "tmux-unavailable" | "tmux-unverified" | null;
 };
 
 export async function collectWorkloads(input: CollectWorkloadsInput): Promise<WorkloadsSection> {
@@ -316,8 +318,11 @@ export async function collectWorkloads(input: CollectWorkloadsInput): Promise<Wo
   );
   const contexts = new Map<string, LastKnownPaneContext>();
   for (const pane of new Set(attribution.ownerByPid.values())) {
-    const context = input.paneContext(pane, input.incarnation ?? null);
+    const context = await input.paneContext(pane, input.incarnation ?? null);
     if (context) contexts.set(pane, context);
   }
-  return buildWorkloadGroups({ nowMs: input.nowMs, snapshot, attribution, contexts });
+  return {
+    ...buildWorkloadGroups({ nowMs: input.nowMs, snapshot, attribution, contexts }),
+    warning: input.tmuxWarning ?? null,
+  };
 }
