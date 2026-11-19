@@ -112,33 +112,68 @@ export type OwnDbWorkerLike = {
 
 export type OwnDbWorkerFactory = (data: OwnDbWorkerData) => OwnDbWorkerLike;
 
-// The deadline covers worker creation; a timeout terminates the worker but keeps the returned
-// promise pending until the worker actually exits, so callers can retain ownership of it.
+// The deadline covers worker creation. A validated message is published only after the worker
+// exits normally (handle closed) while the original allowance still has time; a timeout
+// terminates once but keeps the promise pending until the actual exit, so callers retain
+// ownership of the original operation. An error event alone does not release that ownership.
 export function createOwnDbWorkerRunner(
   factory: OwnDbWorkerFactory,
   timeoutMs: number = OWN_DB_TIMEOUT_MS,
+  now: () => number = () => performance.now(),
 ): OwnDbWorkerRunner {
   return (data) => new Promise<OwnDbSnapshot>((resolve) => {
+    const startedAt = now();
     let settled = false;
     let timedOut = false;
-    const worker = factory(data);
+    let failed = false;
+    let message: OwnDbSnapshot | null = null;
+    let terminateStarted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const settle = (value: OwnDbSnapshot) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve(value);
     };
-    const timer = setTimeout(() => {
+    const terminate = () => {
+      if (terminateStarted || worker === null) return;
+      terminateStarted = true;
+      try {
+        Promise.resolve(worker.terminate()).catch(() => {});
+      } catch {
+        // ignore: ownership still ends only at the actual exit event
+      }
+    };
+    let worker: OwnDbWorkerLike | null = null;
+    try {
+      worker = factory(data);
+    } catch {
+      settle(UNAVAILABLE);
+      return;
+    }
+    // Startup time spent before control returned is already part of the original deadline; an
+    // expired startup never receives a fresh full allowance.
+    const remaining = timeoutMs - (now() - startedAt);
+    if (remaining <= 0) {
       timedOut = true;
-      try { void worker.terminate(); } catch { settle(UNAVAILABLE); }
-    }, timeoutMs);
-    worker.once("message", (value) => {
-      if (timedOut) return; // discard a late result; resolve on exit
-      settle(validateOwnDbMessage(value));
-      try { void worker.terminate(); } catch {}
+      terminate();
+    } else {
+      timer = setTimeout(() => { timedOut = true; terminate(); }, remaining);
+    }
+    const current = worker;
+    current.once("message", (value) => {
+      if (timedOut) return; // discard a late result; the exit settles the operation
+      // Keep the value aside: success is published only after the worker actually exits with its
+      // handle closed, never before cleanup.
+      message = validateOwnDbMessage(value);
     });
-    worker.once("error", () => settle(UNAVAILABLE));
-    worker.once("exit", () => settle(UNAVAILABLE));
+    current.once("error", () => {
+      failed = true;
+      terminate();
+    });
+    current.once("exit", () => {
+      settle(timedOut || failed || message === null ? UNAVAILABLE : message);
+    });
   });
 }
 

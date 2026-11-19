@@ -18,7 +18,7 @@ function facts(over: Partial<ComponentFacts> = {}): ComponentFacts {
     db: { state: "ok", schemaVersion: 15 },
     projects: "ok",
     tmux: "ok",
-    ttyd: { roConfigured: false, rwConfigured: false, probeBase: null, reachable: null },
+    ttyd: { roConfigured: false, rwConfigured: false, ro: { base: null, reachable: null }, rw: { base: null, reachable: null } },
     clis: { claude: "missing", codex: "missing", opencode: "missing" },
     githubCli: "missing",
     linearCredential: false,
@@ -50,7 +50,7 @@ describe("buildComponents — explainable state matrix (AC2)", () => {
         ttyd: true, github: true, linear: true,
         agents: { claude: true, codex: true, opencode: true },
       } }),
-      ttyd: { roConfigured: true, rwConfigured: true, probeBase: "http://127.0.0.1:10000", reachable: true },
+      ttyd: { roConfigured: true, rwConfigured: true, ro: { base: "http://127.0.0.1:10000", reachable: true }, rw: { base: "http://127.0.0.1:10000", reachable: true } },
       clis: { claude: "present", codex: "present", opencode: "present" },
       githubCli: "present",
       linearCredential: true,
@@ -88,7 +88,10 @@ describe("buildComponents — explainable state matrix (AC2)", () => {
     const list = buildComponents(facts({
       settings: { ok: true, data: ENABLED },
       presence: settingsKeyPresence({ integrations: { ttyd: true, github: true, linear: true, agents: { codex: true } } }),
-      ttyd: { roConfigured: false, rwConfigured: false, probeBase: null, reachable: null },
+    ttyd: {
+      roConfigured: false, rwConfigured: false,
+      ro: { base: null, reachable: null }, rw: { base: null, reachable: null },
+    },
       clis: { claude: "missing", codex: "missing", opencode: "missing" },
       githubCli: "missing",
       linearCredential: false,
@@ -337,9 +340,15 @@ describe("ttyd transport facts (M5 Task 4)", () => {
     return section.components.find((component) => component.id === "ttyd");
   }
 
-  it("reports missing URLs only when neither transport is configured", async () => {
+  it("requires both configured RO and RW sides", async () => {
     const httpOk = vi.fn(async () => true);
     expect(await ttydComponent({ ttydTransport: () => ({ ro: null, rw: null }), httpOk })).toMatchObject({
+      state: "needs-configuration", detail: "urls-missing",
+    });
+    expect(await ttydComponent({ ttydTransport: () => ({ ro: "http://localhost:10000", rw: null }), httpOk })).toMatchObject({
+      state: "needs-configuration", detail: "urls-missing",
+    });
+    expect(await ttydComponent({ ttydTransport: () => ({ ro: null, rw: "http://localhost:10000" }), httpOk })).toMatchObject({
       state: "needs-configuration", detail: "urls-missing",
     });
     expect(httpOk).not.toHaveBeenCalled();
@@ -350,40 +359,41 @@ describe("ttyd transport facts (M5 Task 4)", () => {
     expect(await ttydComponent({
       ttydTransport: () => ({ ro: "http://example.com:10000", rw: "https://example.org:10000" }),
       httpOk,
-    })).toMatchObject({ state: "unknown", detail: "external-unverified-both" });
-    expect(httpOk).not.toHaveBeenCalled();
-
-    expect(await ttydComponent({
-      ttydTransport: () => ({ ro: "http://example.com:10000", rw: null }),
-      httpOk,
-    })).toMatchObject({ state: "unknown", detail: "external-unverified-ro" });
+    })).toMatchObject({ state: "unknown", detail: "external-unverified-ro-rw" });
     expect(httpOk).not.toHaveBeenCalled();
   });
 
-  it("represents one configured side and an invalid URL as configured-unverified, not missing", async () => {
+  it("probes each allowed loopback side and reports a mixed external/local pair unverified", async () => {
     const httpOk = vi.fn(async () => true);
     expect(await ttydComponent({
-      ttydTransport: () => ({ ro: null, rw: "http://localhost:10000" }),
+      ttydTransport: () => ({ ro: "http://example.com:10000", rw: "http://localhost:10000/y" }),
       httpOk,
-    })).toMatchObject({ state: "healthy", detail: "http-ok-rw" });
+    })).toMatchObject({ state: "unknown", detail: "external-unverified-ro" });
+    expect(httpOk).toHaveBeenCalledTimes(1);
+    expect(httpOk).toHaveBeenCalledWith("http://localhost:10000");
+  });
+
+  it("treats a malformed configured URL as unverified, never missing or healthy", async () => {
+    const httpOk = vi.fn(async () => true);
     expect(await ttydComponent({
-      ttydTransport: () => ({ ro: "not a url", rw: null }),
+      ttydTransport: () => ({ ro: "not a url", rw: "http://localhost:10000" }),
       httpOk,
     })).toMatchObject({ state: "unknown", detail: "external-unverified-ro" });
   });
 
-  it("probes a validated loopback base once and never claims a WebSocket/session", async () => {
-    const httpOk = vi.fn(async () => true);
+  it("probes both validated loopback sides and one failure cannot be healthy", async () => {
+    const httpOk = vi.fn(async (_url: string) => true);
     expect(await ttydComponent({
       ttydTransport: () => ({ ro: "http://127.0.0.1:10000/x", rw: "http://localhost:10001/y" }),
       httpOk,
     })).toMatchObject({ state: "healthy", detail: "http-ok-both" });
-    expect(httpOk).toHaveBeenCalledTimes(1);
+    expect(httpOk).toHaveBeenCalledTimes(2);
     expect(httpOk).toHaveBeenCalledWith("http://127.0.0.1:10000");
+    expect(httpOk).toHaveBeenCalledWith("http://localhost:10001");
 
-    httpOk.mockResolvedValue(false);
+    httpOk.mockImplementation(async (url: string) => url !== "http://localhost:10001");
     expect(await ttydComponent({
-      ttydTransport: () => ({ ro: "http://127.0.0.1:10000/x", rw: null }),
+      ttydTransport: () => ({ ro: "http://127.0.0.1:10000/x", rw: "http://localhost:10001/y" }),
       httpOk,
     })).toMatchObject({ state: "failed", detail: "http-unreachable" });
   });
@@ -431,6 +441,21 @@ describe("source observer — one original pending operation (M5 Task 1)", () =>
     expect(await third).toMatchObject({ ok: true, value: "done" });
   });
 
+  it("subtracts startup time already spent from the original caller budget", async () => {
+    let now = 0;
+    const sleeps: number[] = [];
+    const sleep = (ms: number) => { sleeps.push(ms); return new Promise<void>(() => {}); };
+    const observe = createSourceObserver(() => now, sleep);
+    let release!: (value: string) => void;
+    const pending = observe("source", 60_000, 200, async () => {
+      now += 150;
+      return new Promise<string>((resolve) => { release = resolve; });
+    });
+    expect(sleeps).toEqual([50]);
+    release("done");
+    await expect(pending).resolves.toMatchObject({ ok: true, value: "done" });
+  });
+
   it("keeps the original observation time, not the serving time", async () => {
     let now = NOW;
     const observe = createSourceObserver(() => now);
@@ -439,6 +464,52 @@ describe("source observer — one original pending operation (M5 Task 1)", () =>
     now += 10_000;
     const cached = await observe("value", 60_000, 1_000, async () => "b");
     expect(cached).toMatchObject({ ok: true, value: "a", observedAt: NOW });
+  });
+});
+
+describe("own-DB failure state and original operation (observation completion Task 2)", () => {
+  it("projects a typed unsuccessful snapshot as failed with the original last-good time", async () => {
+    let now = NOW;
+    let mode: "ok" | "failed" = "ok";
+    const ownDb = async () => mode === "ok"
+      ? { ok: true as const, schemaVersion: 15, latestMetricTs: new Date(now).toISOString(), paneContext: null }
+      : { ok: false as const, error: "database-unavailable" as const };
+    const runtime = createEnvironmentRuntime(runtimeDeps({ now: () => now, ownDb }));
+    expect(byId((await runtime.components()).components, "database")?.state).toBe("healthy");
+    const successAt = new Date(now).toISOString();
+    now += 6 * 60_000;
+    mode = "failed";
+    const second = await runtime.components();
+    expect(byId(second.components, "database")).toMatchObject({ state: "failed", lastGoodAt: successAt });
+    expect(byId(second.components, "metrics")?.state).not.toBe("healthy");
+  });
+
+  it("a first typed failure has no healthy badge and no last-good claim", async () => {
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      ownDb: async () => ({ ok: false, error: "database-unavailable" }),
+    }));
+    const section = await runtime.components();
+    expect(byId(section.components, "database")).toMatchObject({ state: "failed", lastGoodAt: null });
+  });
+
+  it("keeps one original pending read across repeated caller timeouts", async () => {
+    let now = NOW;
+    let mode: "ok" | "pending" = "ok";
+    const ownDb = vi.fn(async () => mode === "ok"
+      ? { ok: true as const, schemaVersion: 15, latestMetricTs: null, paneContext: null }
+      : new Promise<never>(() => {}));
+    const runtime = createEnvironmentRuntime(runtimeDeps({ now: () => now, ownDb, sleep: async () => {} }));
+    await runtime.components();
+    const afterFirst = ownDb.mock.calls.length;
+    now += 10 * 60_000;
+    mode = "pending";
+    const firstFailed = await runtime.components();
+    const afterSecond = ownDb.mock.calls.length;
+    const secondFailed = await runtime.components();
+    expect(afterSecond - afterFirst).toBe(2); // one original load per own-DB source, never a duplicate
+    expect(ownDb.mock.calls.length).toBe(afterSecond);
+    expect(byId(firstFailed.components, "database")?.state).toBe("failed");
+    expect(byId(secondFailed.components, "database")?.state).toBe("failed");
   });
 });
 
@@ -478,14 +549,36 @@ describe("fixed probe budgets and CLI presence (M5 Task 1)", () => {
     expect(await probeCliPresence("claude", { PATH: dirs, NODE_ENV: "test" }, { stat: async () => ({ isFile: () => true }), access: async () => {} })).toBe("unknown");
   });
 
-  it("keeps the OpenCode installer fallback and times out to unknown", async () => {
+  it("keeps the OpenCode installer fallback and treats inconclusive filesystem errors as unknown", async () => {
     const fallback = {
       stat: vi.fn(async (path: string) => ({ isFile: () => path === "/home/x/.opencode/bin/opencode" })),
       access: async () => {},
     };
     expect(await probeCliPresence("opencode", { PATH: "/bin", HOME: "/home/x", NODE_ENV: "test" }, fallback)).toBe("present");
-    const hanging = { stat: () => new Promise<{ isFile(): boolean }>(() => {}), access: async () => {} };
-    expect(await probeCliPresence("claude", { PATH: "/a", NODE_ENV: "test" }, hanging, 5)).toBe("unknown");
+    const eio = {
+      stat: async () => { throw Object.assign(new Error("io"), { code: "EIO" }); },
+      access: async () => {},
+    };
+    expect(await probeCliPresence("claude", { PATH: "/a", NODE_ENV: "test" }, eio)).toBe("unknown");
+    const absent = {
+      stat: async () => { throw Object.assign(new Error("absent"), { code: "ENOENT" }); },
+      access: async () => {},
+    };
+    expect(await probeCliPresence("claude", { PATH: "/a", NODE_ENV: "test" }, absent)).toBe("missing");
+  });
+
+  it("leaves a pending CLI read owned by the source observer instead of opening a second one", async () => {
+    let cliCalls = 0;
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      readSettingsRaw: () => ({ ok: true, raw: { integrations: { agents: { claude: true } } }, file: "present" }),
+      sleep: async () => {},
+      cli: () => { cliCalls += 1; return new Promise<never>(() => {}); },
+    }));
+    const first = await runtime.components();
+    expect(cliCalls).toBe(4);
+    expect(byId(first.components, "claude")?.state).toBe("unknown");
+    await runtime.components();
+    expect(cliCalls).toBe(4);
   });
 
   it("bounds a filesystem read by bytes", async () => {

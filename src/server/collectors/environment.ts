@@ -158,11 +158,11 @@ export type CliState = "present" | "missing" | "unknown";
 export type ProbeState = "ok" | "failed" | "unknown";
 export type DbFacts =
   | { state: "ok"; schemaVersion: number | null }
-  | { state: "failed"; error: string }
+  | { state: "failed"; error: string; lastGoodAt?: string | null }
   | { state: "unknown" };
 export type MetricsFacts =
   | { state: "ok"; latest: string | null }
-  | { state: "failed" }
+  | { state: "failed"; lastGoodAt?: string | null }
   | { state: "unknown" };
 
 export type EnvironmentDeps = {
@@ -193,7 +193,14 @@ export type ComponentFacts = {
   db: DbFacts;
   projects: ProbeState;
   tmux: ProbeState;
-  ttyd: { roConfigured: boolean; rwConfigured: boolean; probeBase: string | null; reachable: boolean | null };
+  // Both configured sides are required by the existing viewer; only validated loopback sides
+  // are probed, and `base: null` marks an externally configured side that stays unverified.
+  ttyd: {
+    roConfigured: boolean;
+    rwConfigured: boolean;
+    ro: { base: string | null; reachable: boolean | null };
+    rw: { base: string | null; reachable: boolean | null };
+  };
   clis: { claude: CliState; codex: CliState; opencode: CliState };
   githubCli: CliState;
   linearCredential: boolean;
@@ -215,11 +222,13 @@ function disabledState(enabled: boolean, explicit: boolean): ComponentState {
   return explicit ? "disabled-explicit" : "disabled-default";
 }
 
-function ttydSide(facts: ComponentFacts["ttyd"]): "ro" | "rw" | "both" | null {
-  if (facts.roConfigured && facts.rwConfigured) return "both";
-  if (facts.roConfigured) return "ro";
-  if (facts.rwConfigured) return "rw";
-  return null;
+function ttydResult(facts: ComponentFacts["ttyd"], t: number): ComponentResult {
+  if (!facts.roConfigured || !facts.rwConfigured) return result("ttyd", "needs-configuration", "urls-missing", t);
+  if (facts.ro.reachable === false || facts.rw.reachable === false) return result("ttyd", "failed", "http-unreachable", t);
+  const unverified = (["ro", "rw"] as const).filter((side) => facts[side].base === null);
+  if (unverified.length > 0) return result("ttyd", "unknown", `external-unverified-${unverified.join("-")}`, t);
+  if (facts.ro.reachable === true && facts.rw.reachable === true) return result("ttyd", "healthy", "http-ok-both", t);
+  return result("ttyd", "unknown", "http-unverified", t);
 }
 
 function hostProbesResult(probes: ComponentFacts["hostProbes"], t: number): ComponentResult {
@@ -258,7 +267,7 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
 
   const metrics = ((): ComponentResult => {
     if (facts.metrics.state === "unknown") return result("metrics", "unknown", "database-unverified", t);
-    if (facts.metrics.state === "failed") return result("metrics", "unavailable", "database-unavailable", t);
+    if (facts.metrics.state === "failed") return result("metrics", "unavailable", "database-unavailable", t, facts.metrics.lastGoodAt ?? null);
     if (facts.metrics.latest === null) return result("metrics", "unavailable", "no-sample", t);
     const ageS = Math.max(0, Math.round((t - Date.parse(facts.metrics.latest)) / 1000));
     if (!Number.isFinite(ageS)) return result("metrics", "unavailable", "no-sample", t);
@@ -275,7 +284,7 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
 
   const database = ((): ComponentResult => {
     if (facts.db.state === "ok") return result("database", "healthy", "select-1", t);
-    if (facts.db.state === "failed") return result("database", "failed", facts.db.error, t);
+    if (facts.db.state === "failed") return result("database", "failed", facts.db.error, t, facts.db.lastGoodAt ?? null);
     return result("database", "unknown", "database-unverified", t);
   })();
 
@@ -298,14 +307,7 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
     database,
     projects,
     tmux,
-    integration("ttyd", integrations?.ttyd ?? false, explicit?.ttyd ?? false, () => {
-      const side = ttydSide(facts.ttyd);
-      if (side === null) return result("ttyd", "needs-configuration", "urls-missing", t);
-      if (facts.ttyd.probeBase === null) return result("ttyd", "unknown", `external-unverified-${side}`, t);
-      if (facts.ttyd.reachable === true) return result("ttyd", "healthy", `http-ok-${side}`, t);
-      if (facts.ttyd.reachable === false) return result("ttyd", "failed", "http-unreachable", t);
-      return result("ttyd", "unknown", "http-unverified", t);
-    }),
+    integration("ttyd", integrations?.ttyd ?? false, explicit?.ttyd ?? false, () => ttydResult(facts.ttyd, t)),
     integration("github", integrations?.github ?? false, explicit?.github ?? false, () =>
       facts.githubCli === "present"
         ? result("github", "unknown", "configured-unverified", t)
@@ -450,7 +452,11 @@ export function createSourceObserver(now: () => number, sleep: (ms: number) => P
       (value) => { state.lastGood = { value, at: attemptAt }; },
       () => {},
     );
-    return raceDeadline(promise, budgetMs, sleep)
+    // The caller budget starts at the original monotonic start. Loading may have already spent
+    // part of it (worker construction, synchronous setup) before control returns here; that time
+    // is subtracted instead of granting the operation a fresh full allowance.
+    const remaining = Math.max(0, budgetMs - (now() - attemptAt));
+    return raceDeadline(promise, remaining, sleep)
       .then((out) => out.settled
         ? { ok: true, value: out.value, observedAt: attemptAt }
         : unavailable(state, now()));
@@ -463,11 +469,19 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
   let lastTmpAt: string | null = null;
   const observedSections: ComponentFacts["hostProbes"] = { resources: null, workloads: null, packages: null };
 
+  // A typed unsuccessful own-DB snapshot is a failed attempt, never new last-good data. The load
+  // boundary narrows it to a rejection so the existing observer keeps genuine success separate.
+  async function successfulOwnDb(req?: OwnDbRequest) {
+    const snapshot = await deps.ownDb(req);
+    if (!snapshot.ok) throw new Error("database-unavailable");
+    return snapshot;
+  }
+
   async function paneContext(pane: string, incarnation: string | null): Promise<LastKnownPaneContext | null> {
     const key = ownPaneKey(pane, incarnation);
     if (key === null) return null;
-    const observed = await observe(`pane-context:${key}`, 5_000, 200, () => deps.ownDb({ pane, incarnation }));
-    return observed.ok && observed.value.ok ? observed.value.paneContext : null;
+    const observed = await observe(`pane-context:${key}`, 5_000, 200, () => successfulOwnDb({ pane, incarnation }));
+    return observed.ok ? observed.value.paneContext : null;
   }
 
   async function components(): Promise<ComponentsSection> {
@@ -477,41 +491,44 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
     const presence = raw.ok && settings.ok ? settingsKeyPresence(raw.raw) : null;
 
     const panesObs = await observe("tmux", 5_000, 5_000, () => deps.listPanes());
-    const dbObs = await observe("own-db", 5 * 60_000, 200, () => deps.ownDb());
-    const metricObs = await observe("own-db-metric", 5_000, 200, () => deps.ownDb());
+    const dbObs = await observe("own-db", 5 * 60_000, 200, () => successfulOwnDb());
+    const metricObs = await observe("own-db-metric", 5_000, 200, () => successfulOwnDb());
     const [claude, codex, opencode, gh] = await Promise.all([
-      observe("cli:claude", 30_000, 200, () => deps.cli("claude")),
-      observe("cli:codex", 30_000, 200, () => deps.cli("codex")),
-      observe("cli:opencode", 30_000, 200, () => deps.cli("opencode")),
-      observe("cli:gh", 30_000, 200, () => deps.cli("gh")),
+      observe("cli:claude", 30_000, CLI_CHECK_TIMEOUT_MS, () => deps.cli("claude")),
+      observe("cli:codex", 30_000, CLI_CHECK_TIMEOUT_MS, () => deps.cli("codex")),
+      observe("cli:opencode", 30_000, CLI_CHECK_TIMEOUT_MS, () => deps.cli("opencode")),
+      observe("cli:gh", 30_000, CLI_CHECK_TIMEOUT_MS, () => deps.cli("gh")),
     ]);
 
     const ttydEnabled = settings.ok && settings.data.integrations.ttyd;
     const transport = ttydEnabled ? deps.ttydTransport() : { ro: null, rw: null };
     const roConfigured = typeof transport.ro === "string" && transport.ro.length > 0;
     const rwConfigured = typeof transport.rw === "string" && transport.rw.length > 0;
-    const probeBase = ttydEnabled ? (loopbackBase(transport.ro ?? undefined) ?? loopbackBase(transport.rw ?? undefined)) : null;
-    const ttydObs = probeBase === null
+    // Only validated loopback sides are probed, and only when BOTH sides are configured — the
+    // existing viewer needs the pair; an external/invalid side stays unverified.
+    const ttydComplete = ttydEnabled && roConfigured && rwConfigured;
+    const roBase = ttydComplete ? loopbackBase(transport.ro ?? undefined) : null;
+    const rwBase = ttydComplete ? loopbackBase(transport.rw ?? undefined) : null;
+    const roObs: Observation<boolean> | null = roBase === null
       ? null
-      : await observe(`ttyd:${probeBase}`, 30_000, 2_000, () => deps.httpOk(probeBase));
+      : await observe(`ttyd:ro:${roBase}`, 30_000, 2_000, () => deps.httpOk(roBase));
+    const rwObs: Observation<boolean> | null = rwBase === null
+      ? null
+      : await observe(`ttyd:rw:${rwBase}`, 30_000, 2_000, () => deps.httpOk(rwBase));
 
     const root = settings.ok ? settings.data.reposRoot : null;
     const projectsObs = root === null
       ? null
       : await observe(`projects:${root}`, 30_000, 1_000, () => deps.checkProjects(root));
 
-    const dbSnapshot = dbObs.ok ? dbObs.value : dbObs.lastGood;
-    const db: DbFacts = dbSnapshot === null
-      ? { state: "unknown" }
-      : dbSnapshot.ok
-        ? { state: "ok", schemaVersion: dbSnapshot.schemaVersion }
-        : { state: "failed", error: "database-unavailable" };
-    const metricSnapshot = metricObs.ok ? metricObs.value : metricObs.lastGood;
-    const metrics: MetricsFacts = metricSnapshot === null
-      ? { state: "unknown" }
-      : metricSnapshot.ok
-        ? { state: "ok", latest: metricSnapshot.latestMetricTs }
-        : { state: "failed" };
+    // A failed current attempt is projected as failed with the ORIGINAL last-good time; retained
+    // last-good data never becomes a healthy badge for a database that just failed.
+    const db: DbFacts = dbObs.ok
+      ? { state: "ok", schemaVersion: dbObs.value.schemaVersion }
+      : { state: "failed", error: "database-unavailable", lastGoodAt: dbObs.lastGoodAt === null ? null : new Date(dbObs.lastGoodAt).toISOString() };
+    const metrics: MetricsFacts = !metricObs.ok
+      ? { state: "failed", lastGoodAt: metricObs.lastGoodAt === null ? null : new Date(metricObs.lastGoodAt).toISOString() }
+      : { state: "ok", latest: metricObs.value.latestMetricTs };
     const tmux: ProbeState = panesObs.ok ? "ok" : panesObs.lastGood !== null ? "failed" : "unknown";
     const projects: ProbeState = projectsObs === null
       ? "unknown"
@@ -525,8 +542,9 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
       projects,
       tmux,
       ttyd: {
-        roConfigured, rwConfigured, probeBase,
-        reachable: ttydObs === null ? null : ttydObs.ok ? ttydObs.value : null,
+        roConfigured, rwConfigured,
+        ro: { base: roBase, reachable: roObs === null ? null : roObs.ok ? roObs.value : null },
+        rw: { base: rwBase, reachable: rwObs === null ? null : rwObs.ok ? rwObs.value : null },
       },
       clis: {
         claude: claude.ok ? claude.value : "unknown",
@@ -544,7 +562,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
       metrics: metricObs.observedAt,
       tmux: panesObs.observedAt,
       projects: projectsObs?.observedAt ?? nowMs,
-      ttyd: ttydObs?.observedAt ?? nowMs,
+      ttyd: Math.max(roObs?.observedAt ?? nowMs, rwObs?.observedAt ?? nowMs),
       claude: claude.observedAt,
       codex: codex.observedAt,
       opencode: opencode.observedAt,
@@ -712,13 +730,20 @@ function isPermissionError(error: unknown): boolean {
   return code === "EACCES" || code === "EPERM";
 }
 
-// Fixed executable names only; never launches the CLI/provider. A permission or budget problem
-// cannot prove the CLI missing, so it reports `unknown` instead of a false absence.
+const PROVEN_ABSENT_CODES = new Set(["ENOENT", "ENOTDIR"]);
+
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
+// Fixed executable names only; never launches the CLI/provider. Only a proven missing/non-file/
+// non-executable candidate is absence — permission or other filesystem errors (EIO, ...) stay
+// inconclusive/unknown instead of a false absence. The caller's source observer owns the public
+// deadline, so no inner timeout race clears ownership while a filesystem read is still pending.
 export async function probeCliPresence(
   name: CliName,
   env: NodeJS.ProcessEnv = process.env,
   fs: CliFs = realCliFs,
-  timeoutMs: number = CLI_CHECK_TIMEOUT_MS,
 ): Promise<CliState> {
   if (!(CLI_NAMES as readonly string[]).includes(name)) return "unknown";
   const dirs = (env.PATH ?? "").split(delimiter).filter((dir) => dir !== "");
@@ -728,13 +753,21 @@ export async function probeCliPresence(
   let inconclusive = false;
   for (const candidate of candidates) {
     try {
-      const info = await Promise.race([fs.stat(candidate), timeoutAfter(timeoutMs)]);
+      const info = await fs.stat(candidate);
       if (!info.isFile()) continue;
-      await Promise.race([fs.access(candidate), timeoutAfter(timeoutMs)]);
+    } catch (error) {
+      if (PROVEN_ABSENT_CODES.has(errorCode(error) ?? "")) continue;
+      if (isPermissionError(error)) inconclusive = true;
+      else return "unknown";
+      continue;
+    }
+    try {
+      await fs.access(candidate);
       return "present";
     } catch (error) {
-      if (isPermissionError(error)) inconclusive = true;
-      else if (error instanceof Error && error.message === "timeout") return "unknown";
+      // Proven non-executable for this candidate; any other error is inconclusive.
+      if (!isPermissionError(error)) return "unknown";
+      inconclusive = true;
     }
   }
   return inconclusive ? "unknown" : "missing";
