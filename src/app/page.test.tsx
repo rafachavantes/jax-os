@@ -53,7 +53,7 @@ vi.mock("@/components/mission/ActivityFeed", () => ({ ActivityFeed: () => create
 import { boardCards, toggleFilter, type MissionCard } from "@/lib/mission";
 import { createAnswerDraftStore, draftKeys, draftUpdater, initialDraft, settleAnswer } from "@/components/mission/AnswerDrafts";
 import MissionPage, {
-  HOME_SNAPSHOT_KEY, homeViewHref, parseHomeSnapshot, parseHomeView, readHomeSnapshot, writeHomeSnapshot,
+  HOME_SNAPSHOT_KEY, homeBoardReady, homeViewHref, parseHomeSnapshot, parseHomeView, readHomeSnapshot, writeHomeSnapshot,
 } from "./page";
 
 describe("MissionPage retained poll data", () => {
@@ -204,6 +204,34 @@ describe("Home UI snapshot (M3b Task 4)", () => {
     expect(readHomeSnapshot(throwing)).toBeNull();
     expect(() => writeHomeSnapshot(throwing, { view: "projects", filter: null, expandedKey: null, scrollTop: 0 })).not.toThrow();
     expect(readHomeSnapshot(null)).toBeNull();
+  });
+});
+
+describe("Home snapshot initialization and scroll readiness (M3b corrections)", () => {
+  it("arms the scroll restore only with real projects/hub data and a non-loading board", () => {
+    expect(homeBoardReady({ kind: "ready" })).toBe(true);
+    expect(homeBoardReady({ kind: "degraded", degraded: ["prs"] })).toBe(true);
+    expect(homeBoardReady({ kind: "loading", pending: ["hub"] })).toBe(false);
+    expect(homeBoardReady({ kind: "failed", failed: ["hub"], pending: [] })).toBe(false);
+  });
+
+  it("does not read the saved snapshot during the first render, so server and client markup match", () => {
+    harness.perEndpoint = {};
+    harness.mission = { data: { ok: true, data: { projects: [], skipped: 0 } }, isError: false, dataUpdatedAt: 1, error: undefined };
+    const storage = {
+      getItem: (k: string) => k === HOME_SNAPSHOT_KEY ? JSON.stringify({ view: "activity", filter: "working", expandedKey: "x", scrollTop: 99 }) : null,
+      setItem: () => {},
+    };
+    vi.stubGlobal("window", {
+      sessionStorage: storage, location: { pathname: "/", search: "" }, addEventListener: () => {}, removeEventListener: () => {},
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(MissionPage));
+      expect(html).toContain('data-testid="home-projects" class="flex flex-col gap-[22px]"');
+      expect(html).toContain('data-testid="home-activity" class="hidden"');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

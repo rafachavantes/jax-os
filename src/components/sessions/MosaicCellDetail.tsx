@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { mosaicPaneAction, paneAccessSelector, postWorkflowAction, type MissionCard, type MissionPane } from "@/lib/mission";
@@ -84,9 +85,9 @@ export function MosaicCellDetail({ card, pane, session, lines, busy, onAction, o
           <span className="min-w-0 truncate text-[13px] font-semibold text-ink">{card.name} · {pane.pane}</span>
           <div className="flex flex-none items-center gap-2">
             {openHref ? (
-              <a href={openHref} className="flex min-h-11 items-center rounded-md border border-line-strong px-3 text-[12.5px] font-semibold text-body-ink">
+              <Link href={openHref} className="flex min-h-11 items-center rounded-md border border-line-strong px-3 text-[12.5px] font-semibold text-body-ink">
                 {tSessions("openTerminal")}
-              </a>
+              </Link>
             ) : null}
             <button type="button" aria-label={t("close")} onClick={onClose}
               className="flex h-11 w-11 flex-none items-center justify-center rounded-md text-body-ink hover:bg-surface-2">

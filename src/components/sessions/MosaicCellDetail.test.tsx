@@ -7,6 +7,9 @@ vi.mock("next-intl", () => ({
   useTranslations: () => (key: string, values?: Record<string, string>) => (values ? `${key}:${JSON.stringify(values)}` : key),
   useLocale: () => "en-US",
 }));
+vi.mock("next/link", () => ({
+  default: ({ href, children }: { href: string; children: React.ReactNode }) => createElement("a", { href }, children),
+}));
 // Plan correction: the plan's spy inferred `{ ok: true; data: {} }` as its resolved type, so the
 // failure-case `mockResolvedValueOnce({ ok: false, error })` below failed tsc (TS2353, a 19th
 // error over the plan's 18 baseline). The widened return type keeps the same runtime behavior.

@@ -4,6 +4,7 @@ import { Eye, ExternalLink, Keyboard, RotateCw } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import type { SessionAccessCode } from "@/lib/sessionAccess";
+import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
 
 // selection-lifetime ticket for Take/Release: a request captures the session
@@ -157,6 +158,8 @@ type Props = {
   busy: boolean;
   error: string | null;
   status: AccessStatus;
+  // Metadata validation receipt, shown as its OWN fact — never as ttyd transport state.
+  validatedAt: number | null;
   onTakeControl: () => void;
   onReleaseControl: () => void;
   onReconnect: () => void;
@@ -177,6 +180,7 @@ export function TerminalPanel({
   busy,
   error,
   status,
+  validatedAt,
   onTakeControl,
   onReleaseControl,
   onReconnect,
@@ -231,6 +235,11 @@ export function TerminalPanel({
           {session ? `tmux · ${session}` : "tmux"}
           <span className="ml-2 font-sans text-[10.5px] text-muted">{t("sharedSelection")}</span>
         </span>
+        {validatedAt !== null ? (
+          <span className="flex-none text-[10.5px] text-muted">
+            {t("lastValidated")} · <RelativeTime epochMs={validatedAt} />
+          </span>
+        ) : null}
         <span
           className={`flex flex-none items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] ${
             writable ? "border-brand-soft-border bg-brand-soft text-brand" : "border-line text-muted"
@@ -281,6 +290,8 @@ export function TerminalPanel({
           {writable ? t("releaseControl") : t("takeControl")}
         </button>
         {error ? <span className="w-full truncate text-[11px] text-danger">{error}</span> : null}
+        <p className="w-full text-[10.5px] text-muted">{t("attachMovesSelection")}</p>
+        <p className="w-full text-[10.5px] text-muted">{t("closedPaneInputRisk")}</p>
         <p className="w-full text-[10.5px] text-muted">{t("nativeEnterException")}</p>
         <p className="w-full text-[10.5px] text-muted">{t("modeChangeScrollback")}</p>
       </div>

@@ -9,7 +9,7 @@ import { useCockpitSnapshot } from "@/lib/cockpitPrefsQuery";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import { fetchEnvelope } from "@/lib/api";
 import { boardCards, boardShowsKey, buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
-import type { MissionBucket } from "@/lib/mission";
+import type { MissionBucket, MissionReadiness } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
 import { ProjectsColumn } from "@/components/mission/ProjectsColumn";
@@ -109,13 +109,21 @@ export function readHomeLocation(loc: { pathname: string; search: string }): { v
   return { view: parseHomeView(loc.search), location: { path: loc.pathname, search: loc.search } };
 }
 
+// "Board committed with real data": both backbone sources succeeded and the board is not still a
+// loading skeleton. degraded (a PR-only outage) is still a real board.
+export function homeBoardReady(readiness: MissionReadiness): boolean {
+  return readiness.kind === "ready" || readiness.kind === "degraded";
+}
+
 function HomeCockpit() {
   const t = useTranslations();
   const tNav = useTranslations("nav");
   const tViews = useTranslations("mission.views");
-  // Read ONCE before enabling writes, so the initial defaults can never overwrite the snapshot.
-  const [saved] = useState<HomeSnapshot | null>(() => readHomeSnapshot(browserSessionStorage()));
-  const [view, setView] = useState<HomeView>(saved?.view ?? "projects");
+  // The saved snapshot is read ONLY after mount and applied before the later writers arm, so the
+  // first client render is byte-identical to the server render (no hydration mismatch).
+  const [saved, setSaved] = useState<HomeSnapshot | null>(null);
+  const [initialized, setInitialized] = useState(false);
+  const [view, setView] = useState<HomeView>("projects");
   const [location, setLocation] = useState<{ path: string; search: string }>({ path: "/", search: "" });
   useEffect(() => {
     const sync = () => {
@@ -132,16 +140,28 @@ function HomeCockpit() {
   const hub = useMission<HubEnvelopeData>("hub", 10_000);
   const activity = useMission<Commit[]>("activity", 10_000);
   const worktrees = useMission<Record<string, WorktreeResult>>("worktrees", 60_000);
-  const [filter, setFilter] = useState<MissionBucket | null>(saved?.filter ?? null);
-  const [expandedDir, setExpandedDir] = useState<string | null>(saved?.expandedKey ?? null);
+  const [filter, setFilter] = useState<MissionBucket | null>(null);
+  const [expandedDir, setExpandedDir] = useState<string | null>(null);
 
   // Persist UI state only after the snapshot initialization; restore the saved scroll ONCE after
   // Home's project content is ready (later polls never force it back).
   const readyRef = useRef(false);
-  const scrollRef = useRef(saved?.scrollTop ?? 0);
+  const restoredRef = useRef(false);
+  const scrollRef = useRef(0);
   const uiRef = useRef({ view, filter, expandedKey: expandedDir });
   uiRef.current = { view, filter, expandedKey: expandedDir };
-  useEffect(() => { readyRef.current = true; }, []);
+  useEffect(() => {
+    const snapshot = readHomeSnapshot(browserSessionStorage());
+    if (snapshot) {
+      setSaved(snapshot);
+      scrollRef.current = snapshot.scrollTop;
+      setFilter(snapshot.filter);
+      setExpandedDir(snapshot.expandedKey);
+    }
+    setInitialized(true);
+  }, []);
+  // Writers arm only after the restored state is committed; the mount pass can never overwrite it.
+  useEffect(() => { if (initialized) readyRef.current = true; }, [initialized]);
   useEffect(() => {
     const storage = browserSessionStorage();
     if (readyRef.current) writeHomeSnapshot(storage, { ...uiRef.current, scrollTop: scrollRef.current });
@@ -151,7 +171,8 @@ function HomeCockpit() {
     if (!element) return;
     let frame = 0;
     const onScroll = () => {
-      if (!readyRef.current) return;
+      // While the saved offset is still being restored, the programmatic scroll must not overwrite it.
+      if (!readyRef.current || !restoredRef.current) return;
       scrollRef.current = element.scrollTop;
       if (frame !== 0) return;
       frame = requestAnimationFrame(() => {
@@ -165,13 +186,6 @@ function HomeCockpit() {
       if (frame !== 0) cancelAnimationFrame(frame);
     };
   }, []);
-  const restoredRef = useRef(false);
-  useEffect(() => {
-    if (restoredRef.current || !projects.data) return;
-    restoredRef.current = true;
-    const top = scrollRef.current;
-    if (top > 0) document.getElementById("main-content")?.scrollTo({ top });
-  }, [projects.data]);
 
   // One polling preference snapshot. The PR area never issues a query before this is known, and
   // an unavailable source renders an explicit PR-unavailable state instead of a forever-loading
@@ -203,6 +217,36 @@ function HomeCockpit() {
   const nowMs = Date.now();
   // F2: worktrees is a TRAILING argument (after nowMs), never inserted before it.
   const mission = buildMission(projects.data, hub.data, prsEnvelope, nowMs, worktrees.data, githubEnabled);
+  // Restore the saved #main-content offset ONCE, only when the real board is committed: both
+  // projects and hub succeeded and readiness is no longer loading. At most three animation frames
+  // wait for the rendered range; a genuinely shorter board clamps once, a later poll never resets.
+  const boardReady = homeBoardReady(mission.readiness);
+  useEffect(() => {
+    if (restoredRef.current || !boardReady) return;
+    const element = document.getElementById("main-content");
+    if (!element) return;
+    const top = scrollRef.current;
+    if (top <= 0) { restoredRef.current = true; return; }
+    let attempts = 0;
+    let frame = 0;
+    const settle = () => {
+      attempts += 1;
+      const max = Math.max(0, element.scrollHeight - element.clientHeight);
+      if (max >= top) {
+        element.scrollTo({ top });
+        restoredRef.current = true;
+        return;
+      }
+      if (attempts >= 3) {
+        element.scrollTo({ top: max });
+        restoredRef.current = true;
+        return;
+      }
+      frame = requestAnimationFrame(settle);
+    };
+    frame = requestAnimationFrame(settle);
+    return () => { if (!restoredRef.current) cancelAnimationFrame(frame); };
+  }, [boardReady]);
   const ticker = buildTicker(
     mission.model.cards,
     Array.isArray(activity.data?.data) ? activity.data.data : [],

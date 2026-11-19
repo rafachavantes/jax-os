@@ -517,6 +517,7 @@ export default function SessionsPage() {
           busy={control.busy}
           error={control.error}
           status={lifecycle.status as AccessStatus}
+          validatedAt={lifecycle.frame !== null && target.dataUpdatedAt > 0 ? target.dataUpdatedAt : null}
           onTakeControl={takeControl}
           onReleaseControl={releaseControl}
           onReconnect={reconnect}

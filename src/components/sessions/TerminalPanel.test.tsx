@@ -92,6 +92,7 @@ describe("TerminalPanel prepared-frame rendering (M3b)", () => {
   const base = {
     session: "project agent", frameUrl: null, frameKey: 0, frameMode: "ro" as const,
     configLoading: false, configured: true, mode: "ro" as const, busy: false, error: null,
+    validatedAt: null,
     onTakeControl: () => {}, onReleaseControl: () => {}, onReconnect: () => {}, largerHref: "/tmux?kind=tmux&session=x",
   };
 
@@ -130,6 +131,19 @@ describe("TerminalPanel prepared-frame rendering (M3b)", () => {
     expect(html).toContain("recording failed");
     expect(html).toContain('aria-busy="true"');
     expect(html).toContain('role="status"');
+  });
+
+  it("shows the metadata validation time and both shared-control limits near the controls", () => {
+    const html = renderToStaticMarkup(createElement(TerminalPanel, {
+      ...base, frameUrl: "http://ro/a", status: "live", validatedAt: 1_700_000_000_000,
+    }));
+    expect(html).toContain("lastValidated");
+    expect(html).toContain("attachMovesSelection");
+    expect(html).toContain("closedPaneInputRisk");
+    expect(html).toContain("nativeEnterException");
+    expect(html).toContain("modeChangeScrollback");
+    const absent = renderToStaticMarkup(createElement(TerminalPanel, { ...base, frameUrl: "http://ro/a", status: "live" }));
+    expect(absent).not.toContain("lastValidated");
   });
 
   it("not configured renders the config warning instead of a frame", () => {
