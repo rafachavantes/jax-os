@@ -215,6 +215,9 @@ export function parseCodexLine(
   } else if (payload.type === "token_count") {
     if (!isObj(payload.info) || !isObj(payload.info.last_token_usage)) return { skip: "unsupported" };
     usage = payload.info.last_token_usage;
+  } else if (raw.type === "token_usage_record" || payload.type === "token_usage_record") {
+    // A recognized accounting record without usage is a real diagnostic, not chatter.
+    return { skip: "unsupported" };
   }
   // Ordinary chatter (session_meta, response_item, messages) is not a coverage problem.
   if (!usage) return { skip: "non-usage" };
@@ -798,28 +801,44 @@ async function registerEntry(
   const rel = joinRel(dirPath, entry.name);
   const abs = absOf(deps.roots[source], rel);
   const depth = relDepth(rel);
-  const safeDir = async (): Promise<boolean> => {
-    if (!entry.isDirectory()) return false;
+  const safeDir = async (): Promise<"ok" | "failed" | "unsupported"> => {
+    if (!entry.isDirectory()) return "unsupported";
     const contained = await containReal(scope, deps.fs, ctx.realRoot, abs);
-    return contained.ok;
+    if (contained.ok) return "ok";
+    if (contained.reason !== "read-failed") return "unsupported";
+    // An unreadable directory cannot prove its descendants absent: keep the failure on
+    // the current cycle so the completion gate does not retire their missing facts.
+    ctx.warnings.add("read-failed");
+    addPendingDir(deps.db, source, rel, false, ctx.cycle, deps.now());
+    markDirDone(deps.db, source, rel, deps.now(), "subdir-failed");
+    return "failed";
   };
   const safeFile = async (): Promise<boolean> => {
     const contained = await containReal(scope, deps.fs, ctx.realRoot, abs);
     if (contained.ok) return true;
     ctx.warnings.add(containmentWarning(contained.reason));
+    if (contained.reason === "read-failed") {
+      // Replace any stale missing fact: an unreadable file was not proven absent.
+      markFileFailure(
+        deps.db, source, rel, deps.now() + JSONL_BUDGET.failureRetryMs / 1000, deps.now(), "read-failed",
+      );
+    }
     return false;
+  };
+  const addSafeDir = async (relPath: string, child: boolean): Promise<void> => {
+    const state = await safeDir();
+    if (state === "ok") addPendingDir(deps.db, source, relPath, child, ctx.cycle, deps.now());
+    else if (state === "unsupported") ctx.warnings.add("unsupported-layout");
   };
 
   if (source === "claude") {
     if (depth === 1) {
-      if (await safeDir()) addPendingDir(deps.db, source, rel, false, ctx.cycle, deps.now());
-      else ctx.warnings.add("unsupported-layout");
+      await addSafeDir(rel, false);
       return;
     }
     if (depth === 2) {
       if (entry.isDirectory()) {
-        if (await safeDir()) addPendingDir(deps.db, source, `${rel}/subagents`, true, ctx.cycle, deps.now());
-        else ctx.warnings.add("unsupported-layout");
+        await addSafeDir(`${rel}/subagents`, true);
         return;
       }
       if (entry.isFile() || entry.isSymbolicLink()) {
@@ -851,11 +870,11 @@ async function registerEntry(
       return;
     }
     const okName = depth === 1 ? /^\d{4}$/.test(entry.name) : /^\d{2}$/.test(entry.name);
-    if (!okName || !(await safeDir())) {
+    if (!okName) {
       ctx.warnings.add("unsupported-layout");
       return;
     }
-    addPendingDir(deps.db, source, rel, false, ctx.cycle, deps.now());
+    await addSafeDir(rel, false);
     return;
   }
   if (depth === 4) {
@@ -1348,7 +1367,8 @@ async function ingestFile(
               const out = parseCodexLine(line, { fileIdentity: candidate.identity, now: deps.now() });
               if ("item" in out) items.push(out.item);
               else if ("context" in out) contexts.push(out.context);
-              else warnings.add(out.skip);
+              // Ordinary chatter is an internal skip, never a public coverage warning.
+              else if (out.skip !== "non-usage") warnings.add(out.skip);
             }
           }
         }

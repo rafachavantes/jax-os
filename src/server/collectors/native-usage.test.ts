@@ -310,10 +310,12 @@ import { runInNewContext } from "node:vm";
 import BetterSqlite3 from "better-sqlite3";
 import { parseSettings, type SettingsResult } from "../settings";
 import {
+  applyFileBatch,
   getFileCheckpoint,
   getOpenCodeCursor,
   getPersistentWarnings,
   getSourceStatuses,
+  markFileFailure,
   queryNativeUsage,
 } from "../db/native-usage";
 import { openDb } from "../db";
@@ -2681,6 +2683,90 @@ describe("real failure categories and quiet non-usage records", () => {
     missingDeps.db.close();
   }, 60_000);
 
+  const seedMeasuredFile = (deps: NativeCollectorDeps, rel: string, id: string) => {
+    const line = claudeLine(id);
+    writeClaude(deps, rel, [line]);
+    const parsed = parseClaudeLine(line, { child: false, now: NOW });
+    if (!("item" in parsed)) throw new Error(parsed.skip);
+    applyFileBatch(deps.db, {
+      checkpoint: {
+        source: "claude", identity: rel, generation: "1:1", dev: "1", ino: "1",
+        size: line.length, mtime: NOW, offset: line.length, done: true, processedAt: NOW,
+        child: false, discarding: false,
+      },
+      expectedPrior: null,
+      items: [parsed.item],
+      now: NOW,
+    });
+  };
+
+  it("keeps a discovered unreadable file with a read-failed fact instead of retiring it", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    seedMeasuredFile(deps, "proj/denied.jsonl", "m-denied");
+    // Backoff makes ingestion skip this row in the pass where discovery completes.
+    markFileFailure(deps.db, "claude", "proj/denied.jsonl", NOW + 60, NOW, "missing-file");
+    const deniedAbs = join(deps.roots.claude, "proj", "denied.jsonl");
+    deps.fs = {
+      ...nativeFs,
+      realpath: async (target) => {
+        if (target === deniedAbs) {
+          const error = new Error("EACCES") as Error & { code: string };
+          error.code = "EACCES";
+          throw error;
+        }
+        return nativeFs.realpath(target);
+      },
+    };
+    let now = NOW;
+    const pass = () => runNativeUsagePass({ ...deps, now: () => now });
+    await pass();
+    for (let i = 0; i < 10; i += 1) {
+      now += 61;
+      await pass();
+      if (registryRow(deps, "proj/denied.jsonl")?.last_warning === "read-failed") break;
+    }
+    expect(registryRow(deps, "proj/denied.jsonl")?.last_warning).toBe("read-failed");
+    for (let i = 0; i < 6; i += 1) {
+      now += 61;
+      await pass();
+    }
+    expect(registryRow(deps, "proj/denied.jsonl")?.last_warning).toBe("read-failed");
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-denied'").get()).toEqual({ n: 1 });
+    expect(statusOf(deps)?.warnings).not.toContain("symlink-escape");
+    deps.db.close();
+  }, 60_000);
+
+  it("does not retire missing rows beneath an unreadable ancestor", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    seedMeasuredFile(deps, "good/keep.jsonl", "m-keep");
+    seedMeasuredFile(deps, "bad/x.jsonl", "m-x");
+    markFileFailure(deps.db, "claude", "bad/x.jsonl", NOW + 60, NOW, "missing-file");
+    const badDir = join(deps.roots.claude, "bad");
+    const badFile = join(badDir, "x.jsonl");
+    deps.fs = {
+      ...nativeFs,
+      realpath: async (target) => {
+        if (target === badDir || target === badFile) {
+          const error = new Error("EACCES") as Error & { code: string };
+          error.code = "EACCES";
+          throw error;
+        }
+        return nativeFs.realpath(target);
+      },
+    };
+    let now = NOW;
+    await runNativeUsagePass({ ...deps, now: () => now });
+    for (let i = 0; i < 12; i += 1) {
+      now += 61;
+      await runNativeUsagePass({ ...deps, now: () => now });
+    }
+    expect(registryRow(deps, "bad/x.jsonl")).toBeDefined();
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 2 });
+    expect(statusOf(deps)?.warnings).toContain("read-failed");
+    expect(statusOf(deps)?.warnings).not.toContain("symlink-escape");
+    deps.db.close();
+  }, 60_000);
+
   it("keeps ordinary Codex records quiet while real accounting failures still warn", async () => {
     const deps = makeDeps({ enabled: { claude: false, codex: true, opencode: false } });
     const dir = join(deps.roots.codex, "2026", "11", "17");
@@ -2691,12 +2777,20 @@ describe("real failure categories and quiet non-usage records", () => {
       JSON.stringify({ type: "event_msg", timestamp: "2026-11-17T09:00:02Z", payload: { type: "agent_message", message: "hi" } }),
       codexLine("r-clean"),
       JSON.stringify({ type: "event_msg", timestamp: "2026-11-17T09:00:03Z", payload: { type: "token_count" } }),
+      JSON.stringify({
+        type: "token_usage_record", timestamp: "2026-11-17T09:00:04Z",
+        payload: {
+          session_id: "root-1", thread_id: "thread-1", turn_id: "turn-1", root_turn_id: "turn-1",
+          response_id: "r-missing-usage",
+        },
+      }),
       "{not-json",
     ].join("\n") + "\n");
     await runNativeUsagePass(deps);
     const status = statusOf(deps, "codex");
-    expect(status?.warnings).toContain("unsupported");
-    expect(status?.warnings).toContain("malformed");
+    // Ordinary records are internal skips; only the real accounting failures surface,
+    // and the internal non-usage code never becomes a public warning.
+    expect(status?.warnings).toEqual(["malformed", "unsupported"]);
     expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE harness = 'codex'").get()).toEqual({ n: 1 });
     expect(JSON.stringify(getSourceStatuses(deps.db))).not.toContain("SENTINEL");
     deps.db.close();
