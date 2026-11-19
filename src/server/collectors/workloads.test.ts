@@ -26,7 +26,10 @@ function chain(entries: Record<number, ChainEntry>, afterStart: Record<number, n
 }
 
 const PANE = new Map([["%1", 20]]);
-const LIVE = { paneIds: new Set(["%1"]), incarnation: "10:20", panePids: new Map([["%1", 20]]) };
+const LIVE = {
+  paneIds: new Set(["%1"]), incarnation: "10:20", panePids: new Map([["%1", 20]]),
+  paneDead: new Map([["%1", false]]),
+};
 
 const PS_LINES = [
   "  1 0 1000 Ss 100 100 init",
@@ -120,7 +123,7 @@ describe("proven ancestry (AC6)", () => {
     const readProc = chain(STABLE);
     const result = await collectWorkloads({
       nowMs: 1, psOutput: PS_LINES, panePids: PANE, readProc,
-      paneContext: () => null, incarnation: "10:20",
+      paneContext: () => null, incarnation: "10:20", paneDead: new Map([["%1", false]]),
       verifyPanes: async () => LIVE, monotonic: () => 0,
     });
     const codex = result.groups.find((g) => g.family === "codex");
@@ -129,6 +132,24 @@ describe("proven ancestry (AC6)", () => {
     expect(result.groups.find((g) => g.family === "chrome")?.owner.kind).toBe("unknown");
     expect(result.coverage.ownershipKnown).toBe(3); // pane itself + codex + its zombie
     expect(result.state).toBe("ok");
+  });
+
+  it("requires an explicit alive fact in both observations before proving an owner", async () => {
+    const snapshot = parsePs(PS_LINES);
+    const pids = orderIdentityPids(snapshot, PANE);
+    const before = await readIdentityPhase(pids, createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
+    const after = await readIdentityPhase(pids, createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
+    const withoutInitial = attributeOwners({
+      snapshot, panePids: PANE, paneIncarnation: "10:20", before, after, live: LIVE, partial: false,
+    });
+    expect(withoutInitial.ownerByPid.has(30)).toBe(false);
+    expect(withoutInitial.reasonByPid.get(30)).toBe("race");
+
+    const withBoth = attributeOwners({
+      snapshot, panePids: PANE, paneIncarnation: "10:20", before, after, live: LIVE,
+      paneDead: new Map([["%1", false]]), partial: false,
+    });
+    expect(withBoth.ownerByPid.get(30)).toBe("%1");
   });
 
   it("changes the initial leaf identity between phases and drops the owner", async () => {
@@ -477,7 +498,10 @@ describe("grouping and lifecycle (AC5)", () => {
       const pids = orderIdentityPids(snapshot, PANE);
       const before = await readIdentityPhase(pids, createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
       const after = await readIdentityPhase(pids, createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
-      return attributeOwners({ snapshot, panePids: PANE, paneIncarnation: "10:20", before, after, live: LIVE, partial: false });
+      return attributeOwners({
+        snapshot, panePids: PANE, paneIncarnation: "10:20", before, after, live: LIVE,
+        paneDead: new Map([["%1", false]]), partial: false,
+      });
     })();
     const result = buildWorkloadGroups({
       nowMs: Date.parse("2026-11-19T00:00:00.000Z"),

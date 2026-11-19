@@ -287,6 +287,8 @@ export type AttributeInput = {
   before: IdentityPhase;
   after: IdentityPhase;
   live: LivePaneSnapshot | null;
+  // Native `pane_dead` fact from the INITIAL snapshot; the fresh snapshot carries its own map.
+  paneDead?: Map<string, boolean>;
   partial: boolean;
 };
 
@@ -360,9 +362,12 @@ export function attributeOwners(input: AttributeInput): Attribution {
     }
     const paneStat = consistent(panePid, before.stats, after.stats, byPid.get(panePid)?.ppid);
     if (paneStat !== "ok") { unknown(paneStat === "missing" ? "missing" : "race"); continue; }
+    // The new diagnostic owner path requires an explicit alive fact in BOTH native observations;
+    // a missing or dead fact is unknown even when the ancestry itself is stable.
     if (live === null
       || !live.paneIds.has(pane)
-      || live.paneDead?.get(pane) === true // explicit dead pane never proves a live owner
+      || input.paneDead?.get(pane) !== false
+      || live.paneDead?.get(pane) !== false
       || live.incarnation !== input.paneIncarnation
       || live.panePids?.get(pane) !== panePid) {
       unknown("race");
@@ -522,6 +527,8 @@ export type CollectWorkloadsInput = {
   nowMs: number;
   psOutput: string;
   panePids: Map<string, number>;
+  // Native `pane_dead` fact from the initial snapshot, carried into the fresh one.
+  paneDead?: Map<string, boolean>;
   readProc: (pid: number) => Promise<string>;
   paneContext: (pane: string, incarnation: string | null) => LastKnownPaneContext | null | Promise<LastKnownPaneContext | null>;
   incarnation?: string | null;
@@ -557,6 +564,7 @@ export async function collectWorkloads(input: CollectWorkloadsInput): Promise<Wo
       paneIds: new Set(input.panePids.keys()),
       incarnation: input.incarnation ?? null,
       panePids: input.panePids,
+      paneDead: input.paneDead,
     };
   }
   const attribution = attributeOwners({
@@ -566,6 +574,7 @@ export async function collectWorkloads(input: CollectWorkloadsInput): Promise<Wo
     before,
     after,
     live,
+    paneDead: input.paneDead,
     partial: snapshot.partial || warning !== null,
   });
   const contexts = new Map<string, LastKnownPaneContext>();

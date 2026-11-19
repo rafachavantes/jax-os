@@ -643,6 +643,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
         nowMs: deps.now(),
         psOutput: psObs.value,
         panePids: panes?.panePids ?? new Map<string, number>(),
+        paneDead: panes?.paneDead,
         readProc: deps.readProc,
         paneContext,
         incarnation: panes?.incarnation ?? null,

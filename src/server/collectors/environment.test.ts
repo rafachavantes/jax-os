@@ -410,6 +410,58 @@ describe("ttyd transport facts (M5 Task 4)", () => {
   });
 });
 
+describe("native pane alive evidence (final contracts Task 2)", () => {
+  const PANE_PS = " 10 1 1000 S 1 1 tmux\n 100 10 1000 R 1 1 codex";
+
+  function procStatText(pid: number, ppid: number, start: number, state = "S"): string {
+    return `${pid} (fixture) ${[state, String(ppid), ...Array<string>(17).fill("0"), String(start)].join(" ")}`;
+  }
+
+  function panesWith(dead: [boolean | undefined, boolean | undefined], reads?: () => number) {
+    let count = 0;
+    return async () => {
+      const value = dead[Math.min(count, dead.length - 1)];
+      count += 1;
+      reads?.();
+      const paneDead = new Map<string, boolean>();
+      if (value !== undefined) paneDead.set("%1", value);
+      return {
+        paneIds: new Set(["%1"]),
+        paneCommands: new Map([["%1", "tmux"]]),
+        panePids: new Map([["%1", 10]]),
+        incarnation: "10:20",
+        paneDead,
+      };
+    };
+  }
+
+  async function workloadOwner(dead: [boolean | undefined, boolean | undefined]) {
+    const runtime = createEnvironmentRuntime(runtimeDeps({
+      ps: async () => PANE_PS,
+      readProc: async (pid) => procStatText(pid, pid === 100 ? 10 : 1, 5),
+      listPanes: panesWith(dead),
+    }));
+    const result = await runtime.workloads();
+    return result.groups.find((group) => group.family === "codex")?.owner;
+  }
+
+  it("keeps an initially dead pane unknown when the fresh snapshot claims alive", async () => {
+    expect(await workloadOwner([true, false])).toEqual({ kind: "unknown", reason: "race" });
+  });
+
+  it("keeps a pane unknown when both snapshots omit the native dead fact", async () => {
+    expect(await workloadOwner([undefined, undefined])).toEqual({ kind: "unknown", reason: "race" });
+  });
+
+  it("keeps an initially alive pane unknown when the fresh snapshot reports dead", async () => {
+    expect(await workloadOwner([false, true])).toEqual({ kind: "unknown", reason: "race" });
+  });
+
+  it("proves the pane owner only when both observations report it alive", async () => {
+    expect(await workloadOwner([false, false])).toEqual({ kind: "pane", pane: "%1" });
+  });
+});
+
 describe("source observer — one original pending operation (M5 Task 1)", () => {
   it("a timeout retains the original load; a repeated poll cannot start a copy", async () => {
     let now = NOW;
