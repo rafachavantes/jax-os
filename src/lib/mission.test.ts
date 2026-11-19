@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, cardAccessPane, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
+import { answerEventId, artifactRel, boardCards, bucketOf, buildMission, buildTicker, cardAccessPane, paneAccessSelector, composeIndexedReply, dispatchBodyFor, elapsedMinutesSince, formatClock, gateWaitingLine, hasQuestionText, heartbeatPath, isMergeAskEligible, liveSessions, mosaicPaneAction, mosaicPaneState, newestPr, pageSlice, paneState, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, stageDotIndex, statusPillSuffix, stripPresentation, stuckLine, summarizeBuckets, tickerSentence, worstFinding, worstPaneState, type DispatchFields, type TickerItem } from "./mission";
 import { parseIndexedReply } from "./workflow";
 import type { Envelope } from "./api";
 import type { Project, ProjectScan } from "../server/collectors/projects";
@@ -2193,5 +2193,21 @@ describe("M3b exact session access projection (plan Task 1)", () => {
     ]) ] })).toBeNull();
     expect(cardAccessPane({ sessions: [tmuxSession([paneModel({ pane: "%1", live: false })])] })).toBeNull();
     expect(cardAccessPane({ sessions: [{ transport: "codex", threadId: "t", state: "idle", lastEventTs: null, subagentCount: 0, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null }] })).toBeNull();
+  });
+});
+
+describe("paneAccessSelector — one shared exact-target selector (M3b)", () => {
+  const paneModel = (overrides: Partial<MissionPane>): MissionPane => ({
+    pane: "%7", live: true, tmuxIncarnation: "1234:1700000000", session: "s", tmuxSession: "s", role: "lead",
+    state: "idle", lastEventTs: null, pendingQuestion: null, capsuleStatus: null, capsuleMinutes: null,
+    capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, subagentCount: 0, capsuleEventId: null,
+    ...overrides,
+  });
+  it("binds the project/pane/incarnation/harness tuple from real pane identity", () => {
+    expect(paneAccessSelector("jax-os", paneModel({ harnessSession: "sess-a" })))
+      .toEqual({ kind: "card", project: "jax-os", harnessSession: "sess-a", pane: "%7", incarnation: "1234:1700000000" });
+    const unidentified = paneAccessSelector("jax-os", paneModel({ harnessSession: null }));
+    expect(unidentified?.kind === "card" ? unidentified.harnessSession : "wrong-kind").toBeNull();
+    expect(paneAccessSelector("jax-os", paneModel({}))).toBeNull();
   });
 });

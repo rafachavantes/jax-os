@@ -107,7 +107,7 @@ describe("Mosaic — tmuxSession === null (spec §8 D13a, round-2 F1)", () => {
     let opened: string | null = null;
     const html = renderToStaticMarkup(createElement(Mosaic, {
       readiness: readyEmpty, cards, panesTail: null, busy: false,
-      onAction: () => {}, onOpenDetail: (s) => { opened = s; }, onOpenMobile: () => {},
+      onAction: () => {}, onOpenDetail: (c) => { opened = c.dir; }, onOpenMobile: () => {},
     }));
     expect(html).toContain("unknownSession");
     expect(html).not.toContain("openPane");
@@ -237,5 +237,28 @@ describe("Mosaic — mobile 44px cell target (round-4 F3)", () => {
       onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
     }));
     expect(html).toContain("min-h-11 lg:min-h-0");
+  });
+});
+
+describe("Mosaic — exact pane selection (M3b)", () => {
+  it("a proven harness identity makes the cell interactive; an unproven one (undefined) does not", () => {
+    const proven = renderToStaticMarkup(createElement(Mosaic, {
+      readiness: readyEmpty, cards: [cardWithPanes({}, [pane({ harnessSession: "sess-a" })])], panesTail: null, busy: false,
+      onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
+    }));
+    expect(proven).toContain('role="button"');
+    const unproven = renderToStaticMarkup(createElement(Mosaic, {
+      readiness: readyEmpty, cards: [cardWithPanes({}, [pane({})])], panesTail: null, busy: false,
+      onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
+    }));
+    expect(unproven).not.toContain('role="button"');
+  });
+
+  it("the null unidentified-pane seat stays interactive (it is an explicit seat, not a wildcard)", () => {
+    const html = renderToStaticMarkup(createElement(Mosaic, {
+      readiness: readyEmpty, cards: [cardWithPanes({}, [pane({ harnessSession: null })])], panesTail: null, busy: false,
+      onAction: () => {}, onOpenDetail: () => {}, onOpenMobile: () => {},
+    }));
+    expect(html).toContain('role="button"');
   });
 });

@@ -12,6 +12,7 @@ import type { CiState, Pr, PrResult } from "../server/collectors/github";
 import type { Commit } from "../server/collectors/activity";
 import type { WorktreeResult } from "../server/collectors/worktrees";
 import { CONTRACT_STATUSES, STAGES, paneKey, type ContractStatus, type Role, type Stage } from "./workflow";
+import type { SessionAccessSelector } from "./sessionAccess";
 
 export type MissionState = "unknown" | "needs-you" | "stuck" | "working" | "waiting" | "idle";
 
@@ -597,6 +598,14 @@ function toMissionPane(p: HubPane, nowMs: number): MissionPane {
     runtime: p.runtime, live: p.live, tmuxSession: p.session,
     ...(p.harnessSession !== undefined ? { harnessSession: p.harnessSession } : {}),
   };
+}
+
+// M3b: the ONE shared selector/link helper — a card link binds real pane/harness identity, never
+// a display session string or the project's stale builder/branch. An unproven harness (undefined)
+// disables the action; null is the explicit unidentified-pane seat.
+export function paneAccessSelector(project: string, pane: MissionPane): SessionAccessSelector | null {
+  if (pane.harnessSession === undefined) return null;
+  return { kind: "card", project, harnessSession: pane.harnessSession, pane: pane.pane, incarnation: pane.tmuxIncarnation };
 }
 
 // M3b: the ONE pane a card header may open. A sole live tmux pane, or a unique recorded lead;
