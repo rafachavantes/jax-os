@@ -2,13 +2,56 @@
 
 import { AlertCircle, Flag, GitPullRequest, HelpCircle } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { answerEventId, attentionRespondTarget, boardCardKeyFor, cancelAction, cardKey, confirmCancel, postWorkflowAction, sessionDisplay, stripPresentation, stuckBoardCards, type InboxRow, type Mission, type MissionCard } from "@/lib/mission";
+import Link from "next/link";
+import { sessionAccessHref } from "@/lib/sessionAccess";
+import { answerEventId, attentionRespondTarget, boardCardKeyFor, cancelAction, cardKey, confirmCancel, paneAccessSelector, postWorkflowAction, sessionDisplay, stripPresentation, stuckBoardCards, type InboxRow, type Mission, type MissionCard, type MissionPane } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "./SourceWarning";
 import { actionEventId, bareCapsuleStatus, CancelDialog, pendingUiAction, PendingActionButtons } from "./ProjectCard";
 import { useState } from "react";
 
 type Props = { mission: Mission; onExpand: (dir: string) => void };
+
+// M3b: the row's own live tmux pane AND the event it names, with its proven harness identity, is
+// the ONLY terminal target — never a display session string, never a superseded/foreign event on a
+// reused pane. A question row has no incarnation of its own: only the pane's CURRENT pending
+// question with the same event proves ownership. Missing, unanswerable or ambiguous ownership
+// yields no link (the caller keeps generic sessions navigation).
+type InboxOwnerRow =
+  | { kind: "question"; pane: string; eventId: number }
+  | { kind: "attention"; pane: string; tmuxIncarnation: string; capsuleEventId: number | null };
+
+function inboxOwnerPane(card: MissionCard, row: InboxOwnerRow): MissionPane | null {
+  const matches: MissionPane[] = [];
+  for (const session of card.sessions) {
+    if (session.transport !== "tmux") continue;
+    for (const p of session.panes) {
+      if (p.pane !== row.pane || p.live !== true || p.harnessSession === undefined) continue;
+      if (row.kind === "question") {
+        const q = p.pendingQuestion;
+        if (q !== null && q.eventId === row.eventId && q.pane === row.pane && q.answerable !== false) matches.push(p);
+      } else if (
+        p.tmuxIncarnation === row.tmuxIncarnation
+        && row.capsuleEventId !== null
+        && p.capsuleEventId === row.capsuleEventId
+        && p.capsuleAnswerable !== false
+      ) {
+        matches.push(p);
+      }
+    }
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function inboxAccessHref(card: MissionCard | undefined, row: InboxRow): string | null {
+  if (!card) return null;
+  if (row.kind !== "question" && row.kind !== "attention") return null;
+  if (row.kind === "attention" && row.transport !== "tmux") return null;
+  const pane = inboxOwnerPane(card, row);
+  if (!pane) return null;
+  const selector = paneAccessSelector(card.dir, pane);
+  return selector ? sessionAccessHref(selector, "home") : null;
+}
 
 function RowIcon({ kind }: { kind: InboxRow["kind"] }) {
   if (kind === "gate") return <Flag className="h-4 w-4 flex-none text-brand" />;
@@ -109,6 +152,7 @@ function StuckRowActions({ card }: { card: MissionCard }) {
 function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard | undefined; onExpand: (key: string) => void }) {
   const t = useTranslations("mission.inbox");
   const tMission = useTranslations("mission");
+  const accessHref = inboxAccessHref(card, row);
   if (row.kind === "gate") {
     const updatedMs = Date.parse(row.updated);
     return (
@@ -130,7 +174,12 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
         <div className="flex flex-wrap items-center gap-2.5 text-[13px]">
           <RowIcon kind="question" /><span className="truncate font-semibold text-ink">{row.name}</span>
           <span className="text-body-ink">{t(status === "blocked" ? "blocked" : "needsInput")}</span>
-          <a href="/tmux" className="ml-auto flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">{t("openTmux")}</a>
+          {accessHref ? (
+            <Link href={accessHref} className="ml-auto flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">{t("openTmux")}</Link>
+          ) : (
+            // No proven exact owner: plain navigation to the sessions page, never a target claim.
+            <a href="/tmux" className="ml-auto flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">{t("openTmux")}</a>
+          )}
         </div>
       );
     }
@@ -141,9 +190,15 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
         <span className="truncate text-body-ink">&ldquo;{row.question}&rdquo;</span>
         {card ? <QuestionRowActions card={card} eventId={row.eventId} onExpand={onExpand} /> : null}
         <span className="ml-auto flex-none font-mono text-[11px] text-muted">{row.pane}</span>
-        <a href="/tmux" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
-          {t("openTmux")}
-        </a>
+        {accessHref ? (
+          <Link href={accessHref} className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
+            {t("openTmux")}
+          </Link>
+        ) : (
+          <a href="/tmux" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
+            {t("openTmux")}
+          </a>
+        )}
       </div>
     );
   }
@@ -168,9 +223,15 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
           <span className="flex-none whitespace-nowrap text-body-ink">{t(row.status === "blocked" ? "blocked" : "needsInput")}</span>
           {respond}
           <span className="ml-auto flex-none font-mono text-[11px] text-muted">{row.pane}</span>
-          <a href="/tmux" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
-            {t("openTmux")}
-          </a>
+          {accessHref ? (
+            <Link href={accessHref} className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
+              {t("openTmux")}
+            </Link>
+          ) : (
+            <a href="/tmux" className="flex-none rounded-full border border-line-strong px-2.5 py-0.5 text-[11px] font-semibold text-body-ink">
+              {t("openTmux")}
+            </a>
+          )}
         </div>
       );
     }

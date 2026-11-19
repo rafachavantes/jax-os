@@ -146,7 +146,7 @@ export type MosaicProps = {
   panesTail: { pane: string; lines: string[] | null }[] | null;
   busy: boolean;
   onAction: (url: string, body: unknown) => void;
-  onOpenDetail: (tmuxSession: string) => void;
+  onOpenDetail: (card: MissionCard, pane: MissionPane) => void;
   onOpenMobile: (pane: string) => void;
 };
 
@@ -207,16 +207,16 @@ export function Mosaic({ readiness, cards, panesTail, busy, onAction, onOpenDeta
                 // Round-3 F3: a local `const` narrows correctly across the closure below; the
                 // property access `pane.tmuxSession` does not, which is what motivated the `!`
                 // this replaces.
-                const session = pane.tmuxSession;
+                const card = cardByDir.get(g.dir)!;
                 return (
                   <MosaicCell
                     key={`${g.dir}:${pane.pane}:${pane.tmuxIncarnation}`}
-                    card={cardByDir.get(g.dir)!} pane={pane}
+                    card={card} pane={pane}
                     spotlightHere={isSpotlight(g.dir, pane.pane)}
                     dim={spotlight !== null && !isSpotlight(g.dir, pane.pane)}
                     lines={panesTailLookup(panesTail, pane.pane)}
                     busy={busy} onAction={onAction}
-                    onOpen={session !== null ? () => onOpenDetail(session) : null}
+                    onOpen={pane.harnessSession !== undefined ? () => onOpenDetail(card, pane) : null}
                   />
                 );
               })}

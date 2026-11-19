@@ -102,7 +102,7 @@ const MQ_FIELDS = { capsuleMergeAsk: 1, capsuleMergeBranch: "feat/x", capsuleMer
 
 const PANE_ROW: MissionCard = {
   ...base,
-  sessions: [{ transport: "tmux", session: "jax-p1-lead", panes: [{ pane: "%1", tmuxIncarnation: "1:1", session: "jax-p1-lead", role: "lead", state: "working", lastEventTs: null, pendingQuestion: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0 }] }],
+  sessions: [{ transport: "tmux", session: "jax-p1-lead", panes: [{ pane: "%1", tmuxIncarnation: "1:1", session: "jax-p1-lead", role: "lead", state: "working", lastEventTs: null, pendingQuestion: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0, harnessSession: "sess-p1" }] }],
 };
 
 const CODEX_ROW: MissionCard = {
@@ -125,7 +125,7 @@ const FAILED_RUN: MissionCard = {
 describe("ProjectCard — transport-aware session rows (MOA-469 §4)", () => {
   it("a Claude pane row retains its tmux action", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: PANE_ROW }));
-    expect(html).toContain('href="/tmux"');
+    expect(html).toContain('href="/tmux?kind=card');
     expect(html).toContain("expanded.openInTmux");
   });
 
@@ -133,7 +133,7 @@ describe("ProjectCard — transport-aware session rows (MOA-469 §4)", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: CODEX_ROW }));
     expect(html).toContain("codexSession");
     expect(html).toContain("0191f0aa");
-    expect(html).not.toContain('href="/tmux"');
+    expect(html).not.toContain('href="/tmux?');
     expect(html).not.toContain("expanded.openInTmux");
   });
 
@@ -141,7 +141,7 @@ describe("ProjectCard — transport-aware session rows (MOA-469 §4)", () => {
     const card: MissionCard = { ...PANE_ROW, codexSource: "failed" };
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));
     expect(html).toContain("states.working");
-    expect(html).toContain('href="/tmux"');
+    expect(html).toContain('href="/tmux?kind=card');
   });
 });
 
@@ -538,8 +538,8 @@ describe("action row (Task 9, spec §9)", () => {
       sessions: [{
         transport: "tmux" as const, session: "jax-p1-lead",
         panes: [
-          { pane: "%1", tmuxIncarnation: "1:1", session: "jax-p1-lead", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0 },
-          { pane: "%2", tmuxIncarnation: "1:1", session: "jax-p1-lead", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0 },
+          { pane: "%1", tmuxIncarnation: "1:1", session: "jax-p1-lead", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0, harnessSession: "sess-1" },
+          { pane: "%2", tmuxIncarnation: "1:1", session: "jax-p1-lead", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: null, capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0, harnessSession: "sess-2" },
         ],
       }],
     };
@@ -548,10 +548,9 @@ describe("action row (Task 9, spec §9)", () => {
     // detail block render — q2's pane never gets a second one.
     expect((html.match(/>Sim<\/button>/g) ?? []).length).toBe(1);
     expect((html.match(/rounded-md border border-danger bg-danger-soft/g) ?? []).length).toBe(1);
-    // 3 total "/tmux" links: one per Sessions pane row (2) plus the surviving detail block's
-    // own answerHint link (1) — pane %2's own passive link is one of those 2, untouched by q2
-    // being dropped from the pending-question section.
-    expect((html.match(/href="\/tmux"/g) ?? []).length).toBe(3);
+    // Two exact-pane links (one per Sessions pane row); the ambiguous card header/detail hint has
+    // no unique lead, so it renders the localized unavailable action instead of a first choice.
+    expect((html.match(/href="\/tmux\?kind=card/g) ?? []).length).toBe(2);
   });
 
   it("the free-text box lives inside ExpandedCard when a live pane carries a non-null capsuleEventId; the compact face shows the bare-capsule status instead (Decision 12)", () => {
@@ -1014,12 +1013,12 @@ describe("pendingUiAction guard + bare-capsule status text (spec §6, Decisions 
   it("a bare freeform capsule (blocked) renders inbox.blocked status text and a tmux link, no Responder button", () => {
     const card = {
       ...base, headline: "needs-you" as const,
-      sessions: [{ transport: "tmux" as const, session: "s", panes: [{ pane: "%1", tmuxIncarnation: "1:1", session: "s", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: null, capsuleEventId: 5, capsuleStatus: "blocked" as const, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0 }] }],
+      sessions: [{ transport: "tmux" as const, session: "s", panes: [{ pane: "%1", tmuxIncarnation: "1:1", session: "s", role: "lead" as const, state: "needs-you" as const, lastEventTs: null, pendingQuestion: null, capsuleEventId: 5, capsuleStatus: "blocked" as const, capsuleMinutes: null, capsuleDeclaredAt: null, capsuleMergeAsk: null, capsuleQuestion: null, live: true, tmuxSession: null, subagentCount: 0, harnessSession: "sess-b" }] }],
     };
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: false, onToggle: () => {}, card }));
     expect(html).not.toContain("actions.respond");
     expect(html).toContain("inbox.blocked");
-    expect(html).toContain('href="/tmux"');
+    expect(html).toContain('href="/tmux?kind=card');
   });
   it("a blocked gate with no capsule/session renders the gate line only — no capsule label, no tmux link (F3)", () => {
     const card = { ...base, headline: "needs-you" as const, gate: "blocked" as const };

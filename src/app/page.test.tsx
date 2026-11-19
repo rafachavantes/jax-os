@@ -51,7 +51,10 @@ vi.mock("@/components/mission/MissionBlock", () => ({ MissionBlock: () => create
 vi.mock("@/components/mission/ActivityFeed", () => ({ ActivityFeed: () => createElement("div", null, "activity") }));
 
 import { boardCards, toggleFilter, type MissionCard } from "@/lib/mission";
-import MissionPage from "./page";
+import { createAnswerDraftStore, draftKeys, draftUpdater, initialDraft, settleAnswer } from "@/components/mission/AnswerDrafts";
+import MissionPage, {
+  HOME_SNAPSHOT_KEY, homeBoardReady, homeViewHref, parseHomeSnapshot, parseHomeView, readHomeSnapshot, writeHomeSnapshot,
+} from "./page";
 
 describe("MissionPage retained poll data", () => {
   afterEach(() => {
@@ -176,5 +179,77 @@ describe("MissionPage counts board cards (multi-session cards, spec §12)", () =
     renderToStaticMarkup(createElement(MissionPage));
     expect(summarizeBucketsSpy).toHaveBeenCalled();
     expect(summarizeBucketsSpy.mock.calls.at(-1)![1]).toEqual(boardCards(cards));
+  });
+});
+
+
+describe("Home UI snapshot (M3b Task 4)", () => {
+  it("round-trips filter, expansion, scroll and the ?view origin through guarded storage", () => {
+    const data = new Map<string, string>();
+    const storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v); } };
+    writeHomeSnapshot(storage, { view: "activity", filter: "working", expandedKey: "jax-os#project", scrollTop: 412.5 });
+    expect(readHomeSnapshot(storage)).toEqual({ view: "activity", filter: "working", expandedKey: "jax-os#project", scrollTop: 412.5 });
+    expect(data.has(HOME_SNAPSHOT_KEY)).toBe(true);
+    expect(parseHomeView(new URL(homeViewHref("/", "", "activity"), "http://x").search)).toBe("activity");
+  });
+
+  it("falls back safely on corrupt/unavailable data and rejects out-of-envelope values", () => {
+    expect(parseHomeSnapshot("{not json")).toBeNull();
+    expect(parseHomeSnapshot(JSON.stringify({ view: "other", filter: null, expandedKey: null, scrollTop: 0 }))).toBeNull();
+    expect(parseHomeSnapshot(JSON.stringify({ view: "projects", filter: "bogus", expandedKey: null, scrollTop: 0 }))).toBeNull();
+    expect(parseHomeSnapshot(JSON.stringify({ view: "projects", filter: null, expandedKey: "x".repeat(1025), scrollTop: 0 }))).toBeNull();
+    expect(parseHomeSnapshot(JSON.stringify({ view: "projects", filter: null, expandedKey: null, scrollTop: -1 }))).toBeNull();
+    expect(parseHomeSnapshot(JSON.stringify({ view: "projects", filter: null, expandedKey: null, scrollTop: Number.POSITIVE_INFINITY }))).toBeNull();
+    const throwing = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } };
+    expect(readHomeSnapshot(throwing)).toBeNull();
+    expect(() => writeHomeSnapshot(throwing, { view: "projects", filter: null, expandedKey: null, scrollTop: 0 })).not.toThrow();
+    expect(readHomeSnapshot(null)).toBeNull();
+  });
+});
+
+describe("Home snapshot initialization and scroll readiness (M3b corrections)", () => {
+  it("arms the scroll restore only with real projects/hub data and a non-loading board", () => {
+    expect(homeBoardReady({ kind: "ready" })).toBe(true);
+    expect(homeBoardReady({ kind: "degraded", degraded: ["prs"] })).toBe(true);
+    expect(homeBoardReady({ kind: "loading", pending: ["hub"] })).toBe(false);
+    expect(homeBoardReady({ kind: "failed", failed: ["hub"], pending: [] })).toBe(false);
+  });
+
+  it("does not read the saved snapshot during the first render, so server and client markup match", () => {
+    harness.perEndpoint = {};
+    harness.mission = { data: { ok: true, data: { projects: [], skipped: 0 } }, isError: false, dataUpdatedAt: 1, error: undefined };
+    const storage = {
+      getItem: (k: string) => k === HOME_SNAPSHOT_KEY ? JSON.stringify({ view: "activity", filter: "working", expandedKey: "x", scrollTop: 99 }) : null,
+      setItem: () => {},
+    };
+    vi.stubGlobal("window", {
+      sessionStorage: storage, location: { pathname: "/", search: "" }, addEventListener: () => {}, removeEventListener: () => {},
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(MissionPage));
+      expect(html).toContain('data-testid="home-projects" class="flex flex-col gap-[22px]"');
+      expect(html).toContain('data-testid="home-activity" class="hidden"');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("answer drafts survive route content unmount (M3b Task 4)", () => {
+  it("keeps a draft across remount while another question never inherits it and an answer clears only its event", () => {
+    const store = createAnswerDraftStore();
+    const key = draftKeys.question(11);
+    let local = "";
+    const update = draftUpdater(store, key, (v: string) => { local = v; });
+    update("typed answer");
+    // route content unmounts: a fresh form instance re-reads the same store
+    expect(initialDraft(store, key, () => "")).toBe("typed answer");
+    expect(initialDraft(store, draftKeys.question(12), () => "")).toBe("");
+    settleAnswer(store, true, { event_id: 11 });
+    expect(initialDraft(store, key, () => "")).toBe("");
+    // a failed answer keeps the draft
+    store.set(key, "still here");
+    settleAnswer(store, false, { event_id: 11 });
+    expect(initialDraft(store, key, () => "")).toBe("still here");
   });
 });

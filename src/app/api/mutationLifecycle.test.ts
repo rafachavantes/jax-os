@@ -70,8 +70,8 @@ import { POST as deletePost } from "./files/delete/route";
 import { POST as renamePost } from "./files/rename/route";
 import { POST as writePost } from "./files/write/route";
 import { POST as uploadPost } from "./files/upload/route";
-import { POST as takePost } from "./tmux/take-control/route";
-import { POST as releasePost } from "./tmux/release-control/route";
+import { POST as takePost, handleTakeControl } from "./tmux/take-control/route";
+import { POST as releasePost, handleReleaseControl } from "./tmux/release-control/route";
 import { POST as movePost } from "./kanban/move/route";
 import { POST as issueCreatePost } from "./kanban/create/route";
 import { POST as updatePost } from "./kanban/update/route";
@@ -79,6 +79,8 @@ import { POST as commentPost } from "./kanban/comment/route";
 import { POST as applyPost } from "./rules/apply/route";
 import { applyRuleFile, rulePaths } from "../../server/collectors/rules";
 import { getRuleDocs } from "../../server/db/rules";
+import { logMutation } from "../../server/mutations";
+import { SessionAccessError, type ResolvedSessionAccess } from "../../lib/sessionAccess";
 import sample from "../../../workflow/fixtures/agent-settings-v1.json";
 import { POST as settingsRoutePost } from "./agent-settings/route";
 import { POST as providersRoutePost } from "./opencode-providers/route";
@@ -854,5 +856,88 @@ describe("agent settings mutation lifecycle", () => {
       ok: false, code: "audit-finalization-failed", effect: "applied", audit: "pending",
     });
     expect(body.data).toMatchObject({ effect: "published" });
+  });
+});
+
+
+describe("exact session control shape (M3b plan Task 2)", () => {
+  const selector = { kind: "card" as const, project: "jax-os", harnessSession: "sess-a", pane: "%7", incarnation: "1234:1700000000" };
+  const expected = { target: "$2:@3.%7", incarnation: "1234:1700000000" };
+  const resolved: ResolvedSessionAccess = {
+    selector, expected, sessionName: "project agent", runtime: "claude",
+    observedAt: "2026-11-19T10:00:00.000Z", roUrl: "http://127.0.0.1:10000/ro/?arg=x",
+  };
+
+  function deps(overrides: { resolve?: () => Promise<ResolvedSessionAccess>; log?: (entry: Record<string, unknown>) => void } = {}) {
+    return {
+      resolve: overrides.resolve ?? (async () => resolved),
+      config: () => ({ enabled: true, rwUrl: "http://127.0.0.1:10001/rw" }),
+      log: overrides.log ?? ((entry: Record<string, unknown>) => logMutation(entry)),
+    };
+  }
+
+  beforeEach(() => { testDb = openDb(":memory:"); });
+  afterEach(() => { testDb.close(); });
+
+  it("exact Take is the only response carrying rwUrl and records bounded identity context", async () => {
+    const res = await handleTakeControl(request({ selector, expected }), deps());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(new URL(body.data.rwUrl).searchParams.get("arg")).toBe("$2:@3.%7");
+    const all = rows();
+    expect(all).toHaveLength(1);
+    expect(JSON.parse(all[0].payload)).toMatchObject({
+      kind: "take-control", selector: "card", project: "jax-os", harnessSession: "sess-a",
+      pane: "%7", incarnation: "1234:1700000000", target: "$2:@3.%7", targetIncarnation: "1234:1700000000",
+    });
+  });
+
+  it("a failed fresh resolution never falls back to configured RW data and never audits", async () => {
+    const res = await handleTakeControl(request({ selector, expected }), deps({
+      resolve: async () => { throw new SessionAccessError("lost-target"); },
+    }));
+    const body = await res.json();
+    expect(body).toEqual({ ok: false, code: "lost-target", error: "session target lost" });
+    expect(JSON.stringify(body)).not.toContain("rwUrl");
+    expect(rows()).toEqual([]);
+  });
+
+  it("audit insertion failure preserves audit-unavailable/not-applied and reports no RW success", async () => {
+    const res = await handleTakeControl(request({ selector, expected }), deps({
+      log: () => { throw new Error("db down"); },
+    }));
+    const body = await res.json();
+    expect(body).toEqual({
+      ok: false, code: "audit-unavailable", effect: "not-applied", audit: "unavailable",
+      error: "control record unavailable",
+    });
+    expect(JSON.stringify(body)).not.toContain("rwUrl");
+  });
+
+  it("rejects a mixed legacy/exact body instead of guessing", async () => {
+    let resolvedCalls = 0;
+    const exactDeps = () => deps({
+      resolve: async () => { resolvedCalls += 1; return resolved; },
+    });
+    for (const body of [
+      { session: "jax-test", selector, expected },
+      { session: "jax-test", expected },
+      { selector, expected, extra: true, session: "x" },
+    ]) {
+      const res = await handleTakeControl(request(body), exactDeps());
+      expect(await res.json()).toEqual({ ok: false, error: "invalid payload" });
+    }
+    expect(resolvedCalls).toBe(0);
+    expect(rows()).toEqual([]);
+  });
+
+  it("exact Release records the original binding as unverified even when the target is gone", async () => {
+    const res = await handleReleaseControl(request({ selector, expected }), deps());
+    expect(await res.json()).toEqual({ ok: true });
+    expect(JSON.parse(rows()[0].payload)).toMatchObject({
+      kind: "release-control", targetPresent: "unverified", selector: "card",
+      target: "$2:@3.%7", targetIncarnation: "1234:1700000000",
+    });
   });
 });

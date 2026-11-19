@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { flushSync } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useMission } from "@/lib/useMission";
@@ -9,14 +9,13 @@ import { useCockpitSnapshot } from "@/lib/cockpitPrefsQuery";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import { fetchEnvelope } from "@/lib/api";
 import { boardCards, boardShowsKey, buildMission, buildTicker, summarizeBuckets, toggleFilter } from "@/lib/mission";
-import type { MissionBucket } from "@/lib/mission";
+import type { MissionBucket, MissionReadiness } from "@/lib/mission";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
 import { ProjectsColumn } from "@/components/mission/ProjectsColumn";
 import { InboxStrip } from "@/components/mission/InboxStrip";
 import { ServerPanel } from "@/components/mission/ServerPanel";
 import { MissionBlock } from "@/components/mission/MissionBlock";
-import { AnswerDraftsProvider } from "@/components/mission/AnswerDrafts";
 import { EventTicker } from "@/components/mission/EventTicker";
 import type { ProjectScan } from "@/server/collectors/projects";
 import type { Commit } from "@/server/collectors/activity";
@@ -25,6 +24,54 @@ import type { PrResult } from "@/server/collectors/github";
 import type { WorktreeResult } from "@/server/collectors/worktrees";
 
 export type HomeView = "projects" | "activity";
+
+// Per-tab Home UI snapshot (M3b): filter, expanded card key, the #main-content scroll offset and
+// the ?view origin, in sessionStorage only. No DB/state library; guarded and bounded.
+export const HOME_SNAPSHOT_KEY = "jax-os.home.snapshot";
+export type HomeSnapshot = {
+  view: HomeView;
+  filter: MissionBucket | null;
+  expandedKey: string | null;
+  scrollTop: number;
+};
+
+const HOME_BUCKETS: readonly MissionBucket[] = ["needs-you", "stuck", "working", "idle"];
+
+export function parseHomeSnapshot(raw: string | null): HomeSnapshot | null {
+  if (raw === null) return null;
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return null; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.view !== "projects" && record.view !== "activity") return null;
+  const filter = record.filter === null ? null : HOME_BUCKETS.includes(record.filter as MissionBucket) ? record.filter as MissionBucket : undefined;
+  if (filter === undefined) return null;
+  const expandedKey = record.expandedKey === null
+    ? null
+    : typeof record.expandedKey === "string" && record.expandedKey.length > 0 && record.expandedKey.length <= 1024
+      ? record.expandedKey
+      : undefined;
+  if (expandedKey === undefined) return null;
+  const scrollTop = typeof record.scrollTop === "number" && Number.isFinite(record.scrollTop) && record.scrollTop >= 0
+    ? record.scrollTop
+    : null;
+  if (scrollTop === null) return null;
+  return { view: record.view, filter, expandedKey, scrollTop };
+}
+
+export function readHomeSnapshot(storage: Pick<Storage, "getItem"> | null): HomeSnapshot | null {
+  if (!storage) return null;
+  try { return parseHomeSnapshot(storage.getItem(HOME_SNAPSHOT_KEY)); } catch { return null; }
+}
+
+export function writeHomeSnapshot(storage: Pick<Storage, "setItem"> | null, snapshot: HomeSnapshot): void {
+  if (!storage) return;
+  try { storage.setItem(HOME_SNAPSHOT_KEY, JSON.stringify(snapshot)); } catch { /* storage unavailable */ }
+}
+
+function browserSessionStorage(): Storage | null {
+  try { return typeof window === "undefined" ? null : window.sessionStorage; } catch { return null; }
+}
 
 // ?view= is the meaningful selection (plan Task 5). Read it from the real location after mount
 // instead of useSearchParams, whose Suspense boundary would render an empty home during
@@ -62,28 +109,84 @@ export function readHomeLocation(loc: { pathname: string; search: string }): { v
   return { view: parseHomeView(loc.search), location: { path: loc.pathname, search: loc.search } };
 }
 
+// "Board committed with real data": both backbone sources succeeded and the board is not still a
+// loading skeleton. degraded (a PR-only outage) is still a real board.
+export function homeBoardReady(readiness: MissionReadiness): boolean {
+  return readiness.kind === "ready" || readiness.kind === "degraded";
+}
+
 function HomeCockpit() {
   const t = useTranslations();
   const tNav = useTranslations("nav");
   const tViews = useTranslations("mission.views");
+  // The saved snapshot is read ONLY after mount and applied before the later writers arm, so the
+  // first client render is byte-identical to the server render (no hydration mismatch).
+  const [saved, setSaved] = useState<HomeSnapshot | null>(null);
+  const [initialized, setInitialized] = useState(false);
   const [view, setView] = useState<HomeView>("projects");
   const [location, setLocation] = useState<{ path: string; search: string }>({ path: "/", search: "" });
   useEffect(() => {
     const sync = () => {
       const next = readHomeLocation(window.location);
-      setView(next.view);
+      const params = new URLSearchParams(window.location.search);
+      setView(params.has("view") ? next.view : (saved?.view ?? "projects"));
       setLocation(next.location);
     };
     sync();
     window.addEventListener("popstate", sync);
     return () => window.removeEventListener("popstate", sync);
-  }, []);
+  }, [saved]);
   const projects = useMission<ProjectScan>("projects", 10_000);
   const hub = useMission<HubEnvelopeData>("hub", 10_000);
   const activity = useMission<Commit[]>("activity", 10_000);
   const worktrees = useMission<Record<string, WorktreeResult>>("worktrees", 60_000);
   const [filter, setFilter] = useState<MissionBucket | null>(null);
   const [expandedDir, setExpandedDir] = useState<string | null>(null);
+
+  // Persist UI state only after the snapshot initialization; restore the saved scroll ONCE after
+  // Home's project content is ready (later polls never force it back).
+  const readyRef = useRef(false);
+  const restoredRef = useRef(false);
+  const scrollRef = useRef(0);
+  const uiRef = useRef({ view, filter, expandedKey: expandedDir });
+  uiRef.current = { view, filter, expandedKey: expandedDir };
+  useEffect(() => {
+    const snapshot = readHomeSnapshot(browserSessionStorage());
+    if (snapshot) {
+      setSaved(snapshot);
+      setView(new URLSearchParams(window.location.search).has("view") ? parseHomeView(window.location.search) : snapshot.view);
+      scrollRef.current = snapshot.scrollTop;
+      setFilter(snapshot.filter);
+      setExpandedDir(snapshot.expandedKey);
+    }
+    setInitialized(true);
+  }, []);
+  // Writers arm only after the restored state is committed; the mount pass can never overwrite it.
+  useEffect(() => { if (initialized) readyRef.current = true; }, [initialized]);
+  useEffect(() => {
+    const storage = browserSessionStorage();
+    if (readyRef.current) writeHomeSnapshot(storage, { ...uiRef.current, scrollTop: scrollRef.current });
+  }, [view, filter, expandedDir]);
+  useEffect(() => {
+    const element = document.getElementById("main-content");
+    if (!element) return;
+    let frame = 0;
+    const onScroll = () => {
+      // While the saved offset is still being restored, the programmatic scroll must not overwrite it.
+      if (!readyRef.current || !restoredRef.current) return;
+      scrollRef.current = element.scrollTop;
+      if (frame !== 0) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        writeHomeSnapshot(browserSessionStorage(), { ...uiRef.current, scrollTop: scrollRef.current });
+      });
+    };
+    element.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      element.removeEventListener("scroll", onScroll);
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, []);
 
   // One polling preference snapshot. The PR area never issues a query before this is known, and
   // an unavailable source renders an explicit PR-unavailable state instead of a forever-loading
@@ -115,6 +218,36 @@ function HomeCockpit() {
   const nowMs = Date.now();
   // F2: worktrees is a TRAILING argument (after nowMs), never inserted before it.
   const mission = buildMission(projects.data, hub.data, prsEnvelope, nowMs, worktrees.data, githubEnabled);
+  // Restore the saved #main-content offset ONCE, only when the real board is committed: both
+  // projects and hub succeeded and readiness is no longer loading. At most three animation frames
+  // wait for the rendered range; a genuinely shorter board clamps once, a later poll never resets.
+  const boardReady = homeBoardReady(mission.readiness);
+  useEffect(() => {
+    if (restoredRef.current || !boardReady) return;
+    const element = document.getElementById("main-content");
+    if (!element) return;
+    const top = scrollRef.current;
+    if (top <= 0) { restoredRef.current = true; return; }
+    let attempts = 0;
+    let frame = 0;
+    const settle = () => {
+      attempts += 1;
+      const max = Math.max(0, element.scrollHeight - element.clientHeight);
+      if (max >= top) {
+        element.scrollTo({ top });
+        restoredRef.current = true;
+        return;
+      }
+      if (attempts >= 3) {
+        element.scrollTo({ top: max });
+        restoredRef.current = true;
+        return;
+      }
+      frame = requestAnimationFrame(settle);
+    };
+    frame = requestAnimationFrame(settle);
+    return () => { if (!restoredRef.current) cancelAnimationFrame(frame); };
+  }, [boardReady]);
   const ticker = buildTicker(
     mission.model.cards,
     Array.isArray(activity.data?.data) ? activity.data.data : [],
@@ -158,10 +291,10 @@ function HomeCockpit() {
         <a href={viewHref("activity")} onClick={(event) => onViewClick(event, "activity")} aria-current={view === "activity" ? "page" : undefined} className={tabClass(view === "activity")}>{tViews("activity")}</a>
       </nav>
 
-      <AnswerDraftsProvider>
-        {/* Both surfaces stay mounted: switching to Activity must not destroy answer drafts,
-            focus, expansion or confirmation dialogs (spec AC6). */}
-        <div data-testid="home-projects" className={view === "projects" ? "flex flex-col gap-[22px]" : "hidden"}>
+      {/* Both surfaces stay mounted: switching to Activity must not destroy answer drafts,
+          focus, expansion or confirmation dialogs (spec AC6). The draft provider now lives in
+          app/Providers.tsx above route children (M3b). */}
+      <div data-testid="home-projects" className={view === "projects" ? "flex flex-col gap-[22px]" : "hidden"}>
           <InboxStrip mission={mission} onExpand={(key) => {
             // Respond on a card the filter hides: drop the filter synchronously so the scroll finds it.
             if (filter !== null && !boardShowsKey(mission.model.cards, filter, key)) flushSync(() => { setFilter(null); setExpandedDir(key); });
@@ -175,17 +308,16 @@ function HomeCockpit() {
             onToggleFilter={(b) => setFilter((f) => toggleFilter(f, b))}
           />
         </div>
-        <div data-testid="home-activity" className={view === "activity" ? "" : "hidden"}>
-          <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
-            <div className="min-w-0 lg:col-span-2">
-              <EventTicker items={ticker} />
-              <a href="/executions" className="mt-2 inline-block text-[12px] text-muted hover:text-body-ink">
-                {tNav("executions")} →
-              </a>
-            </div>
+      <div data-testid="home-activity" className={view === "activity" ? "" : "hidden"}>
+        <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
+          <div className="min-w-0 lg:col-span-2">
+            <EventTicker items={ticker} />
+            <a href="/executions" className="mt-2 inline-block text-[12px] text-muted hover:text-body-ink">
+              {tNav("executions")} →
+            </a>
           </div>
         </div>
-      </AnswerDraftsProvider>
+      </div>
 
       <a href="/audit" className="self-start text-[12px] text-muted hover:text-body-ink">
         {tNav("audit")} →

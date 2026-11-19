@@ -7,6 +7,9 @@ vi.mock("next-intl", () => ({
   useTranslations: () => (key: string, values?: Record<string, string>) => (values ? `${key}:${JSON.stringify(values)}` : key),
   useLocale: () => "en-US",
 }));
+vi.mock("next/link", () => ({
+  default: ({ href, children }: { href: string; children: React.ReactNode }) => createElement("a", { href }, children),
+}));
 // Plan correction: the plan's spy inferred `{ ok: true; data: {} }` as its resolved type, so the
 // failure-case `mockResolvedValueOnce({ ok: false, error })` below failed tsc (TS2353, a 19th
 // error over the plan's 18 baseline). The widened return type keeps the same runtime behavior.
@@ -79,6 +82,28 @@ describe("MosaicCellDetail — four-way branch (spec §9 rows 22-24, round-1 F2/
     expect(html).toContain("8");
     const empty = renderToStaticMarkup(createElement(MosaicCellDetail, { card, pane: pane({}), session: "s1", lines: null, busy: false, onAction: () => {}, onClose: () => {} }));
     expect(empty).toContain("noOutput");
+  });
+});
+
+describe("MosaicCellDetail — distinct Open terminal action (M3b)", () => {
+  it("links the clicked pane identity to the focused Jax route and keeps the mobile preview/answer flow", () => {
+    const html = renderToStaticMarkup(createElement(MosaicCellDetail, {
+      card, pane: pane({ harnessSession: "sess-a" }), session: "s1", lines: ["a"], busy: false, onAction: () => {}, onClose: () => {},
+    }));
+    expect(html).toContain("openTerminal");
+    expect(html).toContain('href="/tmux?kind=card');
+    expect(html).toContain("project=p1");
+    expect(html).toContain("pane=%251");
+    expect(html).toContain("from=mosaic");
+    expect(html).toContain(">a<"); // preview still renders (Open is an extra action, not a replacement)
+  });
+
+  it("renders no Open terminal action when the pane harness identity is unproven", () => {
+    const html = renderToStaticMarkup(createElement(MosaicCellDetail, {
+      card, pane: pane({}), session: "s1", lines: null, busy: false, onAction: () => {}, onClose: () => {},
+    }));
+    expect(html).not.toContain("openTerminal");
+    expect(html).not.toContain('href="/tmux?');
   });
 });
 

@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { X } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { mosaicPaneAction, postWorkflowAction, type MissionCard, type MissionPane } from "@/lib/mission";
+import { mosaicPaneAction, paneAccessSelector, postWorkflowAction, type MissionCard, type MissionPane } from "@/lib/mission";
+import { sessionAccessHref } from "@/lib/sessionAccess";
 import { LIMITS } from "@/lib/workflow";
 import { MosaicAnswerOptions, MosaicQuestionText, MosaicUnanswerable } from "./Mosaic";
 
@@ -54,6 +56,8 @@ export function MosaicCellDetail({ card, pane, session, lines, busy, onAction, o
   const [controlBusy, setControlBusy] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
   const [reply, setReply] = useState("");
+  const accessSelector = paneAccessSelector(card.dir, pane);
+  const openHref = accessSelector ? sessionAccessHref(accessSelector, "mosaic") : null;
   const action = mosaicPaneAction(pane);
   const replyEventId = pane.pendingQuestion?.eventId ?? pane.capsuleEventId;
   const validReply = reply.trim().length > 0 && reply.length <= LIMITS.freeformReply;
@@ -79,10 +83,17 @@ export function MosaicCellDetail({ card, pane, session, lines, busy, onAction, o
       >
         <div className="flex flex-none items-center justify-between gap-2 border-b border-line px-3 py-2">
           <span className="min-w-0 truncate text-[13px] font-semibold text-ink">{card.name} · {pane.pane}</span>
-          <button type="button" aria-label={t("close")} onClick={onClose}
-            className="flex h-11 w-11 flex-none items-center justify-center rounded-md text-body-ink hover:bg-surface-2">
-            <X className="h-5 w-5" aria-hidden />
-          </button>
+          <div className="flex flex-none items-center gap-2">
+            {openHref ? (
+              <Link href={openHref} className="flex min-h-11 items-center rounded-md border border-line-strong px-3 text-[12.5px] font-semibold text-body-ink">
+                {tSessions("openTerminal")}
+              </Link>
+            ) : null}
+            <button type="button" aria-label={t("close")} onClick={onClose}
+              className="flex h-11 w-11 flex-none items-center justify-center rounded-md text-body-ink hover:bg-surface-2">
+              <X className="h-5 w-5" aria-hidden />
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto jax-scroll px-3 py-3">
           <pre className="whitespace-pre-wrap break-all font-mono text-[12px] text-body-ink">

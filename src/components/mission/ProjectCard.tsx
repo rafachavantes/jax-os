@@ -4,11 +4,13 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, ChevronRight, Clock3, File, FolderGit2, GitBranch, GitPullRequest, Hourglass, MoreHorizontal } from "lucide-react";
 import { useTranslations } from "next-intl";
+import Link from "next/link";
 import {
-  answerEventId, artifactRelForRun, cancelAction, cardKey, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
+  answerEventId, artifactRelForRun, cancelAction, cardAccessPane, cardKey, paneAccessSelector, composeIndexedReply, confirmCancel, liveSessions, dispatchBodyFor, elapsedMinutesSince, hasQuestionText, isMergeAskEligible, PIPELINE_STAGES, postWorkflowAction, selectPendingAction, sessionDisplay, stageDotIndex, statusPillSuffix,
   stuckLine, gateWaitingLine, heartbeatPath, worstFinding, worstPaneState,
-  type MissionActiveRunSummary, type MissionCard, type MissionCardPr, type MissionLastRun, type MissionPendingQuestion, type MissionState,
+  type MissionActiveRunSummary, type MissionCard, type MissionCardPr, type MissionLastRun, type MissionPane, type MissionPendingQuestion, type MissionState,
 } from "@/lib/mission";
+import { sessionAccessHref } from "@/lib/sessionAccess";
 import { postPrefsPatch } from "@/lib/prefsAction";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 import {
@@ -18,6 +20,17 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { draftKeys, settleAnswer, useAnswerDraft, useAnswerDraftStore } from "@/components/mission/AnswerDrafts";
 import { serializeFileSelection } from "@/lib/filesUrl";
 import { TimelineEntryText } from "@/components/mission/TimelineEntryText";
+
+// M3b: ONE shared link builder for every card/pane terminal action.
+function paneAccessHref(card: MissionCard, pane: MissionPane): string | null {
+  const selector = paneAccessSelector(card.dir, pane);
+  return selector ? sessionAccessHref(selector, "home") : null;
+}
+
+function cardAccessHref(card: MissionCard): string | null {
+  const pane = cardAccessPane(card);
+  return pane ? paneAccessHref(card, pane) : null;
+}
 
 const BTN = "rounded-md px-3 py-1.5 text-[12.5px] font-medium disabled:cursor-not-allowed disabled:opacity-50";
 const BTN_PRIMARY = `${BTN} border border-brand bg-brand-soft text-brand`;
@@ -211,6 +224,7 @@ function ActionRow({
   // capsule at all, and used to get this same misleading needs-you label + tmux link regardless.
   const status = card.headline === "needs-you" && !isActionable ? bareCapsuleStatus(card) : null;
   const bareCapsule = card.headline === "needs-you" && !isActionable && (status !== null || card.pendingQuestions.length > 0);
+  const accessHref = bareCapsule ? cardAccessHref(card) : null;
   if (!isActionable && !showCancel && !bareCapsule) return null;
   return (
     <div className="flex flex-col gap-1">
@@ -220,7 +234,11 @@ function ActionRow({
         {bareCapsule ? (
           <span className="flex items-center gap-1.5 text-[11.5px] text-muted">
             {t(status === "blocked" ? "inbox.blocked" : status === "needs_input" ? "inbox.needsInput" : "states.needs-you")}
-            <a href="/tmux" className="font-semibold text-body-ink">{t("expanded.openInTmux")}</a>
+            {accessHref ? (
+              <Link href={accessHref} className="font-semibold text-body-ink">{t("expanded.openInTmux")}</Link>
+            ) : (
+              <span className="font-semibold text-muted">{t("expanded.openUnavailable")}</span>
+            )}
           </span>
         ) : null}
         {showCancel ? (
@@ -1079,6 +1097,7 @@ function ExpandedCard({
   const t = useTranslations("mission");
   const scoped = card.scope !== undefined;
   const unlinked = card.scope?.kind === "unlinked";
+  const accessHref = cardAccessHref(card);
 
   return (
     <div className="flex flex-col gap-4 border-t border-line-subtle pt-[15px]">
@@ -1124,6 +1143,7 @@ function ExpandedCard({
               {s.panes.map((p) => {
                 const paneStyles = STATE_STYLES[p.state];
                 const paneMs = p.lastEventTs ? Date.parse(p.lastEventTs) : NaN;
+                const href = paneAccessHref(card, p);
                 return (
                   <div key={`${p.pane}:${p.tmuxIncarnation}`} className="flex items-center gap-2.5 pl-5 text-[12.5px]">
                     <span className="font-mono text-muted">{p.pane}</span>
@@ -1133,9 +1153,13 @@ function ExpandedCard({
                     {Number.isFinite(paneMs) ? (
                       <span className="ml-auto flex-none text-[11px] text-muted"><RelativeTime epochMs={paneMs} /></span>
                     ) : null}
-                    <a href="/tmux" className="flex-none rounded border border-line-strong px-1.5 py-0.5 text-[10.5px] font-semibold text-body-ink">
-                      {t("expanded.openInTmux")}
-                    </a>
+                    {href ? (
+                      <Link href={href} className="flex-none rounded border border-line-strong px-1.5 py-0.5 text-[10.5px] font-semibold text-body-ink">
+                        {t("expanded.openInTmux")}
+                      </Link>
+                    ) : (
+                      <span className="flex-none text-[10.5px] text-muted">{t("expanded.openUnavailable")}</span>
+                    )}
                   </div>
                 );
               })}
@@ -1176,7 +1200,11 @@ function ExpandedCard({
                 ) : null}
                 <span className="text-[11px] text-muted">
                   {t("expanded.answerHint")}{" "}
-                  <a href="/tmux" className="font-semibold text-brand">{t("expanded.openInTmux")}</a>
+                  {accessHref ? (
+                    <Link href={accessHref} className="font-semibold text-brand">{t("expanded.openInTmux")}</Link>
+                  ) : (
+                    <span className="font-semibold text-muted">{t("expanded.openUnavailable")}</span>
+                  )}
                 </span>
               </div>
             ) : null}
