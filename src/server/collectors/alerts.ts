@@ -350,7 +350,14 @@ export function normalizePackageCandidates(observation: PackageObservation): Nor
   return {
     candidates,
     duplicateConflict,
-    selectionKnown: holds !== null && simulation !== null && !anyAmbiguous && !anyUnresolved,
+    // Retained last-good solver facts are historical evidence, never a current ready-work claim:
+    // a failed holds/simulation child keeps selection unknown even though rows survive.
+    selectionKnown: observation.children.holds.ok
+      && observation.children.simulation.ok
+      && holds !== null
+      && simulation !== null
+      && !anyAmbiguous
+      && !anyUnresolved,
   };
 }
 

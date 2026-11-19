@@ -739,6 +739,24 @@ describe("package candidates (AC7)", () => {
     expect(section.state).toBe("partial");
   });
 
+  it("does not claim current ready work from retained solver facts after a failed child", () => {
+    const staleChildren = {
+      ...observation().children,
+      holds: { ok: false, observedAt: new Date(NOW).toISOString(), lastGoodAt: new Date(NOW - 60_000).toISOString() },
+      simulation: { ok: false, observedAt: new Date(NOW).toISOString(), lastGoodAt: new Date(NOW - 60_000).toISOString() },
+    };
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64")],
+      holds: [{ name: "bar", arch: "amd64" }],
+      simulation: [{ name: "bar", arch: "amd64", version: "2" }],
+      state: "partial", stale: true, warnings: ["simulation-unavailable"],
+      children: staleChildren,
+    }), { now: () => NOW });
+    expect(section.candidates[0]).toMatchObject({ reason: "unknown", selectedNow: false });
+    expect(section.counts?.selectedNow).toBeNull();
+    expect(section.state).toBe("partial");
+  });
+
   it("classifies a held-and-selected conflict only as unknown", () => {
     const section = buildPackageSection(observation({
       rows: [pkg("bar", "amd64")],
