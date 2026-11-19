@@ -27,6 +27,14 @@ export type SessionAccessCode =
   | "lost-target"
   | "source-failure";
 
+export const SESSION_ACCESS_ERROR_TEXT: Record<SessionAccessCode, string> = {
+  "invalid-selector": "invalid selector",
+  unconfigured: "terminal access not configured",
+  unavailable: "session target unavailable",
+  "lost-target": "session target lost",
+  "source-failure": "session source unavailable",
+};
+
 export class SessionAccessError extends Error {
   constructor(readonly code: Exclude<SessionAccessCode, "invalid-selector">) {
     super(code);
@@ -124,6 +132,42 @@ export function parseExpectedBinding(value: unknown): ExpectedBindingParse {
   return { kind: "valid", expected: { target, incarnation } };
 }
 
+export function parseExpectedTarget(value: unknown): ExpectedSessionTarget | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length !== 2 || !keys.includes("target") || !keys.includes("incarnation")) return null;
+  const { target, incarnation } = record;
+  if (typeof target !== "string" || target.length > 35 || !TARGET_RE.test(target)) return null;
+  if (typeof incarnation !== "string" || !INCARNATION_RE.test(incarnation)) return null;
+  return { target, incarnation };
+}
+
+const TARGET_QUERY_FIELDS = new Set([
+  "kind", "project", "harnessSession", "pane", "incarnation", "session",
+  "expectedTarget", "expectedIncarnation",
+]);
+
+export type SessionAccessQuery =
+  | { kind: "valid"; selector: SessionAccessSelector; expected?: ExpectedSessionTarget }
+  | { kind: "invalid" };
+
+// The dynamic target endpoint's own query grammar: unknown, duplicate or conflicting fields are
+// invalid, and an optional expected binding is fully valid or the whole request is refused.
+export function parseSessionAccessQuery(value: unknown): SessionAccessQuery {
+  if (!(value instanceof URLSearchParams)) return { kind: "invalid" };
+  for (const key of value.keys()) if (!TARGET_QUERY_FIELDS.has(key)) return { kind: "invalid" };
+  const selector = parseSessionAccessSelector(value);
+  if (!selector) return { kind: "invalid" };
+  if (selector.kind === "card" && value.has("session")) return { kind: "invalid" };
+  if (selector.kind === "tmux" && ["project", "harnessSession", "pane", "incarnation"].some((k) => value.has(k))) {
+    return { kind: "invalid" };
+  }
+  const expected = parseExpectedBinding(value);
+  if (expected.kind === "invalid") return { kind: "invalid" };
+  return expected.kind === "valid" ? { kind: "valid", selector, expected: expected.expected } : { kind: "valid", selector };
+}
+
 export function sessionAccessHref(selector: SessionAccessSelector, from: "home" | "mosaic"): string {
   const params = new URLSearchParams();
   if (selector.kind === "card") {
@@ -138,6 +182,38 @@ export function sessionAccessHref(selector: SessionAccessSelector, from: "home" 
   }
   params.set("from", from);
   return `/tmux?${params.toString()}`;
+}
+
+export const EXACT_SHAPE_BODY = { ok: false, error: "invalid payload" } as const;
+
+// The exact control shape is `{selector, expected}` ONLY — mixing it with the legacy `{session}`
+// form is refused rather than guessed at. `"legacy"` keeps the mobile reply-gating branch.
+export function parseExactControlPayload(
+  payload: Record<string, unknown>,
+): { selector: SessionAccessSelector; expected: ExpectedSessionTarget } | "legacy" | null {
+  if (!("selector" in payload)) return "legacy";
+  if ("session" in payload) return null;
+  const selector = parseSessionAccessSelector(payload.selector);
+  const expected = parseExpectedTarget(payload.expected);
+  if (!selector || !expected) return null;
+  return { selector, expected };
+}
+
+export function exactPayload(
+  selector: SessionAccessSelector,
+  expected: ExpectedSessionTarget,
+  session?: string,
+) {
+  return {
+    ts: new Date().toISOString(),
+    session: session ?? (selector.kind === "tmux" ? selector.session : selector.project),
+    selector: selector.kind,
+    ...(selector.kind === "card"
+      ? { project: selector.project, harnessSession: selector.harnessSession, pane: selector.pane, incarnation: selector.incarnation }
+      : {}),
+    target: expected.target,
+    targetIncarnation: expected.incarnation,
+  };
 }
 
 export function buildTtydFrameUrl(base: string, target: string): string {
