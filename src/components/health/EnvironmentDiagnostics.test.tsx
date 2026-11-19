@@ -65,11 +65,11 @@ const WORKLOADS = {
 
 const PACKAGES = {
   observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: "2026-11-19T00:00:00.000Z",
-  state: "ok", truncated: false, warning: null,
-  counts: { total: 2, selectedNow: 1, held: 1, deferred: 0 },
+  state: "ok", truncated: false, warnings: [],
+  counts: { total: 2, shown: 2, remainder: 0, selectedNow: 1, held: 1, deferred: 0, unknown: 0 },
   candidates: [
-    { key: "openssl:amd64", name: "openssl", arch: "amd64", fromVersion: "1", toVersion: "2", security: true, held: false, selectedNow: true, reason: "selected-now" },
-    { key: "curl:amd64", name: "curl", arch: "amd64", fromVersion: "1", toVersion: "2", security: false, held: true, selectedNow: false, reason: "held" },
+    { key: "openssl:amd64", name: "openssl", arch: "amd64", fromVersion: "1", toVersion: "2", security: true, held: false, selectedNow: true, conflict: false, reason: "selected-now" },
+    { key: "curl:amd64", name: "curl", arch: "amd64", fromVersion: "1", toVersion: "2", security: false, held: true, selectedNow: false, conflict: false, reason: "held" },
   ],
 };
 

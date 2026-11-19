@@ -57,6 +57,15 @@ export function parseZombieRows(psOut: string): ZombieRow[] {
 }
 
 export type PackageNameArch = { name: string; arch: string | null };
+export type PackageSimulationFact = { name: string; arch: string | null; version: string | null };
+
+// Validated Debian identity: lowercase name (2+ chars) and architecture. Foreign architectures
+// stay distinct from the native one; nothing is inferred from a suite or package name.
+export const DEB_NAME_RE = /^[a-z0-9][a-z0-9+.-]+$/;
+export const DEB_ARCH_RE = /^(all|[a-z0-9][a-z0-9-]*)$/;
+
+export function validPackageName(name: string): boolean { return DEB_NAME_RE.test(name); }
+export function validPackageArch(arch: string): boolean { return DEB_ARCH_RE.test(arch); }
 
 // M5 F6: identity is `name:arch`. Bare names take the fixed native architecture (read by the
 // caller with `dpkg --print-architecture`); when that is unknown, the key stays explicitly
@@ -67,59 +76,143 @@ export function packageKey(name: string, arch: string | null, nativeArch: string
 }
 
 function splitNameArch(token: string): PackageNameArch | null {
-  if (!/^[A-Za-z0-9][A-Za-z0-9+.-]*(?::[A-Za-z0-9-]+)?$/.test(token)) return null;
+  if (!/^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?$/.test(token)) return null;
   const at = token.lastIndexOf(":");
-  return at > 0 ? { name: token.slice(0, at), arch: token.slice(at + 1) } : { name: token, arch: null };
+  const name = at > 0 ? token.slice(0, at) : token;
+  if (!validPackageName(name)) return null;
+  if (at <= 0) return { name, arch: null };
+  const arch = token.slice(at + 1);
+  return validPackageArch(arch) ? { name, arch } : null;
 }
 
 const PACKAGE_LINE_RE = /^([^/\s]+)\/(\S+)\s+(\S+)\s+(\S+)\s+\[upgradable from:\s*([^\]]+)\]/;
 
-// Parses `apt list --upgradable` (English locale only; revisit if apt output ever localizes);
-// a SUITE name (after "/") carrying "-security" marks it security-sourced. A line
-// missing the bracketed version pair is skipped, not crashed on.
-export function parsePackageRows(aptOut: string): PackageRow[] {
+export type PackageListing = { rows: PackageRow[]; recognized: boolean };
+
+// Parses `apt list --upgradable` (C locale is pinned by the caller). Unrecognized prose is
+// never proof of zero: parsed known rows are preserved but the listing is flagged partial.
+export function parsePackageListing(aptOut: string): PackageListing {
   const rows: PackageRow[] = [];
+  let recognized = true;
   for (const line of aptOut.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed === "Listing...") continue;
     const m = PACKAGE_LINE_RE.exec(line);
-    if (!m) continue;
+    if (!m) { recognized = false; continue; }
     const [, name, suite, toVersion, arch, fromVersion] = m;
+    if (!validPackageName(name) || !validPackageArch(arch)) { recognized = false; continue; }
     rows.push({
       name, arch, key: packageKey(name, arch, null),
       fromVersion: fromVersion.trim(), toVersion, security: suite.includes("-security"),
     });
   }
-  return rows;
+  return { rows, recognized };
 }
 
-// `apt-mark showhold` prints one bare (or name:arch) package per line.
+export function parsePackageRows(aptOut: string): PackageRow[] {
+  return parsePackageListing(aptOut).rows;
+}
+
+export type PackageHoldListing = { rows: PackageNameArch[]; recognized: boolean };
+
+// `apt-mark showhold` prints one bare (or name:arch) package per line. Empty output is a valid
+// zero holds; any unparseable non-empty line makes the whole listing unrecognized.
+export function parseHoldListing(out: string): PackageHoldListing {
+  const rows: PackageNameArch[] = [];
+  let recognized = true;
+  for (const line of out.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parsed = splitNameArch(trimmed);
+    if (parsed) rows.push(parsed);
+    else recognized = false;
+  }
+  return { rows, recognized };
+}
+
 export function parseHoldRows(out: string): PackageNameArch[] {
-  const rows: PackageNameArch[] = [];
-  for (const line of out.split(/\r?\n/)) {
-    const parsed = splitNameArch(line.trim());
-    if (parsed) rows.push(parsed);
-  }
-  return rows;
+  return parseHoldListing(out).rows;
 }
 
-// `apt-get --simulate upgrade` marks each selected package with an `Inst` row.
-export function parseSimulationRows(out: string): PackageNameArch[] {
-  const rows: PackageNameArch[] = [];
+const INST_RE = /^Inst\s+(\S+)\s+\[([^\]]*)\]\s+\((.*)\)\s*$/;
+const SIM_SUMMARY_RE = /^\d+ upgraded, \d+ newly installed, \d+ to remove and \d+ not upgraded\.$/;
+const SIM_PREAMBLE_RE = [
+  /^NOTE: This is only a simulation!$/,
+  /^\s+apt-get needs root privileges for real execution\.$/,
+  /^\s+Keep also in mind that locking is deactivated,$/,
+  /^\s+so don't depend on the relevance to the real current situation!$/,
+  /^Reading package lists\.\.\.$/,
+  /^Building dependency tree\.\.\.$/,
+  /^Reading state information\.\.\.$/,
+  /^Calculating upgrade\.\.\.$/,
+  /^The following packages will be upgraded:$/,
+  /^(?:Need to get|After this operation|Fetched) /,
+  /^\s{2,}[a-z0-9][a-z0-9+.:-]*(?:\s+[a-z0-9][a-z0-9+.:-]*)*$/,
+];
+
+export type PackageSimulationListing = { rows: PackageSimulationFact[]; recognized: boolean };
+
+// `apt-get --simulate upgrade` marks each selected package with an `Inst` row; the bracketed
+// architecture and candidate version are part of the solver fact. A recognized zero-result
+// summary is valid; arbitrary/empty prose is not proof of zero.
+export function parseSimulationListing(out: string): PackageSimulationListing {
+  const rows: PackageSimulationFact[] = [];
+  let recognized = true;
+  let sawProof = false;
   for (const line of out.split(/\r?\n/)) {
-    const m = /^Inst\s+(\S+)\s+\[/.exec(line);
-    if (!m) continue;
-    const parsed = splitNameArch(m[1]);
-    if (parsed) rows.push(parsed);
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("Conf ")) { sawProof = true; continue; }
+    const inst = INST_RE.exec(trimmed);
+    if (inst) {
+      const target = splitNameArch(inst[1]);
+      if (!target) { recognized = false; continue; }
+      const inner = inst[3].trim().split(/\s+/);
+      const bracket = /\[([^\]]+)\]\s*$/.exec(inst[3]);
+      const bracketArch = bracket && validPackageArch(bracket[1]) ? bracket[1] : null;
+      const version = inner.find((token) => /^[0-9]/.test(token)) ?? null;
+      rows.push({ name: target.name, arch: target.arch ?? bracketArch, version });
+      sawProof = true;
+      continue;
+    }
+    if (SIM_SUMMARY_RE.test(trimmed)) { sawProof = true; continue; }
+    if (SIM_PREAMBLE_RE.some((re) => re.test(trimmed))) continue;
+    recognized = false;
   }
-  return rows;
+  return { rows, recognized: recognized && sawProof };
 }
+
+export function parseSimulationRows(out: string): PackageNameArch[] {
+  return parseSimulationListing(out).rows.map(({ name, arch }) => ({ name, arch }));
+}
+
+export type PackageWarning =
+  | "package-query-failed"
+  | "candidates-unrecognized"
+  | "hold-unavailable"
+  | "simulation-unavailable"
+  | "architecture-unavailable";
+
+export type PackageChildFacts = { ok: boolean; observedAt: string; lastGoodAt: string | null };
 
 export type PackageObservation = {
   rows: PackageRow[];
-  state: "ok" | "failed";
+  holds: PackageNameArch[] | null;
+  simulation: PackageSimulationFact[] | null;
+  nativeArch: string | null;
+  state: "ok" | "partial" | "failed";
   observedAt: string;
   lastGoodAt: string | null;
   stale: boolean;
   error: "package-query-failed" | null;
+  warnings: PackageWarning[];
+  children: {
+    candidates: PackageChildFacts;
+    holds: PackageChildFacts;
+    simulation: PackageChildFacts;
+    architecture: PackageChildFacts;
+  };
 };
 
 export type FixedExecOptions = { timeout?: number; maxBuffer?: number; env?: NodeJS.ProcessEnv };
@@ -140,41 +233,139 @@ const systemAsyncExec: AsyncExec = async (file, args, opts = {}) => {
 };
 
 export const PACKAGE_TTL_MS = 5 * 60 * 1000;
+export const ARCH_RE = /^[a-z0-9-]{1,32}$/;
+
+function iso(ms: number): string { return new Date(ms).toISOString(); }
+
+function emptyChildren(at: number): PackageObservation["children"] {
+  const facts: PackageChildFacts = { ok: false, observedAt: iso(at), lastGoodAt: null };
+  return { candidates: { ...facts }, holds: { ...facts }, simulation: { ...facts }, architecture: { ...facts } };
+}
 
 // One cached, single-flight package observation shared by `getAlerts` and Environment (M5 F7):
-// a cache miss cannot overlap another apt run, and a pending probe never delays resources.
+// candidates, holds, simulation and native architecture are read together, each child keeps its
+// own success/failure/last-good fact, and a cache miss cannot overlap another run.
 export function createPackageObservationReader(exec: AsyncExec = systemAsyncExec, now: () => number = Date.now) {
-  let cache: { at: number; obs: PackageObservation } | null = null;
+  let cached: { at: number; obs: PackageObservation } | null = null;
   let inflight: Promise<PackageObservation> | null = null;
+  const good = {
+    candidates: null as { value: PackageRow[]; at: number } | null,
+    holds: null as { value: PackageNameArch[]; at: number } | null,
+    simulation: null as { value: PackageSimulationFact[]; at: number } | null,
+    architecture: null as { value: string; at: number } | null,
+  };
   return {
-    reset() { cache = null; inflight = null; },
+    reset() { cached = null; inflight = null; },
+    peek(): PackageObservation | null { return cached?.obs ?? null; },
     async read(): Promise<PackageObservation> {
       const t = now();
-      if (cache && t - cache.at < PACKAGE_TTL_MS) return cache.obs;
+      if (cached && t - cached.at < PACKAGE_TTL_MS) return cached.obs;
       if (inflight) return inflight;
       inflight = (async (): Promise<PackageObservation> => {
-        try {
-          const rows = parsePackageRows(await exec("apt", ["list", "--upgradable"], { timeout: 5_000, maxBuffer: 1024 * 1024 }));
-          const obs: PackageObservation = {
-            rows, state: "ok", observedAt: new Date(t).toISOString(),
-            lastGoodAt: new Date(t).toISOString(), stale: false, error: null,
-          };
-          cache = { at: t, obs };
-          return obs;
-        } catch {
-          const prev = cache?.obs;
-          const obs: PackageObservation = {
-            rows: prev?.rows ?? [], state: "failed", observedAt: new Date(t).toISOString(),
-            lastGoodAt: prev?.lastGoodAt ?? null, stale: prev !== null, error: "package-query-failed",
-          };
-          cache = { at: t, obs };
-          return obs;
+        const [candidateResult, holdResult, simulationResult, archResult] = await Promise.allSettled([
+          exec("apt", ["list", "--upgradable"], { timeout: 5_000, maxBuffer: 1024 * 1024 }),
+          exec("apt-mark", ["showhold"], { timeout: 5_000, maxBuffer: 1024 * 1024 }),
+          exec("apt-get", ["--simulate", "upgrade"], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 }),
+          exec("dpkg", ["--print-architecture"], { timeout: 2_000, maxBuffer: 4 * 1024 }),
+        ]);
+        const warnings: PackageWarning[] = [];
+        const children = emptyChildren(t);
+
+        let candidatesOk = false;
+        let rows: PackageRow[] = [];
+        if (candidateResult.status === "fulfilled") {
+          const listing = parsePackageListing(candidateResult.value);
+          if (listing.recognized) {
+            candidatesOk = true;
+            rows = listing.rows;
+            good.candidates = { value: listing.rows, at: t };
+            children.candidates = { ok: true, observedAt: iso(t), lastGoodAt: iso(t) };
+          } else {
+            warnings.push("candidates-unrecognized");
+            rows = listing.rows.length > 0 ? listing.rows : good.candidates?.value ?? [];
+          }
+        } else {
+          warnings.push("package-query-failed");
+          rows = good.candidates?.value ?? [];
         }
+        if (!candidatesOk) {
+          children.candidates = {
+            ok: false, observedAt: iso(t),
+            lastGoodAt: good.candidates === null ? null : iso(good.candidates.at),
+          };
+        }
+
+        let holds: PackageNameArch[] | null = null;
+        if (holdResult.status === "fulfilled") {
+          const listing = parseHoldListing(holdResult.value);
+          if (listing.recognized) {
+            holds = listing.rows;
+            good.holds = { value: listing.rows, at: t };
+            children.holds = { ok: true, observedAt: iso(t), lastGoodAt: iso(t) };
+          }
+        }
+        if (holds === null) {
+          warnings.push("hold-unavailable");
+          holds = good.holds?.value ?? null;
+          children.holds = { ok: false, observedAt: iso(t), lastGoodAt: good.holds === null ? null : iso(good.holds.at) };
+        }
+
+        let simulation: PackageSimulationFact[] | null = null;
+        if (simulationResult.status === "fulfilled") {
+          const listing = parseSimulationListing(simulationResult.value);
+          if (listing.recognized) {
+            simulation = listing.rows;
+            good.simulation = { value: listing.rows, at: t };
+            children.simulation = { ok: true, observedAt: iso(t), lastGoodAt: iso(t) };
+          }
+        }
+        if (simulation === null) {
+          warnings.push("simulation-unavailable");
+          simulation = good.simulation?.value ?? null;
+          children.simulation = { ok: false, observedAt: iso(t), lastGoodAt: good.simulation === null ? null : iso(good.simulation.at) };
+        }
+
+        let nativeArch: string | null = null;
+        if (archResult.status === "fulfilled") {
+          const value = archResult.value.trim();
+          if (ARCH_RE.test(value)) {
+            nativeArch = value;
+            good.architecture = { value, at: t };
+            children.architecture = { ok: true, observedAt: iso(t), lastGoodAt: iso(t) };
+          }
+        }
+        if (nativeArch === null) {
+          warnings.push("architecture-unavailable");
+          nativeArch = good.architecture?.value ?? null;
+          children.architecture = { ok: false, observedAt: iso(t), lastGoodAt: good.architecture === null ? null : iso(good.architecture.at) };
+        }
+
+        const lastGoodAt = good.candidates === null ? null : iso(good.candidates.at);
+        const state: PackageObservation["state"] = candidatesOk
+          ? (warnings.length > 0 ? "partial" : "ok")
+          : "failed";
+        const obs: PackageObservation = {
+          rows,
+          holds,
+          simulation,
+          nativeArch,
+          state,
+          observedAt: iso(t),
+          lastGoodAt,
+          stale: !candidatesOk && lastGoodAt !== null,
+          error: candidateResult.status === "rejected" ? "package-query-failed" : null,
+          warnings,
+          children,
+        };
+        cached = { at: t, obs };
+        return obs;
       })().finally(() => { inflight = null; });
       return inflight;
     },
   };
 }
+
+export type PackageObservationReader = ReturnType<typeof createPackageObservationReader>;
 
 export const packageObservation = createPackageObservationReader();
 export const getPackageObservation = (): Promise<PackageObservation> => packageObservation.read();
@@ -182,13 +373,58 @@ export const getPackageObservation = (): Promise<PackageObservation> => packageO
 export type GetAlertsOptions = {
   exec?: AsyncExec;
   packages?: () => Promise<PackageObservation>;
+  packageSnapshot?: () => PackageObservation | null;
+  packageWaitMs?: number;
+  loadavg?: () => Promise<string>;
 };
+
+export const PACKAGE_ALERT_AWAIT_MS = 1_000;
+
+function unavailableObservation(base: PackageObservation | null, at: number): PackageObservation {
+  const children = emptyChildren(at);
+  if (base) {
+    children.candidates = { ok: false, observedAt: iso(at), lastGoodAt: base.lastGoodAt };
+  }
+  return {
+    rows: base?.rows ?? [], holds: base?.holds ?? null, simulation: base?.simulation ?? null,
+    nativeArch: base?.nativeArch ?? null, state: "failed",
+    observedAt: iso(at), lastGoodAt: base?.lastGoodAt ?? null,
+    stale: base?.lastGoodAt != null,
+    error: "package-query-failed",
+    warnings: [...new Set([...(base?.warnings ?? []), "package-query-failed" as const])],
+    children: { ...(base?.children ?? children), candidates: children.candidates },
+  };
+}
+
+// A slow package probe may take a full second; the rest of the alerts always resolve. The
+// original pending probe is never cancelled or duplicated by this timeout.
+async function packagesWithinBudget(
+  packages: () => Promise<PackageObservation>,
+  snapshot: () => PackageObservation | null,
+  waitMs: number,
+  now: () => number,
+): Promise<PackageObservation> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), waitMs); });
+  try {
+    const result = await Promise.race([
+      packages().then((obs) => ({ kind: "obs" as const, obs }), () => ({ kind: "error" as const })),
+      deadline.then(() => ({ kind: "timeout" as const })),
+    ]);
+    if (result.kind === "obs") return result.obs;
+    return unavailableObservation(snapshot(), now());
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // Each probe fails independently and becomes an explicit source alert; the call itself never
 // rejects for an ordinary source failure (error contract: visible warning, not a blank card).
 export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]> {
   const exec = options.exec ?? systemAsyncExec;
   const packages = options.packages ?? getPackageObservation;
+  const snapshot = options.packageSnapshot ?? (() => packageObservation.peek());
+  const loadavg = options.loadavg ?? (() => readFile("/proc/loadavg", "utf8"));
   const alerts: Alert[] = [];
   try {
     alerts.push(...parseDfAlerts(await exec("df", ["-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"], DEFAULT_EXEC)));
@@ -197,7 +433,7 @@ export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]
   }
   try {
     const cores = Number((await exec("nproc", [], DEFAULT_EXEC)).trim());
-    const load = parseLoadAlert(await readFile("/proc/loadavg", "utf8"), cores);
+    const load = parseLoadAlert(await loadavg(), cores);
     if (load) alerts.push(load);
   } catch {
     alerts.push({ kind: "source", source: "load", state: "failed" });
@@ -208,7 +444,9 @@ export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]
   } catch {
     alerts.push({ kind: "source", source: "zombies", state: "failed" });
   }
-  const observation = await packages();
+  const observation = await packagesWithinBudget(
+    packages, snapshot, options.packageWaitMs ?? PACKAGE_ALERT_AWAIT_MS, Date.now,
+  );
   if (observation.rows.length > 0) {
     alerts.push({ kind: "updates", count: observation.rows.length, rows: observation.rows });
   }

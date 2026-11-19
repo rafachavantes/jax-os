@@ -17,8 +17,8 @@ import {
   parseSettings, readRawSettings, settingsKeyPresence, type KeyPresence, type RawSettingsRead, type SettingsResult,
 } from "../settings";
 import {
-  getPackageObservation, packageKey, parseHoldRows, parseSimulationRows,
-  type PackageObservation,
+  getPackageObservation, packageKey, validPackageArch, validPackageName,
+  type PackageObservation, type PackageRow, type PackageWarning,
 } from "./alerts";
 import { listLivePanes } from "./workflow-tmux";
 import { collectWorkloads, readProcStat, type WorkloadsSection } from "./workloads";
@@ -141,7 +141,18 @@ export type PackageCandidate = {
   security: boolean;
   held: boolean;
   selectedNow: boolean;
+  conflict: boolean;
   reason: "held" | "selected-now" | "deferred-unknown" | "unknown";
+};
+
+export type PackageCounts = {
+  total: number;
+  shown: number;
+  remainder: number;
+  selectedNow: number | null;
+  held: number | null;
+  deferred: number | null;
+  unknown: number | null;
 };
 
 export type PackagesSection = {
@@ -149,9 +160,9 @@ export type PackagesSection = {
   lastGoodAt: string | null;
   state: "ok" | "partial" | "unavailable";
   candidates: PackageCandidate[];
-  counts: { total: number; selectedNow: number; held: number; deferred: number } | null;
+  counts: PackageCounts | null;
   truncated: boolean;
-  warning: "hold-unavailable" | "simulation-unavailable" | "package-query-failed" | null;
+  warnings: PackageWarning[];
 };
 
 export type CliState = "present" | "missing" | "unknown";
@@ -332,70 +343,146 @@ export function buildComponents(facts: ComponentFacts): ComponentResult[] {
 
 export const MAX_PACKAGE_ROWS = 500;
 
-function normalizeKeys(rows: { name: string; arch: string | null }[], nativeArch: string | null): Set<string> {
-  return new Set(rows.map((row) => packageKey(row.name, row.arch, nativeArch)));
+type FactMatch = { state: "match" } | { state: "no" } | { state: "ambiguous" } | { state: "unresolved" };
+
+// A bare (architecture-less) policy fact resolves only to an unambiguous native or Arch:all
+// candidate. Two eligible candidates stay unknown instead of being matched to both.
+function matchFact(
+  fact: { name: string; arch: string | null },
+  name: string,
+  arch: string,
+  nativeArch: string | null,
+  archesForName: Set<string>,
+): FactMatch {
+  if (fact.name !== name) return { state: "no" };
+  if (fact.arch !== null) return fact.arch === arch ? { state: "match" } : { state: "no" };
+  if (nativeArch === null) {
+    const all = [...archesForName].filter((candidate) => candidate === "all");
+    return all.length === 1 ? (arch === "all" ? { state: "match" } : { state: "no" }) : { state: "unresolved" };
+  }
+  const eligible = [...archesForName].filter((candidate) => candidate === nativeArch || candidate === "all");
+  if (eligible.length > 1) return { state: "ambiguous" };
+  if (eligible.length === 0) return { state: "no" };
+  return eligible[0] === arch ? { state: "match" } : { state: "no" };
 }
 
-// Fixed read-only package queries. Simulation is labelled selection by the latest simulation,
-// never guaranteed installability; no apt update/install/upgrade/autoremove ever runs here.
-export async function buildPackageSection(
+// One normalized projection used by both the Environment section and alert counts. No subprocess
+// runs here: candidates/holds/simulation/architecture all come from the shared observation.
+export function buildPackageSection(
   observation: PackageObservation,
-  deps: Pick<EnvironmentDeps, "exec" | "now">,
-): Promise<PackagesSection> {
+  deps: Pick<EnvironmentDeps, "now">,
+): PackagesSection {
   const nowMs = deps.now();
   const observedAt = new Date(nowMs).toISOString();
+  const warnings = [...observation.warnings];
   if (observation.state === "failed" && observation.rows.length === 0) {
     return {
       observedAt, lastGoodAt: observation.lastGoodAt, state: "unavailable",
-      candidates: [], counts: null, truncated: false, warning: "package-query-failed",
+      candidates: [], counts: null, truncated: false, warnings,
     };
   }
-  let nativeArch: string | null = null;
-  try {
-    const out = (await deps.exec("dpkg", ["--print-architecture"], { timeout: 2_000, maxBuffer: 4 * 1024 })).trim();
-    nativeArch = /^[a-z0-9-]{1,32}$/.test(out) ? out : null;
-  } catch {}
-  let holdSet: Set<string> | null = null;
-  try {
-    holdSet = normalizeKeys(parseHoldRows(await deps.exec("apt-mark", ["showhold"], { timeout: 5_000, maxBuffer: 1024 * 1024 })), nativeArch);
-  } catch {}
-  let simSet: Set<string> | null = null;
-  try {
-    simSet = normalizeKeys(parseSimulationRows(await deps.exec("apt-get", ["--simulate", "upgrade"], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 })), nativeArch);
-  } catch {}
 
-  const truncated = observation.rows.length > MAX_PACKAGE_ROWS;
-  const rows = observation.rows.slice(0, MAX_PACKAGE_ROWS);
-  const candidates: PackageCandidate[] = rows.map((row) => {
+  const nativeArch = observation.nativeArch;
+  const byKey = new Map<string, PackageRow>();
+  let duplicateConflict = false;
+  for (const row of observation.rows) {
+    if (!validPackageName(row.name)) continue;
+    if (row.arch && !validPackageArch(row.arch)) continue;
     const key = packageKey(row.name, row.arch, nativeArch);
-    const held = holdSet?.has(key) ?? false;
-    const selectedNow = !held && (simSet?.has(key) ?? false);
-    const reason: PackageCandidate["reason"] =
-      holdSet === null || simSet === null ? "unknown"
-        : held ? "held"
-          : selectedNow ? "selected-now"
-            : "deferred-unknown";
+    const existing = byKey.get(key);
+    if (existing) {
+      if (existing.fromVersion !== row.fromVersion || existing.toVersion !== row.toVersion) duplicateConflict = true;
+      continue;
+    }
+    byKey.set(key, row);
+  }
+
+  const archesByName = new Map<string, Set<string>>();
+  for (const row of byKey.values()) {
+    const arch = row.arch || nativeArch || "unknown";
+    const set = archesByName.get(row.name) ?? new Set<string>();
+    set.add(arch);
+    archesByName.set(row.name, set);
+  }
+
+  const holds = observation.holds;
+  const simulation = observation.simulation;
+  let anyUnresolved = false;
+  let anyAmbiguous = false;
+
+  const normalized = [...byKey.values()].map((row) => {
+    const arch = row.arch || nativeArch || "unknown";
+    const arches = archesByName.get(row.name) ?? new Set([arch]);
+    let held = false;
+    let simVersion: string | null = null;
+    let simMatched = false;
+    let ambiguous = false;
+    let unresolved = false;
+
+    if (holds !== null) {
+      for (const fact of holds) {
+        const match = matchFact(fact, row.name, arch, nativeArch, arches);
+        if (match.state === "match") held = true;
+        if (match.state === "ambiguous") { ambiguous = true; anyAmbiguous = true; }
+        if (match.state === "unresolved") { unresolved = true; anyUnresolved = true; }
+      }
+    }
+    if (simulation !== null) {
+      for (const fact of simulation) {
+        const match = matchFact(fact, row.name, arch, nativeArch, arches);
+        if (match.state === "match") { simMatched = true; simVersion = fact.version; }
+        if (match.state === "ambiguous") { ambiguous = true; anyAmbiguous = true; }
+        if (match.state === "unresolved") { unresolved = true; anyUnresolved = true; }
+      }
+    }
+    const selectedNow = simMatched && simVersion !== null && simVersion === row.toVersion;
+    const conflict = held && selectedNow;
+    const reason: PackageCandidate["reason"] = conflict || ambiguous || unresolved
+      ? "unknown"
+      : held ? "held"
+        : selectedNow ? "selected-now"
+          : "deferred-unknown";
     return {
-      key, name: row.name, arch: row.arch || nativeArch || "unknown",
-      fromVersion: row.fromVersion, toVersion: row.toVersion, security: row.security,
-      held, selectedNow, reason,
-    };
+      key: packageKey(row.name, row.arch, nativeArch),
+      name: row.name,
+      arch,
+      fromVersion: row.fromVersion,
+      toVersion: row.toVersion,
+      security: row.security,
+      held,
+      selectedNow: selectedNow && !conflict,
+      conflict,
+      reason,
+    } satisfies PackageCandidate;
   }).sort((a, b) => a.key.localeCompare(b.key));
 
-  const counts = holdSet === null || simSet === null ? null : {
-    total: candidates.length,
-    selectedNow: candidates.filter((c) => c.reason === "selected-now").length,
-    held: candidates.filter((c) => c.held).length,
-    deferred: candidates.filter((c) => c.reason === "deferred-unknown").length,
-  };
-  const warning = holdSet === null ? "hold-unavailable"
-    : simSet === null ? "simulation-unavailable"
-      : observation.state === "failed" ? "package-query-failed" : null;
+  const truncated = normalized.length > MAX_PACKAGE_ROWS;
+  const shown = truncated ? normalized.slice(0, MAX_PACKAGE_ROWS) : normalized;
+  const totalKnown = observation.children.candidates.ok || observation.children.candidates.lastGoodAt !== null;
+  const selectionKnown = holds !== null && simulation !== null && !anyUnresolved && !anyAmbiguous;
+  const counts: PackageCounts | null = totalKnown ? {
+    total: normalized.length,
+    shown: shown.length,
+    remainder: normalized.length - shown.length,
+    selectedNow: selectionKnown ? normalized.filter((c) => c.reason === "selected-now").length : null,
+    held: selectionKnown ? normalized.filter((c) => c.held).length : null,
+    deferred: selectionKnown ? normalized.filter((c) => c.reason === "deferred-unknown").length : null,
+    unknown: normalized.filter((c) => c.reason === "unknown").length,
+  } : null;
+
+  const hasConflict = normalized.some((candidate) => candidate.conflict);
+  const state: PackagesSection["state"] =
+    observation.state === "failed" && normalized.length === 0 ? "unavailable"
+      : observation.state === "ok" && warnings.length === 0 && !hasConflict && !duplicateConflict && !truncated ? "ok"
+        : "partial";
   return {
     observedAt,
     lastGoodAt: observation.lastGoodAt,
-    state: observation.state === "ok" && warning === null ? (truncated ? "partial" : "ok") : "partial",
-    candidates, counts, truncated, warning,
+    state,
+    candidates: shown,
+    counts,
+    truncated,
+    warnings,
   };
 }
 
@@ -620,7 +707,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
 
   async function packages(): Promise<PackagesSection> {
     const observation = await deps.packages();
-    const section = await buildPackageSection(observation, deps);
+    const section = buildPackageSection(observation, deps);
     observedSections.packages = section.state !== "unavailable";
     return section;
   }

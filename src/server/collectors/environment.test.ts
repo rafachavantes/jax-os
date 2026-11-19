@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseSettings, settingsKeyPresence, type GeneralSettings } from "../settings";
+import type { PackageObservation, PackageRow } from "./alerts";
 import {
   buildComponents, buildPackageSection, capacityFromStatfs, createEnvironmentRuntime, createSourceObserver,
   decodeMountField, loopbackBase, MAX_PATH_SEGMENTS, parseMountInfo, probeCliPresence, readBoundedText,
@@ -211,7 +212,7 @@ describe("mount parsing and /tmp capacity (AC4)", () => {
       readMountInfo: async () => MOUNTINFO,
       statfs: async () => ({ bsize: 4096, blocks: 1_000_000, bfree: 250_000, bavail: 200_000 }),
       realpath: () => "/tmp",
-      packages: async () => ({ rows: [], state: "ok", observedAt: new Date(NOW).toISOString(), lastGoodAt: new Date(NOW).toISOString(), stale: false, error: null }),
+      packages: async () => observation(),
       exec: async () => "",
       ps: async () => "",
       readProc: async () => { throw new Error("no proc"); },
@@ -382,63 +383,122 @@ describe("fixed probe budgets and CLI presence (M5 Task 1)", () => {
   });
 });
 
-describe("package candidates (AC7)", () => {
-  const observation = {
-    rows: [
-      { name: "openssl", arch: "amd64", key: "openssl:amd64", fromVersion: "1", toVersion: "2", security: true },
-      { name: "bare", arch: "", key: "bare:", fromVersion: "1", toVersion: "2", security: false },
-      { name: "held", arch: "amd64", key: "held:amd64", fromVersion: "1", toVersion: "2", security: false },
-    ],
-    state: "ok" as const,
-    observedAt: new Date(NOW).toISOString(), lastGoodAt: new Date(NOW).toISOString(), stale: false, error: null,
+function childFacts() {
+  const at = new Date(NOW).toISOString();
+  return { ok: true, observedAt: at, lastGoodAt: at };
+}
+
+function observation(over: Partial<PackageObservation> = {}): PackageObservation {
+  const at = new Date(NOW).toISOString();
+  return {
+    rows: [],
+    holds: [],
+    simulation: [],
+    nativeArch: "amd64",
+    state: "ok",
+    observedAt: at,
+    lastGoodAt: at,
+    stale: false,
+    error: null,
+    warnings: [],
+    children: { candidates: childFacts(), holds: childFacts(), simulation: childFacts(), architecture: childFacts() },
+    ...over,
   };
-  const execFor = (map: Record<string, string | Error>) => vi.fn(async (file: string) => {
-    const value = map[file];
-    if (value instanceof Error) throw value;
-    if (value === undefined) throw new Error(`unexpected ${file}`);
-    return value;
+}
+
+function pkg(name: string, arch: string, over: Partial<PackageRow> = {}): PackageRow {
+  return { name, arch, key: `${name}:${arch}`, fromVersion: "1", toVersion: "2", security: false, ...over };
+}
+
+describe("package candidates (AC7)", () => {
+  it("selects a bare simulation fact for the Arch:all candidate using the bracket architecture", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "all")],
+      simulation: [{ name: "bar", arch: "all", version: "2" }],
+    }), { now: () => NOW });
+    const allCandidate = section.candidates.find((candidate) => candidate.key === "bar:all");
+    expect(allCandidate).toMatchObject({ selectedNow: true, reason: "selected-now", conflict: false });
+    expect(section.counts).toMatchObject({ total: 1, selectedNow: 1, held: 0, deferred: 0 });
   });
 
-  it("separates holds, simulation-selected rows and unknown deferrals with consistent counts", async () => {
-    const deps = { now: () => NOW, exec: execFor({
-      dpkg: "amd64\n",
-      "apt-mark": "held\nbare\n",
-      "apt-get": "Inst bare [1] (noble 2 amd64 [amd64])\n",
-    }) };
-    const section = await buildPackageSection(observation, deps);
-    expect(section.state).toBe("ok");
-    expect(section.counts).toEqual({ total: 3, selectedNow: 0, held: 2, deferred: 1 });
-    expect(section.candidates.map((c) => [c.key, c.reason])).toEqual([
-      ["bare:amd64", "held"],
-      ["held:amd64", "held"],
-      ["openssl:amd64", "deferred-unknown"],
-    ]);
+  it("treats a bare showhold name as held while a foreign architecture stays distinct", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("foo", "amd64"), pkg("foo", "i386")],
+      holds: [{ name: "foo", arch: null }],
+    }), { now: () => NOW });
+    expect(section.candidates.find((c) => c.key === "foo:amd64")).toMatchObject({ held: true, reason: "held" });
+    expect(section.candidates.find((c) => c.key === "foo:i386")).toMatchObject({ held: false, reason: "deferred-unknown" });
   });
 
-  it("a failed simulation keeps candidates but makes ready/deferred counts unknown", async () => {
-    const deps = { now: () => NOW, exec: execFor({
-      dpkg: "amd64\n", "apt-mark": "", "apt-get": new Error("simulated apt lock"),
-    }) };
-    const section = await buildPackageSection(observation, deps);
+  it("keeps multiple eligible bare matches and an unresolved native architecture unknown", () => {
+    const ambiguous = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64"), pkg("bar", "all")],
+      holds: [{ name: "bar", arch: null }],
+    }), { now: () => NOW });
+    expect(ambiguous.candidates.every((c) => c.reason === "unknown")).toBe(true);
+    expect(ambiguous.counts).toMatchObject({ selectedNow: null, held: null, deferred: null });
+
+    const unresolved = buildPackageSection(observation({
+      rows: [pkg("bar", "")],
+      nativeArch: null,
+      holds: [{ name: "bar", arch: null }],
+    }), { now: () => NOW });
+    expect(unresolved.candidates[0]).toMatchObject({ key: "bar:unknown", reason: "unknown" });
+    expect(unresolved.counts).toMatchObject({ total: 1, selectedNow: null, held: null, deferred: null });
+  });
+
+  it("marks held-and-simulation-selected evidence as a conflict, not confidently held or ready", () => {
+    const conflict = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64")],
+      holds: [{ name: "bar", arch: "amd64" }],
+      simulation: [{ name: "bar", arch: "amd64", version: "2" }],
+    }), { now: () => NOW });
+    expect(conflict.candidates[0]).toMatchObject({ held: true, selectedNow: false, conflict: true, reason: "unknown" });
+    expect(conflict.state).toBe("partial");
+  });
+
+  it("does not claim a selected candidate when the simulation version differs", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64", { toVersion: "3" })],
+      simulation: [{ name: "bar", arch: "amd64", version: "2" }],
+    }), { now: () => NOW });
+    expect(section.candidates[0]).toMatchObject({ selectedNow: false, reason: "deferred-unknown" });
+    expect(section.counts).toMatchObject({ selectedNow: 0, deferred: 1 });
+  });
+
+  it("builds totals and counts before the 500-row display cap and keeps the remainder", () => {
+    const rows = Array.from({ length: 502 }, (_, i) => pkg(`pkg${String(i).padStart(3, "0")}`, "amd64"));
+    const section = buildPackageSection(observation({ rows }), { now: () => NOW });
+    expect(section.candidates).toHaveLength(500);
+    expect(section.truncated).toBe(true);
+    expect(section.counts).toEqual({
+      total: 502, shown: 500, remainder: 2, selectedNow: 0, held: 0, deferred: 502, unknown: 0,
+    });
     expect(section.state).toBe("partial");
-    expect(section.counts).toBeNull();
-    expect(section.warning).toBe("simulation-unavailable");
-    expect(section.candidates.every((c) => c.reason === "unknown")).toBe(true);
-    expect(section.candidates).toHaveLength(3);
   });
 
-  it("an unknown native architecture keeps bare keys explicitly ambiguous", async () => {
-    const deps = { now: () => NOW, exec: execFor({ dpkg: new Error("no dpkg"), "apt-mark": "", "apt-get": "" }) };
-    const section = await buildPackageSection(observation, deps);
-    expect(section.candidates.find((c) => c.name === "bare")?.key).toBe("bare:unknown");
+  it("preserves known candidates under a partial child warning but keeps an unknown total honest", () => {
+    const section = buildPackageSection(observation({
+      rows: [pkg("bar", "amd64")],
+      simulation: null,
+      warnings: ["simulation-unavailable"],
+      children: { ...observation().children, simulation: { ok: false, observedAt: new Date(NOW).toISOString(), lastGoodAt: null } },
+    }), { now: () => NOW });
+    expect(section.state).toBe("partial");
+    expect(section.warnings).toContain("simulation-unavailable");
+    expect(section.candidates).toHaveLength(1);
+    expect(section.counts).toMatchObject({ total: 1, selectedNow: null, deferred: null });
   });
 
-  it("a total package-query failure is unavailable, never an all-clear zero", async () => {
-    const deps = { now: () => NOW, exec: execFor({}) };
-    const section = await buildPackageSection({
-      ...observation, rows: [], state: "failed", error: "package-query-failed",
-    }, deps);
-    expect(section).toMatchObject({ state: "unavailable", counts: null, warning: "package-query-failed" });
+  it("a total package-query failure is unavailable, never an all-clear zero", () => {
+    const failed = observation({
+      rows: [], state: "failed", lastGoodAt: null, stale: false, error: "package-query-failed",
+      warnings: ["package-query-failed"],
+      children: { ...observation().children, candidates: { ok: false, observedAt: new Date(NOW).toISOString(), lastGoodAt: null } },
+    });
+    const section = buildPackageSection(failed, { now: () => NOW });
+    expect(section).toMatchObject({ state: "unavailable", counts: null });
+    expect(section.warnings).toContain("package-query-failed");
     expect(section.candidates).toEqual([]);
   });
 });

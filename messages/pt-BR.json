@@ -1359,6 +1359,8 @@
         "counts": "{total} candidatos · {ready} selecionados agora · {held} retidos · {deferred} adiados",
         "countsUnknown": "{total} candidatos · retenção/simulação indisponível, motivos desconhecidos",
         "empty": "Nenhuma atualização candidata.",
+        "totalUnknown": "Candidatos encontrados · total desconhecido, retenção/simulação indisponível",
+        "remainder": "+{count} candidatos",
         "security": "segurança",
         "truncated": "Lista truncada após 500 pacotes.",
         "manualStep": "Somente leitura: instale atualizações manualmente fora do Jax OS.",
@@ -1370,6 +1372,8 @@
         },
         "warnings": {
           "hold-unavailable": "Retenções de pacotes indisponíveis",
+          "candidates-unrecognized": "Lista de pacotes candidatos parcialmente não reconhecida",
+          "architecture-unavailable": "Arquitetura nativa indisponível",
           "simulation-unavailable": "Simulação de upgrade indisponível",
           "package-query-failed": "Consulta de pacotes indisponível"
         }

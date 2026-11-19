@@ -196,23 +196,32 @@ function Packages() {
     <Panel id="packages" title={t("sections.packages")}>
       {q.isError ? <SourceWarning label={t("unavailable")} /> : !data || !Array.isArray(data.candidates) ? <Skeleton /> : (
         <div className="flex flex-col gap-2">
-          {data.warning ? (
+          {data.warnings.map((warning) => (
             <SourceWarning
-              label={t(`packages.warnings.${data.warning}`)}
+              key={warning}
+              label={t(`packages.warnings.${warning}`)}
               detail={data.lastGoodAt ? t("lastGood") : undefined}
             />
+          ))}
+          {data.state !== "unavailable" ? (
+            <span className="text-[11px] text-muted">
+              {data.counts === null
+                ? t("packages.totalUnknown")
+                : data.counts.selectedNow === null || data.counts.held === null || data.counts.deferred === null
+                  ? t("packages.countsUnknown", { total: data.counts.total })
+                  : t("packages.counts", {
+                    total: data.counts.total, ready: data.counts.selectedNow,
+                    held: data.counts.held, deferred: data.counts.deferred,
+                  })}
+              {data.counts !== null && data.counts.remainder > 0
+                ? ` · ${t("packages.remainder", { count: data.counts.remainder })}`
+                : ""}
+            </span>
           ) : null}
-          <span className="text-[11px] text-muted">
-            {data.counts
-              ? t("packages.counts", {
-                total: data.counts.total, ready: data.counts.selectedNow,
-                held: data.counts.held, deferred: data.counts.deferred,
-              })
-              : t("packages.countsUnknown", { total: data.candidates.length })}
-          </span>
-          {data.candidates.length === 0 ? (
+          {data.state !== "unavailable" && data.candidates.length === 0 ? (
             <span className="text-[12.5px] text-muted">{t("packages.empty")}</span>
-          ) : (
+          ) : null}
+          {data.candidates.length > 0 ? (
             <div className="flex flex-col gap-1">
               {data.candidates.map((candidate) => (
                 <div key={candidate.key} data-testid={`package-${candidate.key}`} className="flex min-w-0 flex-wrap items-center gap-2 text-[12px] text-body-ink">
@@ -229,7 +238,11 @@ function Packages() {
               ))}
               {data.truncated ? <span className="text-[11px] text-muted">{t("packages.truncated")}</span> : null}
             </div>
-          )}
+          ) : null}
+          <span className="text-[11px] text-muted">
+            {t("observed")} <RelativeTime epochMs={Date.parse(data.observedAt)} />
+            {data.lastGoodAt ? <> · {t("lastGood")} <RelativeTime epochMs={Date.parse(data.lastGoodAt)} /></> : null}
+          </span>
           <span className="text-[10.5px] italic text-muted">{t("packages.manualStep")}</span>
         </div>
       )}

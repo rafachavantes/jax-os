@@ -1359,6 +1359,8 @@
         "counts": "{total} candidates · {ready} selected now · {held} held · {deferred} deferred",
         "countsUnknown": "{total} candidates · hold/simulation unavailable, reasons unknown",
         "empty": "No candidate updates.",
+        "totalUnknown": "Candidates found · total unknown, hold/simulation unavailable",
+        "remainder": "+{count} more candidates",
         "security": "security",
         "truncated": "List truncated after 500 packages.",
         "manualStep": "Read-only: install updates manually outside Jax OS.",
@@ -1370,6 +1372,8 @@
         },
         "warnings": {
           "hold-unavailable": "Package holds unavailable",
+          "candidates-unrecognized": "Package candidate list partially unrecognized",
+          "architecture-unavailable": "Native architecture unavailable",
           "simulation-unavailable": "Upgrade simulation unavailable",
           "package-query-failed": "Package query unavailable"
         }

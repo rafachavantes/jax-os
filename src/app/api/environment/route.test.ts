@@ -10,7 +10,7 @@ const WORKLOADS = {
 };
 const PACKAGES = {
   observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null, state: "unavailable" as const,
-  candidates: [], counts: null, truncated: false, warning: "package-query-failed" as const,
+  candidates: [], counts: null, truncated: false, warnings: ["package-query-failed" as const],
 };
 
 type RuntimeOverrides = Partial<EnvironmentHandlerDeps["runtime"]>;
