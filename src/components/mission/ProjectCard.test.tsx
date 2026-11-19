@@ -154,6 +154,43 @@ describe("ProjectCard — transport-aware session rows (MOA-469 §4)", () => {
     expect(html).toContain("expanded.openInTmux");
   });
 
+  it("offers the sole proven Codex terminal from the expanded row (and the header adapter)", () => {
+    const ID = "01a1ea73-662c-7c31-9f94-cf1567bd851e";
+    const card: MissionCard = {
+      ...base,
+      sessions: [{
+        transport: "codex" as const, threadId: ID, state: "idle" as const, lastEventTs: null, subagentCount: 0,
+        capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null,
+        terminal: { pane: "%183", tmuxIncarnation: "3421408:1793045754", session: "jax-os-lead" },
+      }],
+    };
+    const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));
+    expect((html.match(/href="\/tmux\?kind=card/g) ?? []).length).toBe(1);
+    expect(html).toContain(`harnessSession=${ID}`);
+    expect(html).toContain("pane=%25183");
+    expect(html).toContain("incarnation=3421408%3A1793045754");
+  });
+
+  it("gives two Codex roots their own distinct terminal links and no ambiguous header", () => {
+    const root = (threadId: string, pane: string) => ({
+      transport: "codex" as const, threadId, state: "idle" as const, lastEventTs: null, subagentCount: 0,
+      capsuleEventId: null, capsuleStatus: null, capsuleMinutes: null, capsuleDeclaredAt: null,
+      terminal: { pane, tmuxIncarnation: "3421408:1793045754", session: `s-${pane}` },
+    });
+    const card: MissionCard = {
+      ...base,
+      sessions: [
+        root("01a1ea73-662c-7c31-9f94-cf1567bd851e", "%183"),
+        root("0191f0aa-bbbb-7000-8000-00000000000a", "%184"),
+      ],
+    };
+    const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));
+    expect((html.match(/href="\/tmux\?kind=card/g) ?? []).length).toBe(2);
+    expect(html).toContain("pane=%25183");
+    expect(html).toContain("pane=%25184");
+    expect(html).not.toContain('href="/tmux?kind=card&amp;project=p1&amp;harnessSession=&amp;');
+  });
+
   it("a Codex source failure still renders the working Claude card", () => {
     const card: MissionCard = { ...PANE_ROW, codexSource: "failed" };
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));
