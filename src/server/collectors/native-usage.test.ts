@@ -2080,6 +2080,66 @@ describe("interrupted discovery registration and directory failure mapping", () 
     deps.db.close();
   }, 30_000);
 
+  it("keeps a new cycle from clearing an unrevisited directory failure", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    for (let i = 0; i < 40; i += 1) {
+      writeClaude(deps, `a${String(i).padStart(2, "0")}/f.jsonl`, [claudeLine(`m-a${i}`)]);
+    }
+    writeClaude(deps, "zbad/f.jsonl", [claudeLine("m-bad")]);
+    const badAbs = join(deps.roots.claude, "zbad");
+    let calls = 0;
+    let fault = true;
+    deps.fs = {
+      ...nativeFs,
+      realpath: async (path) => {
+        if (path === badAbs) {
+          calls += 1;
+          if (fault && calls % 2 === 0) {
+            const error = new Error("EACCES") as Error & { code: string };
+            error.code = "EACCES";
+            throw error;
+          }
+        }
+        return nativeFs.realpath(path);
+      },
+    };
+    let now = NOW;
+    const pass = () => runNativeUsagePass({ ...deps, now: () => (now += 61) });
+    const cycle = () =>
+      (deps.db.prepare("SELECT cycle FROM native_usage_discovery WHERE source = 'claude'").get() as { cycle: number })
+        .cycle;
+    const badItem = () =>
+      deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-bad'").get() as { n: number };
+
+    await pass();
+    const firstCycle = cycle();
+    let seenNewCycleWithWarning = false;
+    for (let passIndex = 0; passIndex < 40; passIndex += 1) {
+      await pass();
+      if (!getPersistentWarnings(deps.db, "claude").includes("subdir-failed")) continue;
+      if (cycle() > firstCycle) {
+        seenNewCycleWithWarning = true;
+        break;
+      }
+    }
+    expect(seenNewCycleWithWarning).toBe(true);
+    expect(
+      deps.db.prepare("SELECT last_warning FROM native_usage_dirs WHERE source = 'claude' AND path = 'zbad'").get(),
+    ).toEqual({ last_warning: "subdir-failed" });
+    expect(statusOf(deps)?.warnings).toContain("subdir-failed");
+    expect(badItem()).toEqual({ n: 0 });
+
+    fault = false;
+    let settled = 0;
+    while (settled < 30 && badItem().n === 0) {
+      await pass();
+      settled += 1;
+    }
+    expect(badItem()).toEqual({ n: 1 });
+    expect(getPersistentWarnings(deps.db, "claude")).not.toContain("subdir-failed");
+    deps.db.close();
+  }, 60_000);
+
   it("reports a root that becomes unreadable after validation as unavailable", async () => {
     const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
     writeClaude(deps, "p/lead.jsonl", [claudeLine("m-1")]);

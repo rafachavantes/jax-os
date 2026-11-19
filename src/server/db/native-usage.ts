@@ -381,8 +381,19 @@ function readDiscovery(db: Database.Database, source: Harness): DiscoveryStateRo
   };
 }
 
+// Re-pending a known directory keeps its failure fact: a rediscovered retained row is
+// queued again without clearing last_warning. Success clears it through markDirDone.
+function upsertPendingDir(db: Database.Database, source: Harness, path: string, child: boolean, cycle: number): void {
+  db.prepare(
+    `INSERT INTO native_usage_dirs (source, path, child, state, cycle) VALUES (?, ?, ?, 'pending', ?)
+     ON CONFLICT (source, path) DO UPDATE SET
+       child = excluded.child, state = 'pending', cycle = excluded.cycle`,
+  ).run(source, path, child ? 1 : 0, cycle);
+}
+
 // Starts a cycle when none exists, or when the previous complete cycle is older
-// than the refresh cadence. Completed directory state is retained within a cycle.
+// than the refresh cadence. Completed directory state is retained within a cycle; a
+// new cycle keeps warning-bearing rows until a successful enumeration reconfirms them.
 export function ensureDiscoveryCycle(
   db: Database.Database,
   source: Harness,
@@ -396,13 +407,13 @@ export function ensureDiscoveryCycle(
         `INSERT INTO native_usage_discovery (source, cycle, state, current_dir, visit_seq, last_complete, updated_at)
          VALUES (?, 1, 'active', NULL, 0, NULL, ?)`,
       ).run(source, now);
-      db.prepare("INSERT OR IGNORE INTO native_usage_dirs (source, path, child, state, cycle) VALUES (?, '.', 0, 'pending', 1)").run(source);
+      upsertPendingDir(db, source, ".", false, 1);
       return readDiscovery(db, source)!;
     }
     if (existing.state === "complete" && now - (existing.lastComplete ?? 0) >= cadenceSeconds) {
       const cycle = existing.cycle + 1;
-      db.prepare("DELETE FROM native_usage_dirs WHERE source = ?").run(source);
-      db.prepare("INSERT INTO native_usage_dirs (source, path, child, state, cycle) VALUES (?, '.', 0, 'pending', ?)").run(source, cycle);
+      db.prepare("DELETE FROM native_usage_dirs WHERE source = ? AND last_warning IS NULL").run(source);
+      upsertPendingDir(db, source, ".", false, cycle);
       db.prepare(
         `UPDATE native_usage_discovery SET cycle = ?, state = 'active', current_dir = NULL, updated_at = ? WHERE source = ?`,
       ).run(cycle, now, source);
@@ -419,9 +430,7 @@ export function addPendingDir(
   cycle: number,
   now: number,
 ): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO native_usage_dirs (source, path, child, state, cycle) VALUES (?, ?, ?, 'pending', ?)`,
-  ).run(source, path, child ? 1 : 0, cycle);
+  upsertPendingDir(db, source, path, child, cycle);
   db.prepare("UPDATE native_usage_discovery SET updated_at = ? WHERE source = ?").run(now, source);
 }
 
@@ -475,10 +484,31 @@ export function hasPendingDirs(db: Database.Database, source: Harness): boolean 
   return row !== undefined;
 }
 
-export function finishDiscoveryCycle(db: Database.Database, source: Harness, now: number): void {
-  db.prepare(
-    `UPDATE native_usage_discovery SET state = 'complete', last_complete = ?, current_dir = NULL, updated_at = ? WHERE source = ?`,
-  ).run(now, now, source);
+// A completed enumeration can prove that an unseen old failed directory is gone; an
+// unreadable current-cycle ancestor cannot. Unseen retained rows from older cycles are
+// removed only when the completed cycle itself has no directory failure left.
+export function finishDiscoveryCycle(
+  db: Database.Database,
+  source: Harness,
+  now: number,
+  completeEnumeration = true,
+): void {
+  db.transaction(() => {
+    const cycle = readDiscovery(db, source)?.cycle ?? 0;
+    if (completeEnumeration) {
+      const failed = db
+        .prepare(
+          "SELECT 1 AS n FROM native_usage_dirs WHERE source = ? AND cycle = ? AND last_warning IS NOT NULL LIMIT 1",
+        )
+        .get(source, cycle) as { n: number } | undefined;
+      if (!failed) {
+        db.prepare("DELETE FROM native_usage_dirs WHERE source = ? AND cycle < ?").run(source, cycle);
+      }
+    }
+    db.prepare(
+      `UPDATE native_usage_discovery SET state = 'complete', last_complete = ?, current_dir = NULL, updated_at = ? WHERE source = ?`,
+    ).run(now, now, source);
+  }).immediate();
 }
 
 export function registerNativeFile(

@@ -974,7 +974,7 @@ async function discoveryPass(
         }
         if (current === ".") {
           if (errorCode(error) === "ENOENT") {
-            finishDiscoveryCycle(deps.db, source, deps.now());
+            finishDiscoveryCycle(deps.db, source, deps.now(), false);
             break;
           }
           warnings.add("root-unavailable");

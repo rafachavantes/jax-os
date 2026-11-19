@@ -4,11 +4,15 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { openDb } from "./index";
 import {
+  addPendingDir,
   applyFileBatch,
+  ensureDiscoveryCycle,
+  finishDiscoveryCycle,
   getFileCheckpoint,
   getPersistentWarnings,
   getSourceStatuses,
   insertNativeContext,
+  markDirDone,
   markFileFailure,
   pruneNativeUsage,
   queryNativeUsage,
@@ -580,6 +584,95 @@ describe("indexed ingestion selection", () => {
       ),
       plan("SELECT path FROM native_usage_dirs WHERE source = ? AND state = 'pending' ORDER BY path ASC LIMIT 1", "claude"),
       plan("SELECT path FROM native_usage_dirs WHERE source = ? AND state = 'pending' ORDER BY path DESC LIMIT 1", "codex"),
+    ]) {
+      expect(details.join("\n")).not.toMatch(/TEMP B-TREE/i);
+    }
+    db.close();
+  });
+});
+
+describe("directory failure facts across discovery cycles", () => {
+  const CADENCE = 60;
+
+  it("retains a failed directory row across cycle start and intermediate polls", () => {
+    const db = openDb(":memory:");
+    const first = ensureDiscoveryCycle(db, "claude", NOW, CADENCE);
+    addPendingDir(db, "claude", "proj", false, first.cycle, NOW);
+    markDirDone(db, "claude", "proj", NOW, "subdir-failed");
+    markDirDone(db, "claude", ".", NOW);
+    finishDiscoveryCycle(db, "claude", NOW);
+    expect(getPersistentWarnings(db, "claude")).toEqual(["subdir-failed"]);
+
+    const second = ensureDiscoveryCycle(db, "claude", NOW + 61, CADENCE);
+    expect(second.cycle).toBe(2);
+    expect(
+      db.prepare("SELECT state, cycle, last_warning FROM native_usage_dirs WHERE source = 'claude' AND path = 'proj'").get(),
+    ).toEqual({ state: "done", cycle: 1, last_warning: "subdir-failed" });
+    expect(getPersistentWarnings(db, "claude")).toEqual(["subdir-failed"]);
+    expect(getPersistentWarnings(db, "claude")).toEqual(["subdir-failed"]);
+
+    addPendingDir(db, "claude", "proj", false, second.cycle, NOW + 61);
+    expect(
+      db.prepare("SELECT state, cycle, last_warning FROM native_usage_dirs WHERE source = 'claude' AND path = 'proj'").get(),
+    ).toEqual({ state: "pending", cycle: 2, last_warning: "subdir-failed" });
+
+    markDirDone(db, "claude", "proj", NOW + 62);
+    expect(getPersistentWarnings(db, "claude")).toEqual([]);
+    db.close();
+  });
+
+  it("clears an unseen failed directory only after a successful complete enumeration", () => {
+    const db = openDb(":memory:");
+    ensureDiscoveryCycle(db, "claude", NOW, CADENCE);
+    addPendingDir(db, "claude", "proj/gone", false, 1, NOW);
+    markDirDone(db, "claude", "proj/gone", NOW, "discovery-failed");
+    markDirDone(db, "claude", ".", NOW);
+    finishDiscoveryCycle(db, "claude", NOW);
+    expect(getPersistentWarnings(db, "claude")).toEqual(["discovery-failed"]);
+
+    ensureDiscoveryCycle(db, "claude", NOW + 61, CADENCE);
+    markDirDone(db, "claude", ".", NOW + 61);
+    finishDiscoveryCycle(db, "claude", NOW + 61);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM native_usage_dirs WHERE source = 'claude' AND path = 'proj/gone'").get())
+      .toEqual({ n: 0 });
+    expect(getPersistentWarnings(db, "claude")).toEqual([]);
+    db.close();
+  });
+
+  it("retains a descendant's failure when an ancestor fails in the current cycle", () => {
+    const db = openDb(":memory:");
+    ensureDiscoveryCycle(db, "claude", NOW, CADENCE);
+    addPendingDir(db, "claude", "proj", false, 1, NOW);
+    addPendingDir(db, "claude", "proj/a", false, 1, NOW);
+    markDirDone(db, "claude", "proj/a", NOW, "discovery-failed");
+    markDirDone(db, "claude", "proj", NOW, "subdir-failed");
+    markDirDone(db, "claude", ".", NOW);
+    finishDiscoveryCycle(db, "claude", NOW);
+
+    ensureDiscoveryCycle(db, "claude", NOW + 61, CADENCE);
+    addPendingDir(db, "claude", "proj", false, 2, NOW + 61);
+    markDirDone(db, "claude", "proj", NOW + 61, "subdir-failed");
+    markDirDone(db, "claude", ".", NOW + 61);
+    finishDiscoveryCycle(db, "claude", NOW + 61);
+    expect(
+      db.prepare("SELECT cycle, state, last_warning FROM native_usage_dirs WHERE source = 'claude' AND path = 'proj/a'").get(),
+    ).toEqual({ cycle: 1, state: "done", last_warning: "discovery-failed" });
+    expect(getPersistentWarnings(db, "claude").sort()).toEqual(["discovery-failed", "subdir-failed"]);
+    db.close();
+  });
+
+  it("plans the registry maintenance statements without a temporary sort", () => {
+    const db = openDb(":memory:");
+    const plan = (sql: string, ...params: unknown[]) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as { detail: string }[]).map((r) => r.detail);
+    for (const details of [
+      plan("DELETE FROM native_usage_dirs WHERE source = ? AND last_warning IS NULL", "claude"),
+      plan("DELETE FROM native_usage_dirs WHERE source = ? AND cycle < ?", "claude", 1),
+      plan(
+        "SELECT 1 AS n FROM native_usage_dirs WHERE source = ? AND cycle = ? AND last_warning IS NOT NULL LIMIT 1",
+        "claude",
+        1,
+      ),
     ]) {
       expect(details.join("\n")).not.toMatch(/TEMP B-TREE/i);
     }
