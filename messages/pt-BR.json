@@ -691,7 +691,7 @@
       "utcNote": "Os dias usam UTC; o dia atual é parcial.",
       "historyNote": "O histórico numérico é mantido por 91 dias UTC (desde {cutoff}).",
       "cacheNote": "Cache e raciocínio são detalhes nativos e não entram duas vezes no total.",
-      "mixedProjection": "{count} sessão(ões) OpenCode têm histórico V1/V2 misto; uso V1 sem par é excluído.",
+      "mixedProjection": "{count} sessão(ões) OpenCode combinam histórico V1 legado e V2 atual; registros V1 legados sem contraparte V2 são excluídos.",
       "source": {
         "claude": "Claude Code",
         "codex": "Codex",

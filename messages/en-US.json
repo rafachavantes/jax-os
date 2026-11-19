@@ -691,7 +691,7 @@
       "utcNote": "Days use UTC; the current day is partial.",
       "historyNote": "Numeric history is retained for 91 UTC days (from {cutoff}).",
       "cacheNote": "Cache and reasoning are native details and are not added to the headline twice.",
-      "mixedProjection": "{count} OpenCode session(s) have mixed V1/V2 history; unmatched V1 usage is excluded.",
+      "mixedProjection": "{count} OpenCode session(s) mix legacy V1 and current V2 history; legacy V1 records without a V2 counterpart are excluded.",
       "source": {
         "claude": "Claude Code",
         "codex": "Codex",
