@@ -132,7 +132,9 @@ describe("InboxStrip — exact event ownership before an exact target link (M3b 
 
   it("keeps generic navigation when the harness identity is unrecorded and links the explicit null seat", () => {
     const unrecorded = cardWith({ pendingQuestion: { pane: "%1", eventId: 11, questions: [] } });
-    delete (unrecorded.sessions[0].panes[0] as unknown as Record<string, unknown>).harnessSession;
+    const unrecordedSession = unrecorded.sessions[0];
+    if (unrecordedSession.transport !== "tmux") throw new Error("tmux fixture expected");
+    delete (unrecordedSession.panes[0] as unknown as Record<string, unknown>).harnessSession;
     expect(href(question(11), unrecorded)).not.toContain('href="/tmux?kind=card');
 
     const unidentified = cardWith({ harnessSession: null, pendingQuestion: { pane: "%1", eventId: 11, questions: [] } });

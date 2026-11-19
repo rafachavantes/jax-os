@@ -17,7 +17,11 @@ type Props = { mission: Mission; onExpand: (dir: string) => void };
 // reused pane. A question row has no incarnation of its own: only the pane's CURRENT pending
 // question with the same event proves ownership. Missing, unanswerable or ambiguous ownership
 // yields no link (the caller keeps generic sessions navigation).
-function inboxOwnerPane(card: MissionCard, row: Extract<InboxRow, { kind: "question" | "attention" }>): MissionPane | null {
+type InboxOwnerRow =
+  | { kind: "question"; pane: string; eventId: number }
+  | { kind: "attention"; pane: string; tmuxIncarnation: string; capsuleEventId: number | null };
+
+function inboxOwnerPane(card: MissionCard, row: InboxOwnerRow): MissionPane | null {
   const matches: MissionPane[] = [];
   for (const session of card.sessions) {
     if (session.transport !== "tmux") continue;
@@ -40,7 +44,8 @@ function inboxOwnerPane(card: MissionCard, row: Extract<InboxRow, { kind: "quest
 }
 
 function inboxAccessHref(card: MissionCard | undefined, row: InboxRow): string | null {
-  if (!card || (row.kind !== "question" && row.kind !== "attention")) return null;
+  if (!card) return null;
+  if (row.kind !== "question" && row.kind !== "attention") return null;
   if (row.kind === "attention" && row.transport !== "tmux") return null;
   const pane = inboxOwnerPane(card, row);
   if (!pane) return null;

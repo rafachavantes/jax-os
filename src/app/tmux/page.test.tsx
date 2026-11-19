@@ -48,12 +48,15 @@ vi.mock("@/components/sessions/MosaicCellDetail", () => ({
 }));
 
 import SessionsPage, {
-  backHref, largerWindowHref, parseFocusedLocation, selectorIdentity, targetFreshness, targetQueryString,
+  FRESHNESS_MS, REQUEST_TIMEOUT_MS, TARGET_POLL_MS, backHref, fetchTarget, largerWindowHref, parseFocusedLocation,
+  parseTargetResult, selectorIdentity, targetApplication, targetAppliesTo, targetFreshness, targetQueryKey, targetQueryString,
+  type ValidationLifetime,
 } from "./page";
 import {
-  captureControlTicket, controlModeAfter, controlStateReducer, controlTicketCurrent, type ControlState,
+  accessLifecycle, captureControlTicket, controlModeAfter, controlStateReducer, controlTicketCurrent,
+  initialAccessLifecycle, type ControlState,
 } from "@/components/sessions/TerminalPanel";
-import { sessionAccessHref, type SessionAccessSelector } from "@/lib/sessionAccess";
+import { sessionAccessHref, type ExpectedSessionTarget, type SessionAccessSelector } from "@/lib/sessionAccess";
 
 const idle: ControlState = { mode: "ro", busy: false, error: null };
 const writable: ControlState = { mode: "rw", busy: false, error: null };
@@ -153,6 +156,126 @@ describe("focused deep links", () => {
     expect(query.get("expectedTarget")).toBe("$2:@3.%7");
     expect(selectorIdentity(cardSelector)).toBe("card|jax-os|sess-a|%7|1234:1700000000");
     expect(selectorIdentity({ kind: "tmux", session: "a" })).toBe("tmux|a");
+  });
+});
+
+const expected: ExpectedSessionTarget = { target: "$2:@3.%7", incarnation: "1234:1700000000" };
+const resolvedAccess = {
+  selector: cardSelector, expected, sessionName: "project agent", runtime: "claude" as const,
+  observedAt: "2023-11-14T22:15:00.000Z", roUrl: "http://127.0.0.1:10000/ro/?arg=%242%3A%403.%257",
+};
+const lifetime = (token: number): ValidationLifetime => ({ token, selector: selectorIdentity(cardSelector), expected: "" });
+
+function response(body: unknown, status = 200): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+const abortingFetch = (_url: RequestInfo | URL, init?: RequestInit) =>
+  new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+  });
+
+describe("bounded target validation results (M3b corrections)", () => {
+  it("maps network rejection, non-2xx, malformed envelopes and wrong success shapes to unknown", async () => {
+    const signal = new AbortController().signal;
+    const rejection = await fetchTarget(cardSelector, null, signal, async () => { throw new Error("down"); });
+    expect(rejection).toMatchObject({ ok: false, code: "source-failure" });
+
+    expect(await fetchTarget(cardSelector, null, signal, async () => response({ ok: true, data: resolvedAccess }, 500)))
+      .toMatchObject({ ok: false, code: "source-failure" });
+    expect(await fetchTarget(cardSelector, null, signal, async () => response("not json")))
+      .toMatchObject({ ok: false, code: "source-failure" });
+    expect(await fetchTarget(cardSelector, null, signal, async () => response({ ok: true })))
+      .toMatchObject({ ok: false, code: "source-failure" });
+    expect(await fetchTarget(cardSelector, null, signal, async () => response({ ok: true, data: { ...resolvedAccess, expected: { target: "bad" } } })))
+      .toMatchObject({ ok: false, code: "source-failure" });
+    expect(await fetchTarget(cardSelector, null, signal, async () => response({ ok: true, data: { ...resolvedAccess, roUrl: 7 } })))
+      .toMatchObject({ ok: false, code: "source-failure" });
+    expect(await fetchTarget(cardSelector, null, signal, async () => response({ ok: true, data: resolvedAccess })))
+      .toMatchObject({ ok: true, data: { expected } });
+  });
+
+  it("times out through the injected fetch signal as a bounded unknown failure", async () => {
+    const started = Date.now();
+    const result = await fetchTarget(cardSelector, null, new AbortController().signal, abortingFetch, 5);
+    expect(result).toMatchObject({ ok: false, code: "source-failure" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("keeps the fixed polling, timeout and freshness bounds and never shares a cache entry across lifetimes", () => {
+    expect(targetQueryKey("card|a", "", 1)).not.toEqual(targetQueryKey("card|a", "", 2));
+    expect(targetQueryKey("card|a", "", 1)).toEqual(targetQueryKey("card|a", "", 1));
+    expect(TARGET_POLL_MS).toBe(5_000);
+    expect(REQUEST_TIMEOUT_MS).toBe(5_000);
+    expect(FRESHNESS_MS).toBe(10_000);
+    expect(parseTargetResult({ ok: false, code: "lost-target", error: "x" })).toEqual({ ok: false, code: "lost-target", error: "x" });
+    expect(parseTargetResult({ ok: false, code: "made-up" })).toMatchObject({ ok: false, code: "source-failure" });
+  });
+});
+
+describe("validation lifetimes (deferred old success, failure and rearm)", () => {
+  it("tags each request with the lifetime captured at begin and ignores a stale result", async () => {
+    const first = deferred<Response>();
+    const pending = fetchTarget(cardSelector, null, new AbortController().signal, () => first.promise);
+    const responseLifetime = lifetime(1);
+    first.resolve(response({ ok: true, data: resolvedAccess }));
+    const responseA = { lifetime: responseLifetime, result: await pending };
+
+    const currentB = lifetime(2);
+    expect(targetAppliesTo(currentB, responseA.lifetime)).toBe(false);
+    expect(targetApplication(responseA, currentB, 1_000, 1_001, 0)).toEqual({ kind: "ignore" });
+    expect(targetApplication(responseA, currentB, 1_000, 1_001, 1_500)).toEqual({ kind: "ignore" });
+
+    const currentA = lifetime(1);
+    expect(targetApplication(responseA, currentA, 1_000, 1_001, 0)).toMatchObject({ kind: "ok" });
+    expect(targetApplication(responseA, currentA, 1_000, 1_000 + FRESHNESS_MS, 0)).toEqual({ kind: "expired" });
+    expect(targetApplication({ ...responseA, result: { ok: false, code: "source-failure", error: "x" } }, currentA, 1_000, 1_001, 0))
+      .toEqual({ kind: "failure", status: "unknown" });
+  });
+
+  it("a held old GET completing after hide/show cannot attach; only the new lifetime's success can", async () => {
+    let state = accessLifecycle(initialAccessLifecycle, { type: "open" });
+    state = accessLifecycle(state, { type: "validation", roUrl: "http://ro/A" });
+    state = accessLifecycle(state, { type: "hide" });
+    state = accessLifecycle(state, { type: "show" });
+
+    const oldApplication = targetApplication(
+      { lifetime: lifetime(1), result: { ok: true, data: resolvedAccess } }, lifetime(2), 1_000, 1_001, 0,
+    );
+    expect(oldApplication.kind).toBe("ignore");
+    expect(state.frame).toBeNull();
+
+    const newApplication = targetApplication(
+      { lifetime: lifetime(2), result: { ok: true, data: resolvedAccess } }, lifetime(2), 1_000, 1_001, 0,
+    );
+    if (newApplication.kind !== "ok") throw new Error("expected a current validation");
+    state = accessLifecycle(state, { type: "validation", roUrl: newApplication.data.roUrl });
+    expect(state.frame).toMatchObject({ mode: "ro" });
+  });
+
+  it("a current failure removes RW and latches the frame off; a later success cannot reattach without Reconnect", () => {
+    let state = accessLifecycle(initialAccessLifecycle, { type: "open" });
+    state = accessLifecycle(state, { type: "takeStart" });
+    state = accessLifecycle(state, { type: "takeOk", rwUrl: "http://rw/A" });
+    expect(state.frame?.mode).toBe("rw");
+
+    state = accessLifecycle(state, { type: "failure", status: "unknown" });
+    expect(state.frame).toBeNull();
+    expect(controlStateReducer(writable, { type: "reset" }).mode).toBe("ro");
+
+    const laterPoll = accessLifecycle(state, { type: "validation", roUrl: "http://ro/later" });
+    expect(laterPoll.frame).toBeNull();
+
+    state = accessLifecycle(state, { type: "reconnect" });
+    state = accessLifecycle(state, { type: "validation", roUrl: "http://ro/fresh" });
+    expect(state.frame).toMatchObject({ mode: "ro" });
   });
 });
 

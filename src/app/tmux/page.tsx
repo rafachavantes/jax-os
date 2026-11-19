@@ -26,6 +26,7 @@ import { SourceWarning } from "@/components/mission/SourceWarning";
 import { Mosaic } from "@/components/sessions/Mosaic";
 import { MosaicCellDetail } from "@/components/sessions/MosaicCellDetail";
 import {
+  parseExpectedTarget,
   parseSessionAccessOrigin,
   parseSessionAccessSelector,
   sessionAccessHref,
@@ -79,21 +80,84 @@ export function targetQueryString(
   return params.toString();
 }
 
-async function fetchTarget(
+// Network rejection, timeout, non-success HTTP and a malformed envelope are all the SAME bounded
+// unknown validation failure — never an exception escaping into the effect.
+const UNKNOWN_TARGET: TargetResult = { ok: false, code: "source-failure", error: "unavailable" };
+const FAILURE_CODES = new Set<string>(["invalid-selector", "unconfigured", "unavailable", "lost-target", "source-failure"]);
+
+export function parseTargetResult(json: unknown): TargetResult {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return UNKNOWN_TARGET;
+  const record = json as Record<string, unknown>;
+  if (record.ok === false) {
+    const code = typeof record.code === "string" && FAILURE_CODES.has(record.code) ? record.code as SessionAccessCode : "source-failure";
+    return { ok: false, code, error: typeof record.error === "string" ? record.error : "unavailable" };
+  }
+  if (record.ok !== true) return UNKNOWN_TARGET;
+  const data = record.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return UNKNOWN_TARGET;
+  const resolved = data as Record<string, unknown>;
+  // `{ok:true}` without usable success data or binding is malformed, not a validation.
+  if (!parseExpectedTarget(resolved.expected)) return UNKNOWN_TARGET;
+  if (typeof resolved.roUrl !== "string" || resolved.roUrl.length === 0) return UNKNOWN_TARGET;
+  if (typeof resolved.sessionName !== "string" || typeof resolved.observedAt !== "string") return UNKNOWN_TARGET;
+  if (resolved.runtime !== "claude" && resolved.runtime !== "codex" && resolved.runtime !== "unknown") return UNKNOWN_TARGET;
+  return { ok: true, data: data as ResolvedSessionAccess };
+}
+
+export async function fetchTarget(
   selector: SessionAccessSelector,
   expected: ExpectedSessionTarget | null,
   signal: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<TargetResult> {
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  const res = await fetch(`/api/tmux/target?${targetQueryString(selector, expected)}`, {
-    signal: AbortSignal.any([signal, timeout]),
-    cache: "no-store",
-  });
-  const json = (await res.json().catch(() => null)) as TargetResult | null;
-  if (!json || typeof json !== "object" || !("ok" in json)) {
-    return { ok: false, code: "source-failure", error: "unavailable" };
+  try {
+    const res = await fetchImpl(`/api/tmux/target?${targetQueryString(selector, expected)}`, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+      cache: "no-store",
+    });
+    if (!res.ok) return UNKNOWN_TARGET;
+    return parseTargetResult(await res.json().catch(() => null));
+  } catch {
+    return UNKNOWN_TARGET;
   }
-  return json;
+}
+
+// Each request is tagged with the lifetime captured when it BEGINS (synchronous token + selector +
+// expected binding). A result may act only while that exact lifetime is still current; the
+// completion timestamp is freshness, never proof of generation.
+export type ValidationLifetime = { token: number; selector: string; expected: string };
+export type TargetResponse = { lifetime: ValidationLifetime; result: TargetResult };
+
+export function targetAppliesTo(current: ValidationLifetime, response: ValidationLifetime): boolean {
+  return current.token === response.token && current.selector === response.selector
+    && current.expected === response.expected;
+}
+
+// A new lifetime is a new query entry: no in-flight or cached result of the previous one exists
+// under it, so an explicit revalidation always issues a real request.
+export function targetQueryKey(selector: string, expected: string, token: number) {
+  return ["tmux", "target", selector, expected, token] as const;
+}
+
+export type TargetApplication =
+  | { kind: "ignore" }
+  | { kind: "expired" }
+  | { kind: "failure"; status: Extract<AccessStatus, "unknown" | "unavailable" | "lost-target" | "expired" | "unconfigured"> }
+  | { kind: "ok"; data: ResolvedSessionAccess };
+
+export function targetApplication(
+  response: TargetResponse | undefined,
+  current: ValidationLifetime | null,
+  receivedAt: number,
+  now: number,
+  notBefore: number,
+): TargetApplication {
+  if (!current || !response || !targetAppliesTo(current, response.lifetime)) return { kind: "ignore" };
+  if (receivedAt < notBefore) return { kind: "ignore" };
+  if (targetFreshness(receivedAt, now) === "expired") return { kind: "expired" };
+  if (!response.result.ok) return { kind: "failure", status: accessFailureStatus(response.result.code) };
+  return { kind: "ok", data: response.result.data };
 }
 
 export type FocusedLocation =
@@ -153,6 +217,12 @@ export default function SessionsPage() {
   // response can only affect a frame whose selector AND token still match.
   const tokenRef = useRef(0);
   const bumpToken = () => { tokenRef.current += 1; return tokenRef.current; };
+  // Validation lifetime: bumped ONLY when a NEW validation is required (open, reconnect, show,
+  // release). It is part of the request key, so those actions issue a genuinely fresh request and
+  // an in-flight/cached result from a previous lifetime can never stand in for it. A failure or
+  // expiry does NOT bump it: ordinary polling continues, but the reducer latches the frame off.
+  const validationRef = useRef(0);
+  const bumpValidation = () => { validationRef.current += 1; return validationRef.current; };
 
   const projects = useMission<ProjectScan>("projects", 10_000, view === "mosaic");
   const hub = useMission<HubEnvelopeData>("hub", 10_000, view === "mosaic");
@@ -172,15 +242,27 @@ export default function SessionsPage() {
 
   const selectorKey = focus ? selectorIdentity(focus.selector) : "";
   const expectedKey = expected ? `${expected.target}|${expected.incarnation}` : "";
+  const validationToken = validationRef.current;
   const target = useQuery({
-    queryKey: ["tmux", "target", selectorKey, expectedKey],
-    queryFn: ({ signal }) => fetchTarget(focus!.selector, expectedRef.current, signal),
+    // The lifetime token is part of the key: every explicit revalidation asks a NEW question
+    // instead of being answered from an in-flight or cached result of the previous one.
+    queryKey: targetQueryKey(selectorKey, expectedKey, validationToken),
+    queryFn: async ({ signal }): Promise<TargetResponse> => {
+      const previous = focusRef.current;
+      const previousExpected = expectedRef.current;
+      const lifetime: ValidationLifetime = {
+        token: validationRef.current,
+        selector: previous ? selectorIdentity(previous.selector) : "",
+        expected: previousExpected ? `${previousExpected.target}|${previousExpected.incarnation}` : "",
+      };
+      if (!previous) return { lifetime, result: UNKNOWN_TARGET };
+      const result = await fetchTarget(previous.selector, previousExpected, signal);
+      return { lifetime, result };
+    },
     enabled: mounted && focus !== null && visible,
     refetchInterval: TARGET_POLL_MS,
     retry: false,
   });
-  const refetchRef = useRef(target.refetch);
-  refetchRef.current = target.refetch;
 
   const clearExpiry = useCallback(() => {
     if (expiryRef.current !== null) {
@@ -209,6 +291,7 @@ export default function SessionsPage() {
       setView("detail");
       notBeforeRef.current = Date.now();
       bumpToken();
+      bumpValidation();
       dispatchLifecycle({ type: "open" });
     } else if (location.kind === "invalid") {
       setView("detail");
@@ -231,39 +314,49 @@ export default function SessionsPage() {
       } else if (focusRef.current) {
         notBeforeRef.current = Date.now();
         bumpToken();
+        bumpValidation();
         dispatchLifecycle({ type: "show" });
-        refetchRef.current();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [clearExpiry]);
 
-  // One validation effect: expiry, source/target failure and the gated RO attach. A healthy poll
-  // only refreshes facts — the iframe src/key stay untouched.
+  // One validation effect: expiry, source/target failure and the gated RO attach. Both success and
+  // failure act only on the exact lifetime their request began in. A healthy poll only refreshes
+  // facts — the iframe src/key stay untouched — and a failure latches the frame off, so a later
+  // ordinary success can update metadata but never reattach without a new explicit lifetime.
   useEffect(() => {
-    if (!mounted || !visible || !focus || !target.data) return;
+    if (!mounted || !visible || !focus) return;
     const receivedAt = target.dataUpdatedAt;
-    if (receivedAt < notBeforeRef.current) return;
-    if (targetFreshness(receivedAt, Date.now()) === "expired") {
+    const selector = focusRef.current?.selector ?? null;
+    const binding = expectedRef.current;
+    const current: ValidationLifetime = {
+      token: validationRef.current,
+      selector: selector ? selectorIdentity(selector) : "",
+      expected: binding ? `${binding.target}|${binding.incarnation}` : "",
+    };
+    const application = targetApplication(target.data, current, receivedAt, Date.now(), notBeforeRef.current);
+    if (application.kind === "ignore") return;
+    if (application.kind === "expired") {
       clearExpiry();
       bumpToken();
       dispatchLifecycle({ type: "failure", status: "expired" });
       return;
     }
-    const result = target.data;
-    if (!result.ok) {
+    if (application.kind === "failure") {
       clearExpiry();
       setResolved(null);
       bumpToken();
-      dispatchLifecycle({ type: "failure", status: accessFailureStatus(result.code) });
+      dispatchControl({ type: "reset" });
+      dispatchLifecycle({ type: "failure", status: application.status });
       return;
     }
-    setResolved(result.data);
-    if (expectedRef.current === null) setExpected(result.data.expected);
-    const current = lifecycleRef.current;
-    if (current.pendingAttach) dispatchLifecycle({ type: "validation", roUrl: result.data.roUrl });
-    if (current.pendingAttach || current.frame) armExpiry(receivedAt);
+    setResolved(application.data);
+    if (expectedRef.current === null) setExpected(application.data.expected);
+    const lifecycleNow = lifecycleRef.current;
+    if (lifecycleNow.pendingAttach) dispatchLifecycle({ type: "validation", roUrl: application.data.roUrl });
+    if (lifecycleNow.pendingAttach || lifecycleNow.frame) armExpiry(receivedAt);
   }, [target.data, target.dataUpdatedAt, visible, mounted, focus, armExpiry, clearExpiry]);
 
   function openSelector(selector: SessionAccessSelector, origin: Focus["origin"]) {
@@ -274,6 +367,7 @@ export default function SessionsPage() {
     setView("detail");
     notBeforeRef.current = Date.now();
     bumpToken();
+    bumpValidation();
     dispatchLifecycle({ type: "open" });
     dispatchControl({ type: "reset" });
   }
@@ -283,8 +377,8 @@ export default function SessionsPage() {
     clearExpiry();
     notBeforeRef.current = Date.now();
     bumpToken();
+    bumpValidation();
     dispatchLifecycle({ type: "reconnect" });
-    refetchRef.current();
   }
 
   async function postJson<T>(url: string, body: unknown): Promise<{ ok: boolean; data?: T; error?: string }> {
@@ -337,18 +431,17 @@ export default function SessionsPage() {
     const token = bumpToken();
     controlBusyRef.current = true;
     clearExpiry();
-    // Synchronous read-only transition BEFORE any await; the audit cannot restore RW.
+    // Synchronous read-only transition BEFORE any await; the audit cannot restore RW. The release
+    // itself starts a NEW validation lifetime, so the RO reattach needs its own fresh success.
     dispatchLifecycle({ type: "releaseStart" });
     dispatchControl({ type: "request", action: "release" });
+    bumpValidation();
+    notBeforeRef.current = Date.now();
     try {
       const res = await postJson("/api/tmux/release-control", { selector, expected: binding });
       const stillCurrent = tokenRef.current === token
         && focusRef.current !== null && selectorIdentity(focusRef.current.selector) === selectorIdentity(selector);
       dispatchControl({ type: "settle", action: "release", ok: res.ok, error: res.ok ? null : (res.error ?? t("controlFailed")), current: stillCurrent });
-      if (stillCurrent) {
-        notBeforeRef.current = Date.now();
-        refetchRef.current();
-      }
     } finally {
       controlBusyRef.current = false;
     }
