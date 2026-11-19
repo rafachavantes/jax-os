@@ -61,6 +61,7 @@ export type FileCheckpoint = {
   processedAt: number;
   child?: boolean;
   discarding?: boolean;
+  warning?: string | null;
 };
 
 export const UNKNOWN_MODEL_FILTER = "__unknown__";
@@ -288,6 +289,7 @@ export function getFileCheckpoint(
         discarding: number;
         done: number;
         processed_at: number | null;
+        last_warning: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -304,21 +306,22 @@ export function getFileCheckpoint(
     processedAt: row.processed_at ?? 0,
     child: row.child === 1,
     discarding: row.discarding === 1,
+    warning: row.last_warning,
   };
 }
 
 function writeFileCheckpoint(db: Database.Database, cp: FileCheckpoint, now: number): void {
   db.prepare(
     `INSERT INTO native_usage_files
-       (source, identity, child, generation, dev, ino, size, mtime, offset, discarding, done, processed_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       (source, identity, child, generation, dev, ino, size, mtime, offset, discarding, done, processed_at, last_warning, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (source, identity) DO UPDATE SET
        child = excluded.child,
        generation = excluded.generation, dev = excluded.dev, ino = excluded.ino,
        size = excluded.size, mtime = excluded.mtime, offset = excluded.offset,
        discarding = excluded.discarding, done = excluded.done,
        processed_at = excluded.processed_at, updated_at = excluded.updated_at,
-       failed_until = 0, last_warning = NULL`,
+       failed_until = 0, last_warning = excluded.last_warning`,
   ).run(
     cp.source,
     cp.identity,
@@ -332,6 +335,7 @@ function writeFileCheckpoint(db: Database.Database, cp: FileCheckpoint, now: num
     cp.discarding ? 1 : 0,
     cp.done ? 1 : 0,
     cp.processedAt,
+    cp.warning ?? null,
     now,
   );
 }
@@ -503,6 +507,11 @@ export function finishDiscoveryCycle(
         .get(source, cycle) as { n: number } | undefined;
       if (!failed) {
         db.prepare("DELETE FROM native_usage_dirs WHERE source = ? AND cycle < ?").run(source, cycle);
+        // A complete enumeration with no current directory failure proves a file marked
+        // missing is still gone; measured items/contexts/session facts are never touched.
+        db.prepare(
+          "DELETE FROM native_usage_files WHERE source = ? AND last_warning = 'missing-file'",
+        ).run(source);
       }
     }
     db.prepare(
@@ -527,12 +536,14 @@ export function registerNativeFile(
       )
       .run(source, identity, child ? 1 : 0, now);
     if (result.changes === 0) {
-      db.prepare("UPDATE native_usage_files SET child = ?, updated_at = ? WHERE source = ? AND identity = ?").run(
-        child ? 1 : 0,
-        now,
-        source,
-        identity,
-      );
+      // Positive rediscovery clears an old missing-file fact/retry so a complete cycle
+      // cannot retire a file that came back; other warnings survive.
+      db.prepare(
+        `UPDATE native_usage_files SET child = ?, updated_at = ?,
+           failed_until = CASE WHEN last_warning = 'missing-file' THEN 0 ELSE failed_until END,
+           last_warning = CASE WHEN last_warning = 'missing-file' THEN NULL ELSE last_warning END
+         WHERE source = ? AND identity = ?`,
+      ).run(child ? 1 : 0, now, source, identity);
     }
     return result.changes > 0;
   }).immediate();
@@ -616,11 +627,12 @@ export function markFileCurrent(
   size: number,
   mtime: number,
   now: number,
+  warning: string | null = null,
 ): void {
   db.prepare(
-    `UPDATE native_usage_files SET size = ?, mtime = ?, failed_until = 0, last_warning = NULL, updated_at = ?
+    `UPDATE native_usage_files SET size = ?, mtime = ?, failed_until = 0, last_warning = ?, updated_at = ?
       WHERE source = ? AND identity = ?`,
-  ).run(size, mtime, now, source, identity);
+  ).run(size, mtime, warning, now, source, identity);
 }
 
 // Safe persisted failure facts survive the poll that skipped the failed entry; only a
@@ -708,7 +720,9 @@ export function applyFileBatch(
 // OpenCode cursor state: canonical decimal rowid strings, never JS numbers.
 
 export type OpenCodeTableCursor = { after: string | null; ceiling: string | null; done: boolean };
-export type OpenCodeCursorState = { v: 1; v1: OpenCodeTableCursor; v2: OpenCodeTableCursor };
+export type OpenCodeNativeCursor = { v: 1; v1: OpenCodeTableCursor; v2: OpenCodeTableCursor };
+// `complete` is private own state: it never widens the fixed native helper protocol.
+export type OpenCodeCursorState = OpenCodeNativeCursor & { complete: boolean };
 
 const ROWID_RE = /^-?\d{1,20}$/;
 
@@ -728,6 +742,7 @@ export function canonicalRowId(value: unknown): string | null {
 export function freshOpenCodeCursor(): OpenCodeCursorState {
   return {
     v: 1,
+    complete: false,
     v1: { after: null, ceiling: null, done: false },
     v2: { after: null, ceiling: null, done: false },
   };
@@ -749,6 +764,8 @@ function parseCursorState(raw: unknown): OpenCodeCursorState {
   if (typeof raw !== "object" || raw === null) return out;
   const state = raw as Record<string, unknown>;
   if (state.v !== 1) return out;
+  // Fail closed: an absent/legacy marker means the first cycle is still unfinished.
+  out.complete = state.complete === true;
   for (const key of ["v1", "v2"] as const) {
     const parsed = sanitizeCursor(state[key]);
     if (parsed) out[key] = parsed;

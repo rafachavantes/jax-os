@@ -2203,3 +2203,487 @@ describe("strict OpenCode helper reply contract", () => {
     expect(min?.next.v1.after).toBe("-9223372036854775808");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Refresh lifecycle, stable tails, failure categories and helper diagnostics.
+
+describe("background refresh and genuinely pending work", () => {
+  const statusOf = (deps: NativeCollectorDeps, source: "claude" | "codex" | "opencode" = "claude") =>
+    getSourceStatuses(deps.db).find((s) => s.source === source);
+  const cycleOf = (deps: NativeCollectorDeps) =>
+    (deps.db.prepare("SELECT cycle, state, last_complete FROM native_usage_discovery WHERE source = 'claude'").get() as
+      | { cycle: number; state: string; last_complete: number | null }
+      | undefined);
+  const itemTotal = (deps: NativeCollectorDeps) =>
+    (deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number }).n;
+  const steppingPass = (deps: NativeCollectorDeps) => {
+    let now = NOW;
+    return () => {
+      now += 61;
+      const at = now;
+      return runNativeUsagePass({ ...deps, now: () => at });
+    };
+  };
+
+  it("keeps a completed history refresh as background availability and paces new pending files", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    for (let i = 0; i < 70; i += 1) {
+      writeClaude(deps, `p${String(i).padStart(2, "0")}/f.jsonl`, [claudeLine(`m-${i}`, { sessionId: `s-${i}` })]);
+    }
+    const pass = steppingPass(deps);
+    let guard = 0;
+    const states: string[] = [];
+    while (guard < 200) {
+      await pass();
+      guard += 1;
+      const status = statusOf(deps);
+      states.push(status?.state ?? "none");
+      const discovery = cycleOf(deps);
+      if (itemTotal(deps) === 70 && status?.state === "available" && discovery?.state === "complete") break;
+    }
+    expect(states).toContain("indexing");
+    expect(itemTotal(deps)).toBe(70);
+    expect(statusOf(deps)?.state).toBe("available");
+
+    // The next pass starts a refresh cycle over already-indexed history: it must stay
+    // available, surface the background diagnostic and never fall back to steady indexing.
+    const initialCycle = cycleOf(deps)!.cycle;
+    while (cycleOf(deps)!.cycle === initialCycle && guard < 400) {
+      await pass();
+      guard += 1;
+    }
+    expect(cycleOf(deps)!.cycle).toBeGreaterThan(initialCycle);
+    const refreshCycle = cycleOf(deps)!.cycle;
+    let refreshPasses = 0;
+    let sawBackground = false;
+    const refreshStates: string[] = [];
+    while (guard < 600) {
+      await pass();
+      guard += 1;
+      refreshPasses += 1;
+      const status = statusOf(deps);
+      refreshStates.push(status?.state ?? "none");
+      if ((status?.warnings ?? []).includes("background-refresh")) sawBackground = true;
+      if (cycleOf(deps)!.cycle !== refreshCycle) break;
+      if (cycleOf(deps)!.state === "complete") break;
+    }
+    expect(refreshStates.every((s) => s === "available")).toBe(true);
+    expect(sawBackground).toBe(true);
+    expect(refreshPasses).toBeGreaterThan(0);
+
+    // Files added before the final unvisited directory (p69 sorts last) are discovered
+    // within the remaining bounded discovery passes of the next cycle; more than one
+    // ingestion pass of pending files keeps the source indexing until they complete.
+    for (let i = 0; i < 8; i += 1) {
+      writeClaude(deps, `p69/extra${i}.jsonl`, [claudeLine(`m-extra-${i}`, { sessionId: `s-extra-${i}` })]);
+    }
+    while (cycleOf(deps)!.cycle === refreshCycle && guard < 800) {
+      await pass();
+      guard += 1;
+    }
+    const discoveryCycle = cycleOf(deps)!.cycle;
+    let discoveryPasses = 0;
+    let pendingStateSeen = false;
+    while (guard < 1000) {
+      await pass();
+      guard += 1;
+      discoveryPasses += 1;
+      if (statusOf(deps)?.state === "indexing") pendingStateSeen = true;
+      const registered = deps.db
+        .prepare("SELECT COUNT(*) AS n FROM native_usage_files WHERE source = 'claude' AND identity LIKE 'p69/extra%'")
+        .get() as { n: number };
+      if (registered.n === 8 && cycleOf(deps)!.state === "complete") break;
+      if (cycleOf(deps)!.cycle !== discoveryCycle) break;
+    }
+    expect(discoveryPasses).toBeLessThanOrEqual(80);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_files WHERE source = 'claude' AND identity LIKE 'p69/extra%'").get())
+      .toEqual({ n: 8 });
+    expect(pendingStateSeen).toBe(true);
+    let extraGuard = 0;
+    while (extraGuard < 30) {
+      const row = deps.db.prepare("SELECT 1 AS n FROM native_usage_items WHERE item_id = 'm-extra-0'").get() as { n: number } | undefined;
+      if (row) break;
+      await pass();
+      extraGuard += 1;
+    }
+    expect(deps.db.prepare("SELECT 1 AS n FROM native_usage_items WHERE item_id = 'm-extra-0'").get()).toEqual({ n: 1 });
+
+    // An insertion behind the cursor is not found in the remainder of that cycle; the
+    // next cycle re-enumerates the directory and picks it up.
+    while (cycleOf(deps)!.state === "complete" && cycleOf(deps)!.cycle === discoveryCycle && guard < 1200) {
+      await pass();
+      guard += 1;
+    }
+    const cursorCycle = cycleOf(deps)!.cycle;
+    let sawDoneDir = false;
+    while (!sawDoneDir && cycleOf(deps)!.cycle === cursorCycle && guard < 1400) {
+      await pass();
+      guard += 1;
+      const dir = deps.db.prepare("SELECT state, cycle FROM native_usage_dirs WHERE source = 'claude' AND path = 'p00'").get() as
+        | { state: string; cycle: number }
+        | undefined;
+      sawDoneDir = dir?.cycle === cursorCycle && dir.state === "done";
+    }
+    if (cycleOf(deps)!.cycle === cursorCycle) {
+      writeClaude(deps, "p00/behind.jsonl", [claudeLine("m-behind", { sessionId: "s-behind" })]);
+      while (cycleOf(deps)!.cycle === cursorCycle && guard < 1600) {
+        await pass();
+        guard += 1;
+      }
+      expect(deps.db.prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'").get())
+        .toBeUndefined();
+      const nextCycle = cycleOf(deps)!.cycle;
+      let nextPasses = 0;
+      while (nextPasses < 80) {
+        const row = deps.db.prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'").get() as
+          | { n: number }
+          | undefined;
+        if (row) break;
+        if (cycleOf(deps)!.cycle !== nextCycle && cycleOf(deps)!.state === "complete") break;
+        await pass();
+        nextPasses += 1;
+      }
+      expect(deps.db.prepare("SELECT 1 AS n FROM native_usage_files WHERE source = 'claude' AND identity = 'p00/behind.jsonl'").get())
+        .toEqual({ n: 1 });
+    }
+    deps.db.close();
+  }, 120_000);
+
+  it("settles a physically unchanged unterminated tail without losing append recovery", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    const complete = claudeLine("m-complete");
+    const partial = JSON.stringify({
+      type: "assistant", sessionId: "sess-1", timestamp: "2026-11-17T11:00:00Z",
+      message: { id: "m-tail", usage: { input_tokens: 2, output_tokens: 2 } },
+    });
+    const path = join(deps.roots.claude, "p/partial.jsonl");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${complete}\n${partial.slice(0, 20)}`);
+    let now = NOW;
+    const pass = () => {
+      now += 61;
+      const at = now;
+      return runNativeUsagePass({ ...deps, now: () => at });
+    };
+
+    await pass();
+    let cp = getFileCheckpoint(deps.db, "claude", "p/partial.jsonl");
+    expect(cp?.done).toBe(false);
+    const preTail = cp!.offset;
+    expect(preTail).toBeLessThan(cp!.size);
+
+    await pass();
+    cp = getFileCheckpoint(deps.db, "claude", "p/partial.jsonl");
+    expect(cp?.done).toBe(true);
+    expect(cp?.offset).toBe(preTail);
+    expect(getPersistentWarnings(deps.db, "claude")).toContain("incomplete-tail");
+    expect(statusOf(deps)?.state).toBe("available");
+
+    // The unchanged fast path preserves and re-emits the warning.
+    await pass();
+    expect(getFileCheckpoint(deps.db, "claude", "p/partial.jsonl")).toMatchObject({ done: true, offset: preTail });
+    expect(getPersistentWarnings(deps.db, "claude")).toContain("incomplete-tail");
+    expect(statusOf(deps)?.warnings).toContain("incomplete-tail");
+    expect(statusOf(deps)?.state).toBe("available");
+
+    appendFileSync(path, `${partial.slice(20)}\n`);
+    for (let passIndex = 0; passIndex < 6; passIndex += 1) {
+      await pass();
+      const count = deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get() as { n: number };
+      if (count.n === 2) break;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 2 });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-tail'").get()).toEqual({ n: 1 });
+    expect(getPersistentWarnings(deps.db, "claude")).not.toContain("incomplete-tail");
+    expect(getFileCheckpoint(deps.db, "claude", "p/partial.jsonl")).toMatchObject({ done: true });
+
+    rmSync(path);
+    writeFileSync(path, `${complete}\n`);
+    for (let passIndex = 0; passIndex < 6; passIndex += 1) {
+      await pass();
+      const cp = getFileCheckpoint(deps.db, "claude", "p/partial.jsonl");
+      if (cp?.done && cp.offset === cp.size) break;
+    }
+    expect(getFileCheckpoint(deps.db, "claude", "p/partial.jsonl")).toMatchObject({ done: true, offset: fsStatSync(path).size });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-complete'").get()).toEqual({ n: 1 });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 2 });
+    expect(getPersistentWarnings(deps.db, "claude")).not.toContain("incomplete-tail");
+    deps.db.close();
+  }, 60_000);
+
+  it("indexes the first OpenCode cycle then keeps completed re-sweeps available", async () => {
+    const row = {
+      projection: "v2", session_id: "ses-1", message_id: "msg-1", parent_session_id: null,
+      model_id: "model-x", provider_id: "provider-x", agent: "build",
+      created: 1_794_909_600_000, updated: 1_794_909_800_000,
+      cost: 12.5, input: 100, output: 30, reasoning: 7, cache_read: 11, cache_write: 5,
+    };
+    const reply = (next: unknown, rows: unknown[] = []) =>
+      JSON.stringify({ v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows, next, warnings: {} });
+    const firstPage = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "1", ceiling: "2", done: false } }, [row]);
+    const completePage = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "2", ceiling: "2", done: true } });
+    const resweepPage = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "1", ceiling: "1", done: false } }, [
+      { ...row, updated: 1_794_910_000_000, output: 40 },
+    ]);
+    const resweepDone = reply({ v1: { after: "1", ceiling: "1", done: true }, v2: { after: "1", ceiling: "1", done: true } });
+    let calls = 0;
+    const argvStates: string[] = [];
+    const deps = makeDeps({
+      enabled: { claude: false, codex: false, opencode: true },
+      exec: async (_file, args) => {
+        argvStates.push(args[6]);
+        calls += 1;
+        if (calls === 1) return { stdout: firstPage };
+        if (calls === 2) return { stdout: completePage };
+        if (calls === 3) return { stdout: resweepPage };
+        return { stdout: resweepDone };
+      },
+    });
+    writeFileSync(deps.roots.opencodeDb, "");
+    let now = NOW;
+    const pass = () => {
+      now += 61;
+      const at = now;
+      return runNativeUsagePass({ ...deps, now: () => at });
+    };
+
+    await pass();
+    expect(statusOf(deps, "opencode")?.state).toBe("indexing");
+    expect(getOpenCodeCursor(deps.db).complete).toBe(false);
+    expect(Object.keys(JSON.parse(argvStates[0])).sort()).toEqual(["v", "v1", "v2"]);
+
+    await pass();
+    expect(statusOf(deps, "opencode")?.state).toBe("available");
+    expect(getOpenCodeCursor(deps.db).complete).toBe(true);
+    expect(getOpenCodeCursor(deps.db)).toMatchObject({
+      v1: { after: null, ceiling: null, done: false },
+      v2: { after: null, ceiling: null, done: false },
+    });
+
+    // A re-sweep after first completion is background availability, not indexing.
+    const callsBeforeWait = calls;
+    await runNativeUsagePass({ ...deps, now: () => now + 30 });
+    expect(calls).toBe(callsBeforeWait);
+    await pass();
+    expect(statusOf(deps, "opencode")?.state).toBe("available");
+    expect(statusOf(deps, "opencode")?.warnings).toContain("background-refresh");
+    expect(getOpenCodeCursor(deps.db).complete).toBe(true);
+    expect(Object.keys(JSON.parse(argvStates.at(-1)!)).sort()).toEqual(["v", "v1", "v2"]);
+    const updated = queryNativeUsage(deps.db, { period: 30, now: NOW });
+    expect(updated.byAgent.find((a) => a.name === "build")?.allOutput).toBe(47);
+
+    await pass();
+    expect(statusOf(deps, "opencode")?.state).toBe("available");
+    expect(statusOf(deps, "opencode")?.warnings).not.toContain("background-refresh");
+    expect(getOpenCodeCursor(deps.db).complete).toBe(true);
+
+    // Restart: the marker survives and no helper input widens the strict protocol.
+    const restarted = { ...deps, exec: async () => ({ stdout: reply({ v1: { after: null, ceiling: null, done: true }, v2: { after: null, ceiling: null, done: true } }) }) };
+    now += 61;
+    await runNativeUsagePass({ ...restarted, now: () => now });
+    expect(getOpenCodeCursor(deps.db).complete).toBe(true);
+    expect(statusOf(deps, "opencode")?.state).toBe("available");
+    deps.db.close();
+  }, 60_000);
+});
+
+describe("real failure categories and quiet non-usage records", () => {
+  const statusOf = (deps: NativeCollectorDeps, source: "claude" | "codex" | "opencode" = "claude") =>
+    getSourceStatuses(deps.db).find((s) => s.source === source);
+  const registryRow = (deps: NativeCollectorDeps, identity: string) =>
+    deps.db.prepare("SELECT * FROM native_usage_files WHERE source = 'claude' AND identity = ?").get(identity) as
+      | { last_warning: string | null; done: number; offset: number }
+      | undefined;
+
+  it("retires only a confirmed missing file after a complete cycle and keeps its usage", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(deps, "proj/keep.jsonl", [claudeLine("m-keep", { sessionId: "s-keep" })]);
+    writeClaude(deps, "proj/gone.jsonl", [claudeLine("m-gone", { sessionId: "s-gone" })]);
+    let now = NOW;
+    const pass = () => {
+      now += 61;
+      const at = now;
+      return runNativeUsagePass({ ...deps, now: () => at });
+    };
+    for (let i = 0; i < 8; i += 1) {
+      await pass();
+      if (statusOf(deps)?.state === "available") break;
+    }
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 2 });
+    rmSync(join(deps.roots.claude, "proj", "gone.jsonl"));
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i += 1) {
+      await pass();
+      for (const warning of statusOf(deps)?.warnings ?? []) seen.add(warning);
+      if (registryRow(deps, "proj/gone.jsonl") === undefined) break;
+    }
+    expect([...seen]).not.toContain("symlink-escape");
+    expect(registryRow(deps, "proj/gone.jsonl")).toBeUndefined();
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 2 });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-gone'").get()).toEqual({ n: 1 });
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-keep'").get()).toEqual({ n: 1 });
+
+    // Reappearance is a fresh safe discovery; dedupe keeps the measured item single.
+    writeClaude(deps, "proj/gone.jsonl", [claudeLine("m-gone", { sessionId: "s-gone" })]);
+    for (let i = 0; i < 30; i += 1) {
+      await pass();
+      if (registryRow(deps, "proj/gone.jsonl")) break;
+    }
+    expect(registryRow(deps, "proj/gone.jsonl")).toBeDefined();
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-gone'").get()).toEqual({ n: 1 });
+    deps.db.close();
+  }, 60_000);
+
+  it("keeps a rediscovered unreadable file with a read-failed fact instead of retiring it", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(deps, "proj/gone.jsonl", [claudeLine("m-gone")]);
+    let now = NOW;
+    const pass = () => {
+      now += 61;
+      const at = now;
+      return runNativeUsagePass({ ...deps, now: () => at });
+    };
+    for (let i = 0; i < 8; i += 1) {
+      await pass();
+      if (statusOf(deps)?.state === "available") break;
+    }
+    appendFileSync(join(deps.roots.claude, "proj", "gone.jsonl"), `${claudeLine("m-more", { sessionId: "s-more" })}\n`);
+    deps.fs = {
+      ...nativeFs,
+      open: async (target) => {
+        if (target.endsWith("gone.jsonl")) throw new Error("EACCES");
+        return nativeFs.open(target);
+      },
+    };
+    for (let i = 0; i < 30; i += 1) {
+      await pass();
+      if (registryRow(deps, "proj/gone.jsonl")?.last_warning === "read-failed") break;
+    }
+    expect(registryRow(deps, "proj/gone.jsonl")?.last_warning).toBe("read-failed");
+    for (let i = 0; i < 40; i += 1) await pass();
+    expect(registryRow(deps, "proj/gone.jsonl")?.last_warning).toBe("read-failed");
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE item_id = 'm-gone'").get()).toEqual({ n: 1 });
+    deps.db.close();
+  }, 60_000);
+
+  it("classifies realpath failures without mislabelling them as symlink escapes", async () => {
+    const deps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(deps, "proj/denied.jsonl", [claudeLine("m-denied")]);
+    const deniedAbs = join(deps.roots.claude, "proj", "denied.jsonl");
+    deps.fs = {
+      ...nativeFs,
+      realpath: async (target) => {
+        if (target === deniedAbs) {
+          const error = new Error("EACCES") as Error & { code: string };
+          error.code = "EACCES";
+          throw error;
+        }
+        return nativeFs.realpath(target);
+      },
+    };
+    let now = NOW;
+    for (let i = 0; i < 4; i += 1) await runNativeUsagePass({ ...deps, now: () => (now += 61) });
+    const denied = statusOf(deps);
+    expect(denied?.warnings).toContain("read-failed");
+    expect(denied?.warnings).not.toContain("symlink-escape");
+    expect(denied?.state).toBe("unavailable");
+
+    const missingDeps = makeDeps({ enabled: { claude: true, codex: false, opencode: false } });
+    writeClaude(missingDeps, "proj/vanishing.jsonl", [claudeLine("m-vanish")]);
+    const vanishAbs = join(missingDeps.roots.claude, "proj", "vanishing.jsonl");
+    missingDeps.fs = {
+      ...nativeFs,
+      realpath: async (target) => {
+        if (target === vanishAbs) {
+          const error = new Error("ENOENT") as Error & { code: string };
+          error.code = "ENOENT";
+          throw error;
+        }
+        return nativeFs.realpath(target);
+      },
+    };
+    let missingNow = NOW;
+    for (let i = 0; i < 4; i += 1) await runNativeUsagePass({ ...missingDeps, now: () => (missingNow += 61) });
+    const vanished = statusOf(missingDeps);
+    expect(vanished?.warnings).toContain("missing-file");
+    expect(vanished?.warnings).not.toContain("symlink-escape");
+    deps.db.close();
+    missingDeps.db.close();
+  }, 60_000);
+
+  it("keeps ordinary Codex records quiet while real accounting failures still warn", async () => {
+    const deps = makeDeps({ enabled: { claude: false, codex: true, opencode: false } });
+    const dir = join(deps.roots.codex, "2026", "11", "17");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "rollout-mixed.jsonl"), [
+      JSON.stringify({ type: "session_meta", timestamp: "2026-11-17T09:00:00Z", payload: { id: "root-1", instructions: "SENTINEL" } }),
+      JSON.stringify({ type: "response_item", timestamp: "2026-11-17T09:00:01Z", payload: { type: "message", role: "assistant", content: [] } }),
+      JSON.stringify({ type: "event_msg", timestamp: "2026-11-17T09:00:02Z", payload: { type: "agent_message", message: "hi" } }),
+      codexLine("r-clean"),
+      JSON.stringify({ type: "event_msg", timestamp: "2026-11-17T09:00:03Z", payload: { type: "token_count" } }),
+      "{not-json",
+    ].join("\n") + "\n");
+    await runNativeUsagePass(deps);
+    const status = statusOf(deps, "codex");
+    expect(status?.warnings).toContain("unsupported");
+    expect(status?.warnings).toContain("malformed");
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items WHERE harness = 'codex'").get()).toEqual({ n: 1 });
+    expect(JSON.stringify(getSourceStatuses(deps.db))).not.toContain("SENTINEL");
+    deps.db.close();
+  });
+});
+
+describe("settings retention and fixed helper diagnostics", () => {
+  it("retains last refresh and progress when settings become unreadable", async () => {
+    const deps = makeDeps();
+    writeClaude(deps, "p/one.jsonl", [claudeLine("m-one")]);
+    await runNativeUsagePass(deps);
+    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
+    const before = getSourceStatuses(deps.db).find((s) => s.source === "claude")!;
+    expect(before.lastRefresh).not.toBeNull();
+    deps.settings = () => ({ ok: false, error: "settings-unreadable" });
+    await runNativeUsagePass({ ...deps, now: () => NOW + 122 });
+    for (const status of getSourceStatuses(deps.db)) {
+      expect(status.state).toBe("unavailable");
+      expect(status.warnings).toEqual(["settings-error"]);
+    }
+    const claude = getSourceStatuses(deps.db).find((s) => s.source === "claude")!;
+    expect(claude.lastRefresh).toBe(before.lastRefresh);
+    expect(claude.progress).toEqual(before.progress);
+    expect(deps.db.prepare("SELECT COUNT(*) AS n FROM native_usage_items").get()).toEqual({ n: 1 });
+    deps.db.close();
+  }, 60_000);
+
+  it("maps helper validation failures to localized fixed warnings and never leaks raw text", async () => {
+    const base = mkdtempSync(join(VERIFY_HOME, "helper-map-"));
+    const makeCase = (error: string | undefined) => {
+      const deps = makeDeps({
+        enabled: { claude: false, codex: false, opencode: true },
+        exec: async () => ({ stdout: JSON.stringify({ v: 1, ok: false, ...(error ? { error } : {}) }) }),
+      });
+      writeFileSync(deps.roots.opencodeDb, "");
+      return deps;
+    };
+    const expected: [string | undefined, string][] = [
+      ["bad-argv", "malformed-reply"],
+      ["bad-path", "malformed-reply"],
+      ["bad-state", "malformed-reply"],
+      ["helper-failed", "exec-failed"],
+      ["SENTINEL_RAW_HELPER_ERROR", "exec-failed"],
+      ["schema-fail-closed", "schema-fail-closed"],
+      ["runtime-fail", "runtime-fail"],
+      ["open-failed", "open-failed"],
+      ["query-failed", "query-failed"],
+      ["output-overflow", "output-overflow"],
+    ];
+    for (const [error, warning] of expected) {
+      const deps = makeCase(error);
+      await runNativeUsagePass(deps);
+      const status = getSourceStatuses(deps.db).find((s) => s.source === "opencode")!;
+      expect(status.warnings).toEqual([warning]);
+      expect(JSON.stringify(status)).not.toContain("SENTINEL_RAW_HELPER_ERROR");
+      deps.db.close();
+    }
+    rmSync(base, { recursive: true, force: true });
+  }, 60_000);
+});

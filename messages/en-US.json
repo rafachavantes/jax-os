@@ -706,6 +706,8 @@
         "incompatible": "incompatible"
       },
       "warning": {
+        "background-refresh": "refreshing known history in the background",
+        "incomplete-tail": "latest line is incomplete",
         "settings-error": "settings unreadable",
         "settings-unreadable": "settings unreadable",
         "read-failed": "read failed",

@@ -1051,3 +1051,49 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     db.close();
   });
 });
+
+describe("missing-file retirement", () => {
+  it("retires confirmed missing rows only after a complete cycle without directory failure", () => {
+    const db = openDb(":memory:");
+    registerNativeFile(db, "claude", "a.jsonl", false, NOW);
+    registerNativeFile(db, "claude", "b.jsonl", false, NOW);
+    markFileFailure(db, "claude", "a.jsonl", NOW + 60, NOW, "missing-file");
+    markFileFailure(db, "claude", "b.jsonl", NOW + 60, NOW, "read-failed");
+
+    ensureDiscoveryCycle(db, "claude", NOW, 60);
+    addPendingDir(db, "claude", "bad", false, 1, NOW);
+    markDirDone(db, "claude", "bad", NOW, "subdir-failed");
+    finishDiscoveryCycle(db, "claude", NOW);
+    expect((db.prepare("SELECT identity FROM native_usage_files ORDER BY identity").all() as { identity: string }[])
+      .map((r) => r.identity)).toEqual(["a.jsonl", "b.jsonl"]);
+
+    ensureDiscoveryCycle(db, "claude", NOW + 61, 60);
+    finishDiscoveryCycle(db, "claude", NOW + 61);
+    expect((db.prepare("SELECT identity FROM native_usage_files ORDER BY identity").all() as { identity: string }[])
+      .map((r) => r.identity)).toEqual(["b.jsonl"]);
+    expect(getPersistentWarnings(db, "claude")).toEqual(["read-failed"]);
+    db.close();
+  });
+
+  it("lets positive rediscovery clear a missing fact so a read failure survives as read-failed", () => {
+    const db = openDb(":memory:");
+    registerNativeFile(db, "claude", "a.jsonl", false, NOW);
+    markFileFailure(db, "claude", "a.jsonl", NOW + 60, NOW, "missing-file");
+    db.prepare("UPDATE native_usage_files SET done = 1, offset = 100 WHERE identity = 'a.jsonl'").run();
+    expect(getPersistentWarnings(db, "claude")).toEqual(["missing-file"]);
+
+    registerNativeFile(db, "claude", "a.jsonl", false, NOW + 61);
+    expect(getPersistentWarnings(db, "claude")).toEqual([]);
+    const row = db.prepare("SELECT failed_until, done, offset FROM native_usage_files WHERE identity = 'a.jsonl'").get() as
+      { failed_until: number; done: number; offset: number };
+    expect(row).toEqual({ failed_until: 0, done: 1, offset: 100 });
+
+    markFileFailure(db, "claude", "a.jsonl", NOW + 120, NOW + 61, "read-failed");
+    ensureDiscoveryCycle(db, "claude", NOW + 61, 60);
+    finishDiscoveryCycle(db, "claude", NOW + 61);
+    expect((db.prepare("SELECT identity FROM native_usage_files").all() as { identity: string }[]).map((r) => r.identity))
+      .toEqual(["a.jsonl"]);
+    expect(getPersistentWarnings(db, "claude")).toEqual(["read-failed"]);
+    db.close();
+  });
+});

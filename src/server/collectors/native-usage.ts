@@ -31,6 +31,7 @@ import {
   type FileCheckpoint,
   type NativeContextRow,
   type OpenCodeCursorState,
+  type OpenCodeNativeCursor,
 } from "../db/native-usage";
 import { readGeneralSettings, type SettingsResult } from "../settings";
 import { jaxosHome } from "../env";
@@ -207,10 +208,16 @@ export function parseCodexLine(
   }
 
   let usage: Record<string, unknown> | null = null;
-  if (isObj(payload.usage)) usage = payload.usage;
-  else if (payload.type === "token_count" && isObj(payload.info) && isObj(payload.info.last_token_usage))
+  if (payload.usage !== undefined) {
+    // A recognized usage-bearing form with invalid data stays explicit.
+    if (!isObj(payload.usage)) return { skip: "unsupported" };
+    usage = payload.usage;
+  } else if (payload.type === "token_count") {
+    if (!isObj(payload.info) || !isObj(payload.info.last_token_usage)) return { skip: "unsupported" };
     usage = payload.info.last_token_usage;
-  if (!usage) return { skip: "unsupported" };
+  }
+  // Ordinary chatter (session_meta, response_item, messages) is not a coverage problem.
+  if (!usage) return { skip: "non-usage" };
 
   const sessionId = payload.session_id;
   const threadId = payload.thread_id;
@@ -712,20 +719,29 @@ const joinRel = (a: string, b: string) => (a === "." ? b : `${a}/${b}`);
 const relDepth = (rel: string) => (rel === "." ? 0 : rel.split("/").length);
 const absOf = (root: string, rel: string) => (rel === "." ? root : join(root, ...rel.split("/")));
 
+type Containment =
+  | { ok: true; real: string }
+  | { ok: false; reason: "outside" | "missing" | "read-failed" };
+
 async function containReal(
   scope: IoWindow,
   fs: NativeFs,
   realRoot: string,
   absPath: string,
-): Promise<string | null> {
+): Promise<Containment> {
   let real: string;
   try {
     real = await scope.io(() => fs.realpath(absPath), scope.wallDeadline, () => undefined);
   } catch (error) {
     if (isTimeout(error)) throw error;
-    return null;
+    if (errorCode(error) === "ENOENT") return { ok: false, reason: "missing" };
+    return { ok: false, reason: "read-failed" };
   }
-  return insideRealRoot(realRoot, real) ? real : null;
+  return insideRealRoot(realRoot, real) ? { ok: true, real } : { ok: false, reason: "outside" };
+}
+
+function containmentWarning(reason: "outside" | "missing" | "read-failed"): string {
+  return reason === "outside" ? "symlink-escape" : reason === "missing" ? "missing-file" : "read-failed";
 }
 
 type RootState =
@@ -784,16 +800,14 @@ async function registerEntry(
   const depth = relDepth(rel);
   const safeDir = async (): Promise<boolean> => {
     if (!entry.isDirectory()) return false;
-    const real = await containReal(scope, deps.fs, ctx.realRoot, abs);
-    return real !== null;
+    const contained = await containReal(scope, deps.fs, ctx.realRoot, abs);
+    return contained.ok;
   };
   const safeFile = async (): Promise<boolean> => {
-    const real = await containReal(scope, deps.fs, ctx.realRoot, abs);
-    if (real === null) {
-      ctx.warnings.add("symlink-escape");
-      return false;
-    }
-    return true;
+    const contained = await containReal(scope, deps.fs, ctx.realRoot, abs);
+    if (contained.ok) return true;
+    ctx.warnings.add(containmentWarning(contained.reason));
+    return false;
   };
 
   if (source === "claude") {
@@ -1151,14 +1165,15 @@ async function ingestFile(
 
   const cp = getFileCheckpoint(deps.db, source, id);
   const abs = absOf(deps.roots[source], id);
-  let real: string | null;
+  let contained: Containment;
   try {
-    real = await containReal(scope, deps.fs, realRoot, abs);
+    contained = await containReal(scope, deps.fs, realRoot, abs);
   } catch (error) {
     if (isTimeout(error)) return error.started ? outstanding() : stop();
-    real = null;
+    contained = { ok: false, reason: "read-failed" };
   }
-  if (real === null) return failed("symlink-escape");
+  if (!contained.ok) return failed(containmentWarning(contained.reason));
+  const real = contained.real;
   let info: StatLike;
   try {
     info = await scope.io(() => deps.fs.stat(real!), scope.wallDeadline, () => undefined);
@@ -1175,7 +1190,9 @@ async function ingestFile(
   const mtime = Math.floor(info.mtimeMs / 1000);
   const current = sameGeneration && cp!.done && !cp!.discarding && cp!.size === info.size && cp!.mtime === mtime;
   if (current) {
-    markFileCurrent(deps.db, source, id, info.size, mtime, deps.now());
+    const warning = cp!.warning === "incomplete-tail" ? "incomplete-tail" : null;
+    markFileCurrent(deps.db, source, id, info.size, mtime, deps.now(), warning);
+    if (warning !== null) warnings.add(warning);
     return { processed: false, confirmed: true, items: 0, bytes: 0, pending: false };
   }
 
@@ -1351,17 +1368,26 @@ async function ingestFile(
   if (closeTimedOut) return outstanding(sourceBytes);
   if (scope.expired) return { processed: false, confirmed: false, items: 0, bytes: sourceBytes, pending: false };
 
+  let stableTail = false;
   if (done) {
     if (discarding) {
       // EOF inside an oversized line: keep the discard marker so a later append
       // continues discarding instead of parsing a fragment as a new line.
       lineStart = offset;
     } else if (carry.length > 0) {
+      // A subsequent physically unchanged tail is terminal: keep the checkpoint before
+      // the fragment and surface the fixed warning instead of polling it forever.
+      stableTail =
+        cp !== undefined &&
+        cp.generation === generation &&
+        cp.size === info.size &&
+        cp.mtime === mtime &&
+        cp.offset === lineStart;
       done = false;
     }
   }
   const consumed = done ? offset : lineStart;
-  const completeAtEof = done && carry.length === 0;
+  const completeAtEof = stableTail || (done && carry.length === 0);
 
   const checkpoint: FileCheckpoint = {
     source,
@@ -1376,6 +1402,7 @@ async function ingestFile(
     discarding,
     done: completeAtEof,
     processedAt: deps.now(),
+    warning: stableTail ? "incomplete-tail" : null,
   };
   try {
     const verify = await scope.io(() => deps.fs.stat(real!), scope.wallDeadline, () => undefined);
@@ -1450,6 +1477,19 @@ async function ingestionPass(
   return outcome;
 }
 
+function discoveryCompletion(
+  db: Database.Database,
+  source: "claude" | "codex",
+): { active: boolean; initial: boolean } {
+  const row = db
+    .prepare("SELECT state, last_complete FROM native_usage_discovery WHERE source = ?")
+    .get(source) as { state: "active" | "complete"; last_complete: number | null } | undefined;
+  return {
+    active: row?.state === "active",
+    initial: row === undefined || row.last_complete === null,
+  };
+}
+
 function stateFor(
   source: "claude" | "codex",
   db: Database.Database,
@@ -1457,16 +1497,21 @@ function stateFor(
   coverageFailure: boolean,
 ): SourceState {
   const counts = getRegistryCounts(db, source, now);
-  const discovery = db
-    .prepare("SELECT state FROM native_usage_discovery WHERE source = ?")
-    .get(source) as { state: "active" | "complete" } | undefined;
-  const discoveryActive = discovery?.state === "active";
-  if (discoveryActive || counts.pending > 0) return "indexing";
+  const discovery = discoveryCompletion(db, source);
+  // Genuinely pending known files keep the short initial-work pacing.
+  if (counts.pending > 0) return "indexing";
+  // Only the very first incomplete cycle is initial indexing; later refreshes are
+  // bounded background availability after first completion.
+  if (discovery.initial && discovery.active) return "indexing";
   if (counts.total === 0) return coverageFailure ? "unavailable" : "empty";
   return "available";
 }
 
-const coverageFailureCodes = new Set(["subdir-failed", "discovery-failed", "io-timeout"]);
+const coverageFailureCodes = new Set(["subdir-failed", "discovery-failed", "io-timeout", "read-failed"]);
+const passFailureCodes = new Set([
+  "subdir-failed", "discovery-failed", "io-timeout", "io-pending", "read-failed",
+  "checkpoint-conflict", "file-replaced", "root-unavailable",
+]);
 
 async function runJsonlSourcePass(
   deps: NativeCollectorDeps,
@@ -1611,6 +1656,8 @@ async function runJsonlSourcePass(
     : pending
       ? "indexing"
       : stateFor(source, deps.db, deps.now(), coverageFailure);
+  const discovery = discoveryCompletion(deps.db, source);
+  if (discovery.active && !discovery.initial) warnings.add("background-refresh");
   return {
     items: ingestion?.items ?? 0,
     filesProcessed: ingestion?.filesProcessed ?? 0,
@@ -1900,6 +1947,10 @@ type OpenCodeReply = {
 };
 
 const OPENCODE_WARNING_KEYS = new Set(["malformed", "overlength", "unsupported", "budget"]);
+const HELPER_WARNINGS = new Set([
+  "schema-fail-closed", "runtime-fail", "open-failed", "query-failed", "output-overflow",
+  "exec-failed", "pass-failed",
+]);
 const OPENCODE_MAX_ROWS = 512;
 const OPENCODE_MAX_ROW_BYTES = 16 * 1024;
 const OPENCODE_MAX_ROWS_BYTES = 240 * 1024;
@@ -1907,7 +1958,7 @@ const OPENCODE_MAX_HEADER_BYTES = 16 * 1024;
 
 export function parseOpenCodeReply(
   stdout: string,
-  previous: OpenCodeCursorState,
+  previous: OpenCodeNativeCursor,
 ): OpenCodeReply | null {
   if (Buffer.byteLength(stdout, "utf8") > OPENCODE_BUDGET.maxReplyBytes) return null;
   let raw: unknown;
@@ -2042,6 +2093,8 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   if (!real) return failed("db-invalid");
 
   const cursor = getOpenCodeCursor(deps.db);
+  // The native helper only ever sees its original fixed cursor fields.
+  const nativeCursor: OpenCodeNativeCursor = { v: cursor.v, v1: cursor.v1, v2: cursor.v2 };
   const argv = [
     "--no-env-file",
     `--config=${deps.opencode.configPath}`,
@@ -2049,7 +2102,7 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
     "-e",
     OPENCODE_HELPER_SOURCE,
     real,
-    JSON.stringify(cursor),
+    JSON.stringify(nativeCursor),
   ];
   let stdout: string;
   try {
@@ -2072,10 +2125,18 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   }
   if (isObj(parsedRaw) && parsedRaw.ok === false) {
     const error = typeof parsedRaw.error === "string" ? parsedRaw.error : "helper-failed";
+    // Internal validation codes never reach the client verbatim; known schema/runtime
+    // incompatibilities stay explicit and everything else maps to a fixed local key.
+    const warning =
+      error === "bad-argv" || error === "bad-path" || error === "bad-state"
+        ? "malformed-reply"
+        : HELPER_WARNINGS.has(error)
+          ? error
+          : "exec-failed";
     const state: SourceState = error === "schema-fail-closed" || error === "runtime-fail" ? "incompatible" : "unavailable";
-    return failed(error, state);
+    return failed(warning, state);
   }
-  const reply = parseOpenCodeReply(stdout, cursor);
+  const reply = parseOpenCodeReply(stdout, nativeCursor);
   if (!reply) return failed("malformed-reply");
 
   const items: NativeUsageItem[] = [];
@@ -2088,16 +2149,24 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
   for (const [key, count] of Object.entries(reply.warnings)) {
     if (count > 0) warnings.add(key);
   }
-  const next: OpenCodeCursorState = { v: 1, v1: reply.next.v1, v2: reply.next.v2 };
+  const next: OpenCodeCursorState = { v: 1, complete: false, v1: reply.next.v1, v2: reply.next.v2 };
   const complete = next.v1.done && next.v2.done;
+  // The private completion marker is set atomically with the completing batch and
+  // survives the cursor reset, later cursor writes, restarts and failure paths.
   const persisted: OpenCodeCursorState = complete
-    ? { v: 1, v1: { after: null, ceiling: null, done: false }, v2: { after: null, ceiling: null, done: false } }
-    : next;
+    ? {
+        v: 1,
+        complete: true,
+        v1: { after: null, ceiling: null, done: false },
+        v2: { after: null, ceiling: null, done: false },
+      }
+    : { v: 1, complete: cursor.complete, v1: next.v1, v2: next.v2 };
   persistOpenCodeBatch(deps.db, items, persisted, deps.now());
+  if (!complete && cursor.complete) warnings.add("background-refresh");
   return {
     items: items.length,
     warnings: warnings.values,
-    state: complete ? "available" : "indexing",
+    state: complete || cursor.complete ? "available" : "indexing",
     lastRefresh: deps.now(),
     progress: null,
   };
@@ -2158,15 +2227,18 @@ async function runOneSource(deps: NativeCollectorDeps, source: Harness, enabled:
   }
   try {
     const result = await runJsonlSourcePass(deps, source);
+    // A healthy bounded pass refreshes even when it advances zero items; preparation,
+    // settings, source and IO failures retain the previous successful refresh.
+    const healthy =
+      result.state !== "unavailable" &&
+      !result.stalled &&
+      !result.warnings.some((code) => passFailureCodes.has(code));
     setSourceStatus(
       deps.db,
       {
         source,
         state: result.state,
-        lastRefresh:
-          result.state === "unavailable" || result.stalled || !result.progressed
-            ? previous?.lastRefresh ?? null
-            : now,
+        lastRefresh: healthy ? now : previous?.lastRefresh ?? null,
         progress: { filesDone: result.filesDone, filesTotal: result.filesTotal },
         warnings: result.warnings,
       },
@@ -2201,8 +2273,21 @@ export async function runNativeUsagePass(deps: NativeCollectorDeps): Promise<voi
   const settings = deps.settings();
   const enabled = settingsSources(settings);
   if (enabled === null) {
+    const now = deps.now();
+    const statuses = getSourceStatuses(deps.db);
     for (const source of HARNESSES) {
-      setSourceStatus(deps.db, { source, state: "unavailable", lastRefresh: null, progress: null, warnings: ["settings-error"] }, deps.now());
+      const previous = statuses.find((s) => s.source === source);
+      setSourceStatus(
+        deps.db,
+        {
+          source,
+          state: "unavailable",
+          lastRefresh: previous?.lastRefresh ?? null,
+          progress: previous?.progress ?? null,
+          warnings: ["settings-error"],
+        },
+        now,
+      );
     }
     return;
   }
