@@ -139,7 +139,9 @@ export async function listLivePanes(
     paneIds.add(m[1]);
     // New format: "<pane_pid> <pane_dead> <command…>"; the legacy injected fixtures carry
     // "<pane_pid> <command…>" or only the command, which keep parsing as before.
-    const withDeath = /^([0-9]{1,10})\s+([01])\s+(.*)$/.exec(m[4]);
+    // Native rows may carry a blank pane_current_command, so the command suffix is optional;
+    // the pinned ambiguous `<pid> 0|1` legacy shape is native pane_dead with no command.
+    const withDeath = /^([0-9]{1,10})\s+([01])(?:\s+(.*))?$/.exec(m[4]);
     const withPid = withDeath ? null : /^([0-9]{1,10})\s(.*)$/.exec(m[4]);
     if (withDeath) {
       panePids.set(m[1], Number(withDeath[1]));

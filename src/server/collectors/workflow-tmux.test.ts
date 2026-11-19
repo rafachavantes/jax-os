@@ -178,6 +178,19 @@ describe("runtime command association (MOA-469)", () => {
     expect(old.paneCommands.get("%1")).toBe("codex");
   });
 
+  it("captures native pane_dead with a blank command (F5)", async () => {
+    const run = vi.fn(async () => "%1 234790 1787586213 234800 0\n%2 234790 1787586213 234801 1\n");
+    const live = await listLivePanes(run);
+    expect(live.panePids).toEqual(new Map([["%1", 234800], ["%2", 234801]]));
+    expect(live.paneDead).toEqual(new Map([["%1", false], ["%2", true]]));
+    expect(live.paneCommands.size).toBe(0);
+
+    const spaced = vi.fn(async () => "%1 234790 1787586213 234800 0 \n");
+    const withSuffix = await listLivePanes(spaced);
+    expect(withSuffix.paneDead).toEqual(new Map([["%1", false]]));
+    expect(withSuffix.paneCommands.size).toBe(0);
+  });
+
   it("records the pane_current_command per pane in the live snapshot", async () => {
     const run = vi.fn(async (_file: string, args: string[]) => {
       expect(args).toEqual(["list-panes", "-a", "-F", "#{pane_id} #{pid} #{start_time} #{pane_pid} #{pane_dead} #{pane_current_command}"]);
