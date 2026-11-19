@@ -94,6 +94,9 @@ export type LivePaneSnapshot = {
   paneIds: Set<string>;
   incarnation: string | null;
   panePids?: Map<string, number>;
+  // Explicit tmux `pane_dead` fact where the snapshot carries it. Only a literal `true` blocks a
+  // positive owner; legacy fixtures without the fact keep their existing behavior.
+  paneDead?: Map<string, boolean>;
 };
 
 async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -108,13 +111,118 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
   await Promise.all(workers);
 }
 
-function readWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("identity-timeout")), ms);
+// Hard ceiling of unsettled ORIGINAL proc reads per runtime, across overlapping polls. A public
+// timeout never frees one of these: only the actual read settlement does.
+export const MAX_ORIGINAL_IDENTITY_READS = 8;
+// Default libuv pool scheduling cap. A configured startup pool size n reserves one slot:
+// min(2, max(0, n - 1)); a pool of one/zero or an invalid value admits no identity read.
+export const DEFAULT_IDENTITY_CONCURRENCY = 2;
+
+export function identityConcurrency(env: { UV_THREADPOOL_SIZE?: string | undefined } = process.env as { UV_THREADPOOL_SIZE?: string | undefined }): number {
+  const raw = env.UV_THREADPOOL_SIZE;
+  if (raw === undefined) return DEFAULT_IDENTITY_CONCURRENCY;
+  if (!/^\d+$/.test(raw)) return 0;
+  const size = Number(raw);
+  if (!Number.isSafeInteger(size) || size < 2) return 0;
+  return Math.min(DEFAULT_IDENTITY_CONCURRENCY, size - 1);
+}
+
+// A read that never obtained (or never settled inside) its permit is reported as budget, not as
+// a missing process, so permit exhaustion is visibly partial instead of a false absence.
+export const IDENTITY_BUDGET = "identity-budget" as const;
+export type IdentityOutcome = ProcStat | null | typeof IDENTITY_BUDGET;
+export type IdentityRead = (pid: number, deadline: number) => Promise<IdentityOutcome>;
+export type IdentityReader = { read: IdentityRead };
+
+function readWithinAllowance<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  if (ms <= 0) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    }, ms);
     timer.unref?.();
+    promise.then((value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    });
   });
-  return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
+// Collector-local/persistent runtime closure owning the RAW reads. A pid already pending is
+// reused (never a second original); the same pid gets a fresh operation only after its original
+// settles, so the before/after identity maps stay independent proofs. Scheduling respects the
+// libuv-derived concurrency and the injected five-second deadline; a public per-read timeout
+// returns unknown without cancelling or duplicating the original operation.
+export function createIdentityReader(
+  read: (pid: number) => Promise<string>,
+  opts: { concurrency?: number; now?: () => number; perReadMs?: number } = {},
+): IdentityReader {
+  const concurrency = Math.max(0, Math.min(MAX_ORIGINAL_IDENTITY_READS, opts.concurrency ?? DEFAULT_IDENTITY_CONCURRENCY));
+  const now = opts.now ?? (() => performance.now());
+  const perReadMs = opts.perReadMs ?? IDENTITY_READ_TIMEOUT_MS;
+  type Entry = { startedAt: number; promise: Promise<IdentityOutcome> };
+  const pending = new Map<number, Entry>();
+  const waiters: (() => void)[] = [];
+  let active = 0;
+
+  const release = () => {
+    active -= 1;
+    waiters.shift()?.();
+  };
+
+  const acquire = (entry: Entry, deadline: number): Promise<boolean> => new Promise((resolve) => {
+    const attempt = () => {
+      if (now() >= deadline || now() - entry.startedAt >= perReadMs) {
+        resolve(false);
+        return;
+      }
+      if (active < concurrency) {
+        active += 1;
+        resolve(true);
+        return;
+      }
+      waiters.push(attempt);
+    };
+    attempt();
+  });
+
+  const start = (pid: number, entry: Entry, deadline: number): Promise<IdentityOutcome> =>
+    (async () => {
+      const admitted = await acquire(entry, deadline);
+      try {
+        if (!admitted) return IDENTITY_BUDGET;
+        const stat = parseProcStat(await read(pid));
+        return stat && stat.pid === pid ? stat : null;
+      } catch {
+        return null; // a settled missing/malformed identity stays explicitly unknown
+      } finally {
+        if (admitted) release();
+        pending.delete(pid);
+      }
+    })();
+
+  return {
+    async read(pid: number, deadline: number): Promise<IdentityOutcome> {
+      if (concurrency === 0) return IDENTITY_BUDGET;
+      const t = now();
+      if (t >= deadline) return IDENTITY_BUDGET;
+      let entry = pending.get(pid);
+      if (!entry) {
+        if (pending.size >= MAX_ORIGINAL_IDENTITY_READS) return IDENTITY_BUDGET;
+        const created = { startedAt: t, promise: Promise.resolve(null) } as Entry;
+        pending.set(pid, created);
+        created.promise = start(pid, created, deadline);
+        entry = created;
+      }
+      const outcome = await readWithinAllowance(entry.promise, entry.startedAt + perReadMs - now());
+      return outcome === null ? IDENTITY_BUDGET : outcome;
+    },
+  };
 }
 
 // Priority: live pane PIDs, then every node on a ps-observed chain that reaches a pane, then the
@@ -152,25 +260,22 @@ export type IdentityPhase = {
   deadlineHit: boolean;
 };
 
-// One before/after identity map. Every scheduled read keeps its own 2s bound; the shared deadline
-// stops NEW scheduling only (an in-flight read is never cancelled).
+// One before/after identity map over the runtime reader. The shared deadline stops NEW scheduling
+// only; the reader owns each original read's allowance and releases capacity only on settlement.
 export async function readIdentityPhase(
   pids: number[],
-  read: (pid: number) => Promise<string>,
-  opts: { deadline: number; now: () => number; perReadMs?: number },
+  read: IdentityRead,
+  opts: { deadline: number; now: () => number },
 ): Promise<IdentityPhase> {
   const stats = new Map<number, ProcStat>();
   const attempted = new Set<number>();
   let deadlineHit = false;
   await mapLimit(pids, READ_CONCURRENCY, async (pid) => {
     if (opts.now() >= opts.deadline) { deadlineHit = true; return; }
+    const outcome = await read(pid, opts.deadline);
+    if (outcome === IDENTITY_BUDGET) return; // permit exhaustion stays an explicit budget reason
     attempted.add(pid);
-    try {
-      const stat = parseProcStat(await readWithTimeout(read(pid), opts.perReadMs ?? IDENTITY_READ_TIMEOUT_MS));
-      if (stat && stat.pid === pid) stats.set(pid, stat);
-    } catch {
-      // missing/malformed/timed-out identity stays explicitly unknown
-    }
+    if (outcome && outcome.pid === pid) stats.set(pid, outcome);
   });
   return { stats, attempted, deadlineHit };
 }
@@ -257,6 +362,7 @@ export function attributeOwners(input: AttributeInput): Attribution {
     if (paneStat !== "ok") { unknown(paneStat === "missing" ? "missing" : "race"); continue; }
     if (live === null
       || !live.paneIds.has(pane)
+      || live.paneDead?.get(pane) === true // explicit dead pane never proves a live owner
       || live.incarnation !== input.paneIncarnation
       || live.panePids?.get(pane) !== panePid) {
       unknown("race");
@@ -424,6 +530,8 @@ export type CollectWorkloadsInput = {
   // unknown ownership instead of a second owner.
   verifyPanes?: () => Promise<LivePaneSnapshot>;
   monotonic?: () => number;
+  // Persistent per-runtime raw-read ownership; a direct caller gets its own bounded instance.
+  identityReader?: IdentityReader;
 };
 
 export async function collectWorkloads(input: CollectWorkloadsInput): Promise<WorkloadsSection> {
@@ -431,8 +539,9 @@ export async function collectWorkloads(input: CollectWorkloadsInput): Promise<Wo
   const now = input.monotonic ?? (() => performance.now());
   const deadline = now() + IDENTITY_DEADLINE_MS;
   const pids = orderIdentityPids(snapshot, input.panePids);
-  const before = await readIdentityPhase(pids, input.readProc, { deadline, now });
-  const after = await readIdentityPhase(pids, input.readProc, { deadline, now });
+  const identity = input.identityReader ?? createIdentityReader(input.readProc, { now });
+  const before = await readIdentityPhase(pids, identity.read, { deadline, now });
+  const after = await readIdentityPhase(pids, identity.read, { deadline, now });
 
   let live: LivePaneSnapshot | null = null;
   let warning = input.tmuxWarning ?? null;

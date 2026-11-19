@@ -21,7 +21,7 @@ import {
   type NormalizedPackageCandidate, type PackageObservation, type PackageWarning,
 } from "./alerts";
 import { listLivePanes } from "./workflow-tmux";
-import { collectWorkloads, readProcStat, type WorkloadsSection } from "./workloads";
+import { collectWorkloads, createIdentityReader, readProcStat, type WorkloadsSection } from "./workloads";
 
 export const COMPONENT_IDS = [
   "database", "projects", "tmux", "ttyd", "github", "linear",
@@ -465,6 +465,9 @@ export function createSourceObserver(now: () => number, sleep: (ms: number) => P
 
 export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRuntime {
   const observe = createSourceObserver(deps.now, deps.sleep ?? realSleep);
+  // One raw-read owner per runtime: caller timeouts and overlapping polls share the same bounded
+  // original operations, and only their actual settlement releases capacity.
+  const identityReader = createIdentityReader(deps.readProc);
   let lastTmp: TmpCapacity | null = null;
   let lastTmpAt: string | null = null;
   const observedSections: ComponentFacts["hostProbes"] = { resources: null, workloads: null, packages: null };
@@ -645,6 +648,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
         incarnation: panes?.incarnation ?? null,
         tmuxWarning,
         verifyPanes: () => deps.listPanes(),
+        identityReader,
       });
       observedSections.workloads = section.state !== "unavailable";
       return section;
@@ -811,7 +815,6 @@ export function systemEnvironmentDeps(options: SystemEnvironmentOptions = {}): E
     const { stdout } = await run(file, args, { encoding: "utf8", timeout, maxBuffer, env: { ...env, ...C_LOCALE_ENV } });
     return stdout;
   };
-  const boundedProc = (pid: number) => Promise.race([readProcStat(pid), timeoutAfter(2_000)]);
   return {
     now: options.now ?? Date.now,
     sleep: options.sleep,
@@ -835,7 +838,7 @@ export function systemEnvironmentDeps(options: SystemEnvironmentOptions = {}): E
     realpath: (path) => realpathSync(path),
     packages: () => getPackageObservation(),
     ps: () => runFixed("ps", ["-eo", "pid=,ppid=,uid=,stat=,etimes=,rss=,comm="], 5_000, 2 * 1024 * 1024),
-    readProc: boundedProc,
+    readProc: readProcStat,
   };
 }
 

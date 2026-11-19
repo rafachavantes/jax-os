@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  attributeOwners, buildWorkloadGroups, collectWorkloads, executableFamily, orderIdentityPids,
-  parseProcStat, parsePs, readIdentityPhase, MAX_GROUP_DETAILS, MAX_GROUPS, MAX_PHASE_READS,
+  attributeOwners, buildWorkloadGroups, collectWorkloads, createIdentityReader, executableFamily,
+  identityConcurrency, orderIdentityPids, parseProcStat, parsePs, readIdentityPhase,
+  MAX_GROUP_DETAILS, MAX_GROUPS, MAX_PHASE_READS,
 } from "./workloads";
 
 function statText(pid: number, ppid: number, start: number, comm = "proc"): string {
@@ -100,10 +101,10 @@ describe("proven ancestry (AC6)", () => {
 
   it("changes the initial leaf identity between phases and drops the owner", async () => {
     const snapshot = parsePs(PS_LINES);
-    const before = await readIdentityPhase(orderIdentityPids(snapshot, PANE), chain(STABLE), { deadline: 1e9, now: () => 0 });
+    const before = await readIdentityPhase(orderIdentityPids(snapshot, PANE), createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
     const after = await readIdentityPhase(
       orderIdentityPids(snapshot, PANE),
-      chain({ ...STABLE, 30: { ...STABLE[30], start: 999 } }),
+      createIdentityReader(chain({ ...STABLE, 30: { ...STABLE[30], start: 999 } }), { now: () => 0 }).read,
       { deadline: 1e9, now: () => 0 },
     );
     const attribution = attributeOwners({
@@ -117,9 +118,10 @@ describe("proven ancestry (AC6)", () => {
   it("treats a changed ancestor start tick or PPID as a race", async () => {
     const snapshot = parsePs(PS_LINES);
     const pids = orderIdentityPids(snapshot, PANE);
-    const before = await readIdentityPhase(pids, chain(STABLE), { deadline: 1e9, now: () => 0 });
+    const before = await readIdentityPhase(pids, createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
     const after = await readIdentityPhase(
-      pids, chain({ ...STABLE, 20: { ...STABLE[20], start: 404 } }), { deadline: 1e9, now: () => 0 },
+      pids, createIdentityReader(chain({ ...STABLE, 20: { ...STABLE[20], start: 404 } }), { now: () => 0 }).read,
+      { deadline: 1e9, now: () => 0 },
     );
     const attribution = attributeOwners({
       snapshot, panePids: PANE, paneIncarnation: "10:20", before, after, live: LIVE, partial: false,
@@ -142,12 +144,12 @@ describe("proven ancestry (AC6)", () => {
 
     const loopSnapshot = parsePs([" 50 60 1000 S 1 1 a", " 60 50 1000 S 1 1 b", " 20 1 1000 S 1 1 pane"].join("\n"));
     const loopPids = orderIdentityPids(loopSnapshot, new Map([["%1", 20]]));
-    const loopBefore = await readIdentityPhase(loopPids, chain({
+    const loopBefore = await readIdentityPhase(loopPids, createIdentityReader(chain({
       20: { ppid: 1, start: 1 }, 50: { ppid: 60, start: 2 }, 60: { ppid: 50, start: 3 },
-    }), { deadline: 1e9, now: () => 0 });
-    const loopAfter = await readIdentityPhase(loopPids, chain({
+    }), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
+    const loopAfter = await readIdentityPhase(loopPids, createIdentityReader(chain({
       20: { ppid: 1, start: 1 }, 50: { ppid: 60, start: 2 }, 60: { ppid: 50, start: 3 },
-    }), { deadline: 1e9, now: () => 0 });
+    }), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
     const loop = attributeOwners({
       snapshot: loopSnapshot, panePids: new Map([["%1", 20]]), paneIncarnation: "10:20",
       before: loopBefore, after: loopAfter, live: LIVE, partial: false,
@@ -158,14 +160,24 @@ describe("proven ancestry (AC6)", () => {
     const crossUid = parsePs([" 50 20 0 S 1 1 sudo", " 20 1 1000 S 1 1 pane"].join("\n"));
     const crossStable = { 20: { ppid: 1, start: 1 }, 50: { ppid: 20, start: 2 } };
     const crossPids = orderIdentityPids(crossUid, new Map([["%1", 20]]));
-    const crossBefore = await readIdentityPhase(crossPids, chain(crossStable), { deadline: 1e9, now: () => 0 });
-    const crossAfter = await readIdentityPhase(crossPids, chain(crossStable), { deadline: 1e9, now: () => 0 });
+    const crossBefore = await readIdentityPhase(crossPids, createIdentityReader(chain(crossStable), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
+    const crossAfter = await readIdentityPhase(crossPids, createIdentityReader(chain(crossStable), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
     const cross = attributeOwners({
       snapshot: crossUid, panePids: new Map([["%1", 20]]), paneIncarnation: "10:20",
       before: crossBefore, after: crossAfter, live: LIVE, partial: false,
     });
     expect(cross.ownerByPid.has(50)).toBe(false);
     expect(cross.reasonByPid.get(50)).toBe("cross-uid");
+  });
+
+  it("an explicit dead pane cannot establish a live owner even with a stable recycled PID", async () => {
+    const result = await collectWorkloads({
+      nowMs: 1, psOutput: PS_LINES, panePids: PANE, readProc: chain(STABLE),
+      paneContext: () => null, incarnation: "10:20",
+      verifyPanes: async () => ({ ...LIVE, paneDead: new Map([["%1", true]]) }), monotonic: () => 0,
+    });
+    expect(result.groups.find((g) => g.family === "codex")?.owner.kind).toBe("unknown");
+    expect(result.coverage.partial).toBe(true);
   });
 
   it("a changed/closed pane incarnation yields unknown, never another owner", async () => {
@@ -239,13 +251,96 @@ describe("one before/after identity budget (M5 Task 3)", () => {
   });
 });
 
+describe("raw read ownership across caller timeouts (observation completion Task 3)", () => {
+  it("derives the libuv scheduling cap from the startup pool size, reserving one slot", () => {
+    expect(identityConcurrency({})).toBe(2);
+    expect(identityConcurrency({ UV_THREADPOOL_SIZE: "4" })).toBe(2);
+    expect(identityConcurrency({ UV_THREADPOOL_SIZE: "2" })).toBe(1);
+    expect(identityConcurrency({ UV_THREADPOOL_SIZE: "1" })).toBe(0);
+    expect(identityConcurrency({ UV_THREADPOOL_SIZE: "0" })).toBe(0);
+    expect(identityConcurrency({ UV_THREADPOOL_SIZE: "many" })).toBe(0);
+  });
+
+  it("keeps one original read per pending PID and never starts another after the deadline", async () => {
+    vi.useFakeTimers();
+    let clock = 0;
+    let starts = 0;
+    let active = 0;
+    let maxActive = 0;
+    let hanging = true;
+    let timedOut = false;
+    const startsByPid = new Map<number, number>();
+    const deferred: (() => void)[] = [];
+    let first: Promise<unknown> | null = null;
+    let second: Promise<unknown> | null = null;
+    const readProc = async (pid: number) => {
+      starts += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      startsByPid.set(pid, (startsByPid.get(pid) ?? 0) + 1);
+      if (!hanging) {
+        active -= 1;
+        return statText(pid, pid === 10 ? 1 : 10, 1);
+      }
+      return new Promise<string>((resolve) => {
+        deferred.push(() => {
+          active -= 1;
+          resolve(statText(pid, pid === 10 ? 1 : 10, 1));
+        });
+      });
+    };
+    try {
+      const psOutput = ["10 1 1000 S 1 1 tmux", ...Array.from({ length: 24 }, (_, i) => `${1000 + i} 10 1000 R 1 1 helper`)].join("\n");
+      const identityReader = createIdentityReader(readProc, { now: () => clock });
+      const input = {
+        nowMs: 0, psOutput, panePids: new Map([["%1", 10]]), paneContext: () => null,
+        incarnation: "10:20",
+        verifyPanes: async () => ({ paneIds: new Set(["%1"]), incarnation: "10:20", panePids: new Map([["%1", 10]]) }),
+        monotonic: () => clock, readProc, identityReader,
+      };
+      first = collectWorkloads(input);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(maxActive).toBeLessThanOrEqual(2); // default libuv scheduling cap
+      expect(starts).toBe(2);
+      expect(startsByPid.get(10)).toBe(1);
+
+      second = collectWorkloads(input); // overlapping poll reuses the pending originals
+      await Promise.resolve();
+      expect(startsByPid.get(10)).toBe(1);
+
+      clock += 2_500;
+      await vi.advanceTimersByTimeAsync(2_500);
+      timedOut = true;
+      const afterTimeouts = starts;
+      expect(afterTimeouts).toBe(2); // a public timeout does not release the raw permit
+      clock += 2_600; // now past the shared five-second scheduling deadline
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(starts).toBe(afterTimeouts); // no new original read after the deadline
+      expect(starts).toBeLessThanOrEqual(8); // hard ceiling of unsettled originals
+    } finally {
+      hanging = false;
+      for (const release of deferred.splice(0)) release();
+      if (first) await first.catch(() => {});
+      if (second) await second.catch(() => {});
+      vi.useRealTimers();
+    }
+    expect(timedOut).toBe(true);
+    expect(maxActive).toBeLessThanOrEqual(8);
+    expect(active).toBe(0);
+    const result = await first as Awaited<ReturnType<typeof collectWorkloads>>;
+    expect(result.coverage.partial).toBe(true);
+    expect(result.coverage.reasons.budget).toBeGreaterThan(0);
+  });
+});
+
 describe("grouping and lifecycle (AC5)", () => {
   it("maps fixed browser/helper families, keeps zombies and last-known context", async () => {
     const snapshot = parsePs(PS_LINES);
     const attribution = await (async () => {
       const pids = orderIdentityPids(snapshot, PANE);
-      const before = await readIdentityPhase(pids, chain(STABLE), { deadline: 1e9, now: () => 0 });
-      const after = await readIdentityPhase(pids, chain(STABLE), { deadline: 1e9, now: () => 0 });
+      const before = await readIdentityPhase(pids, createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
+      const after = await readIdentityPhase(pids, createIdentityReader(chain(STABLE), { now: () => 0 }).read, { deadline: 1e9, now: () => 0 });
       return attributeOwners({ snapshot, panePids: PANE, paneIncarnation: "10:20", before, after, live: LIVE, partial: false });
     })();
     const result = buildWorkloadGroups({
