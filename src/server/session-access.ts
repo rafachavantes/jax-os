@@ -3,9 +3,12 @@
 // bases. No persisted state, no target fallback: ambiguity or a changed binding fails visibly.
 
 import { getDb } from "./db";
-import { getProjectPanes, sessionSeats, type HubPane, type LiveSnapshot } from "./db/workflows";
+import { getCodexSessions, getProjectPanes, sessionSeats, type HubPane, type LiveSnapshot } from "./db/workflows";
 import { readGeneralSettings } from "./settings";
 import { collectSessionAccessSnapshot, type SessionAccessSnapshot } from "./collectors/session-access";
+import { collectCodexSnapshot, createCodexConnector, type CodexSnapshot } from "./collectors/workflow-codex";
+import { codexTerminalBindings } from "./collectors/codex-tmux";
+import { isCodexCommand } from "./collectors/workflow-tmux";
 import {
   PANE_RE,
   SessionAccessError,
@@ -22,6 +25,11 @@ export type SessionAccessDeps = {
   projectPanes: (project: string, live: LiveSnapshot, nowMs: number) => HubPane[];
   config: () => SessionAccessConfig;
   now: () => number;
+  // Fresh native Codex identity proof for a card selector only. Optional so ordinary Claude/tmux
+  // access never depends on the Codex App Server; omitted means "unavailable" for a Codex command.
+  codexEnabled?: () => boolean;
+  codexSnapshot?: (timeoutMs: number) => Promise<CodexSnapshot>;
+  codexSessions?: (project: string, snapshot: CodexSnapshot, nowMs: number) => ReturnType<typeof getCodexSessions>;
 };
 
 export function readSessionAccessConfig(): SessionAccessConfig {
@@ -35,6 +43,9 @@ const systemDeps: SessionAccessDeps = {
   projectPanes: (project, live, nowMs) => getProjectPanes(getDb(), project, live, nowMs, () => false),
   config: readSessionAccessConfig,
   now: () => Date.now(),
+  codexEnabled: () => { const s = readGeneralSettings(); return s.ok && s.data.integrations.agents.codex; },
+  codexSnapshot: (timeoutMs) => collectCodexSnapshot(createCodexConnector, { timeoutMs }),
+  codexSessions: (project, snapshot, nowMs) => getCodexSessions(getDb(), project, snapshot, nowMs),
 };
 
 function liveSnapshot(snapshot: SessionAccessSnapshot): LiveSnapshot {
@@ -78,6 +89,7 @@ export async function resolveSessionAccess(
   const roBase = config.roUrl;
   if (!config.enabled || !usableBase(roBase)) pof("unconfigured");
 
+  const requestStartedAt = deps.now();
   const snapshot = await deps.collect().catch(() => pof("source-failure"));
   const live = liveSnapshot(snapshot);
 
@@ -87,35 +99,72 @@ export async function resolveSessionAccess(
   let runtime: ResolvedSessionAccess["runtime"] = "unknown";
 
   if (selector.kind === "card") {
-    const panes = deps.projectPanes(selector.project, live, deps.now());
-    const hub = panes.find(
-      (p) => p.pane === selector.pane && p.tmuxIncarnation === selector.incarnation && p.live,
-    );
-    // A pinned target whose live hub row disappeared is a lost target; an initial miss is merely
-    // unavailable. Harness/seat ownership mismatches below stay unavailable either way.
-    if (!hub) pof(expected ? "lost-target" : "unavailable");
-    // Strict identity: an unrecorded harness (undefined) is not the explicit unidentified seat
-    // (null), and neither is a wildcard for the other.
-    if (hub.harnessSession !== selector.harnessSession) pof("unavailable");
-    const seat = sessionSeats(panes, []).find(
-      (s) => s.transport === "tmux"
-        && s.panes.some((r) => r.pane === selector.pane && r.tmuxIncarnation === selector.incarnation),
-    );
-    if (!seat || seat.sessionId !== selector.harnessSession) pof("unavailable");
+    // A positive Codex command on the selected pane takes the native path BEFORE any historical
+    // Claude pane/seat fallback: an unprovable Codex identity never resolves as Claude.
+    const freshRow = snapshot.rows.find((r) => r.eligible && r.pane === selector.pane);
+    if (freshRow && isCodexCommand(freshRow.command ?? "")) {
+      const readCodex = deps.codexSnapshot;
+      const readMembership = deps.codexSessions;
+      if (!deps.codexEnabled?.() || !readCodex || !readMembership) pof("unavailable");
+      const timeoutMs = Math.min(3_000, 4_500 - (deps.now() - requestStartedAt));
+      if (timeoutMs <= 0) pof("source-failure");
+      const codex = await readCodex(timeoutMs).catch(() => pof("source-failure"));
+      if (!codex.ok || codex.truncated || !codex.loadedThreadIds) pof("source-failure");
+      const roots = codex.threads.filter((s) =>
+        s.threadId === selector.harnessSession && ["active", "idle"].includes(s.status),
+      );
+      if (roots.length !== 1 || roots[0].owner !== selector.project) pof("unavailable");
+      const membership = readMembership(selector.project, codex, deps.now());
+      if (!membership.sessions.some((s) => s.threadId === selector.harnessSession)) pof("unavailable");
+      const observations = snapshot.rows.map((r) => ({
+        pane: r.pane, tmuxIncarnation: r.incarnation, session: r.sessionName,
+        command: r.command ?? "", title: r.title ?? "", dead: r.dead,
+        eligible: r.eligible && r.title !== undefined,
+      }));
+      const binding = selector.harnessSession === null
+        ? undefined
+        : codexTerminalBindings(codex, observations).get(selector.harnessSession);
+      if (!binding) pof(expected ? "lost-target" : "unavailable");
+      if (binding.project !== selector.project) pof("unavailable");
+      if (binding.terminal.pane !== selector.pane || binding.terminal.tmuxIncarnation !== selector.incarnation) pof("lost-target");
+      const row = snapshot.rows.find((r) => r.eligible && !r.dead && r.pane === selector.pane && r.incarnation === selector.incarnation);
+      if (!row) pof(expected ? "lost-target" : "unavailable");
+      requireExpectedBinding(expected, row.target, row.incarnation);
+      target = row.target;
+      incarnation = row.incarnation;
+      sessionName = row.sessionName;
+      runtime = "codex";
+    } else {
+      const panes = deps.projectPanes(selector.project, live, deps.now());
+      const hub = panes.find(
+        (p) => p.pane === selector.pane && p.tmuxIncarnation === selector.incarnation && p.live,
+      );
+      // A pinned target whose live hub row disappeared is a lost target; an initial miss is merely
+      // unavailable. Harness/seat ownership mismatches below stay unavailable either way.
+      if (!hub) pof(expected ? "lost-target" : "unavailable");
+      // Strict identity: an unrecorded harness (undefined) is not the explicit unidentified seat
+      // (null), and neither is a wildcard for the other.
+      if (hub.harnessSession !== selector.harnessSession) pof("unavailable");
+      const seat = sessionSeats(panes, []).find(
+        (s) => s.transport === "tmux"
+          && s.panes.some((r) => r.pane === selector.pane && r.tmuxIncarnation === selector.incarnation),
+      );
+      if (!seat || seat.sessionId !== selector.harnessSession) pof("unavailable");
 
-    const paneRows = snapshot.rows.filter((r) => r.eligible && r.pane === selector.pane);
-    const row = paneRows.find((r) => r.incarnation === selector.incarnation && !r.dead);
-    if (!row) {
-      // A pinned binding that is no longer live is always lost. Without one, a missing initial
-      // target is unavailable while a moved/dead row is a lost target.
-      if (expected || paneRows.length > 0) pof("lost-target");
-      pof("unavailable");
+      const paneRows = snapshot.rows.filter((r) => r.eligible && r.pane === selector.pane);
+      const row = paneRows.find((r) => r.incarnation === selector.incarnation && !r.dead);
+      if (!row) {
+        // A pinned binding that is no longer live is always lost. Without one, a missing initial
+        // target is unavailable while a moved/dead row is a lost target.
+        if (expected || paneRows.length > 0) pof("lost-target");
+        pof("unavailable");
+      }
+      requireExpectedBinding(expected, row.target, row.incarnation);
+      target = row.target;
+      incarnation = row.incarnation;
+      sessionName = row.sessionName;
+      runtime = hub.runtime;
     }
-    requireExpectedBinding(expected, row.target, row.incarnation);
-    target = row.target;
-    incarnation = row.incarnation;
-    sessionName = row.sessionName;
-    runtime = hub.runtime;
   } else if (expected) {
     // With a pinned binding, native IDs and incarnation are the identity — a rename keeps it.
     const row = snapshot.rows.find(
