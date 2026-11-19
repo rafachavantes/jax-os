@@ -148,6 +148,19 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
     expect(html).not.toContain("unavailable");
   });
 
+  it("counts each count-less disk/load/source warning once and keeps row counts exact", () => {
+    harness.results.set("health:24h", health());
+    harness.results.set("mission:alerts", {
+      data: { ok: true, data: [
+        { kind: "zombies", count: 2, rows: [] },
+        { kind: "updates", count: 3, rows: [] },
+        { kind: "disk", mount: "/data", usedPercent: 90 },
+        { kind: "source", source: "packages", state: "failed" },
+      ] }, isError: false,
+    });
+    expect(renderIntl(createElement(ServerPanel)).html).toContain("7 alerts");
+  });
+
   it("shows the alert count (summed from existing sources) and a source warning on failure", () => {
     harness.results.set("health:24h", health());
     harness.results.set("mission:alerts", {
@@ -156,6 +169,34 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
     expect(renderIntl(createElement(ServerPanel)).html).toContain("5 alerts");
     harness.results.set("mission:alerts", { data: undefined, isError: true });
     expect(renderIntl(createElement(ServerPanel)).html).toContain("Server alerts unavailable");
+  });
+
+  it("keeps the CPU/memory/disk/tmp links while health is pending or unavailable", () => {
+    const pending = renderIntl(createElement(ServerPanel)).html;
+    for (const key of ["cpu", "mem", "disk", "tmp"]) {
+      expect(pending).toContain(`href="/health#${key}"`);
+    }
+    harness.results.set("health:24h", { data: undefined, isError: true });
+    const failed = renderIntl(createElement(ServerPanel)).html;
+    expect(failed).toContain("Server metrics unavailable");
+    for (const key of ["cpu", "mem", "disk", "tmp"]) {
+      expect(failed).toContain(`href="/health#${key}"`);
+    }
+  });
+
+  it("rejects through the real envelope when the source answers ok:false", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify({ ok: false, error: "unavailable" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    try {
+      renderIntl(createElement(ServerPanel));
+      const healthCall = harness.calls.find((call) => call.queryKey.join(":") === "health:24h");
+      expect(healthCall).toBeDefined();
+      await expect(healthCall!.queryFn({})).rejects.toThrow("unavailable");
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it("first render is a skeleton, never fake values; a failed source is a visible warning", () => {

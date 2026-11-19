@@ -125,6 +125,19 @@ describe("getAlerts — explicit source states (M5 Task 3)", () => {
     expect(alerts.find((a) => a.kind === "updates")).toMatchObject({ count: 1 });
   });
 
+  it("keeps a partial package observation's known rows and its visible source warning", async () => {
+    const alerts = await getAlerts({
+      exec: execFor(ALERT_EXECS),
+      loadavg: loadavgOk,
+      packages: async () => observation({
+        rows: [{ name: "bar", arch: "amd64", key: "bar:amd64", fromVersion: "1", toVersion: "2", security: false }],
+        state: "partial", warnings: ["simulation-unavailable"],
+      }),
+    });
+    expect(alerts.find((a) => a.kind === "updates")).toMatchObject({ count: 1, rows: [{ key: "bar:amd64" }] });
+    expect(alerts).toContainEqual({ kind: "source", source: "packages", state: "failed" });
+  });
+
   it("never reads the real /proc/loadavg when the loader is injected", async () => {
     const loadavg = vi.fn(loadavgOk);
     const exec = execFor(ALERT_EXECS);

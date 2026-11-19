@@ -600,7 +600,9 @@ export async function getAlerts(options: GetAlertsOptions = {}): Promise<Alert[]
   if (normalized.length > 0) {
     alerts.push({ kind: "updates", count: normalized.length, rows: normalized });
   }
-  if (observation.state === "failed") {
+  // A partial observation keeps its known total but never becomes a complete-count/all-clear
+  // badge: the existing source warning rides alongside the rows.
+  if (observation.state !== "ok") {
     alerts.push({ kind: "source", source: "packages", state: "failed" });
   }
   return alerts;

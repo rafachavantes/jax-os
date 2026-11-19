@@ -1992,6 +1992,8 @@ describe("interrupted discovery registration and directory failure mapping", () 
     let readStarted = false;
     let releaseRead: (() => void) | null = null;
     let releaseClose: (() => void) | null = null;
+    let resolveReadStarted: (() => void) | null = null;
+    const readStartedBarrier = new Promise<void>((resolve) => { resolveReadStarted = resolve; });
     deps.fs = {
       ...nativeFs,
       opendir: async (path) => {
@@ -2002,6 +2004,7 @@ describe("interrupted discovery registration and directory failure mapping", () 
             reads += 1;
             if (reads === 1) {
               readStarted = true;
+              resolveReadStarted?.();
               return new Promise<DirEntryLike | null>((resolve) => {
                 releaseRead = () =>
                   resolve({ name: "one.jsonl", isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false });
@@ -2025,14 +2028,24 @@ describe("interrupted discovery registration and directory failure mapping", () 
       },
     };
 
+    // The readiness barrier must use a REAL timer, captured before fake timers are enabled: the
+    // production pass first performs real fs work, so advancing virtual time cannot move it.
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+    const realReadinessFailure = new Promise<void>((_, reject) => {
+      readinessTimer = realSetTimeout(() => reject(new Error("directory read did not start")), 5_000);
+      readinessTimer.unref?.();
+    });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const pass = runNativeUsagePass({ ...deps, now: () => NOW });
-      for (let i = 0; i < 200 && !readStarted; i += 1) await vi.advanceTimersByTimeAsync(1);
+      await Promise.race([readStartedBarrier, realReadinessFailure]);
       expect(readStarted).toBe(true);
       await vi.advanceTimersByTimeAsync(1400);
       await pass;
     } finally {
+      if (readinessTimer) realClearTimeout(readinessTimer);
       vi.useRealTimers();
     }
     expect(statusOf(deps)?.state).toBe("indexing");

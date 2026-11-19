@@ -54,8 +54,10 @@ function alertRowsOf(data: { ok: true; data: Alert[] } | undefined): Alert[] {
   return Array.isArray(data?.data) ? data.data : [];
 }
 
+// Row counts stay exact for zombies/updates; each disk/load/source warning without a row count
+// contributes once so a failing source is never invisible in the compact count.
 function alertCount(rows: Alert[]): number {
-  return rows.reduce((sum, alert) => sum + ("count" in alert && typeof alert.count === "number" ? alert.count : 0), 0);
+  return rows.reduce((sum, alert) => sum + ("count" in alert && typeof alert.count === "number" ? alert.count : 1), 0);
 }
 
 // Compact home resource strip (M2 plan Task 5): glanceable CPU/RAM/root disk plus an explicit
@@ -106,19 +108,18 @@ export function ServerPanel() {
   return (
     <section data-testid="server-strip" className="sticky top-0 z-10 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-surface px-3.5 py-2">
       <span className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("title")}</span>
-      {health.isError ? (
-        <SourceWarning label={t("metersUnavailable")} />
-      ) : healthPending ? (
-        <span className="h-4 w-48 animate-pulse rounded bg-surface-2" />
-      ) : (
-        meters.map(({ key, icon: Icon, value }) => (
-          <a key={key} href={`/health#${key}`} className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
-            <Icon className="h-3.5 w-3.5" aria-hidden />
-            <span>{t(`meters.${key}`)}</span>
+      {health.isError ? <SourceWarning label={t("metersUnavailable")} /> : null}
+      {meters.map(({ key, icon: Icon, value }) => (
+        <a key={key} href={`/health#${key}`} className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
+          <Icon className="h-3.5 w-3.5" aria-hidden />
+          <span>{t(`meters.${key}`)}</span>
+          {healthPending ? (
+            <span className="h-4 w-12 animate-pulse rounded bg-surface-2" />
+          ) : (
             <span className="font-semibold text-ink">{value}</span>
-          </a>
-        ))
-      )}
+          )}
+        </a>
+      ))}
       <a href="/health#tmp" className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
         <span>{t("temp")}</span>
         {tmpPending ? (
