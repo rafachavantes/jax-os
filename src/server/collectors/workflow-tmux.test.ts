@@ -70,7 +70,7 @@ describe("injectAnswers", () => {
     const pauses: number[] = [];
     const run = vi.fn(async (_file: string, args: string[]) => {
       calls.push(args);
-      if (args[0] === "list-panes") return `${PANE} 234790 1787586213 bash\nother 234790 1787586213 bash\n`;
+      if (args[0] === "list-panes") return `${PANE} 234790 1787586213 bash\n%2 234790 1787586213 bash\n`;
       return "";
     });
     const pause = vi.fn(async (ms: number) => { pauses.push(ms); });
@@ -198,10 +198,23 @@ describe("listLivePanes", () => {
     await expect(listLivePanes(run)).rejects.toThrow("spawn tmux ENOENT");
   });
 
-  it("skips a malformed line rather than throwing, still resolves incarnation from a good line", async () => {
+  it("throws on corrupt/nonempty output instead of presenting it as zero panes (M5 Task 3)", async () => {
     const run = vi.fn(async () => "not-a-valid-line\n%1 234790 1787586213 bash\n");
-    const live = await listLivePanes(run);
-    expect(live).toEqual({ paneIds: new Set(["%1"]), incarnation: "234790:1787586213", paneCommands: new Map([["%1", "bash"]]), panePids: new Map() });
+    await expect(listLivePanes(run)).rejects.toThrow("tmux snapshot unreadable");
+    const corruptOnly = vi.fn(async () => "%1 nope\n");
+    await expect(listLivePanes(corruptOnly)).rejects.toThrow("tmux snapshot unreadable");
+  });
+
+  it("treats permission denied as a source failure, never as no-server", async () => {
+    const run = vi.fn(async () => {
+      throw Object.assign(new Error("error connecting to /tmp/tmux-1000/default (Permission denied)"), { code: "EPERM" });
+    });
+    await expect(listLivePanes(run)).rejects.toMatchObject({ code: "EPERM" });
+  });
+
+  it("a missing tmux executable is a source failure, never an empty server", async () => {
+    const run = vi.fn(async () => { throw new Error("spawn tmux ENOENT"); });
+    await expect(listLivePanes(run)).rejects.toThrow("spawn tmux ENOENT");
   });
 
   it("treats timeout as source failure, not parsed panes", async () => {

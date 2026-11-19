@@ -714,7 +714,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
 
   async function workloads(): Promise<WorkloadsSection> {
     const panesObs = await observe("tmux", 5_000, 5_000, () => deps.listPanes());
-    const panes = panesObs.ok ? panesObs.value : panesObs.lastGood;
+    const panes = panesObs.ok ? panesObs.value : null;
     const tmuxWarning = panesObs.ok ? null : panesObs.lastGood !== null ? "tmux-unavailable" : "tmux-unverified";
     const psObs = await observe("ps", 5_000, 5_000, () => deps.ps());
     if (!psObs.ok) {
@@ -723,7 +723,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
       return {
         observedAt: new Date(nowMs).toISOString(), state: "unavailable", groups: [],
         totalProcesses: 0, truncated: false,
-        coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: true },
+        coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: true, reasons: {} },
       };
     }
     try {
@@ -735,6 +735,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
         paneContext,
         incarnation: panes?.incarnation ?? null,
         tmuxWarning,
+        verifyPanes: () => deps.listPanes(),
       });
       observedSections.workloads = section.state !== "unavailable";
       return section;
@@ -744,7 +745,7 @@ export function createEnvironmentRuntime(deps: EnvironmentDeps): EnvironmentRunt
       return {
         observedAt: new Date(nowMs).toISOString(), state: "unavailable", groups: [],
         totalProcesses: 0, truncated: false,
-        coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: true },
+        coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: true, reasons: {} },
       };
     }
   }

@@ -6,7 +6,7 @@ const COMPONENTS = { observedAt: "2026-11-19T00:00:00.000Z", components: [] };
 const RESOURCES = { observedAt: "2026-11-19T00:00:00.000Z", state: "ok" as const, stale: false, tmp: null, warning: null, lastGoodAt: null };
 const WORKLOADS = {
   observedAt: "2026-11-19T00:00:00.000Z", state: "ok" as const, groups: [], totalProcesses: 0,
-  truncated: false, coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: false },
+  truncated: false, coverage: { ownershipKnown: 0, ownershipUnknown: 0, partial: false, reasons: {} },
 };
 const PACKAGES = {
   observedAt: "2026-11-19T00:00:00.000Z", lastGoodAt: null, state: "unavailable" as const,

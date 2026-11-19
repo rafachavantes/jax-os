@@ -1340,6 +1340,20 @@
       },
       "workloads": {
         "unavailable": "Snapshot de processos indisponível",
+        "tmuxUnavailable": "Snapshot de painéis indisponível — dono do processo desconhecido.",
+        "tmuxUnverified": "Snapshot de painéis expirou — dono do processo desconhecido.",
+        "lastKnownAt": "último conhecido",
+        "parent": "pai {command} · {pid}",
+        "ownerReasons": {
+          "no-pane": "nenhum painel vivo na cadeia de ancestrais",
+          "missing": "metadados de identidade ausentes",
+          "cycle": "ciclo na cadeia de pais",
+          "cross-uid": "UID do dono divergente",
+          "race": "identidade mudou durante a verificação",
+          "budget": "limite de leituras de identidade atingido",
+          "depth": "limite de profundidade de ancestrais",
+          "tmux": "metadados do tmux incompletos"
+        },
         "empty": "Nenhum processo observado.",
         "summary": "{count} processos observados",
         "approxRss": "RSS é aproximado e pode incluir páginas compartilhadas.",

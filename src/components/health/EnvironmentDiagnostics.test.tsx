@@ -48,17 +48,19 @@ const RESOURCES = {
 
 const WORKLOADS = {
   observedAt: "2026-11-19T00:00:00.000Z", state: "ok", totalProcesses: 3, truncated: false,
-  coverage: { ownershipKnown: 2, ownershipUnknown: 1, partial: false },
+  coverage: { ownershipKnown: 2, ownershipUnknown: 1, partial: false, reasons: { "no-pane": 1 } },
   groups: [
     {
       key: "pane:%1:codex", family: "codex", count: 2, running: 1, zombies: 1, rssMb: 120,
       maxAgeSeconds: 60, owner: { kind: "pane", pane: "%1" }, project: "jax-os", session: "s1",
-      purpose: "tmux-pane", pids: [{ pid: 30, ppid: 20, state: "S+", ageSeconds: 60, rssMb: 120 }], detailsTruncated: true,
+      contextObservedAt: "2026-11-18T23:00:00.000Z", purpose: "tmux-pane",
+      pids: [{ pid: 30, ppid: 20, state: "S+", ageSeconds: 60, rssMb: 120, parentCommand: null }], detailsTruncated: true,
     },
     {
       key: "unknown:1000:chrome:1", family: "chrome", count: 1, running: 1, zombies: 0, rssMb: null,
       maxAgeSeconds: 90, owner: { kind: "unknown", reason: "no-pane" }, project: null, session: null,
-      purpose: null, pids: [{ pid: 40, ppid: 1, state: "Sl", ageSeconds: 90, rssMb: null }], detailsTruncated: false,
+      contextObservedAt: null, purpose: null,
+      pids: [{ pid: 40, ppid: 1, state: "Sl", ageSeconds: 90, rssMb: null, parentCommand: null }], detailsTruncated: false,
     },
   ],
 };

@@ -1340,6 +1340,20 @@
       },
       "workloads": {
         "unavailable": "Workload snapshot unavailable",
+        "tmuxUnavailable": "Live pane snapshot unavailable \u2014 process ownership unknown.",
+        "tmuxUnverified": "Live pane snapshot timed out \u2014 process ownership unknown.",
+        "lastKnownAt": "last known",
+        "parent": "parent {command} \u00b7 {pid}",
+        "ownerReasons": {
+          "no-pane": "no live pane in its ancestor chain",
+          "missing": "identity metadata missing",
+          "cycle": "parent chain cycle",
+          "cross-uid": "owner UID disagreement",
+          "race": "identity changed during the check",
+          "budget": "identity read budget reached",
+          "depth": "ancestor depth cap",
+          "tmux": "tmux metadata incomplete"
+        },
         "empty": "No processes observed.",
         "summary": "{count} processes observed",
         "approxRss": "RSS is approximate and may include shared pages.",

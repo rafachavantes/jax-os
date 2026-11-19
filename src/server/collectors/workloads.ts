@@ -1,6 +1,7 @@
-// M5 Task 2: bounded process snapshots, proven pane ancestry and deterministic workload groups.
-// Ownership comes ONLY from an observed ancestor tree reaching a live pane's PID, re-validated
-// against /proc start ticks; logical project/session context stays separately last-known.
+// M5 Task 2/3: bounded process snapshots, proven pane ancestry and deterministic workload groups.
+// Ownership comes ONLY from a complete leaf-to-pane chain validated in BOTH a before and an after
+// identity pass against the same freshly rechecked live pane/server incarnation. Logical
+// project/session context stays separately last-known.
 import { readFile } from "node:fs/promises";
 import type { LastKnownPaneContext } from "../db/workflows";
 
@@ -18,13 +19,17 @@ export type ProcSnapshot = { processes: ProcRow[]; total: number; truncated: boo
 
 export const MAX_PS_PROCESSES = 10_000;
 export const MAX_ANCESTORS = 64;
+// One before map + one after map, each capped at 1024 unique identities (2048 total), 8 at a time.
+export const MAX_PHASE_READS = 1_024;
 export const MAX_PROC_READS = 2_048;
 export const READ_CONCURRENCY = 8;
+export const IDENTITY_READ_TIMEOUT_MS = 2_000;
+export const IDENTITY_DEADLINE_MS = 5_000;
 export const MAX_GROUPS = 200;
 export const MAX_GROUP_DETAILS = 10;
 
 // F9: the command is the remainder after the six numeric/stat fields, so spaces survive.
-const PS_RE = /^\s*(\d{1,10})\s+(\d{1,10})\s+(\d{1,10})\s+(\S+)\s+(\d{1,10})\s+(\d{1,10})\s+(.+)$/;
+const PS_RE = /^\s*(\d{1,10})\s+(\d{1,10})\s+(\d{1,10})\s+(\S+)\s+(\d{1,10})\s+(\S+)\s+(.+)$/;
 
 export function parsePs(out: string): ProcSnapshot {
   const processes: ProcRow[] = [];
@@ -77,13 +82,19 @@ export async function readProcStat(pid: number): Promise<string> {
   return text;
 }
 
-export type OwnerReason = "no-pane" | "missing" | "cycle" | "race" | "cross-uid" | "budget";
+export type OwnerReason = "no-pane" | "missing" | "cycle" | "cross-uid" | "race" | "budget" | "depth" | "tmux";
 
 export type Attribution = {
   ownerByPid: Map<number, string>;
   rootByPid: Map<number, number>;
-  reads: number;
+  reasonByPid: Map<number, OwnerReason>;
   partial: boolean;
+};
+
+export type LivePaneSnapshot = {
+  paneIds: Set<string>;
+  incarnation: string | null;
+  panePids?: Map<string, number>;
 };
 
 async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -98,91 +109,164 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
   await Promise.all(workers);
 }
 
-// Read once for every snapshot PID (bounded), then attribute purely from that map.
-export async function readSnapshotStats(
-  processes: ProcRow[],
-  read: (pid: number) => Promise<string>,
-): Promise<{ stats: Map<number, ProcStat>; reads: number; partial: boolean }> {
-  const stats = new Map<number, ProcStat>();
-  const budget = processes.slice(0, MAX_PROC_READS);
-  await mapLimit(budget, READ_CONCURRENCY, async (proc) => {
-    try {
-      const stat = parseProcStat(await read(proc.pid));
-      if (stat?.pid === proc.pid) stats.set(proc.pid, stat);
-    } catch {}
+function readWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("identity-timeout")), ms);
+    timer.unref?.();
   });
-  return { stats, reads: budget.length, partial: processes.length > MAX_PROC_READS };
+  return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
-export function attributeOwners(
-  snapshot: ProcSnapshot,
-  panePids: Map<string, number>,
-  stats: Map<number, ProcStat>,
-  partialReads: boolean,
-): Attribution {
-  const paneByPid = new Map<number, string>();
-  for (const [pane, pid] of panePids) if (Number.isSafeInteger(pid) && pid > 0) paneByPid.set(pid, pane);
-  const byPid = new Map(snapshot.processes.map((p) => [p.pid, p]));
-  const ownerByPid = new Map<number, string>();
-  const rootByPid = new Map<number, number>();
-  let partial = partialReads;
-
+// Priority: live pane PIDs, then every node on a ps-observed chain that reaches a pane, then the
+// remainder. The cap applies BEFORE scheduling, so required ancestry is never pushed out first.
+export function orderIdentityPids(snapshot: ProcSnapshot, panePids: Map<string, number>): number[] {
+  const byPid = new Map(snapshot.processes.map((proc) => [proc.pid, proc]));
+  const panePidSet = new Set([...panePids.values()].filter((pid) => Number.isSafeInteger(pid) && pid > 0));
+  const required = new Set<number>();
   for (const proc of snapshot.processes) {
-    const leaf = stats.get(proc.pid);
-    if (!leaf) continue; // missing process → unknown, never an owner
     const seen = new Set<number>();
-    let current = leaf;
-    let root = leaf.pid;
-    let crossUid = false;
-    for (let depth = 0; depth < MAX_ANCESTORS; depth += 1) {
-      if (seen.has(current.pid)) { root = current.pid; break; }
+    let current: ProcRow | undefined = proc;
+    for (let depth = 0; depth < MAX_ANCESTORS && current !== undefined; depth += 1) {
+      if (seen.has(current.pid)) break;
       seen.add(current.pid);
-      root = current.pid;
-      if (paneByPid.has(current.pid)) {
-        ownerByPid.set(proc.pid, paneByPid.get(current.pid) as string);
+      if (panePidSet.has(current.pid)) {
+        for (const pid of seen) required.add(pid);
         break;
       }
-      if (current.ppid <= 0 || current.ppid === current.pid) break;
-      // A parent observed in the snapshot must agree with /proc (no stale PPID race).
-      const parentRow = byPid.get(current.ppid);
-      if (parentRow && parentRow.uid !== proc.uid) { crossUid = true; break; }
-      const parent = stats.get(current.ppid);
-      if (!parent) break;
-      const expected = byPid.get(current.pid)?.ppid;
-      if (expected !== undefined && expected !== current.ppid) break;
-      current = parent;
+      current = byPid.get(current.ppid);
     }
-    if (crossUid) continue;
-    rootByPid.set(proc.pid, ownerByPid.has(proc.pid) ? (panePids.get(ownerByPid.get(proc.pid) as string) ?? root) : root);
+    if (panePidSet.has(proc.pid)) required.add(proc.pid);
   }
-  return { ownerByPid, rootByPid, reads: 0, partial };
+  const paneOrder = [...panePidSet].sort((a, b) => a - b);
+  const requiredOrder = [...required].filter((pid) => !panePidSet.has(pid)).sort((a, b) => a - b);
+  const rest = snapshot.processes
+    .map((proc) => proc.pid)
+    .filter((pid) => !panePidSet.has(pid) && !required.has(pid))
+    .sort((a, b) => a - b);
+  return [...paneOrder, ...requiredOrder, ...rest].slice(0, MAX_PHASE_READS);
 }
 
-// Second pass: a PID recycled between the snapshot and the walk must not inherit ownership.
-export async function stabilizeOwners(
-  attribution: Attribution,
+export type IdentityPhase = {
+  stats: Map<number, ProcStat>;
+  attempted: Set<number>;
+  deadlineHit: boolean;
+};
+
+// One before/after identity map. Every scheduled read keeps its own 2s bound; the shared deadline
+// stops NEW scheduling only (an in-flight read is never cancelled).
+export async function readIdentityPhase(
+  pids: number[],
   read: (pid: number) => Promise<string>,
-): Promise<Attribution> {
-  if (attribution.ownerByPid.size === 0) return attribution;
-  const leaves = [...attribution.ownerByPid.keys()].slice(0, Math.floor(MAX_PROC_READS / 2));
-  const before = new Map<number, number>();
-  const after = new Map<number, number>();
-  await mapLimit(leaves, READ_CONCURRENCY, async (pid) => {
+  opts: { deadline: number; now: () => number; perReadMs?: number },
+): Promise<IdentityPhase> {
+  const stats = new Map<number, ProcStat>();
+  const attempted = new Set<number>();
+  let deadlineHit = false;
+  await mapLimit(pids, READ_CONCURRENCY, async (pid) => {
+    if (opts.now() >= opts.deadline) { deadlineHit = true; return; }
+    attempted.add(pid);
     try {
-      const stat = parseProcStat(await read(pid));
-      if (stat) before.set(pid, stat.startTime);
-    } catch {}
+      const stat = parseProcStat(await readWithTimeout(read(pid), opts.perReadMs ?? IDENTITY_READ_TIMEOUT_MS));
+      if (stat && stat.pid === pid) stats.set(pid, stat);
+    } catch {
+      // missing/malformed/timed-out identity stays explicitly unknown
+    }
   });
-  await mapLimit(leaves, READ_CONCURRENCY, async (pid) => {
-    try {
-      const stat = parseProcStat(await read(pid));
-      if (stat) after.set(pid, stat.startTime);
-    } catch {}
-  });
-  for (const pid of leaves) {
-    if (!before.has(pid) || before.get(pid) !== after.get(pid)) attribution.ownerByPid.delete(pid);
+  return { stats, attempted, deadlineHit };
+}
+
+export type AttributeInput = {
+  snapshot: ProcSnapshot;
+  panePids: Map<string, number>;
+  paneIncarnation: string | null;
+  before: IdentityPhase;
+  after: IdentityPhase;
+  live: LivePaneSnapshot | null;
+  partial: boolean;
+};
+
+function consistent(pid: number, before: Map<number, ProcStat>, after: Map<number, ProcStat>, psPpid: number | undefined): "ok" | "missing" | "race" {
+  const first = before.get(pid);
+  const second = after.get(pid);
+  if (!first || !second || first.pid !== pid || second.pid !== pid) return "missing";
+  if (first.startTime !== second.startTime || first.ppid !== second.ppid) return "race";
+  if (psPpid !== undefined && psPpid !== first.ppid) return "race";
+  return "ok";
+}
+
+// A positive owner requires EVERY node from leaf to pane to be present in both maps, agree on
+// PID/start ticks/PPID, match the ps parent relation and UID, and reach the freshly rechecked
+// live pane/server incarnation. Anything else is an explicit unknown reason.
+export function attributeOwners(input: AttributeInput): Attribution {
+  const { snapshot, panePids, before, after, live } = input;
+  const paneByPid = new Map<number, string>();
+  for (const [pane, pid] of panePids) if (Number.isSafeInteger(pid) && pid > 0) paneByPid.set(pid, pane);
+  const byPid = new Map(snapshot.processes.map((proc) => [proc.pid, proc]));
+  const ownerByPid = new Map<number, string>();
+  const rootByPid = new Map<number, number>();
+  const reasonByPid = new Map<number, OwnerReason>();
+  let partial = input.partial || before.deadlineHit || after.deadlineHit;
+
+  for (const proc of snapshot.processes) {
+    const unknown = (reason: OwnerReason, root = proc.pid) => {
+      reasonByPid.set(proc.pid, reason);
+      rootByPid.set(proc.pid, root);
+      if (reason !== "no-pane") partial = true;
+    };
+    if (!before.attempted.has(proc.pid) && !after.attempted.has(proc.pid)) {
+      unknown("budget");
+      continue;
+    }
+    const leafLeaf = consistent(proc.pid, before.stats, after.stats, byPid.get(proc.pid)?.ppid);
+    if (leafLeaf === "missing") {
+      const attempted = before.attempted.has(proc.pid) || after.attempted.has(proc.pid);
+      unknown(attempted ? "missing" : "budget");
+      continue;
+    }
+    if (leafLeaf === "race") { unknown("race"); continue; }
+
+    const seen = new Set<number>();
+    let currentPid = proc.pid;
+    let root = proc.pid;
+    let failed: OwnerReason | null = null;
+    let pane: string | null = null;
+    let panePid: number | null = null;
+    for (let depth = 0; depth < MAX_ANCESTORS; depth += 1) {
+      if (seen.has(currentPid)) { failed = "cycle"; break; }
+      seen.add(currentPid);
+      root = currentPid;
+      const paneName = paneByPid.get(currentPid);
+      if (paneName !== undefined) { pane = paneName; panePid = currentPid; break; }
+      const psRow = byPid.get(currentPid);
+      const stat = before.stats.get(currentPid);
+      if (!psRow || !stat) { failed = "missing"; break; }
+      if (stat.ppid <= 0 || stat.ppid === currentPid) { failed = "no-pane"; break; }
+      const parentRow = byPid.get(stat.ppid);
+      if (!parentRow) { failed = stat.ppid <= 1 ? "no-pane" : "missing"; break; }
+      if (parentRow.uid !== proc.uid) { failed = "cross-uid"; break; }
+      const relation = consistent(stat.ppid, before.stats, after.stats, parentRow.ppid);
+      if (relation === "missing") { failed = "missing"; break; }
+      if (relation === "race") { failed = "race"; break; }
+      currentPid = stat.ppid;
+    }
+    if (pane === null || panePid === null) {
+      unknown(failed ?? "depth", root);
+      continue;
+    }
+    const paneStat = consistent(panePid, before.stats, after.stats, byPid.get(panePid)?.ppid);
+    if (paneStat !== "ok") { unknown(paneStat === "missing" ? "missing" : "race"); continue; }
+    if (live === null
+      || !live.paneIds.has(pane)
+      || live.incarnation !== input.paneIncarnation
+      || live.panePids?.get(pane) !== panePid) {
+      unknown("race");
+      continue;
+    }
+    ownerByPid.set(proc.pid, pane);
+    rootByPid.set(proc.pid, panePid);
   }
-  return attribution;
+  return { ownerByPid, rootByPid, reasonByPid, partial };
 }
 
 export type WorkloadOwner = { kind: "pane"; pane: string } | { kind: "unknown"; reason: OwnerReason };
@@ -193,6 +277,7 @@ export type WorkloadPid = {
   state: string;
   ageSeconds: number;
   rssMb: number | null;
+  parentCommand: string | null;
 };
 
 export type WorkloadGroup = {
@@ -206,9 +291,17 @@ export type WorkloadGroup = {
   owner: WorkloadOwner;
   project: string | null;
   session: string | null;
+  contextObservedAt: string | null;
   purpose: "tmux-pane" | null;
   pids: WorkloadPid[];
   detailsTruncated: boolean;
+};
+
+export type WorkloadCoverage = {
+  ownershipKnown: number;
+  ownershipUnknown: number;
+  partial: boolean;
+  reasons: Partial<Record<OwnerReason, number>>;
 };
 
 export type WorkloadsSection = {
@@ -217,14 +310,23 @@ export type WorkloadsSection = {
   groups: WorkloadGroup[];
   totalProcesses: number;
   truncated: boolean;
-  coverage: { ownershipKnown: number; ownershipUnknown: number; partial: boolean };
+  coverage: WorkloadCoverage;
   warning?: "tmux-unavailable" | "tmux-unverified" | null;
 };
 
+const BROWSER_HELPERS: [RegExp, string][] = [
+  [/^(google chrome|chrome|chromium)/i, "chrome"],
+  [/^firefox/i, "firefox"],
+];
+
+// Bounded executable family: a fixed browser-helper map preserves meaningful names; otherwise the
+// leading token is kept (bounded). This is never evidence of purpose or safe-to-kill status.
 export function executableFamily(comm: string): string {
-  const first = comm.trim().split(/\s+/)[0] ?? "";
+  const whole = comm.trim();
+  for (const [pattern, family] of BROWSER_HELPERS) if (pattern.test(whole)) return family;
+  const first = whole.split(/\s+/)[0] ?? "";
   const base = first.split("/").pop() ?? "";
-  return base || "unknown";
+  return base.slice(0, 64) || "unknown";
 }
 
 export type BuildWorkloadsInput = {
@@ -232,15 +334,19 @@ export type BuildWorkloadsInput = {
   snapshot: ProcSnapshot;
   attribution: Attribution;
   contexts: Map<string, LastKnownPaneContext>;
+  warning?: "tmux-unavailable" | "tmux-unverified" | null;
 };
 
 export function buildWorkloadGroups(input: BuildWorkloadsInput): WorkloadsSection {
   const { snapshot, attribution, contexts } = input;
+  const byPid = new Map(snapshot.processes.map((proc) => [proc.pid, proc]));
   const buckets = new Map<string, { owner: WorkloadOwner; rows: ProcRow[] }>();
   for (const proc of snapshot.processes) {
     const family = executableFamily(proc.comm);
     const pane = attribution.ownerByPid.get(proc.pid);
-    const owner: WorkloadOwner = pane !== undefined ? { kind: "pane", pane } : { kind: "unknown", reason: "no-pane" };
+    const owner: WorkloadOwner = pane !== undefined
+      ? { kind: "pane", pane }
+      : { kind: "unknown", reason: attribution.reasonByPid.get(proc.pid) ?? "no-pane" };
     const root = attribution.rootByPid.get(proc.pid) ?? proc.pid;
     const key = pane !== undefined
       ? `pane:${pane}:${family}`
@@ -262,6 +368,7 @@ export function buildWorkloadGroups(input: BuildWorkloadsInput): WorkloadsSectio
       pid: r.pid, ppid: r.ppid, state: r.stat,
       ageSeconds: r.ageSeconds,
       rssMb: Number.isFinite(r.rssKb) && r.rssKb >= 0 ? r.rssKb / 1024 : null,
+      parentCommand: r.stat.startsWith("Z") ? byPid.get(r.ppid)?.comm ?? null : null,
     }));
     return {
       key,
@@ -271,10 +378,11 @@ export function buildWorkloadGroups(input: BuildWorkloadsInput): WorkloadsSectio
       zombies: rows.length - live.length,
       rssMb,
       maxAgeSeconds: ageSeconds.length > 0 ? Math.max(...ageSeconds) : null,
-      owner: bucket.owner,
+      owner,
       // Last-known logical context only when the owner is a validated pane; never an inference.
       project: context?.project ?? null,
       session: context?.session ?? null,
+      contextObservedAt: context?.observedAt ?? null,
       purpose: owner.kind === "pane" ? "tmux-pane" : null,
       pids,
       detailsTruncated: rows.length > MAX_GROUP_DETAILS,
@@ -285,6 +393,10 @@ export function buildWorkloadGroups(input: BuildWorkloadsInput): WorkloadsSectio
   const truncated = groups.length > MAX_GROUPS;
   const shown = truncated ? groups.slice(0, MAX_GROUPS) : groups;
   const known = snapshot.processes.filter((p) => attribution.ownerByPid.has(p.pid)).length;
+  const reasons: Partial<Record<OwnerReason, number>> = {};
+  for (const reason of attribution.reasonByPid.values()) {
+    reasons[reason] = (reasons[reason] ?? 0) + 1;
+  }
   return {
     observedAt: new Date(input.nowMs).toISOString(),
     state: snapshot.partial || attribution.partial || truncated ? "partial" : "ok",
@@ -295,7 +407,9 @@ export function buildWorkloadGroups(input: BuildWorkloadsInput): WorkloadsSectio
       ownershipKnown: known,
       ownershipUnknown: snapshot.processes.length - known,
       partial: snapshot.partial || attribution.partial,
+      reasons,
     },
+    warning: input.warning ?? null,
   };
 }
 
@@ -307,22 +421,49 @@ export type CollectWorkloadsInput = {
   paneContext: (pane: string, incarnation: string | null) => LastKnownPaneContext | null | Promise<LastKnownPaneContext | null>;
   incarnation?: string | null;
   tmuxWarning?: "tmux-unavailable" | "tmux-unverified" | null;
+  // A FRESH pane snapshot taken after the identity reads; a changed/closed/respawned pane yields
+  // unknown ownership instead of a second owner.
+  verifyPanes?: () => Promise<LivePaneSnapshot>;
+  monotonic?: () => number;
 };
 
 export async function collectWorkloads(input: CollectWorkloadsInput): Promise<WorkloadsSection> {
   const snapshot = parsePs(input.psOutput);
-  const { stats, partial } = await readSnapshotStats(snapshot.processes, input.readProc);
-  const attribution = await stabilizeOwners(
-    attributeOwners(snapshot, input.panePids, stats, partial),
-    input.readProc,
-  );
+  const now = input.monotonic ?? (() => performance.now());
+  const deadline = now() + IDENTITY_DEADLINE_MS;
+  const pids = orderIdentityPids(snapshot, input.panePids);
+  const before = await readIdentityPhase(pids, input.readProc, { deadline, now });
+  const after = await readIdentityPhase(pids, input.readProc, { deadline, now });
+
+  let live: LivePaneSnapshot | null = null;
+  let warning = input.tmuxWarning ?? null;
+  if (input.verifyPanes) {
+    try {
+      live = await input.verifyPanes();
+    } catch {
+      live = null;
+      warning = "tmux-unavailable";
+    }
+  } else {
+    live = {
+      paneIds: new Set(input.panePids.keys()),
+      incarnation: input.incarnation ?? null,
+      panePids: input.panePids,
+    };
+  }
+  const attribution = attributeOwners({
+    snapshot,
+    panePids: input.panePids,
+    paneIncarnation: input.incarnation ?? null,
+    before,
+    after,
+    live,
+    partial: snapshot.partial || warning !== null,
+  });
   const contexts = new Map<string, LastKnownPaneContext>();
   for (const pane of new Set(attribution.ownerByPid.values())) {
     const context = await input.paneContext(pane, input.incarnation ?? null);
     if (context) contexts.set(pane, context);
   }
-  return {
-    ...buildWorkloadGroups({ nowMs: input.nowMs, snapshot, attribution, contexts }),
-    warning: input.tmuxWarning ?? null,
-  };
+  return buildWorkloadGroups({ nowMs: input.nowMs, snapshot, attribution, contexts, warning });
 }

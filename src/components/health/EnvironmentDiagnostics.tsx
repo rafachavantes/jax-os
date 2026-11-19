@@ -134,20 +134,26 @@ function Workloads() {
   const t = useTranslations("health.environment");
   const q = useEnvironmentSection("workloads");
   const data = q.data?.ok ? q.data.data : null;
+  const unavailable = data?.state === "unavailable";
   return (
     <Panel id="workloads" title={t("sections.workloads")}>
       {q.isError ? <SourceWarning label={t("unavailable")} /> : !data || !Array.isArray(data.groups) ? <Skeleton /> : (
         <div className="flex flex-col gap-2">
-          {data.state === "unavailable" ? <SourceWarning label={t("workloads.unavailable")} /> : null}
-          {data.state === "partial" || data.truncated ? (
+          {data.warning === "tmux-unavailable" ? <SourceWarning label={t("workloads.tmuxUnavailable")} /> : null}
+          {data.warning === "tmux-unverified" ? <SourceWarning label={t("workloads.tmuxUnverified")} /> : null}
+          {unavailable ? <SourceWarning label={t("workloads.unavailable")} /> : null}
+          {!unavailable && (data.state === "partial" || data.truncated) ? (
             <SourceWarning label={t("partial")} detail={t("workloads.coverage", { known: data.coverage.ownershipKnown, unknown: data.coverage.ownershipUnknown })} />
           ) : null}
-          <span className="text-[11px] text-muted">
-            {t("workloads.summary", { count: data.totalProcesses })} · {t("workloads.approxRss")}
-          </span>
-          {data.groups.length === 0 ? (
+          {!unavailable ? (
+            <span className="text-[11px] text-muted">
+              {t("workloads.summary", { count: data.totalProcesses })} · {t("workloads.approxRss")}
+            </span>
+          ) : null}
+          {!unavailable && data.groups.length === 0 ? (
             <span className="text-[12.5px] text-muted">{t("workloads.empty")}</span>
-          ) : (
+          ) : null}
+          {data.groups.length > 0 ? (
             data.groups.map((group) => (
               <details key={group.key} data-testid={`workload-${group.family}`} className="rounded-md border border-line-subtle px-3 py-2">
                 <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-body-ink">
@@ -159,9 +165,12 @@ function Workloads() {
                   <span className={group.owner.kind === "pane" ? "text-success" : "text-muted"}>
                     {group.owner.kind === "pane"
                       ? t("workloads.paneOwner", { pane: group.owner.pane })
-                      : t("workloads.unknownOwner")}
+                      : `${t("workloads.unknownOwner")} · ${t(`workloads.ownerReasons.${group.owner.reason}`)}`}
                   </span>
                   {group.project ? <span className="text-muted">{t("workloads.lastKnown", { project: group.project })}</span> : null}
+                  {group.contextObservedAt ? (
+                    <span className="text-muted">{t("workloads.lastKnownAt")} <RelativeTime epochMs={Date.parse(group.contextObservedAt)} /></span>
+                  ) : null}
                   {group.zombies > 0 ? <span className="text-warning">{t("workloads.zombies", { count: group.zombies })}</span> : null}
                 </summary>
                 <div className="mt-2 flex flex-col gap-1 border-t border-line-subtle pt-2">
@@ -172,6 +181,9 @@ function Workloads() {
                       <span>{proc.state}</span>
                       <span>{t("workloads.age", { value: proc.ageSeconds })}</span>
                       <span>{proc.rssMb !== null ? MB(proc.rssMb) : t("shortUnavailable")}</span>
+                      {proc.parentCommand !== null ? (
+                        <span>{t("workloads.parent", { command: proc.parentCommand, pid: proc.ppid })}</span>
+                      ) : null}
                     </div>
                   ))}
                   {group.detailsTruncated ? (
@@ -180,8 +192,11 @@ function Workloads() {
                 </div>
               </details>
             ))
-          )}
-          <span className="text-[10.5px] italic text-muted">{t("workloads.zombieNote")}</span>
+          ) : null}
+          {!unavailable ? <span className="text-[10.5px] italic text-muted">{t("workloads.zombieNote")}</span> : null}
+          <span className="text-[11px] text-muted">
+            {t("observed")} <RelativeTime epochMs={Date.parse(data.observedAt)} />
+          </span>
         </div>
       )}
     </Panel>
