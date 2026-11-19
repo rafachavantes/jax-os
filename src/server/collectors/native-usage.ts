@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, stat as nodeStatAsync, realpath as nodeRealpathAsync, opendir as nodeOpendirAsync, open as nodeOpenAsync, writeFile, access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import type Database from "better-sqlite3";
 import {
@@ -502,6 +503,11 @@ export type NativeExec = (
   opts: { cwd: string; env: Record<string, string>; timeout: number; maxBuffer: number },
 ) => Promise<NativeExecResult>;
 
+// Cooperative cancellation for the streaming hash: a chunk that already started may
+// settle, but the loop must observe this flag before reading the next one. It is not a
+// claim that an AbortSignal cancels a kernel read.
+export type HashCancellation = { cancelled: boolean };
+
 export type NativeCollectorDeps = {
   db: Database.Database;
   now: () => number;
@@ -518,7 +524,7 @@ export type NativeCollectorDeps = {
     ensureAdapter?: () => Promise<void>;
     exec: NativeExec;
     stat: (path: string) => Promise<StatLike | null>;
-    hash: (path: string) => Promise<string | null>;
+    hash: (path: string, cancellation?: HashCancellation) => Promise<string | null>;
   };
 };
 
@@ -1744,6 +1750,35 @@ function openCodeRuntime(db: Database.Database): PendingOwner {
 
 type PrepFailure = { ok: false; state: SourceState; warning: string; pending: boolean };
 
+// One bounded streaming pass over the executable. Cancellation is checked before each
+// new chunk, so a timed-out preparation stops after the in-flight read settles and only
+// closes the owned handle.
+export async function hashFileStreaming(
+  fs: Pick<NativeFs, "open">,
+  path: string,
+  cancellation?: HashCancellation,
+): Promise<string | null> {
+  let handle: FileHandleLike | null = null;
+  try {
+    handle = await fs.open(path);
+    const digest = createHash("sha256");
+    const buffer = Buffer.alloc(64 * 1024);
+    let position = 0;
+    for (;;) {
+      if (cancellation?.cancelled) return null;
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead <= 0) break;
+      digest.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    return digest.digest("hex");
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 async function openCodeExecutableState(
   scope: IoWindow,
   deps: NativeCollectorDeps,
@@ -1770,14 +1805,17 @@ async function openCodeExecutableState(
   if (cachedHash !== undefined) {
     hash = cachedHash;
   } else {
+    const cancellation: HashCancellation = { cancelled: false };
     try {
       hash = await scope.io(
-        () => deps.opencode.hash(deps.opencode.executable),
+        () => deps.opencode.hash(deps.opencode.executable, cancellation),
         scope.wallDeadline,
         () => undefined,
       );
     } catch (error) {
       if (isTimeout(error)) {
+        // The original hash stays owned through close; it just stops reading chunks.
+        cancellation.cancelled = true;
         return { ok: false, state: "unavailable", warning: "io-pending", pending: error.started };
       }
       hash = null;
@@ -2218,7 +2256,8 @@ export async function defaultNativeCollectorDeps(db: Database.Database): Promise
   return {
     db,
     now: () => Math.floor(Date.now() / 1000),
-    nowMs: () => Date.now(),
+    // Budget elapsed time never follows a backward wall-clock step.
+    nowMs: () => performance.now(),
     settings: readGeneralSettings,
     fs,
     roots: startup.roots,
@@ -2255,26 +2294,7 @@ export async function defaultNativeCollectorDeps(db: Database.Database): Promise
         }
       },
       // Streams fixed bounded chunks; the whole executable is never materialized.
-      hash: async (path) => {
-        let handle: Awaited<ReturnType<typeof nodeOpenAsync>> | null = null;
-        try {
-          handle = await nodeOpenAsync(path, "r");
-          const digest = createHash("sha256");
-          const buffer = Buffer.alloc(64 * 1024);
-          let position = 0;
-          for (;;) {
-            const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-            if (bytesRead <= 0) break;
-            digest.update(buffer.subarray(0, bytesRead));
-            position += bytesRead;
-          }
-          return digest.digest("hex");
-        } catch {
-          return null;
-        } finally {
-          await handle?.close().catch(() => undefined);
-        }
-      },
+      hash: (path, cancellation) => hashFileStreaming(fs, path, cancellation),
     },
   };
 }
