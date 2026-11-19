@@ -44,6 +44,15 @@ beforeEach(() => {
   harness.results.clear();
 });
 
+const resources = () => ({
+  data: { ok: true, data: {
+    observedAt: "2026-09-18T00:00:00.000Z", lastGoodAt: "2026-09-18T00:00:00.000Z",
+    state: "ok", stale: false, warning: null,
+    tmp: { path: "/tmp", mountPath: "/tmp", fsType: "tmpfs", tmpfs: true, sharedRoot: false, usedGb: 1.5, totalGb: 4, availableGb: 2.5 },
+  } },
+  isError: false,
+});
+
 const health = (over: Record<string, unknown> = {}) => ({
   data: { ok: true, data: { latest: LATEST, cores: 8, series: [], spark: [], services: null, ...over } }, isError: false,
 });
@@ -79,12 +88,13 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
   it("polls the existing health + alerts endpoints and renders glanceable links to stable health anchors", async () => {
     harness.results.set("health:24h", health());
     harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
+    harness.results.set("environment:resources", resources());
     const { html } = renderIntl(createElement(ServerPanel));
-    expect(harness.calls.map((c) => c.queryKey.join(":"))).toEqual(["health:24h", "mission:alerts"]);
+    expect(harness.calls.map((c) => c.queryKey.join(":"))).toEqual(["health:24h", "mission:alerts", "environment:resources"]);
     expect(html).toContain('href="/health#cpu"');
     expect(html).toContain('href="/health#mem"');
     expect(html).toContain('href="/health#disk"');
-    expect(html).toContain('href="/health#resources"');
+    expect(html).toContain('href="/health#tmp"');
     expect(html).toContain('href="/health#alerts"');
     // Compact values, not a full process/package panel.
     expect(html).toContain("42%");
@@ -99,6 +109,15 @@ describe("ServerPanel — compact resource strip (M2 plan Task 5)", () => {
     const { html } = renderIntl(createElement(ServerPanel));
     expect(html).toContain("/tmp");
     expect(html).toContain("unavailable");
+  });
+
+  it("shows the independent measured /tmp capacity when the environment source answers", () => {
+    harness.results.set("health:24h", health());
+    harness.results.set("mission:alerts", { data: { ok: true, data: [] }, isError: false });
+    harness.results.set("environment:resources", resources());
+    const { html } = renderIntl(createElement(ServerPanel));
+    expect(html).toContain("1.5 / 4.0 GB");
+    expect(html).toContain('href="/health#tmp"');
   });
 
   it("shows the alert count (summed from existing sources) and a source warning on failure", () => {
@@ -178,6 +197,7 @@ describe("both actual catalogs resolve every server key (plan Task 5)", () => {
   it.each(["en-US", "pt-BR"] as const)("%s renders ServerPanel and ServerAlerts with no MISSING_MESSAGE or literal key", (locale) => {
     harness.results.set("health:24h", health());
     harness.results.set("mission:alerts", alerts);
+    harness.results.set("environment:resources", resources());
     const panel = renderIntl(createElement(ServerPanel), locale);
     const detail = renderIntl(createElement(ServerAlerts), locale);
     expect(panel.errors).toEqual([]);
@@ -187,14 +207,14 @@ describe("both actual catalogs resolve every server key (plan Task 5)", () => {
     }
     if (locale === "en-US") {
       expect(panel.html).toContain("/tmp");
-      expect(panel.html).toContain("unavailable");
+      expect(panel.html).toContain("1.5 / 4.0 GB");
       expect(panel.html).toContain("4 alerts");
       expect(detail.html).toContain("Server alerts");
       expect(detail.html).toContain("2 children");
       expect(detail.html).toContain("Read only");
     } else {
       expect(panel.html).toContain("/tmp");
-      expect(panel.html).toContain("indisponível");
+      expect(panel.html).toContain("1.5 / 4.0 GB");
       expect(panel.html).toContain("4 alertas");
       expect(detail.html).toContain("Alertas do servidor");
       expect(detail.html).toContain("2 filhos");

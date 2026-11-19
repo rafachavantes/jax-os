@@ -7,6 +7,7 @@ import { fetchEnvelope } from "@/lib/api";
 import { meterValuesCompact } from "@/lib/format";
 import type { HealthPayload, HealthLatest } from "@/server/db/metrics";
 import type { Alert, PackageRow, ZombieRow } from "@/server/collectors/alerts";
+import type { ResourcesSection } from "@/server/collectors/environment";
 import { SourceWarning } from "./SourceWarning";
 
 const VISIBLE_PACKAGES = 3;
@@ -71,11 +72,18 @@ export function ServerPanel() {
     queryFn: ({ signal }) => fetchEnvelope<Alert[]>("/api/mission/alerts", signal),
     refetchInterval: 60_000,
   });
+  // M5: the independent actual /tmp observation (never the root disk, never Shmem).
+  const environment = useQuery({
+    queryKey: ["environment", "resources"],
+    queryFn: ({ signal }) => fetchEnvelope<ResourcesSection>("/api/environment?section=resources", signal),
+    refetchInterval: 10_000,
+  });
 
   const healthPending = health.data === undefined && !health.isError;
   const healthData = health.data?.ok ? health.data.data : null;
   const mv = meterValuesCompact(healthData?.latest ?? null, healthData?.cores ?? null);
   const rows = alertRowsOf(alerts.data);
+  const tmp = environment.data?.ok ? environment.data.data.tmp : null;
   const alertsReady = alerts.data !== undefined && alerts.data.ok === true;
   const meters = [
     { key: "cpu" as const, icon: Cpu, value: mv.cpu },
@@ -99,9 +107,11 @@ export function ServerPanel() {
           </a>
         ))
       )}
-      <a href="/health#resources" className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
+      <a href="/health#tmp" className="flex items-center gap-1 font-mono text-[11px] text-muted hover:text-body-ink">
         <span>{t("temp")}</span>
-        <span className="font-semibold text-ink">{t("tempUnavailable")}</span>
+        <span className="font-semibold text-ink">
+          {tmp ? `${tmp.usedGb.toFixed(1)} / ${tmp.totalGb.toFixed(1)} GB` : t("tempUnavailable")}
+        </span>
       </a>
       {alerts.isError ? (
         <SourceWarning label={t("alertsUnavailable")} />
@@ -130,6 +140,9 @@ export function ServerAlerts() {
   const zombiesAlert = rows.find((a): a is Extract<Alert, { kind: "zombies" }> => a.kind === "zombies");
   const updatesAlert = rows.find((a): a is Extract<Alert, { kind: "updates" }> => a.kind === "updates");
   const zombieGroups = zombiesAlert ? groupZombies(zombiesAlert.rows) : [];
+  const failedSources = rows
+    .filter((a): a is Extract<Alert, { kind: "source" }> => a.kind === "source")
+    .map((a) => a.source);
   const packages: PackageRow[] = updatesAlert?.rows ?? [];
   const securityNames = packages.filter((p) => p.security).map((p) => p.name);
   const visiblePackages = packages.slice(0, VISIBLE_PACKAGES);
@@ -139,6 +152,9 @@ export function ServerAlerts() {
     <section id="alerts" className="flex flex-col gap-4 rounded-lg border border-line bg-surface px-5 py-[18px]">
       <span className="text-sm font-bold text-ink">{t("alertsTitle")}</span>
       {alerts.isError ? <SourceWarning label={t("alertsUnavailable")} /> : null}
+      {failedSources.map((source) => (
+        <SourceWarning key={source} label={t("sourceFailed", { source: t(`sourceNames.${source}`) })} />
+      ))}
       {pending ? (
         <span className="h-6 animate-pulse rounded bg-surface-2" />
       ) : (

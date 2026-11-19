@@ -13,6 +13,7 @@ import { LineChart, Sparkline } from "@/components/health/Charts";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SourceWarning } from "@/components/mission/SourceWarning";
 import { ServerAlerts } from "@/components/mission/ServerPanel";
+import { EnvironmentDiagnostics } from "@/components/health/EnvironmentDiagnostics";
 
 const RANGES: HealthRange[] = ["1h", "24h", "7d", "90d"];
 const STALE_S = 180;
@@ -90,6 +91,8 @@ function HealthPageInner() {
       ) : stale ? (
         <SourceWarning label={t("collectorDown")} detail={t("lastSampleAgo", { min: Math.round((data.collectedAgoS ?? 0) / 60) })} />
       ) : null}
+
+      <EnvironmentDiagnostics />
 
       <div className="flex items-center justify-between text-[12px] text-muted">
         <span>{t("uptime", { value: fmtUptime(l.uptimeS) })}</span>
