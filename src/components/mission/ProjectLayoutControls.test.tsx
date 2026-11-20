@@ -24,10 +24,14 @@ const baseProps = {
 };
 
 describe("Organize controls (spec AC3, plan Task 3)", () => {
-  it("offers Enter and Reset in view mode, with the visible PR scope", () => {
+  it("keeps Organize in a folded display menu and PR scope directly available", () => {
     const html = renderToStaticMarkup(createElement(ProjectLayoutControls, baseProps));
-    expect(html).toContain("controls.organize");
-    expect(html).toContain("controls.reset");
+    const menu = html.match(/<details[^>]*>([\s\S]*?)<\/details>/)?.[1] ?? "";
+    expect(menu).toContain("controls.display");
+    expect(menu).toContain("controls.organize");
+    expect(menu).not.toContain("controls.mine");
+    expect(html).not.toMatch(/<details[^>]*\bopen\b/);
+    expect(html).not.toContain("controls.reset");
     expect(html).not.toContain("controls.save");
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("controls.mine");
@@ -40,18 +44,19 @@ describe("Organize controls (spec AC3, plan Task 3)", () => {
     }));
     expect(html).toContain("controls.save");
     expect(html).toContain("controls.cancel");
+    expect(html).toContain("controls.reset");
     expect(html).toContain("controls.reload");
     expect(html).toContain('aria-pressed="true"'); // All selected
   });
 
-  it("a save failure is visible and an unavailable source disables organize/reset/scope", () => {
+  it("a save failure is visible and an unavailable source disables organize/scope", () => {
     const failed = renderToStaticMarkup(createElement(ProjectLayoutControls, {
       ...baseProps, organize: { ...enterOrganize(snapshot, [{ dir: "Alpha" }]), status: "error", error: "disk" },
     }));
     expect(failed).toContain("controls.saveError");
     const unavailable = renderToStaticMarkup(createElement(ProjectLayoutControls, { ...baseProps, unavailable: true }));
     expect(unavailable).toContain("controls.unavailable");
-    expect(unavailable.match(/disabled/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(unavailable.match(/disabled/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
   });
 
   it("a scope persistence error is surfaced while the prior choice stays selected", () => {

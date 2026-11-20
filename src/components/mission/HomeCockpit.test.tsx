@@ -64,6 +64,17 @@ describe("Home cockpit hierarchy (M2 plan Task 5, spec AC1/AC2/AC10)", () => {  
     expect(html).not.toContain("pitHint");
   });
 
+  it("puts navigation and filters in the card toolbar and server resources last", () => {
+    seed({ "mission:prs:scope=mine": { data: { ok: true, data: { Alpha: { ok: true, prs: [], truncated: false } } }, isError: false } });
+    const html = render();
+    const controls = html.slice(html.indexOf('data-testid="projects-controls"'), html.indexOf('class="project-grid"'));
+    expect(controls).toContain('aria-label="label"');
+    expect(controls).toContain("controls.filter");
+    expect(controls).toContain("controls.mine");
+    expect(controls).toContain("controls.display");
+    expect(html.indexOf('data-testid="server-strip"')).toBeGreaterThan(html.indexOf('href="/audit"'));
+  });
+
   it("local cards, attention and resources render while the PR query is still unresolved", () => {
     // No "mission:prs:scope=mine" entry: the query is in flight/delayed.
     const html = render();

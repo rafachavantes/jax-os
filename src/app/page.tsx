@@ -268,14 +268,21 @@ function HomeCockpit() {
     event.preventDefault();
     if (!plan.push) return;
     window.history.pushState(null, "", plan.href);
-    setView(next);
+    flushSync(() => setView(next));
     setLocation({ path: location.path, search: plan.href.slice(location.path.length) });
+    document.getElementById(`home-${next}`)?.querySelector<HTMLAnchorElement>("nav a[aria-current='page']")?.focus();
   };
   const tabClass = (active: boolean) =>
     `rounded-md border px-3 py-1 text-[12px] font-semibold ${active ? "border-brand-soft-border bg-brand-soft text-brand" : "border-line text-muted hover:text-body-ink"}`;
+  const navigation = (
+    <nav aria-label={tViews("label")} className="flex flex-none items-center gap-1.5">
+      <a href={viewHref("projects")} onClick={(event) => onViewClick(event, "projects")} aria-current={view === "projects" ? "page" : undefined} className={tabClass(view === "projects")}>{tViews("projects")}</a>
+      <a href={viewHref("activity")} onClick={(event) => onViewClick(event, "activity")} aria-current={view === "activity" ? "page" : undefined} className={tabClass(view === "activity")}>{tViews("activity")}</a>
+    </nav>
+  );
 
   return (
-    <div className="mx-auto flex w-full min-w-0 max-w-[1320px] flex-col gap-[18px] [animation:jax-rise_.4s_ease]">
+    <div className="mx-auto flex min-h-full w-full min-w-0 max-w-[1320px] flex-col gap-[18px] [animation:jax-rise_.4s_ease]">
       {staleSource ? (
         <SourceWarning
           label={t("mission.inbox.unavailable")}
@@ -284,23 +291,18 @@ function HomeCockpit() {
       ) : null}
 
       <MissionBlock />
-      <ServerPanel />
-
-      <nav aria-label={tViews("label")} className="flex items-center gap-1.5">
-        <a href={viewHref("projects")} onClick={(event) => onViewClick(event, "projects")} aria-current={view === "projects" ? "page" : undefined} className={tabClass(view === "projects")}>{tViews("projects")}</a>
-        <a href={viewHref("activity")} onClick={(event) => onViewClick(event, "activity")} aria-current={view === "activity" ? "page" : undefined} className={tabClass(view === "activity")}>{tViews("activity")}</a>
-      </nav>
 
       {/* Both surfaces stay mounted: switching to Activity must not destroy answer drafts,
           focus, expansion or confirmation dialogs (spec AC6). The draft provider now lives in
           app/Providers.tsx above route children (M3b). */}
-      <div data-testid="home-projects" className={view === "projects" ? "flex flex-col gap-[22px]" : "hidden"}>
+      <div id="home-projects" data-testid="home-projects" className={view === "projects" ? "flex flex-col gap-[22px]" : "hidden"}>
           <InboxStrip mission={mission} onExpand={(key) => {
             // Respond on a card the filter hides: drop the filter synchronously so the scroll finds it.
             if (filter !== null && !boardShowsKey(mission.model.cards, filter, key)) flushSync(() => { setFilter(null); setExpandedDir(key); });
             else setExpandedDir(key);
           }} />
           <ProjectsColumn
+            navigation={navigation}
             mission={mission} reposRoot={mission.model.reposRoot} counts={countsByName} filter={filter}
             expandedDir={expandedDir}
             onToggleExpand={(dir) => setExpandedDir((d) => (d === dir ? null : dir))}
@@ -308,7 +310,8 @@ function HomeCockpit() {
             onToggleFilter={(b) => setFilter((f) => toggleFilter(f, b))}
           />
         </div>
-      <div data-testid="home-activity" className={view === "activity" ? "" : "hidden"}>
+      <div id="home-activity" data-testid="home-activity" className={view === "activity" ? "flex flex-col gap-3.5" : "hidden"}>
+        {navigation}
         <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
           <div className="min-w-0 lg:col-span-2">
             <EventTicker items={ticker} />
@@ -322,6 +325,7 @@ function HomeCockpit() {
       <a href="/audit" className="self-start text-[12px] text-muted hover:text-body-ink">
         {tNav("audit")} →
       </a>
+      <ServerPanel />
     </div>
   );
 }

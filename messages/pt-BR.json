@@ -81,6 +81,7 @@
       "autoHiddenBar": "{count, plural, one {# recolhido} other {# recolhidos}}",
       "autoHiddenShow": "mostrar",
       "controls": {
+        "display": "Exibição",
         "organize": "Organizar",
         "save": "Salvar",
         "cancel": "Cancelar",
