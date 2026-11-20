@@ -66,7 +66,7 @@ function alertCount(rows: Alert[]): number {
 // Compact home resource strip (M2 plan Task 5): glanceable CPU/RAM/root disk plus an explicit
 // /tmp unavailable value (collector lands with M5 — never substituted disk/Shmem) and the alert
 // count linking to the read-only Health detail. Lives in its own 10s poll; a slow GitHub call
-// never gates it. Sticky without covering controls (background + max z-index tier).
+// never gates it. The final row stays at the bottom even when the board is short.
 export function ServerPanel() {
   const t = useTranslations("mission.server");
   const health = useQuery({
@@ -110,7 +110,7 @@ export function ServerPanel() {
   ];
 
   return (
-    <section data-testid="server-strip" className="sticky top-0 z-10 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-surface px-3.5 py-2">
+    <section data-testid="server-strip" className="sticky bottom-0 z-10 mt-auto flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-surface px-3.5 py-2">
       <span className="text-[11px] font-bold uppercase tracking-[.08em] text-muted">{t("title")}</span>
       {health.isError ? <SourceWarning label={t("metersUnavailable")} /> : null}
       {meters.map(({ key, icon: Icon, value }) => (

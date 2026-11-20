@@ -215,10 +215,11 @@ describe("ProjectsColumn — uncarded-projects collapsed toggle (MOA-486 follow-
     expect(html).not.toMatch(/<details[^>]*\bopen\b/);
   });
 
-  it("no uncarded names: nothing renders, not even an empty <details>", () => {
+  it("no uncarded names: only the display menu renders, without an empty project disclosure", () => {
     const mission = missionOf({ uncardedProjectNames: [] });
     const html = renderToStaticMarkup(createElement(ProjectsColumn, { reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {} }));
-    expect(html).not.toContain("<details");
+    expect(html.match(/<details/g)).toHaveLength(1);
+    expect(html).toContain("controls.display");
     expect(html).not.toContain("uncarded");
   });
 });

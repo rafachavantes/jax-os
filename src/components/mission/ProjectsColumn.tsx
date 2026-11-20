@@ -16,6 +16,7 @@ import { ProjectLayoutControls } from "./ProjectLayoutControls";
 import { SourceWarning } from "./SourceWarning";
 
 type Props = {
+  navigation?: React.ReactNode;
   mission: Mission;
   reposRoot: string;
   counts: Record<string, number> | null;
@@ -126,7 +127,7 @@ export function announceDrop(
   return { next, announcement: t("organize.moved", { name, position: position + 1 }) };
 }
 
-export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expandedDir, onToggleExpand, bucketSummary = null, onToggleFilter }: Props) {
+export function ProjectsColumn({ navigation, mission, reposRoot, counts, filter = null, expandedDir, onToggleExpand, bucketSummary = null, onToggleFilter }: Props) {
   const t = useTranslations("mission.projects");
   const tMission = useTranslations("mission");
   const tSource = useTranslations("mission.source");
@@ -304,11 +305,8 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
 
   return (
     <div className="flex min-w-0 flex-col gap-3.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-bold text-ink">{t("title")}</span>
-        <span className="font-mono text-[11px] text-muted">{reposRoot}</span>
-      </div>
       <ProjectLayoutControls
+        navigation={navigation}
         unavailable={preferencesUnavailable}
         organize={organize}
         onEnter={startOrganize}
@@ -320,45 +318,57 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
         scopeBusy={scopeBusy}
         scopeError={scopeError}
         onScope={(scope) => void chooseScope(scope)}
-      />
-      <span aria-live="polite" className="sr-only">{announcement}</span>
-      {bucketSummary && onToggleFilter && (bucketSummary.counts || filter !== null) ? (
-        // M2 plan F2: the permanent four-pill row is one compact native disclosure, folded by
-        // default. The pills (same PitCounts state/callback/counts/pressed semantics) live inside;
-        // the clear action is a sibling of the summary, visible while folded and independent of
-        // bucket-count availability, so it still clears a selected status whose counts are unknown.
-        <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-muted">
-          <details className="min-w-0">
-            <summary className="cursor-pointer list-none font-semibold text-body-ink [&::-webkit-details-marker]:hidden">
-              {t("controls.filter")}: {filter !== null ? tMission(`states.${filter}`) : t("controls.filterAll")}
-            </summary>
-            {bucketSummary.counts ? (
-              <div className="mt-1.5">
-                <PitCounts
-                  counts={bucketSummary.counts}
-                  active={filter}
-                  onToggle={onToggleFilter}
-                  hiddenCount={model.hiddenCount}
-                  autoHiddenCount={model.autoHiddenCount}
-                  compact
-                />
-              </div>
+        filterControl={bucketSummary && onToggleFilter && (bucketSummary.counts || filter !== null) ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-muted">
+            <details className="relative min-w-0">
+              <summary className="cursor-pointer list-none font-semibold text-body-ink [&::-webkit-details-marker]:hidden">
+                {t("controls.filter")}: {filter !== null ? tMission(`states.${filter}`) : t("controls.filterAll")}
+              </summary>
+              {bucketSummary.counts ? (
+                <div className="absolute left-0 z-20 mt-2 w-72 max-w-[calc(100vw-3rem)] rounded-md border border-line bg-surface p-3">
+                  <PitCounts
+                    counts={bucketSummary.counts}
+                    active={filter}
+                    onToggle={onToggleFilter}
+                    hiddenCount={model.hiddenCount}
+                    autoHiddenCount={model.autoHiddenCount}
+                    compact
+                  />
+                </div>
+              ) : null}
+            </details>
+            {filter !== null ? (
+              <button type="button" className="rounded border border-line px-1.5 py-0.5 font-semibold text-body-ink" onClick={() => onToggleFilter(filter)}>
+                {t("controls.filterClear")}
+              </button>
             ) : null}
-          </details>
-          {filter !== null ? (
-            <button type="button" className="rounded border border-line px-1.5 py-0.5 font-semibold text-body-ink" onClick={() => onToggleFilter(filter)}>
-              {t("controls.filterClear")}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {(() => {
-        const summary = hiddenAutoHiddenSummary(hiddenCards.length, autoHiddenCards.length, t as (key: string, values?: Record<string, unknown>) => string);
-        if (!summary.hidden && !summary.autoHidden) return null;
-        return (
-          <ProjectVisibilityDisclosure autoHiddenText={summary.autoHidden} hiddenText={summary.hidden} autoHiddenCards={autoHiddenCards} hiddenCards={hiddenCards} />
-        );
-      })()}
+          </div>
+        ) : null}
+      >
+        <span className="break-all font-mono text-[11px] text-muted">{reposRoot}</span>
+        {(() => {
+          const summary = hiddenAutoHiddenSummary(hiddenCards.length, autoHiddenCards.length, t as (key: string, values?: Record<string, unknown>) => string);
+          if (!summary.hidden && !summary.autoHidden) return null;
+          return (
+            <ProjectVisibilityDisclosure autoHiddenText={summary.autoHidden} hiddenText={summary.hidden} autoHiddenCards={autoHiddenCards} hiddenCards={hiddenCards} />
+          );
+        })()}
+        {model.uncardedProjectNames.length > 0 ? (
+          <>
+            <details className="group text-[11px] text-muted">
+              <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+                {t("uncarded", { count: model.uncardedProjectNames.length })}
+                {" · "}
+                <span className="font-semibold text-body-ink underline group-open:hidden">{t("uncardedShow")}</span>
+                <span className="hidden font-semibold text-body-ink underline group-open:inline">{t("uncardedHide")}</span>
+              </summary>
+              <span>{t("uncardedNames", { names: model.uncardedProjectNames.join(", ") })}</span>
+            </details>
+            {model.historicalTruncated ? <span className="text-[11px] text-muted">{t("uncardedTruncated")}</span> : null}
+          </>
+        ) : model.historicalTruncated ? <span className="text-[11px] text-muted">{t("hubListTruncated")}</span> : null}
+      </ProjectLayoutControls>
+      <span aria-live="polite" className="sr-only">{announcement}</span>
       {/* MOA-469 §4 / C4: the two live sources warn independently — a failed tmux collector is a
           visible source warning (never a quiet healthy zero-agents board), and a failed Codex
           collector must not hide the (fully known) tmux/projects state. */}
@@ -373,38 +383,6 @@ export function ProjectsColumn({ mission, reposRoot, counts, filter = null, expa
       {body}
       {model.skipped > 0 ? (
         <span className="text-[11px] text-muted">{t("skipped", { count: model.skipped })}</span>
-      ) : null}
-      {model.uncardedProjectNames.length > 0 ? (
-        <>
-          {/* MOA-486 follow-up: the full name list used to render inline every time, three lines
-              of noise below the cards. A native <details>/<summary> collapses it behind a toggle
-              — no state, no JS; the names stay in the collapsed markup (just not visible) so the
-              test can assert on them without simulating a click. */}
-          <details className="group text-[11px] text-muted">
-            <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-              {t("uncarded", { count: model.uncardedProjectNames.length })}
-              {" · "}
-              <span className="font-semibold text-body-ink underline group-open:hidden">{t("uncardedShow")}</span>
-              <span className="hidden font-semibold text-body-ink underline group-open:inline">{t("uncardedHide")}</span>
-            </summary>
-            <span>{t("uncardedNames", { names: model.uncardedProjectNames.join(", ") })}</span>
-          </details>
-          {model.historicalTruncated ? (
-            // Post-merge cold review, Finding 2 (HIGH): the merged hub envelope reports
-            // `historicalTruncated` when it capped the historical project set — surfacing it here
-            // (rather than silently dropping it, as the earlier draft did) keeps the uncarded line
-            // from implying it lists every project with activity, when it may only list the capped
-            // subset.
-            <span className="text-[11px] text-muted">{t("uncardedTruncated")}</span>
-          ) : null}
-        </>
-      ) : model.historicalTruncated ? (
-        // Finding 4 (branch review, MEDIUM): `historicalTruncated` used to render this "and
-        // others" continuation copy even when `uncardedProjectNames` is empty because `projects`
-        // hasn't resolved yet (mission.ts gates the name list on `projectsReady`, not on the
-        // truncation flag) — it read as a continuation of a list that was never shown. Standalone
-        // wording here says the same thing without implying a preceding list.
-        <span className="text-[11px] text-muted">{t("hubListTruncated")}</span>
       ) : null}
     </div>
   );

@@ -81,6 +81,7 @@
       "autoHiddenBar": "{count, plural, one {# collapsed} other {# collapsed}}",
       "autoHiddenShow": "show",
       "controls": {
+        "display": "Display",
         "organize": "Organize",
         "save": "Save",
         "cancel": "Cancel",

@@ -273,9 +273,15 @@ function HomeCockpit() {
   };
   const tabClass = (active: boolean) =>
     `rounded-md border px-3 py-1 text-[12px] font-semibold ${active ? "border-brand-soft-border bg-brand-soft text-brand" : "border-line text-muted hover:text-body-ink"}`;
+  const navigation = (
+    <nav aria-label={tViews("label")} className="flex flex-none items-center gap-1.5">
+      <a href={viewHref("projects")} onClick={(event) => onViewClick(event, "projects")} aria-current={view === "projects" ? "page" : undefined} className={tabClass(view === "projects")}>{tViews("projects")}</a>
+      <a href={viewHref("activity")} onClick={(event) => onViewClick(event, "activity")} aria-current={view === "activity" ? "page" : undefined} className={tabClass(view === "activity")}>{tViews("activity")}</a>
+    </nav>
+  );
 
   return (
-    <div className="mx-auto flex w-full min-w-0 max-w-[1320px] flex-col gap-[18px] [animation:jax-rise_.4s_ease]">
+    <div className="mx-auto flex min-h-full w-full min-w-0 max-w-[1320px] flex-col gap-[18px] [animation:jax-rise_.4s_ease]">
       {staleSource ? (
         <SourceWarning
           label={t("mission.inbox.unavailable")}
@@ -284,12 +290,6 @@ function HomeCockpit() {
       ) : null}
 
       <MissionBlock />
-      <ServerPanel />
-
-      <nav aria-label={tViews("label")} className="flex items-center gap-1.5">
-        <a href={viewHref("projects")} onClick={(event) => onViewClick(event, "projects")} aria-current={view === "projects" ? "page" : undefined} className={tabClass(view === "projects")}>{tViews("projects")}</a>
-        <a href={viewHref("activity")} onClick={(event) => onViewClick(event, "activity")} aria-current={view === "activity" ? "page" : undefined} className={tabClass(view === "activity")}>{tViews("activity")}</a>
-      </nav>
 
       {/* Both surfaces stay mounted: switching to Activity must not destroy answer drafts,
           focus, expansion or confirmation dialogs (spec AC6). The draft provider now lives in
@@ -301,6 +301,7 @@ function HomeCockpit() {
             else setExpandedDir(key);
           }} />
           <ProjectsColumn
+            navigation={navigation}
             mission={mission} reposRoot={mission.model.reposRoot} counts={countsByName} filter={filter}
             expandedDir={expandedDir}
             onToggleExpand={(dir) => setExpandedDir((d) => (d === dir ? null : dir))}
@@ -308,7 +309,8 @@ function HomeCockpit() {
             onToggleFilter={(b) => setFilter((f) => toggleFilter(f, b))}
           />
         </div>
-      <div data-testid="home-activity" className={view === "activity" ? "" : "hidden"}>
+      <div data-testid="home-activity" className={view === "activity" ? "flex flex-col gap-3.5" : "hidden"}>
+        {navigation}
         <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
           <div className="min-w-0 lg:col-span-2">
             <EventTicker items={ticker} />
@@ -322,6 +324,7 @@ function HomeCockpit() {
       <a href="/audit" className="self-start text-[12px] text-muted hover:text-body-ink">
         {tNav("audit")} →
       </a>
+      <ServerPanel />
     </div>
   );
 }

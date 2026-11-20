@@ -1,6 +1,6 @@
 "use client";
 
-import { GripVertical } from "lucide-react";
+import { ChevronDown, GripVertical } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { normalizeProjectKey, type LayoutEntry, type PrScope, type ProjectWidth } from "@/lib/cockpitLayout";
 import type { OrganizeState } from "@/lib/cockpitPrefsQuery";
@@ -84,6 +84,7 @@ export function readDraggedProject(dataTransfer: Pick<DataTransfer, "getData">, 
 export function ProjectLayoutControls({
   unavailable, organize, onEnter, onSave, onCancel, onReset, onReload,
   prScope, scopeBusy, scopeError, onScope,
+  navigation, filterControl, children,
 }: {
   unavailable: boolean;
   organize: OrganizeState;
@@ -96,6 +97,9 @@ export function ProjectLayoutControls({
   scopeBusy: boolean;
   scopeError: string | null;
   onScope: (scope: PrScope) => void;
+  navigation?: React.ReactNode;
+  filterControl?: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   const t = useTranslations("mission.projects");
   const editing = organize.draft !== null;
@@ -105,35 +109,46 @@ export function ProjectLayoutControls({
     `rounded-md border px-2 py-0.5 text-[11px] font-semibold ${active ? "border-brand-soft-border bg-brand-soft text-brand" : "border-line text-muted hover:text-body-ink"}`;
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5" data-testid="projects-controls">
-      {unavailable ? <span className="text-[11.5px] text-warning">{t("controls.unavailable")}</span> : null}
-      {editing ? (
-        <>
-          <button type="button" className={btn} disabled={saving} onClick={onSave}>{t("controls.save")}</button>
-          <button type="button" className={btn} disabled={saving} onClick={onCancel}>{t("controls.cancel")}</button>
-        </>
-      ) : (
-        <button type="button" className={btn} disabled={unavailable} onClick={onEnter}>{t("controls.organize")}</button>
-      )}
-      <button type="button" className={btn} disabled={unavailable || saving} onClick={onReset}>{t("controls.reset")}</button>
+      {navigation}
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+        {editing ? (
+          <>
+            <button type="button" className={btn} disabled={saving} onClick={onSave}>{t("controls.save")}</button>
+            <button type="button" className={btn} disabled={saving} onClick={onCancel}>{t("controls.cancel")}</button>
+            <button type="button" className={btn} disabled={unavailable || saving} onClick={onReset}>{t("controls.reset")}</button>
+          </>
+        ) : null}
+        {filterControl}
+        <span className="flex flex-none items-center gap-1.5 text-[11px] text-muted">
+          {t("controls.prScope")}
+          <button type="button" disabled={unavailable || scopeBusy} aria-pressed={prScope === "mine"} className={scopeBtn(prScope === "mine")} onClick={() => onScope("mine")}>
+            {t("controls.mine")}
+          </button>
+          <button type="button" disabled={unavailable || scopeBusy} aria-pressed={prScope === "all"} className={scopeBtn(prScope === "all")} onClick={() => onScope("all")}>
+            {t("controls.all")}
+          </button>
+        </span>
+        <details className="relative">
+          <summary className={`${btn} flex cursor-pointer list-none items-center gap-1 [&::-webkit-details-marker]:hidden`}>
+            {t("controls.display")} <ChevronDown className="h-3 w-3" aria-hidden />
+          </summary>
+          <div className="absolute right-0 z-20 mt-2 flex max-h-[60vh] w-72 max-w-[calc(100vw-3rem)] flex-col gap-3 overflow-auto rounded-md border border-line bg-surface p-3">
+            {!editing ? <button type="button" className={`${btn} self-start`} disabled={unavailable} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onEnter(); }}>{t("controls.organize")}</button> : null}
+            {children}
+          </div>
+        </details>
+      </div>
+      {unavailable ? <span className="basis-full text-[11.5px] text-warning">{t("controls.unavailable")}</span> : null}
       {organize.status === "saving" ? <span className="text-[11px] text-muted">{t("controls.saving")}</span> : null}
       {organize.status === "error" && organize.error ? (
-        <span className="text-[11.5px] text-danger">{t("controls.saveError", { error: organize.error })}</span>
+        <span className="basis-full text-[11.5px] text-danger">{t("controls.saveError", { error: organize.error })}</span>
       ) : null}
       {organize.status === "conflict" ? (
-        <span className="flex items-center gap-1.5 text-[11.5px] text-warning">
+        <span className="flex basis-full items-center gap-1.5 text-[11.5px] text-warning">
           {t("controls.conflict")}
           <button type="button" className="font-semibold text-body-ink underline" onClick={onReload}>{t("controls.reload")}</button>
         </span>
       ) : null}
-      <span className="ml-auto flex flex-none items-center gap-1.5 text-[11px] text-muted">
-        {t("controls.prScope")}
-        <button type="button" disabled={unavailable || scopeBusy} aria-pressed={prScope === "mine"} className={scopeBtn(prScope === "mine")} onClick={() => onScope("mine")}>
-          {t("controls.mine")}
-        </button>
-        <button type="button" disabled={unavailable || scopeBusy} aria-pressed={prScope === "all"} className={scopeBtn(prScope === "all")} onClick={() => onScope("all")}>
-          {t("controls.all")}
-        </button>
-      </span>
       {scopeError ? <span className="basis-full text-[11.5px] text-danger">{t("controls.scopeError")}</span> : null}
     </div>
   );
