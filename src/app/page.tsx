@@ -268,8 +268,9 @@ function HomeCockpit() {
     event.preventDefault();
     if (!plan.push) return;
     window.history.pushState(null, "", plan.href);
-    setView(next);
+    flushSync(() => setView(next));
     setLocation({ path: location.path, search: plan.href.slice(location.path.length) });
+    document.getElementById(`home-${next}`)?.querySelector<HTMLAnchorElement>("nav a[aria-current='page']")?.focus();
   };
   const tabClass = (active: boolean) =>
     `rounded-md border px-3 py-1 text-[12px] font-semibold ${active ? "border-brand-soft-border bg-brand-soft text-brand" : "border-line text-muted hover:text-body-ink"}`;
@@ -294,7 +295,7 @@ function HomeCockpit() {
       {/* Both surfaces stay mounted: switching to Activity must not destroy answer drafts,
           focus, expansion or confirmation dialogs (spec AC6). The draft provider now lives in
           app/Providers.tsx above route children (M3b). */}
-      <div data-testid="home-projects" className={view === "projects" ? "flex flex-col gap-[22px]" : "hidden"}>
+      <div id="home-projects" data-testid="home-projects" className={view === "projects" ? "flex flex-col gap-[22px]" : "hidden"}>
           <InboxStrip mission={mission} onExpand={(key) => {
             // Respond on a card the filter hides: drop the filter synchronously so the scroll finds it.
             if (filter !== null && !boardShowsKey(mission.model.cards, filter, key)) flushSync(() => { setFilter(null); setExpandedDir(key); });
@@ -309,7 +310,7 @@ function HomeCockpit() {
             onToggleFilter={(b) => setFilter((f) => toggleFilter(f, b))}
           />
         </div>
-      <div data-testid="home-activity" className={view === "activity" ? "flex flex-col gap-3.5" : "hidden"}>
+      <div id="home-activity" data-testid="home-activity" className={view === "activity" ? "flex flex-col gap-3.5" : "hidden"}>
         {navigation}
         <div className="grid min-w-0 items-start gap-4 [&>*]:min-w-0 lg:grid-cols-[1.6fr_1fr]">
           <div className="min-w-0 lg:col-span-2">
