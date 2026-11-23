@@ -926,6 +926,7 @@
     "modelSearchPlaceholder": "Digite para buscar no catálogo desta conexão",
     "modelHint": "{count} modelos nesta conexão. Se não estiver cadastrado, adicione em Providers do OpenCode.",
     "routingTitle": "Roteamento OpenRouter",
+    "modelChoose": "Nenhum modelo de builder escolhido. Escolha uma conexão e um modelo; builds são recusados até os dois perfis serem salvos.",
     "modelUnavailable": "O modelo salvo não está disponível nesta conexão.",
     "manageConnection": "Gerenciar conexão e modelos",
     "models": "Modelos",

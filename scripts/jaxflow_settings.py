@@ -347,11 +347,10 @@ def select_reviewer(settings, caller, *, model, effort, agents):
 
 
 def select_builder(settings, *, fallback, builder, model, effort):
-    managed = bool(fallback) or builder == "opencode-builder"
     if settings is None:
-        if managed:
-            raise Refusal("agent-settings-uninitialized")
-        return None
+        exc = Refusal("agent-settings-uninitialized")
+        exc.hint = "hint: no builder model is configured; pick one in /settings (Agents) and save, then retry"
+        raise exc
     if builder not in (None, "opencode-builder") or model is not None or effort is not None:
         raise Refusal("agent-settings-override")
     return {

@@ -926,6 +926,7 @@
     "modelSearchPlaceholder": "Type to search this connection's catalog",
     "modelHint": "{count} models on this connection. If it is not registered, add it in OpenCode providers.",
     "routingTitle": "OpenRouter routing",
+    "modelChoose": "No builder model chosen yet. Pick a connection and a model; builds are refused until both profiles are saved.",
     "modelUnavailable": "The saved model is not available on this connection.",
     "manageConnection": "Manage connection and models",
     "models": "Models",

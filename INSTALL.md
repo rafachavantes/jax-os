@@ -58,7 +58,7 @@ If you exported a custom `$JAXOS_HOME`, use that directory instead of
 | `NOTIFICATION_WEBHOOK_URL` | HMAC-signed notification target | `webhook` |
 | `NOTIFICATION_WEBHOOK_SECRET` | Signing secret for that webhook | `webhook` |
 | `TYPESAFE_API` | TypeSafe (Jev) key for the message classifier | `classifier` |
-| `OPENROUTER_API_KEY_BUILDER` | OpenRouter key for the classifier's fallback model | `classifier` |
+| `OPENROUTER_API_KEY_BUILDER` | API key for the classifier's fallback endpoint (OpenRouter unless `CLASSIFIER_FALLBACK_URL` points elsewhere) | `classifier` |
 
 **Runtime settings (3)** — not secrets, and never put them in
 `$JAXOS_HOME/.env`:
@@ -93,7 +93,7 @@ One row per integration that ever leaves the box:
 
 | Integration | Egress |
 |---|---|
-| `classifier` | Message tails / review-finding text / build-failure excerpts → TypeSafe (Jev); on a Jev failure → OpenRouter/DeepSeek |
+| `classifier` | Message tails / review-finding text / build-failure excerpts → TypeSafe (Jev); on a Jev failure → the configurable fallback endpoint (OpenRouter by default) |
 | `webhook` | The configured URL, HMAC-signed payload, wherever the owner points it |
 | `agents.*` | Read-only native OAuth files; no outbound call beyond the provider's own usage endpoint |
 | `linear` / `github` | The named provider's own API, credentials from `$JAXOS_HOME/.env` or `gh auth` |
@@ -142,6 +142,21 @@ kill "$PID"
 With the app running, open `/settings` → Geral and set `ownerName`, `locale`,
 `reposRoot`, `vaultPath`, and `monitoredUnits`. Leave every integration off
 until the secret it needs exists in `$JAXOS_HOME/.env`.
+
+Then open `/settings` → Agents and pick the builder models. Jax OS ships none:
+choose a connection and a model for both the Default and the Fallback profile and
+save. Until then `jaxflow build` refuses with `agent-settings-uninitialized`.
+
+The `classifier` integration is optional and stays off unless you enable it. It
+sends the tail of an agent's last message to TypeSafe (Jev) to label the turn
+done / needs input / blocked / waiting, using `TYPESAFE_API`. If the Jev call
+fails it falls back to an OpenAI-compatible endpoint with
+`OPENROUTER_API_KEY_BUILDER`; without that key the turn is simply left unclassified.
+The fallback defaults to OpenRouter's chat-completions URL and model
+`deepseek/deepseek-v4-flash-0731`; to use another provider or model, set
+`CLASSIFIER_FALLBACK_URL` (`https://`, or loopback `http://`) and/or
+`CLASSIFIER_FALLBACK_MODEL` in `$JAXOS_HOME/.env` or the process environment
+(they are plain settings, not secrets, and are not listed in `.env.example`).
 
 ## Global rules
 

@@ -150,19 +150,10 @@ export const BOOTSTRAP_DRAFT: SettingsDraft = {
     claude: { ...modelDefaults.reviewers.claude },
     codex: { ...modelDefaults.reviewers.codex },
   },
+  // No factory builder model: the user picks one in /settings before the first `jaxflow build`.
   builders: {
-    default: {
-      connection: "xai",
-      ...modelDefaults.builders.default,
-      credential: { kind: "native" },
-      routing: null,
-    },
-    fallback: {
-      connection: "openrouter",
-      ...modelDefaults.builders.fallback,
-      credential: { kind: "native" },
-      routing: { sort: "price", allow_fallbacks: true },
-    },
+    default: { connection: "", model: "", effort: null, credential: { kind: "native" }, routing: null },
+    fallback: { connection: "", model: "", effort: null, credential: { kind: "native" }, routing: null },
   },
 };
 

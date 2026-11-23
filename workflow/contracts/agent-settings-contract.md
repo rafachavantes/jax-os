@@ -137,8 +137,8 @@ explicitly save or reconcile. No automatic cross-profile fallback, historical
 replay, or silent transport downgrade.
 
 Until this file exists, `--fallback` and `--resume` refuse
-`agent-settings-uninitialized` and legacy `--builder`/`--model` continue. After it
-exists, Default/Fallback are the authority. Runtime never creates the file.
+`agent-settings-uninitialized` and so does any other build: there is no factory builder
+model and no legacy `--builder`/`--model` path. After it exists, Default/Fallback are the authority. Runtime never creates the file.
 
 ### Supported transports
 

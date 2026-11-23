@@ -36,6 +36,7 @@ from testkit import (  # noqa: F401  (autouse fixtures included on purpose)
     _init_repo,
     _insert,
     _install_settings,
+    _no_agent_settings,
     _integration_on_by_default,
     _isolate_agent_settings,
     _isolate_callbacks,
@@ -204,7 +205,7 @@ def test_build_refuses_effort_override_for_opencode_runtime_before_reservation(c
     # `opencode run --variant`), not to the call -- picking the runtime IS picking the
     # effort, exactly as it is picking the model id. Accepting `--effort` here would
     # silently drop it at the one call site that launches the builder, so refuse loudly,
-    # before any reservation, for BOTH OpenCode runtimes.
+    # before any reservation (now `agent-settings-override`: model/effort come from /settings).
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
@@ -223,9 +224,8 @@ def test_build_refuses_effort_override_for_opencode_runtime_before_reservation(c
                 argv, run=_run_with_tmux(fake, real_cwd=root), post=lambda e: {"ok": True},
                 env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
             )
-            expected_runtime = builder or jaxflow_build.BUILDER_DEFAULT
             assert code == jaxflow_common.REFUSED
-            assert capsys.readouterr().err.strip() == f"effort-not-supported: {expected_runtime}"
+            assert capsys.readouterr().err.strip() == "agent-settings-override"
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
 
@@ -244,8 +244,8 @@ def test_managed_build_flags_refuse_before_reservation(monkeypatch, tmp_path, fl
         _init_repo(root)
         plan = _plan_file(root)
         monkeypatch.chdir(root)
-        if install:
-            _install_settings(tmp_path, monkeypatch)
+        if not install:
+            _no_agent_settings(monkeypatch)
         _run_id, events, git_calls, mkdir_calls, exc = _probe_dispatch_build(
             monkeypatch, root, allow_root, plan, **flags,
         )
@@ -287,6 +287,7 @@ def test_managed_build_uses_settings_profile(monkeypatch, tmp_path):
 
 
 def test_build_fallback_cli_uninitialized(capsys, monkeypatch):
+    _no_agent_settings(monkeypatch)
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
@@ -300,7 +301,7 @@ def test_build_fallback_cli_uninitialized(capsys, monkeypatch):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
         assert code == jaxflow_common.REFUSED
-        assert capsys.readouterr().err.strip() == "agent-settings-uninitialized"
+        assert capsys.readouterr().err.splitlines()[0] == "agent-settings-uninitialized"
         assert not (allow_root / "demo-feat-x").exists()
 
 
@@ -323,8 +324,8 @@ def test_dispatch_build_legacy_namespace_without_fallback_attr(monkeypatch):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
             allowlist_root=allow_root,
         )
-        assert events[0]["payload"]["runtime"] == "opencode-grok"
-        assert "requested_profile" not in events[0]["payload"]
+        assert events[0]["payload"]["runtime"] == "opencode-builder"
+        assert events[0]["payload"]["requested_profile"] == "default"
         assert run_id
 
 
@@ -358,7 +359,13 @@ def test_review_invalid_override_does_not_launch(monkeypatch):
             assert events == []
 
 
-def test_build_refuses_model_over_hub_limit_before_reservation(monkeypatch):
+def _saved_builder_model(tmp_path, monkeypatch, model):
+    path = _install_settings(tmp_path, monkeypatch)
+    _rewrite_json(path, lambda d: d["builders"]["default"].update(model=model))
+
+
+def test_build_refuses_a_saved_model_over_the_settings_cap_before_reservation(monkeypatch, tmp_path):
+    _saved_builder_model(tmp_path, monkeypatch, "x" * 385)
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
@@ -366,28 +373,27 @@ def test_build_refuses_model_over_hub_limit_before_reservation(monkeypatch):
         plan = _plan_file(root)
         monkeypatch.chdir(root)
         _run_id, events, git_calls, mkdir_calls, exc = _probe_dispatch_build(
-            monkeypatch, root, allow_root, plan, model="x" * 385,
+            monkeypatch, root, allow_root, plan,
         )
-        assert exc is not None and exc.code == "model-invalid"
+        assert exc is not None and exc.code == "agent-settings-malformed"
         _assert_no_reservation(allow_root, git_calls, mkdir_calls, events)
 
 
-def test_build_accepts_combined_id_and_unicode_model_within_hub_limit(monkeypatch):
+def test_build_accepts_combined_id_within_hub_limit(monkeypatch, tmp_path):
+    # the recorded id is `<connection>/<model>`: 200 + len("fixture/") stays within the cap
+    model = "m" * 200
+    _saved_builder_model(tmp_path, monkeypatch, model)
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
         _init_repo(root)
         plan = _plan_file(root)
         monkeypatch.chdir(root)
-        for branch, model in (
-            ("feat/unicode", "é" * 384),
-            ("feat/combined", "fixture/" + "m" * 200),
-        ):
-            _run_id, events, _git, _mkdir, exc = _probe_dispatch_build(
-                monkeypatch, root, allow_root, plan, branch=branch, model=model,
-            )
-            assert exc is None
-            assert events[0]["payload"]["model"] == model
+        _run_id, events, _git, _mkdir, exc = _probe_dispatch_build(
+            monkeypatch, root, allow_root, plan, branch="feat/combined",
+        )
+        assert exc is None
+        assert events[0]["payload"]["model"] == "fixture/" + model
 
 
 def test_build_refuses_codex_as_a_builder_runtime(capsys, monkeypatch):
@@ -412,7 +418,7 @@ def test_build_refuses_codex_as_a_builder_runtime(capsys, monkeypatch):
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
         assert code == jaxflow_common.REFUSED
-        assert "runtime-not-allowed" in capsys.readouterr().err
+        assert "agent-settings-override" in capsys.readouterr().err
         assert fake.calls == []
         assert not (allow_root / "demo-feat-x").exists()
 
@@ -975,7 +981,7 @@ def test_build_keeps_original_plan_path_and_copies_only_agents_md(monkeypatch):
         assert manifest["whitelist"] == ["a.py", "b.py"]
 
 
-def test_build_model_effort_flags_reach_manifest_and_run_started_payload(monkeypatch):
+def test_build_records_the_saved_profile_model_and_refuses_cli_model_overrides(capsys, monkeypatch):
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
@@ -991,32 +997,24 @@ def test_build_model_effort_flags_reach_manifest_and_run_started_payload(monkeyp
             events.append(event)
             return {"ok": True}
 
-        # Amended 2026-09-07 (MOA-451): `--effort` is now refused for EVERY builder runtime,
-        # since both remaining ones are OpenCode and their variant is part of the runtime
-        # definition. So a build's ledger `effort` is always the `n/a` sentinel, and only
-        # `--model` can still be overridden per call.
-        run_id = jaxflow_cli.main(
+        env = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}
+        code = jaxflow_cli.main(
             ["build", "--plan", str(plan), "--phase", "P", "--branch", "feat/ov",
              "--whitelist", "a.py", "--verify", "true", "--model", "custom-model"],
-            run=_run_with_tmux(fake, real_cwd=root), post=post,
-            env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
+            run=_run_with_tmux(fake, real_cwd=root), post=post, env=env, allowlist_root=allow_root,
         )
-        payload = events[0]["payload"]
-        assert payload["model"] == "custom-model"
-        assert payload["effort"] == "n/a"
+        assert code == jaxflow_common.REFUSED
+        assert capsys.readouterr().err.strip() == "agent-settings-override"
+        assert events == []
 
-        # No override -- the ledger records the sentinel-shaped default (fixes cold review
-        # F4; the sentinels are converted back to None in Task 3, never in the ledger).
-        events.clear()
         jaxflow_cli.main(
             ["build", "--plan", str(plan), "--phase", "P", "--branch", "feat/nov",
              "--whitelist", "a.py", "--verify", "true"],
-            run=_run_with_tmux(fake, real_cwd=root), post=post,
-            env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
+            run=_run_with_tmux(fake, real_cwd=root), post=post, env=env, allowlist_root=allow_root,
         )
         payload = events[0]["payload"]
-        assert payload["model"] == "xai/grok-4.6"  # MODEL_BY_RUNTIME["opencode-grok"]
-        assert payload["effort"] == "n/a"
+        assert payload["model"] == "fixture/wire-real-model"
+        assert payload["effort"] == "high"
 
 
 def test_build_records_the_build_command_in_manifest_and_started_payload(monkeypatch):
@@ -2010,9 +2008,9 @@ def test_build_dispatch_posts_run_started_before_tmux_with_builder_defaults(monk
         )
         assert len(events) == 1
         payload = events[0]["payload"]
-        assert payload["runtime"] == "opencode-grok"
-        assert payload["model"] == "xai/grok-4.6"
-        assert payload["effort"] == "n/a"
+        assert payload["runtime"] == "opencode-builder"
+        assert payload["model"] == "fixture/wire-real-model"
+        assert payload["effort"] == "high"
         assert payload["caller"] == "codex"
         tmux_cmds = [c[1] for c in fake.calls]
         assert tmux_cmds == ["has-session", "new-session"]
@@ -2164,17 +2162,6 @@ def test_build_builder_override_and_runtime_not_allowed_end_to_end(capsys, monke
             events.append(event)
             return {"ok": True}
 
-        run_id = jaxflow_build.dispatch_build(
-            _build_args(plan=str(plan), branch="feat/y", builder="opencode-deepseek"),
-            run=_run_with_tmux(fake, real_cwd=root), post=post,
-            env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, now=_fixed_now,
-            allowlist_root=allow_root,
-        )
-        assert events[0]["payload"]["runtime"] == "opencode-deepseek"
-        # An OpenCode runtime records its RESOLVED model id, not the "default" sentinel
-        # (same rule the opencode-grok case above asserts).
-        assert events[0]["payload"]["model"] == "openrouter/deepseek/deepseek-v4-flash-0731"
-
         code = jaxflow_cli.main(
             ["build", "--plan", str(plan), "--phase", "P", "--branch", "feat/z",
              "--whitelist", "a.py", "--verify", "true", "--builder", "bogus-runtime"],
@@ -2182,7 +2169,7 @@ def test_build_builder_override_and_runtime_not_allowed_end_to_end(capsys, monke
             env={"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "01234567-89ab-4cde-8f01-23456789abcd"}, allowlist_root=allow_root,
         )
         assert code == jaxflow_common.REFUSED
-        assert capsys.readouterr().err.strip() == "runtime-not-allowed"
+        assert capsys.readouterr().err.strip() == "agent-settings-override"
         assert not (allow_root / "demo-feat-z").exists()
 
 

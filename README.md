@@ -64,6 +64,10 @@ Light theme: [Mission Control](docs/screenshots/mission-control-light.png), [Tok
 
 Each agent has its own switch in `/settings`. One agent is enough for the dashboard; `build` plus `review` needs OpenCode plus Claude Code or Codex.
 
+**Builder model:** Jax OS ships no builder model. Before the first `jaxflow build`, open `/settings` → Agents, connect an OpenCode provider and pick a model for both the Default and the Fallback profile; until you save them, `jaxflow build` refuses with `agent-settings-uninitialized`. Reviewer models are editable in the same place.
+
+**Message classifier (optional, off by default):** the `classifier` integration asks TypeSafe (Jev) whether an agent's last message is finished, a question, blocked or waiting, so the dashboard card shows the right state. It needs a `TYPESAFE_API` key; an OpenAI-compatible fallback endpoint (OpenRouter by default) is used only if the Jev call fails. See [`INSTALL.md`](INSTALL.md#secrets--runtime-settings).
+
 ## Quick start
 
 ```bash

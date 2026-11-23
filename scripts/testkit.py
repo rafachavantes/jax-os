@@ -55,7 +55,13 @@ def _restore_signal_handlers():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_agent_settings(monkeypatch):
+def _isolate_agent_settings(tmp_path, monkeypatch):
+    # A fresh install ships no builder model, so a build only dispatches once settings are
+    # saved: default to the fixture profile; tests of the unconfigured state call `_no_agent_settings`.
+    _install_settings(tmp_path, monkeypatch)
+
+
+def _no_agent_settings(monkeypatch):
     monkeypatch.setattr(jset, "SETTINGS_PATH", Path("/nonexistent/jaxflow-agent-settings.json"))
 
 
@@ -145,7 +151,7 @@ def _stub_launch_paths(tmp_path, monkeypatch, *, native=None, settings=True):
     monkeypatch.setattr(jset, "ENV_PATH", env_path)
     config = native if native is not None else _native_config()
     monkeypatch.setattr(jset, "read_effective_opencode_config", lambda **kw: config)
-    settings_path = _install_settings(tmp_path, monkeypatch) if settings else None
+    settings_path = _install_settings(tmp_path, monkeypatch) if settings else _no_agent_settings(monkeypatch)
     return config, env_path, settings_path
 
 

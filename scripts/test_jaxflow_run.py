@@ -430,20 +430,14 @@ def test_runtime_argv_is_pinned_and_prompt_content_stays_out_of_argv():
     with TemporaryDirectory() as raw:
         prompt = Path(raw) / "prompt.txt"
         out = Path(raw) / "last.md"
-        grok = [
-            "opencode", "run", "--auto", "--format", "json", "--dir", "/repo",
-            "--model", "xai/grok-4.6", "Execute the attached handoff exactly.",
-            "--file", str(prompt), "--variant", "xhigh",
-        ]
-        assert jr.runtime_argv("opencode-grok", "builder", Path("/repo"), prompt, out) == grok
-        # `--variant high` is part of opencode-deepseek's RUNTIME definition (Rafa's own
-        # tested config: openrouter/deepseek/deepseek-v4-flash-0731 at effort high), not a
-        # caller override -- `cmd_build` still refuses `--effort` for an OpenCode builder.
-        assert jr.runtime_argv("opencode-deepseek", "builder", Path("/repo"), prompt, out) == [
-            "opencode", "run", "--auto", "--format", "json", "--dir", "/repo",
-            "--model", "openrouter/deepseek/deepseek-v4-flash-0731",
-            "Execute the attached handoff exactly.", "--file", str(prompt), "--variant", "high",
-        ]
+        # Retired legacy runtimes carry no model default: the model must be passed in.
+        for legacy in ("opencode-grok", "opencode-deepseek"):
+            assert jr.runtime_argv(legacy, "builder", Path("/repo"), prompt, out, model="p/m") == [
+                "opencode", "run", "--auto", "--format", "json", "--dir", "/repo",
+                "--model", "p/m", "Execute the attached handoff exactly.", "--file", str(prompt),
+            ]
+            with pytest.raises(ValueError):
+                jr.runtime_argv(legacy, "builder", Path("/repo"), prompt, out)
         # `codex` is a REVIEWER runtime only (MOA-451): its workspace-write sandbox cannot
         # write a linked worktree's git dir, so a Codex builder could implement but never
         # commit, and could not spawn `next build`'s TypeScript child either.
@@ -458,7 +452,7 @@ def test_runtime_argv_is_pinned_and_prompt_content_stays_out_of_argv():
             "-c", 'model_reasoning_effort="xhigh"', "-C", "/tmp",
             "--skip-git-repo-check", "--output-last-message", str(out), "-",
         ]
-        joined = " ".join(jr.runtime_argv("opencode-grok", "builder", Path("/repo"), prompt, out))
+        joined = " ".join(jr.runtime_argv("opencode-grok", "builder", Path("/repo"), prompt, out, model="p/m"))
         assert "secret-handoff" not in joined
 
 
@@ -1021,25 +1015,6 @@ def test_alloc_run_explicit_run_id_collision_and_generated_path_unaffected():
         assert len(run_id2) == 12
         assert session2 == f"jax-demo-spec-{run_id2}"
 
-
-def test_runtime_argv_opencode_grok_carries_its_variant_and_model_override_still_works():
-    """Every builder runtime now names its own variant, and each value is one the model
-    actually offers (grok-4.6: low/medium/high/xhigh). A model override must not disturb
-    the variant -- the variant belongs to the runtime, the model id to the call."""
-    with TemporaryDirectory() as raw:
-        prompt = Path(raw) / "prompt.txt"
-        out = Path(raw) / "last.md"
-        bare = jr.runtime_argv("opencode-grok", "builder", Path("/repo"), prompt, out)
-        assert bare == [
-            "opencode", "run", "--auto", "--format", "json", "--dir", "/repo",
-            "--model", "xai/grok-4.6", "Execute the attached handoff exactly.",
-            "--file", str(prompt), "--variant", "xhigh",
-        ]
-        overridden = jr.runtime_argv(
-            "opencode-grok", "builder", Path("/repo"), prompt, out, model="custom-id",
-        )
-        assert overridden[overridden.index("--model") + 1] == "custom-id"
-        assert overridden[overridden.index("--variant") + 1] == "xhigh"
 
 def test_preflight_threads_db_path_into_reviewer_head_gate():
     # fixes cold review round 2 F3(a): preflight()'s skip_handoff=False branch hardcoded
@@ -2194,12 +2169,7 @@ def test_events_url_is_guarded_against_the_real_hub_under_pytest():
 _MODEL_DEFAULTS = json.loads((Path(__file__).resolve().parents[1] / "workflow" / "fixtures" / "model-defaults-v1.json").read_text())
 
 
-def test_model_by_runtime_derives_from_the_fixture_with_provider_prefixes():
-    assert jr.MODEL_BY_RUNTIME == {
-        "opencode-grok": "xai/" + _MODEL_DEFAULTS["builders"]["default"]["model"],
-        "opencode-deepseek": "openrouter/" + _MODEL_DEFAULTS["builders"]["fallback"]["model"],
-    }
-    assert jr.VARIANT_BY_RUNTIME == {
-        "opencode-grok": _MODEL_DEFAULTS["builders"]["default"]["effort"],
-        "opencode-deepseek": _MODEL_DEFAULTS["builders"]["fallback"]["effort"],
-    }
+def test_builder_runtimes_have_no_model_default_and_keep_the_legacy_names_accepted():
+    assert not hasattr(jr, "MODEL_BY_RUNTIME") and not hasattr(jr, "VARIANT_BY_RUNTIME")
+    assert "builders" not in _MODEL_DEFAULTS
+    assert jr.BUILDER_RUNTIMES == {"opencode-builder", "opencode-grok", "opencode-deepseek"}
