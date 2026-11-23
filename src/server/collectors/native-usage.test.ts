@@ -281,6 +281,36 @@ describe("OpenCode accounting", () => {
     if (!("item" in out)) throw new Error("expected item");
     expect(out.item.cost).toBeNull();
   });
+
+  it("labels the harness OpenCode and keeps the provider in the model", () => {
+    const out = parseOpenCodeRow(opencode(), { now: NOW });
+    if (!("item" in out)) throw new Error("expected item");
+    expect(out.item.agent).toBe("OpenCode");
+    expect(out.item.model).toBe("provider-x/model-x");
+    expect(out.item.rawModel).toBe("provider-x/model-x");
+    const bare = parseOpenCodeRow(opencode({ provider_id: undefined }), { now: NOW });
+    if (!("item" in bare)) throw new Error("expected item");
+    expect(bare.item.model).toBe("model-x");
+    expect(bare.item.rawModel).toBe("model-x");
+    const noModel = parseOpenCodeRow(opencode({ model_id: null }), { now: NOW });
+    if (!("item" in noModel)) throw new Error("expected item");
+    expect(noModel.item.model).toBeNull();
+    expect(noModel.item.rawModel).toBeNull();
+  });
+
+  it("keeps a valid cwd and drops malformed ones", () => {
+    const cwdOf = (over: Record<string, unknown>) => {
+      const out = parseOpenCodeRow(opencode(over), { now: NOW });
+      if (!("item" in out)) throw new Error("expected item");
+      return out.item.cwd;
+    };
+    expect(cwdOf({ cwd: "/home/rafa/repos/demo" })).toBe("/home/rafa/repos/demo");
+    expect(cwdOf({ projection: "v1", cwd: "/home/rafa/repos/demo-v1" })).toBe("/home/rafa/repos/demo-v1");
+    expect(cwdOf({ cwd: 42 })).toBeNull();
+    expect(cwdOf({ cwd: "x".repeat(600) })).toBeNull();
+    expect(cwdOf({ cwd: "bad\u0000cwd" })).toBeNull();
+    expect(cwdOf({ cwd: undefined })).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -937,6 +967,61 @@ describe("OpenCode source pass through the injected executor", () => {
     const snap = queryNativeUsage(deps.db, { period: 30, now: NOW });
     expect(snap.totalTokens).toBe(153);
     expect(snap.sources.find((s) => s.source === "opencode")?.state).toBe("available");
+    deps.db.close();
+  });
+
+  it("attributes an OpenCode pass from a launch record and leaves Claude/Codex labels untouched", async () => {
+    const launch = {
+      projection: "v2", session_id: "ses-attr", message_id: "msg-attr", parent_session_id: null,
+      model_id: "jaxflow-builder-default", provider_id: "opencode-go", agent: "build",
+      cwd: "/w-attr",
+      created: 1_794_909_600_000, updated: 1_794_909_800_000,
+      cost: 12.5, input: 100, output: 30, reasoning: 7, cache_read: 11, cache_write: 5,
+    };
+    const deps = withDbFile({
+      exec: async () => ({
+        stdout: JSON.stringify({
+          v: 1, ok: true, runtime: "Bun 1.3.14", schema: "1.18.34", rows: [launch],
+          next: { v1: { after: null, ceiling: null, done: true }, v2: { after: "1", ceiling: "1", done: true } },
+          warnings: {},
+        }),
+      }),
+    });
+    deps.db.prepare(
+      `INSERT INTO workflow_events (ts, run_id, project, role, type, source, emitter, payload, delivery)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "2026-11-17T09:00:00Z", "aaaabbbbcccc", "demo", "builder", "builder-launched",
+      "deterministic", "wrapper",
+      JSON.stringify({
+        launched_at: "2026-11-17T09:00:00Z", worktree: "/w-attr",
+        runtime_model: "opencode-go/jaxflow-builder-default",
+        model: "opencode-go/deepseek-v4.1-flash", profile: "default",
+      }),
+      "local",
+    );
+    const insertItem = deps.db.prepare(
+      `INSERT INTO native_usage_items (harness, item_id, session_id, child_id, parent_id, is_child,
+         provenance, agent, model, model_conflict, identity_conflict, ts, updated_ts, day,
+         all_input, all_output, projection)
+       VALUES (?, ?, 'ses-old', '', NULL, 0, 'test', ?, ?, 0, 0, 1794909600, 1794909600, '2026-11-17', 1, 1, NULL)`,
+    );
+    insertItem.run("claude", "m-c", "Claude Code", "claude-sonnet-5-5");
+    insertItem.run("codex", "r-x", "Codex", "gpt-5.6-luna");
+
+    await runNativeUsagePass(deps);
+    expect(deps.db.prepare(
+      "SELECT model, raw_model, cwd, agent FROM native_usage_items WHERE harness = 'opencode'",
+    ).get()).toEqual({
+      model: "opencode-go/deepseek-v4.1-flash",
+      raw_model: "opencode-go/jaxflow-builder-default",
+      cwd: "/w-attr",
+      agent: "OpenCode",
+    });
+    expect(deps.db.prepare("SELECT agent, model FROM native_usage_items WHERE harness = 'claude'").get())
+      .toEqual({ agent: "Claude Code", model: "claude-sonnet-5-5" });
+    expect(deps.db.prepare("SELECT agent, model FROM native_usage_items WHERE harness = 'codex'").get())
+      .toEqual({ agent: "Codex", model: "gpt-5.6-luna" });
     deps.db.close();
   });
 
@@ -2549,13 +2634,13 @@ describe("background refresh and genuinely pending work", () => {
     expect(getOpenCodeCursor(deps.db).complete).toBe(true);
     expect(Object.keys(JSON.parse(argvStates.at(-1)!)).sort()).toEqual(["v", "v1", "v2"]);
     const updated = queryNativeUsage(deps.db, { period: 30, now: NOW });
-    expect(updated.byAgent.find((a) => a.name === "build")?.allOutput).toBe(47);
+    expect(updated.byAgent.find((a) => a.name === "OpenCode")?.allOutput).toBe(47);
 
     // Several bounded background pages stay available until the re-sweep completes.
     await pass();
     expect(statusOf(deps, "opencode")?.state).toBe("available");
     expect(statusOf(deps, "opencode")?.warnings).toContain("background-refresh");
-    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).byAgent.find((a) => a.name === "build")?.allOutput).toBe(52);
+    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).byAgent.find((a) => a.name === "OpenCode")?.allOutput).toBe(52);
 
     await pass();
     expect(statusOf(deps, "opencode")?.state).toBe("available");
