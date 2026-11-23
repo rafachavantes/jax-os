@@ -282,7 +282,11 @@ def test_legacy_and_reviewer_overrides(fixture_settings):
     assert select_reviewer(None, "codex", model=None, effort=None, agents=ALL_ON) == {
         "runtime": "claude", "model": "sonnet", "effort": "xhigh", "fallback": None,
     }
-    assert select_builder(None, fallback=False, builder=None, model=None, effort=None) is None
+    # No factory builder model: with no saved settings every build refuses, with an actionable hint.
+    with pytest.raises(Refusal) as exc:
+        select_builder(None, fallback=False, builder=None, model=None, effort=None)
+    assert exc.value.code == "agent-settings-uninitialized"
+    assert "/settings" in exc.value.hint
     with pytest.raises(Refusal) as exc:
         select_builder(None, fallback=True, builder=None, model=None, effort=None)
     assert exc.value.code == "agent-settings-uninitialized"

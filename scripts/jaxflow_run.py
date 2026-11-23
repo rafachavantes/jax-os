@@ -29,22 +29,13 @@ _MODEL_DEFAULTS = json.loads(
     (Path(__file__).resolve().parents[1] / "workflow" / "fixtures" / "model-defaults-v1.json")
     .read_text(encoding="utf-8")
 )
-# 2-line runtime-name table: which builder profile, which provider prefix (spec: "One source of
-# model defaults" -- the fixture holds bare ids only, the prefix is a per-consumer concatenation).
-_BUILDER_RUNTIME_PROFILE = {"opencode-grok": ("default", "xai/"), "opencode-deepseek": ("fallback", "openrouter/")}
-MODEL_BY_RUNTIME = {
-    runtime: prefix + _MODEL_DEFAULTS["builders"][profile]["model"]
-    for runtime, (profile, prefix) in _BUILDER_RUNTIME_PROFILE.items()
-}
-# `opencode run --variant` is that CLI's name for provider reasoning effort. Both values are
-# verified against the model's own metadata (`opencode models <provider> --verbose`):
-# grok-4.6 offers low/medium/high/xhigh, deepseek-v4-flash-0731 offers low/high/max. A
-# runtime absent from this table sends no `--variant` token at all.
-VARIANT_BY_RUNTIME = {
-    runtime: _MODEL_DEFAULTS["builders"][profile]["effort"]
-    for runtime, (profile, _prefix) in _BUILDER_RUNTIME_PROFILE.items()
-}
-BUILDER_RUNTIMES = {"opencode-grok", "opencode-deepseek", "opencode-builder"}
+# New builds are always `opencode-builder`: model and effort come from the saved /settings
+# profile (Default/Fallback), never from a factory default. The retired `opencode-grok` and
+# `opencode-deepseek` names stay accepted so manifests, ledgers and events already recorded
+# under them still validate and launch; they have no model default and the product never
+# creates them.
+LEGACY_BUILDER_RUNTIMES = frozenset({"opencode-grok", "opencode-deepseek"})
+BUILDER_RUNTIMES = {"opencode-builder"} | LEGACY_BUILDER_RUNTIMES
 REVIEWER_RUNTIMES = {"codex", "claude"}
 BUILDER_KEYS = ("run_id", "project", "role", "phase", "result", "summary")
 REVIEWER_KEYS = ("run_id", "project", "role", "phase", "verdict", "summary")
@@ -377,22 +368,13 @@ def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=N
         if effort is not None:
             argv += ["--variant", effort]
         return argv
-    if runtime in MODEL_BY_RUNTIME:
-        # `model or MODEL_BY_RUNTIME[runtime]` is a no-op when `model` is None (the bare-
-        # call/no-override shape) -- byte-identical to today's hardcoded value either way.
-        argv = [
+    if runtime in LEGACY_BUILDER_RUNTIMES:
+        if not model:
+            raise ValueError("legacy builder model missing")
+        return [
             "opencode", "run", "--auto", "--format", "json", "--dir", str(repo),
-            "--model", model or MODEL_BY_RUNTIME[runtime], "Execute the attached handoff exactly.",
-            "--file", str(prompt_path),
+            "--model", model, "Execute the attached handoff exactly.", "--file", str(prompt_path),
         ]
-        # The variant belongs to the RUNTIME's definition, not to the call: `cmd_build`
-        # still refuses `--effort` for an OpenCode builder, so there is no caller override
-        # to fold in here. Appended only when the runtime configures one, so
-        # `opencode-grok` keeps today's exact argv.
-        variant = VARIANT_BY_RUNTIME.get(runtime)
-        if variant:
-            argv += ["--variant", variant]
-        return argv
     if runtime == "codex" and role == "reviewer":
         return [
             "codex", "exec", "--ephemeral", "--json", "--sandbox", "read-only",

@@ -29,6 +29,7 @@ export type Source = (typeof SOURCES)[number];
 export const ROLES = ["builder", "reviewer", "lead", "adhoc"] as const;
 export type Role = (typeof ROLES)[number];
 
+// opencode-grok / opencode-deepseek are retired builder names: kept only so already-recorded events still validate.
 export const RUNTIMES = ["opencode-grok", "opencode-deepseek", "opencode-builder", "codex", "claude"] as const;
 export const CONTRACT_STATUSES = ["ok", "missing", "invalid", "cancelled", "interrupted"] as const;
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];

@@ -4053,6 +4053,11 @@ def test_external_plan_survives_dispatch_builder_and_diff_launch(monkeypatch):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["plan_path"] == str(plan_src)
         assert not (worktree / ".local" / "docs").exists()  # no permission-only copy
+        # This test is about the plan path, not the managed launch: run the worker as a
+        # plain (non-managed) builder so it needs no native opencode config or ledger row.
+        manifest.update(runtime="opencode-grok", model="xai/test-model", effort="n/a")
+        manifest.pop("requested_profile")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         # Builder launch: the worker accepts the external original, names it (and the
         # spec it declares -- none here, so the plan is both inputs) and grants its
@@ -4182,31 +4187,6 @@ def test_worker_builder_model_effort_override_reaches_runtime_argv():
         )
         argv = captured["argv"]
         assert argv[argv.index("--model") + 1] == "custom-id"
-        # The runtime's OWN variant survives a model override -- it is part of the runtime
-        # definition, not something the caller supplied (MOA-451).
-        assert argv[argv.index("--variant") + 1] == "high"
-
-        # No override -- the "default"/"n/a" ledger sentinels convert back to None, so the
-        # spawned argv falls back to the runtime's own model id, with no --model token
-        # carrying a caller value.
-        manifest_path2, _ = _write_manifest_for_builder_worker(
-            root, worktree, run_id="ccccddddeeee", runtime="opencode-grok",
-            model="default", effort="n/a",
-        )
-        captured2 = {}
-
-        class CapturePopen2(FakeBuilderPopen):
-            def __init__(self, argv, cwd=None, stdin=None, stdout=None, stderr=None, start_new_session=None, env=None):
-                super().__init__(argv, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=start_new_session, env=env)
-                captured2["argv"] = argv
-
-        jaxflow_worker.run_worker(
-            str(manifest_path2), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
-            post=lambda e: {"ok": True}, popen=CapturePopen2, allowlist_root=root.parent,
-        )
-        argv2 = captured2["argv"]
-        assert argv2[argv2.index("--model") + 1] == "xai/grok-4.6"
-        assert argv2[argv2.index("--variant") + 1] == "xhigh"
 
 
 # ---- worker: post-build verify evidence is redacted (fixes cold review F6) ----

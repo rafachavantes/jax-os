@@ -43,16 +43,15 @@ CLASSIFY_URL = f"{jenv.api_base_url()}/api/workflow/events/classify"
 TIMEOUT_S = 5
 
 ALLOWED_STATUSES = {"done", "needs_input", "blocked", "waiting", "unknown"}
-# OpenRouter, not OpenCode Zen (changed 2026-09-07). Zen's free model had exhausted its quota
-# and answered 429 to every call: 740 of 761 turn-stopped events in the preceding 30 days
-# degraded to `unknown`, which is 97% of them. Zen's paid `deepseek-v4-flash` answers 403 to
-# the key we hold, so the endpoint moved rather than the model id. `-0731` specifically:
-# plain `deepseek/deepseek-v4-flash` is blocked by this account's OpenRouter guardrail.
+# Fallback classifier: any OpenAI-compatible chat-completions endpoint that honours
+# `response_format: json_object`, used only when the Jev call itself fails. The defaults are
+# OpenRouter and a small fast DeepSeek model; set CLASSIFIER_FALLBACK_URL and/or
+# CLASSIFIER_FALLBACK_MODEL in $JAXOS_HOME/.env (or the process environment) to use another
+# provider or model. ENV_KEY holds that provider's API key.
 CLASSIFIER_URL = "https://openrouter.ai/api/v1/chat/completions"
-_MODEL_DEFAULTS = json.loads(
-    (Path(__file__).resolve().parents[1] / "workflow" / "fixtures" / "model-defaults-v1.json").read_text(encoding="utf-8")
-)
-CLASSIFIER_MODEL = _MODEL_DEFAULTS["builders"]["fallback"]["model"]
+CLASSIFIER_MODEL = "deepseek/deepseek-v4-flash-0731"
+CLASSIFIER_URL_ENV = "CLASSIFIER_FALLBACK_URL"
+CLASSIFIER_MODEL_ENV = "CLASSIFIER_FALLBACK_MODEL"
 CLASSIFIER_EFFORT = "low"        # a 4-way classification needs no deliberation
 ENV_KEY = "OPENROUTER_API_KEY_BUILDER"
 # MOA-493 §1.2 — Jev (TypeSafe System One) is the PRIMARY rung-7 classifier: one call per row,
@@ -124,10 +123,13 @@ def _build_prompt(stripped):
 def _call_classifier(prompt, api_key):
     if not isinstance(api_key, str) or not api_key:
         raise ValueError("classifier key unavailable")
+    url = jev_client.api_key(CLASSIFIER_URL_ENV) or CLASSIFIER_URL
+    if not (url.startswith("https://") or url.startswith(("http://localhost", "http://127.0.0.1"))):
+        raise ValueError("classifier url must be https (or loopback http)")
     request = urllib.request.Request(
-        CLASSIFIER_URL,
+        url,
         data=json.dumps({
-            "model": CLASSIFIER_MODEL,
+            "model": jev_client.api_key(CLASSIFIER_MODEL_ENV) or CLASSIFIER_MODEL,
             "reasoning_effort": CLASSIFIER_EFFORT,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
@@ -136,7 +138,7 @@ def _call_classifier(prompt, api_key):
         method="POST",
     )
     # 5s, not 10 (2026-09-07): this call sits at the END of every turn, so the timeout is
-    # what Rafa actually waits when the network stalls. Measured latency is 1.3-4.9s
+    # what the user actually waits when the network stalls. Measured latency is 1.3-4.9s
     # (median 1.8s), so 5s keeps the normal case and halves the stall. A timeout
     # degrades to `unknown` — the same answer the whole path gave for the past month.
     with urllib.request.urlopen(request, timeout=5) as response:

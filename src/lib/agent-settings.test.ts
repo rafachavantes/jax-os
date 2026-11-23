@@ -116,21 +116,12 @@ describe("executor-keyed bootstrap, not caller-keyed runtime tables", () => {
     expect((CLAUDE_REVIEWER_EFFORTS as readonly string[]).includes(BOOTSTRAP_DRAFT.reviewers.claude.effort)).toBe(true);
   });
 
-  it("splits bootstrap CLI ids on the first slash only", () => {
-    expect(BOOTSTRAP_DRAFT.builders.default).toMatchObject({
-      connection: "xai",
-      model: "grok-4.6",
-      effort: "xhigh",
-      credential: { kind: "native" },
-      routing: null,
-    });
-    expect(BOOTSTRAP_DRAFT.builders.fallback).toMatchObject({
-      connection: "openrouter",
-      model: "deepseek/deepseek-v4-flash-0731",
-      effort: "high",
-      credential: { kind: "native" },
-      routing: { sort: "price", allow_fallbacks: true },
-    });
+  it("ships no factory builder model", () => {
+    for (const name of ["default", "fallback"] as const) {
+      expect(BOOTSTRAP_DRAFT.builders[name]).toEqual({
+        connection: "", model: "", effort: null, credential: { kind: "native" }, routing: null,
+      });
+    }
   });
 });
 
@@ -138,10 +129,6 @@ describe("BOOTSTRAP_DRAFT model/effort leaves match the shared fixture (spec: On
   it("reviewers", () => {
     expect(BOOTSTRAP_DRAFT.reviewers.claude).toMatchObject(modelDefaults.reviewers.claude);
     expect(BOOTSTRAP_DRAFT.reviewers.codex).toMatchObject(modelDefaults.reviewers.codex);
-  });
-  it("builders (model/effort only — connection/credential/routing stay TS-only)", () => {
-    expect(BOOTSTRAP_DRAFT.builders.default).toMatchObject(modelDefaults.builders.default);
-    expect(BOOTSTRAP_DRAFT.builders.fallback).toMatchObject(modelDefaults.builders.fallback);
   });
 });
 
@@ -447,7 +434,16 @@ describe("activation save gate", () => {
 });
 
 describe("draft validity", () => {
-  const validDraft = (): SettingsDraft => JSON.parse(JSON.stringify(BOOTSTRAP_DRAFT));
+  // BOOTSTRAP_DRAFT ships no builder model; a valid draft is one where the user picked both.
+  const validDraft = (): SettingsDraft => {
+    const d: SettingsDraft = JSON.parse(JSON.stringify(BOOTSTRAP_DRAFT));
+    d.builders.default = { ...d.builders.default, connection: "xai", model: "grok-4.6", effort: "xhigh" };
+    d.builders.fallback = {
+      ...d.builders.fallback, connection: "openrouter", model: "deepseek/deepseek-v4-flash-0731", effort: "high",
+      routing: { sort: "price", allow_fallbacks: true },
+    };
+    return d;
+  };
   const rows = (): ConnectionChoice[] => [
     conn({
       id: "xai",

@@ -348,6 +348,9 @@ function ProfileCard({
           ) : null}
           <span className={css.hint}>{t("modelHint", { count: String(models.length) })}</span>
         </label>
+        {!profile.model ? (
+          <p className={`${css.field} ${css.full} text-warning`} data-testid={`choose-model-${name}`}>{t("modelChoose")}</p>
+        ) : null}
         {unknownModel ? (
           <p className={`${css.field} ${css.full} text-warning`}>
             {t("modelUnavailable")}{" "}

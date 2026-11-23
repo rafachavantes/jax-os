@@ -19,7 +19,6 @@ import jaxflow_common as jc
 
 MANIFEST_CAP = 1 << 20
 
-BUILDER_DEFAULT = "opencode-grok"
 
 
 def _require_opencode_on():
@@ -415,9 +414,9 @@ def _validated_build_plan(args, allowlist_root):
 
 
 def _select_build_profile(args):
-    """`(runtime, model, effort, requested_profile)` of a fresh build: the saved builder
-    profile (`requested_profile` set) or, with no saved profile, the legacy runtime/model
-    defaults (`requested_profile` None). Validates the hub caps on model and effort."""
+    """`(runtime, model, effort, requested_profile)` of a fresh build, from the saved builder
+    profile; refuses `agent-settings-uninitialized` when none is saved. Validates the hub caps
+    on model and effort."""
     _require_opencode_on()
     settings = jset.read_settings()
     selected = jset.select_builder(
@@ -427,19 +426,11 @@ def _select_build_profile(args):
         model=args.model,
         effort=args.effort,
     )
-    requested_profile = None
-    if selected is None:
-        runtime = args.builder or BUILDER_DEFAULT
-        model = args.model or jr.MODEL_BY_RUNTIME.get(runtime, "default")
-        effort = args.effort or "n/a"
-        if args.effort and runtime in jr.MODEL_BY_RUNTIME:
-            raise Refusal(f"effort-not-supported: {runtime}")
-    else:
-        runtime = selected["runtime"]
-        requested_profile = selected["profile_name"]
-        profile = settings["builders"][requested_profile]
-        model = f"{profile['connection']}/{profile['model']}"
-        effort = profile["effort"] if profile["effort"] is not None else "n/a"
+    requested_profile = selected["profile_name"]
+    runtime = selected["runtime"]
+    profile = settings["builders"][requested_profile]
+    model = f"{profile['connection']}/{profile['model']}"
+    effort = profile["effort"] if profile["effort"] is not None else "n/a"
     if type(model) is not str or not 1 <= jc._utf16_len(model) <= jc.HUB_CAPS["model"]:
         raise Refusal("model-invalid")
     if type(effort) is not str or not 1 <= jc._utf16_len(effort) <= jc.HUB_CAPS["effort"]:

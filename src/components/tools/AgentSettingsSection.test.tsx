@@ -48,11 +48,22 @@ function connection(id: string, adapter: string, modelId: string, efforts: strin
   };
 }
 
+// BOOTSTRAP_DRAFT ships no builder model; this is a draft where the user has picked both.
+function chosenDraft(): typeof BOOTSTRAP_DRAFT {
+  const d = JSON.parse(JSON.stringify(BOOTSTRAP_DRAFT)) as typeof BOOTSTRAP_DRAFT;
+  d.builders.default = { ...d.builders.default, connection: "xai", model: "grok-4.6", effort: "xhigh" };
+  d.builders.fallback = {
+    ...d.builders.fallback, connection: "openrouter", model: "deepseek/deepseek-v4-flash-0731", effort: "high",
+    routing: { sort: "price", allow_fallbacks: true },
+  };
+  return d;
+}
+
 function api(over: Partial<ToolsDraftApi> = {}): ToolsDraftApi {
   return {
     dirty: true,
     conflict: false,
-    draft: JSON.parse(JSON.stringify(BOOTSTRAP_DRAFT)),
+    draft: chosenDraft(),
     baseline: JSON.parse(JSON.stringify(BOOTSTRAP_DRAFT)),
     revision: REV,
     connections: [
@@ -97,11 +108,21 @@ function buttonDisabled(html: string, testid: string): boolean {
 }
 
 function draftWith(over: { connection?: string; model?: string } = {}) {
-  const d = JSON.parse(JSON.stringify(BOOTSTRAP_DRAFT)) as typeof BOOTSTRAP_DRAFT;
+  const d = chosenDraft();
   if (over.connection) d.builders.default.connection = over.connection;
   if (over.model !== undefined) d.builders.default.model = over.model;
   return d;
 }
+
+describe("AgentSettingsSection empty builder profiles", () => {
+  it("asks the user to choose a model and keeps Save disabled", () => {
+    const empty = JSON.parse(JSON.stringify(BOOTSTRAP_DRAFT));
+    const html = render(api({ draft: empty }), "en-US");
+    expect(html).toContain('data-testid="choose-model-default"');
+    expect(html).toContain(en.tools.modelChoose);
+    expect(buttonDisabled(html, "agent-save")).toBe(true);
+  });
+});
 
 describe("AgentSettingsSection direct save", () => {
   it("offers Save and Discard and no preview UI", () => {
