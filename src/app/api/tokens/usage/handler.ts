@@ -1,13 +1,10 @@
 import type Database from "better-sqlite3";
 import { NextResponse } from "next/server";
 import { getDb } from "@/server/db";
-import { defaultNativeCollectorDeps, runNativeUsagePass } from "@/server/collectors/native-usage";
 import { getTokensUsage, isRange, type UsageParams } from "@/server/collectors/tokens-usage";
 
 export type UsageRouteDeps = {
   db: () => Database.Database;
-  after: (callback: () => void | Promise<void>) => void;
-  collect: (db: Database.Database) => Promise<void>;
 };
 
 const MAX_FILTER_LENGTH = 256;
@@ -18,16 +15,14 @@ function validFilter(value: string | null): string | null | undefined {
   return value;
 }
 
-// Reads the persisted snapshot synchronously, then registers one shared bounded
-// collection pass after the response. Native work never runs on the response path.
+// Reads the persisted snapshot synchronously. Collection runs in the background through
+// the loopback collect route (jaxos-usage.timer); a GET never does native work.
 export async function handleTokensUsage(
   req: Request,
   overrides: Partial<UsageRouteDeps> = {},
 ): Promise<Response> {
   const deps: UsageRouteDeps = {
     db: getDb,
-    after: () => undefined,
-    collect: async (db) => runNativeUsagePass(await defaultNativeCollectorDeps(db)),
     ...overrides,
   };
   const url = new URL(req.url);
@@ -53,13 +48,6 @@ export async function handleTokensUsage(
   const params: UsageParams = { range: rawRange, agent, model };
   try {
     const data = getTokensUsage(db, params);
-    deps.after(async () => {
-      try {
-        await deps.collect(db);
-      } catch {
-        /* every failure is already a safe source status */
-      }
-    });
     return NextResponse.json({ ok: true, data });
   } catch {
     return NextResponse.json({ ok: false, error: "usage unavailable" });

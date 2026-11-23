@@ -6,7 +6,7 @@ import { handleTokensUsage, type UsageRouteDeps } from "./handler";
 
 const NOW = Date.parse("2026-11-18T12:00:00Z") / 1000;
 
-function deps(overrides: Partial<UsageRouteDeps> = {}): UsageRouteDeps & { afterCalls: (() => void | Promise<void>)[] } {
+function deps(overrides: Partial<UsageRouteDeps> = {}): UsageRouteDeps {
   const db = openDb(":memory:");
   const out = parseClaudeLine(JSON.stringify({
     type: "assistant", sessionId: "sess-1", timestamp: "2026-11-17T10:00:00Z",
@@ -14,14 +14,7 @@ function deps(overrides: Partial<UsageRouteDeps> = {}): UsageRouteDeps & { after
   }), { child: false, now: NOW });
   if (!("item" in out)) throw new Error(out.skip);
   upsertNativeUsageItem(db, out.item);
-  const afterCalls: (() => void | Promise<void>)[] = [];
-  return {
-    db: () => db,
-    after: (callback) => afterCalls.push(callback),
-    collect: async () => {},
-    afterCalls,
-    ...overrides,
-  };
+  return { db: () => db, ...overrides };
 }
 
 function get(path: string): Request {
@@ -29,9 +22,9 @@ function get(path: string): Request {
 }
 
 describe("handleTokensUsage", () => {
-  it("returns the persisted snapshot and defers one collection pass until after the response", async () => {
-    const collect = vi.fn(async () => {});
-    const routeDeps = deps({ collect });
+  it("returns the persisted snapshot and never collects", async () => {
+    const routeDeps = deps();
+    expect(Object.keys(routeDeps)).toEqual(["db"]);
     const response = await handleTokensUsage(get("?range=30d&agent=Claude%20Code&model=claude-sonnet-5-5"), routeDeps);
     const body = await response.json();
     expect(response.status).toBe(200);
@@ -39,14 +32,10 @@ describe("handleTokensUsage", () => {
     expect(body.data.totalTokens).toBe(15);
     expect(body.data.period).toBe(30);
     expect(body.data.filters.agents).toEqual(["Claude Code"]);
-    expect(collect).not.toHaveBeenCalled();
-    expect(routeDeps.afterCalls).toHaveLength(1);
-    await routeDeps.afterCalls[0]();
-    expect(collect).toHaveBeenCalledTimes(1);
   });
 
   it("returns a healthy empty snapshot, not an error, for an empty period", async () => {
-    const empty = deps({ db: () => openDb(":memory:"), collect: async () => {} });
+    const empty = deps({ db: () => openDb(":memory:") });
     const response = await handleTokensUsage(get("?range=7d"), empty);
     const body = await response.json();
     expect(body.ok).toBe(true);
@@ -72,7 +61,7 @@ describe("handleTokensUsage", () => {
          VALUES ('claude', ?, 'sess-1', 'lead', 'Claude Code', ?, ?, '2026-11-17', ?, 0)`,
       ).run(itemId, NOW, NOW, huge);
     }
-    const routeDeps = { db: () => db, after: () => undefined, collect: async () => {} };
+    const routeDeps = { db: () => db };
     const body = await (await handleTokensUsage(get("?range=7d"), routeDeps)).json();
     expect(body).toEqual({ ok: false, error: "usage unavailable" });
     db.close();
@@ -84,10 +73,4 @@ describe("handleTokensUsage", () => {
       .toEqual({ ok: false, error: "usage unavailable" });
   });
 
-  it("never lets a rejected collection pass escape the deferred callback", async () => {
-    const routeDeps = deps({ collect: async () => { throw new Error("collector down"); } });
-    const response = await handleTokensUsage(get("?range=7d"), routeDeps);
-    expect((await response.json()).ok).toBe(true);
-    await expect(routeDeps.afterCalls[0]()).resolves.toBeUndefined();
-  });
 });
