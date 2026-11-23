@@ -552,13 +552,13 @@ describe("queryNativeUsage", () => {
     upsertNativeUsageItem(db, opencode({}));
     const all = queryNativeUsage(db, { period: 30, now: NOW });
     const claudeOnly = queryNativeUsage(db, { period: 30, agent: "Claude Code", now: NOW });
-    const modelOnly = queryNativeUsage(db, { period: 30, model: "model-x", now: NOW });
+    const modelOnly = queryNativeUsage(db, { period: 30, model: "provider-x/model-x", now: NOW });
     expect(all.totalTokens).toBe(15 + 153);
     expect(claudeOnly.totalTokens).toBe(15);
     expect(claudeOnly.byAgent).toHaveLength(1);
     expect(claudeOnly.sessions).toEqual({ lead: 1, child: 0 });
     expect(modelOnly.totalTokens).toBe(153);
-    expect(modelOnly.filters.agents).toEqual(expect.arrayContaining(["Claude Code", "build"]));
+    expect(modelOnly.filters.agents).toEqual(expect.arrayContaining(["Claude Code", "OpenCode"]));
     expect(modelOnly.totalCacheRead).toBe(11);
     expect(modelOnly.totalCacheWrite).toBe(5);
     expect(modelOnly.totalReasoning).toBe(7);
@@ -1100,7 +1100,7 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     }
     const opts = { period: 30 as const, now: NOW };
     const legacy = legacySnapshot(db, opts);
-    expect(legacy.byModel.map((s) => s.name)).toEqual(["alpha", "zeta"]);
+    expect(legacy.byModel.map((s) => s.name)).toEqual(["provider-x/alpha", "provider-x/zeta"]);
     expectMatchesLegacy(queryNativeUsage(db, opts), legacy);
     db.close();
   });
@@ -1115,10 +1115,10 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
       { period: 7, now: NOW },
       { period: 90, now: NOW },
       { period: 30, agent: "Claude Code", now: NOW },
-      { period: 30, agent: "build", now: NOW },
-      { period: 30, model: "model-x", now: NOW },
+      { period: 30, agent: "OpenCode", now: NOW },
+      { period: 30, model: "provider-x/model-x", now: NOW },
       { period: 30, model: UNKNOWN_MODEL_FILTER, now: NOW },
-      { period: 90, agent: "build", model: "model-x", now: NOW },
+      { period: 90, agent: "OpenCode", model: "provider-x/model-x", now: NOW },
     ];
     for (const opts of queries) {
       expectMatchesLegacy(queryNativeUsage(db, opts), legacySnapshot(db, opts));
@@ -1130,10 +1130,13 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     const db = openDb(":memory:");
     // Seeded reverse-alphabetically: alphabetical group order would invert the ties.
     const tie = (agent: string, model: string | null, input: number, id: string) =>
-      upsertNativeUsageItem(db, opencode({
-        session_id: `tie-${id}`, message_id: `tie-msg-${id}`, agent, model_id: model,
-        input, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, cost: null,
-      }));
+      upsertNativeUsageItem(db, {
+        ...opencode({
+          session_id: `tie-${id}`, message_id: `tie-msg-${id}`, model_id: model,
+          input, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, cost: null,
+        }),
+        agent,
+      });
     tie("Z", "zeta", 10, "z");
     tie("A", "alpha", 10, "a");
     tie("agent-z", "m1", 13, "m1");
@@ -1143,8 +1146,8 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
       { period: 30, now: NOW },
       { period: 30, agent: "Z", now: NOW },
       { period: 30, agent: "A", now: NOW },
-      { period: 30, model: "zeta", now: NOW },
-      { period: 30, model: "alpha", now: NOW },
+      { period: 30, model: "provider-x/zeta", now: NOW },
+      { period: 30, model: "provider-x/alpha", now: NOW },
       { period: 30, model: UNKNOWN_MODEL_FILTER, now: NOW },
     ];
     for (const opts of queries) {
@@ -1156,7 +1159,7 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
       );
     }
     expect(queryNativeUsage(db, { period: 30, now: NOW }).byModel.map((s) => s.name))
-      .toEqual(["m1", "zeta", "alpha", UNKNOWN_MODEL_FILTER, "m2"]);
+      .toEqual(["provider-x/m1", "provider-x/zeta", "provider-x/alpha", UNKNOWN_MODEL_FILTER, "provider-x/m2"]);
     expect(queryNativeUsage(db, { period: 30, now: NOW }).byAgent.map((s) => s.name))
       .toEqual(["agent-z", "Z", "A", "agent-c", "agent-a"]);
     db.close();
@@ -1176,14 +1179,14 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     expect(snap.mixedProjectionSessions).toBe(1);
 
     upsertNativeUsageItem(db, opencode({ projection: "v1", message_id: "other-session", session_id: "ses-2", input: 2, output: 2 }));
-    upsertNativeUsageItem(db, opencode({ projection: "v2", message_id: "other-v2", session_id: "ses-2", model_id: "model-z", agent: "plan" }));
+    upsertNativeUsageItem(db, { ...opencode({ projection: "v2", message_id: "other-v2", session_id: "ses-2", model_id: "model-z" }), agent: "plan" });
     snap = queryNativeUsage(db, { period: 30, now: NOW });
     expect(snap.excludedV1Items).toBe(2);
     expect(snap.mixedProjectionSessions).toBe(2);
-    expect(queryNativeUsage(db, { period: 30, agent: "build", now: NOW }).excludedV1Items).toBe(2);
+    expect(queryNativeUsage(db, { period: 30, agent: "OpenCode", now: NOW }).excludedV1Items).toBe(2);
     expect(queryNativeUsage(db, { period: 30, agent: "plan", now: NOW }).excludedV1Items).toBe(0);
-    expect(queryNativeUsage(db, { period: 30, model: "model-z", now: NOW }).excludedV1Items).toBe(0);
-    expect(queryNativeUsage(db, { period: 30, model: "model-x", now: NOW }).excludedV1Items).toBe(2);
+    expect(queryNativeUsage(db, { period: 30, model: "provider-x/model-z", now: NOW }).excludedV1Items).toBe(0);
+    expect(queryNativeUsage(db, { period: 30, model: "provider-x/model-x", now: NOW }).excludedV1Items).toBe(2);
     db.close();
   });
 
