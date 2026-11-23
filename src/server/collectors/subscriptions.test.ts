@@ -80,6 +80,41 @@ describe("parseClaudeUsage", () => {
     expect(u.weekly).toBeNull();
     expect(u.models).toEqual([]);
   });
+
+  const scoped = (model: unknown, percent: unknown = 2) => ({
+    kind: "weekly_scoped", group: "weekly", percent, resets_at: "2026-11-29T02:00:00.299424+00:00",
+    scope: { model, surface: null },
+  });
+
+  it("reads per-model weekly limits from the limits list", () => {
+    const u = parseClaudeUsage(
+      {
+        seven_day_opus: null,
+        limits: [
+          { kind: "session", group: "session", percent: 5, scope: null },
+          { kind: "weekly_all", group: "weekly", percent: 2, scope: null },
+          scoped({ id: null, display_name: "Fable" }),
+        ],
+      },
+      null,
+    );
+    expect(u.models).toEqual([{ name: "Fable", weekly: { usedPercent: 2, resetsAt: "2026-11-29T02:00:00.299424+00:00" } }]);
+  });
+
+  it("ignores malformed limits entries and dedupes legacy names", () => {
+    const u = parseClaudeUsage(
+      {
+        seven_day_opus: { utilization: 10, resets_at: "x" },
+        limits: [
+          null, "x", { kind: "weekly_scoped" },
+          scoped({ display_name: "" }), scoped(null), scoped({ display_name: "Fable" }, "2"),
+          scoped({ display_name: "Opus" }, 7),
+        ],
+      },
+      null,
+    );
+    expect(u.models.map((m) => [m.name, m.weekly.usedPercent])).toEqual([["Opus", 7]]);
+  });
 });
 
 describe("parseClaudeCreds", () => {
