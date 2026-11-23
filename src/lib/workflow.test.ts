@@ -74,6 +74,11 @@ describe("FORWARDABLE_EVENT_TYPES / DEFAULT_FORWARD_TYPES (MOA-487 §5 Decisions
     ]));
   });
 
+  it("builder-launched is a type but never a forwardable one", () => {
+    expect(EVENT_TYPES).toContain("builder-launched");
+    expect(FORWARDABLE_EVENT_TYPES).not.toContain("builder-launched");
+  });
+
   it("DEFAULT_FORWARD_TYPES is a subset of FORWARDABLE_EVENT_TYPES", () => {
     for (const t of DEFAULT_FORWARD_TYPES) expect(FORWARDABLE_EVENT_TYPES).toContain(t);
     expect(DEFAULT_FORWARD_TYPES).toEqual(["question", "attention-needed", "mission-finished"]);

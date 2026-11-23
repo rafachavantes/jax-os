@@ -4193,6 +4193,31 @@ describe("Phase 3 — lazy 30-day prune of hook telemetry on insert (spec §4.3,
   });
 });
 
+describe("builder-launched (local, silent)", () => {
+  const launch: WorkflowEventInput = {
+    run_id: "r-launch", project: "p1", role: "builder", type: "builder-launched", source: "deterministic", emitter: "wrapper",
+    payload: {
+      launched_at: "2026-11-23T12:00:00Z",
+      worktree: "/home/rafa/repos/demo-feat-x",
+      runtime_model: "opencode-go/jaxflow-builder-default",
+      model: "opencode-go/deepseek-v4.1-flash",
+      profile: "default",
+    },
+  };
+
+  it("never waits for delivery and never reaches the project timeline, while a run-started row still does", () => {
+    const db = openDb(":memory:");
+    const row = insertEvent(db, launch, NOW);
+    expect(row.delivery).toBe("local");
+    expect(listPending(db, 100).some((r) => r.id === row.id)).toBe(false);
+    insertEvent(db, { ...started, run_id: "r-launch" }, NOW);
+    const timeline = getProjectTimeline(db, "p1");
+    expect(timeline.some((e) => e.type === "builder-launched")).toBe(false);
+    expect(timeline.some((e) => e.type === "run-started")).toBe(true);
+    db.close();
+  });
+});
+
 describe("Phase 3 — heartbeat (spec §6, Decision 5)", () => {
   it("heartbeatFromRows zero-fills 60 per-minute buckets, newest last, and buckets same-minute rows", () => {
     const now = Date.parse("2026-09-19T12:00:30.000Z");

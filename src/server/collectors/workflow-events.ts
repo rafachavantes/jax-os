@@ -470,6 +470,18 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       if (typeof age !== "number" || !Number.isFinite(age) || age < 0) fail("age_days must be a non-negative number");
       return;
     }
+    case "builder-launched": {
+      onlyKeys(p, ["launched_at", "worktree", "runtime_model", "model", "profile"], "payload");
+      const launched = reqStr(p, "launched_at", 64);
+      if (!launched.endsWith("Z") || Number.isNaN(Date.parse(launched))) {
+        fail("launched_at must be an ISO-8601 UTC instant");
+      }
+      reqStr(p, "worktree", LIMITS.reportPath);
+      reqStr(p, "runtime_model", 128);
+      reqStr(p, "model", 128);
+      if (!oneOf(p.profile, ["default", "fallback"])) fail("profile not allowed");
+      return;
+    }
     case "mission-status-updated": {
       // Spec §9 payload contract: the ONE schema, reusing §6a's name/status_line bounds exactly
       // (LIMITS.missionName/missionStatusLine) so this validator, the route body checks, and the
@@ -701,6 +713,8 @@ export function renderMessage(
       return `Project ${proj}: PR #${p.pr_number} opened (${s("branch")} → ${s("base")}). ${s("pr_url")}`;
     case "gc-removed":
       return `Project ${proj}: worktree ${s("worktree")} removed (branch ${s("branch")}, ${s("reason")}).`;
+    case "builder-launched":
+      return `Project ${proj}: builder launched on ${s("runtime_model")} (${s("model")}).`;
     // temporary until MOA-488 defines the payload (jaxflow-mission spec §9)
     case "mission-status-updated":
       return `Project ${proj}: mission status updated.`;
