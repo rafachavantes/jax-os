@@ -16,7 +16,7 @@
       "model": "xai/grok-4.6",
       "effort": "n/a",
       "session": "jax-demo-diff-ffff00001111",
-      "repo": "/home/rafa/repos/demo",
+      "repo": "/home/user/repos/demo",
       "builder_run_id": "aaaabbbbcccc"
     }
   },

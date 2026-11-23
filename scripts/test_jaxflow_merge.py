@@ -476,9 +476,9 @@ def test_preset_matrix_pr_open_and_release_refusals(
 
 def test_github_repo_slug_parses_ssh_and_https_remotes(tmp_path):
     for url, expected in [
-        ("git@github.com:acme/route-converter-se.git", "acme/route-converter-se"),
-        ("https://github.com/acme/route-converter-se.git", "acme/route-converter-se"),
-        ("https://github.com/acme/route-converter-se", "acme/route-converter-se"),
+        ("git@github.com:acme/sample-app.git", "acme/sample-app"),
+        ("https://github.com/acme/sample-app.git", "acme/sample-app"),
+        ("https://github.com/acme/sample-app", "acme/sample-app"),
     ]:
         def run(argv, cwd=None, url=url):
             if argv[:3] == ["git", "remote", "get-url"]:
@@ -3851,7 +3851,7 @@ def _merge_argv(calls):
 
 
 def test_merge_pr_explicit_squash_default_uses_the_pr_title_verbatim(tmp_path, monkeypatch):
-    title = "DRA-2408: add Rafa as an operator (#1912)"
+    title = "DRA-2408: add Alex as an operator (#1912)"
     rc, calls, events = _run_convention_pr(
         tmp_path, monkeypatch, _convention_agents(extra="- Merge method: `squash`\n"),
         title=title)
@@ -3869,7 +3869,7 @@ def test_merge_pr_auto_squash_default_queries_capabilities_with_string_vars(tmp_
     rc, calls, events = _run_convention_pr(
         tmp_path, monkeypatch,
         _convention_agents(extra="- Merge method: `auto`\n"),
-        title="DRA-2408: add Rafa as an operator", graphql=graphql,
+        title="DRA-2408: add Alex as an operator", graphql=graphql,
         remote="git@github.com:123/true.git")
     assert rc == jaxflow_common.OK
     graphql_call = next(c for c in calls if c[:3] == ["gh", "api", "graphql"])
@@ -3878,7 +3878,7 @@ def test_merge_pr_auto_squash_default_queries_capabilities_with_string_vars(tmp_
     assert _merge_argv(calls) == [
         "gh", "pr", "merge", "7", "--repo", "123/true", "--squash",
         "--match-head-commit", "a" * 40, "--subject",
-        "DRA-2408: add Rafa as an operator", "--body", "",
+        "DRA-2408: add Alex as an operator", "--body", "",
     ]
 
 

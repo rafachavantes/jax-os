@@ -825,7 +825,7 @@ def _run_doc_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowli
     )
     target_text = target_path.read_text(encoding="utf-8")
     # spec §4.5's status.md gate rule needs to know whether the reviewed doc's own header
-    # opts into Rafa's gate -- captured here (the only place the worker has this text),
+    # opts into the owner's gate -- captured here (the only place the worker has this text),
     # read back by `_update_status_md` via `manifest["spec_gate_required"]`.
     manifest["spec_gate_required"] = any(
         line.strip().lower().startswith(("owner gate: required", "rafa gate: required"))  # "rafa" = legacy

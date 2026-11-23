@@ -8,7 +8,7 @@ description: Use when the owner asks to start, update, or finish a mission -- th
 A mission is the owner's own declared objective (e.g. "ship these 6 phases tonight"): a
 name, a one-sentence goal, a milestone checklist, and a free-text status line the tech
 lead keeps current. Opt-in only -- never inferred, never started by a build or review on
-its own (`.local/docs/specs/2026-09-19-jaxflow-mission-spec.md` §3). Tech-lead-only: never
+its own. Tech-lead-only: never
 invoke this skill, or any `jaxflow mission` command, from inside a builder or reviewer run.
 
 ## Step 1 -- the four fields (one question per message)

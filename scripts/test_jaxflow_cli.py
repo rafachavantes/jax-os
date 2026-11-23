@@ -1065,9 +1065,9 @@ def test_latest_builder_attempt_breaks_ts_tie_by_id(tmp_path):
     con = _fresh_db(db)
     con.row_factory = sqlite3.Row
     same_ts = "2026-09-01T00:00:00+00:00"
-    _insert(con, "aaaa", "demo", "builder", "run-started", {"target": "feat/x", "repo": "/home/rafa/repos/demo"}, ts=same_ts)
-    _insert(con, "bbbb", "demo", "builder", "run-started", {"target": "feat/x", "repo": "/home/rafa/repos/demo"}, ts=same_ts)
-    assert jaxflow_common._latest_builder_attempt(con, "demo", "/home/rafa/repos/demo", "feat/x") == "bbbb"
+    _insert(con, "aaaa", "demo", "builder", "run-started", {"target": "feat/x", "repo": "/home/user/repos/demo"}, ts=same_ts)
+    _insert(con, "bbbb", "demo", "builder", "run-started", {"target": "feat/x", "repo": "/home/user/repos/demo"}, ts=same_ts)
+    assert jaxflow_common._latest_builder_attempt(con, "demo", "/home/user/repos/demo", "feat/x") == "bbbb"
     con.close()
 
 
@@ -1613,7 +1613,7 @@ def _doctor_which(repo_root, present):
 
 
 def _doctor_fixtures(tmp_path):
-    """Every doctor test injects these so none of them ever reads Rafa's real
+    """Every doctor test injects these so none of them ever reads the owner's real
     ~/.claude, ~/.codex, ~/.agents skill/hook files or the real $JAXOS_HOME/.env
     and the OpenCode installer fallback under `$HOME` (an isolated, empty temporary home)."""
     return dict(

@@ -16,7 +16,7 @@
       "model": "xai/grok-4.6",
       "effort": "n/a",
       "session": "jax-demo-build-000011112222",
-      "repo": "/home/rafa/repos/demo",
+      "repo": "/home/user/repos/demo",
       "verify": "true"
     }
   },

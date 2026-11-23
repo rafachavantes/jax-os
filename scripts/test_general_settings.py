@@ -12,9 +12,9 @@ NULL_FIXTURE = FIXTURES_DIR / "general-settings-null.json"
 DEFAULTS = gs.parse_settings(gs.ABSENT)
 
 EXPECTED = {
-    "ownerName": "Owner", "locale": "pt-BR", "reposRoot": "/home/rafa/repos",
-    "vaultPath": "/home/rafa/obsidian-vault",
-    "monitoredUnits": {"user": ["hermes-gateway.service"], "system": ["tailscaled.service"]},
+    "ownerName": "Owner", "locale": "pt-BR", "reposRoot": "/home/user/repos",
+    "vaultPath": "/home/user/vault",
+    "monitoredUnits": {"user": ["example.service"], "system": ["tailscaled.service"]},
     "integrations": {
         "linear": True, "ttyd": False, "webhook": True,
         "agents": {"claude": True, "codex": False, "opencode": False},

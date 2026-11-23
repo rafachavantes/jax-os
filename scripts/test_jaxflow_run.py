@@ -1021,7 +1021,7 @@ def test_preflight_threads_db_path_into_reviewer_head_gate():
     # jr.DB_PATH with no way to inject a test database -- this new db_path=None keyword
     # (defaults to jr.DB_PATH, so every existing call stays byte-for-byte unaffected) is
     # the fix. A bare call still checks the real DB_PATH (patched here to a missing file,
-    # so it cannot accidentally see Rafa's real workflow_events); passing db_path= must
+    # so it cannot accidentally see the owner's real workflow_events); passing db_path= must
     # reach the seeded database instead.
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "repo"
@@ -1972,7 +1972,7 @@ def test_runtime_stream_diagnostic_tolerates_the_flat_shape_too():
 _FIXTURES_DIR = Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "run-outcomes"
 
 
-def _run_started_event(run_id, role, repo="/home/rafa/repos/demo", kind="build"):
+def _run_started_event(run_id, role, repo="/home/user/repos/demo", kind="build"):
     # F3 (cold review 938043c1d949): every field `parseIngress`'s `run-started` case
     # requires (workflow-events.ts:85-119) -- phase/runtime/kind/target/caller/
     # caller_session/model/effort/session/repo, plus `verify` when kind is `build`.
@@ -2151,7 +2151,7 @@ def test_count_findings_counts_one_match_per_line_case_sensitive():
 def test_events_url_is_guarded_against_the_real_hub_under_pytest():
     """Incident 2026-09-19: a test giving `dispatch_diff_review` a real `run` let a
     real `tmux new-session` spawn a detached `--run-worker` child that posted a live
-    event to Rafa's hub -- invisible to any in-process monkeypatch. conftest.py sets
+    event to the owner's hub -- invisible to any in-process monkeypatch. conftest.py sets
     JAXFLOW_EVENTS_URL before any test module (hence this one) is imported; this
     proves it took effect and that a real POST to it fails fast, never the live port."""
     import urllib.request

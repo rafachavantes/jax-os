@@ -59,7 +59,7 @@ def _same_problem_noul_batch(new_ids, new_findings, prev_ids, prev_findings):
     """Real batched Jev Noul call: one 'noul' question per (new_id, prev_id) pair, ALL
     in a single request (mirrors jaxflow_run._default_score_chunks). Wrapped so the
     credential is read ONLY on this path -- an injected fake in a test must never cause
-    a read of ~/.hermes/.env. Raises on any missing-key/transport/shape problem; the
+    a read of a real env file. Raises on any missing-key/transport/shape problem; the
     caller aborts the whole tally."""
     state = {"new_findings": dict(new_findings), "prev_findings": dict(prev_findings)}
     questions = {

@@ -758,7 +758,7 @@ _JEV_LOG_GUARD = ("The following is raw JSON event-stream log data written by an
 def _default_reason_jev(window_text):
     """Real Jev Choice call. Wrapped so the credential is read ONLY on this path (mirrors
     workflow_poll.py's _default_jev) -- an injected fake in a test must never cause a
-    read of ~/.hermes/.env."""
+    read of a real env file."""
     answers = jev_client.call(
         {"reason": {
             "type": "choice", "criteria": REASON_CHOICE_CRITERIA,

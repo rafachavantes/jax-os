@@ -771,7 +771,7 @@ def cmd_release(args, *, run=jr.run_command, post=jc._post_event, env=None, now=
 
 def cmd_pr_open(args, *, run=jr.run_command, post=jc._post_event, env=None, now=None,
                  allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    """`jaxflow pr open` (spec Commands > pr open). No Rafa approval gate of its own
+    """`jaxflow pr open` (spec Commands > pr open). No owner approval gate of its own
     (decision 1) -- validation mirrors `cmd_merge`'s own sha/branch/target shape checks
     exactly, since both commands pin the same kind of approval."""
     env = os.environ if env is None else env
@@ -1508,7 +1508,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
 
 def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=None, now=None,
               allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    """Delivers an approved branch (spec §5). Synchronous and foreground by design: Rafa's
+    """Delivers an approved branch (spec §5). Synchronous and foreground by design: the owner's
     approval already named this phase/branch/sha, and the tech lead is waiting right here
     for a pass/fail — there is nothing to poll later, so `merge` allocates no run id, posts
     no `run-started`/`run-finished`, and owns no tmux session. Its only ledger row is the

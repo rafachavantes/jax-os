@@ -84,7 +84,7 @@ def _isolate_callbacks(tmp_path, monkeypatch):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "python3 /home/rafa/repos/jax-os/scripts/jaxflow_hook.py claude-callback",
+                            "command": "python3 /home/user/repos/jax-os/scripts/jaxflow_hook.py claude-callback",
                             "asyncRewake": True,
                             "timeout": 14400,
                         }

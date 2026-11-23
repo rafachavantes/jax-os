@@ -144,7 +144,7 @@ def test_dispatch_proceeds_when_caller_session_present(monkeypatch):
 
 def test_slugify_project_bounds_and_fallback():
     assert jaxflow_common.slugify_project("Acme.AI") == "acme-ai"
-    assert jaxflow_common.slugify_project("comenta.ia.br") == "comenta-ia-br"
+    assert jaxflow_common.slugify_project("sample.example.org") == "sample-example-org"
     long_name = "a" * 70 + "---"
     slug = jaxflow_common.slugify_project(long_name)
     # 40, not 64 (fixes cold review F2): jax-<slug>-<kind>-<run_id> must stay under the

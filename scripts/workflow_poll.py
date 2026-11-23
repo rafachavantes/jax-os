@@ -32,7 +32,7 @@ import jaxflow_env as jenv
 import jev_client
 import general_settings
 
-# HERMES_ENV_PATH/LOCAL_ENV_PATH/DEFAULT_WEBHOOK_URL are deleted outright — no
+# The legacy env-path constants (HERMES_ENV_PATH/LOCAL_ENV_PATH)/DEFAULT_WEBHOOK_URL are deleted outright — no
 # default URL, no .env.local literal, no second hardcoded credential path; the poller now
 # shares jev_client's single reader and reads NOTIFICATION_WEBHOOK_URL/_SECRET from there.
 EVENTS_URL = f"{jenv.api_base_url()}/api/workflow/events?pending=1&limit=20"
@@ -270,7 +270,7 @@ def _post_classify(url, body):
 
 def _default_classify(message_tail):
     """The real classifier. Wrapped so the credential is read ONLY on this path — an injected
-    fake in a test must never cause a read of ~/.hermes/.env, and an eagerly-evaluated
+    fake in a test must never cause a read of a real env file, and an eagerly-evaluated
     `_classifier_api_key()` argument would do exactly that."""
     return _call_classifier(_build_prompt(message_tail), _classifier_api_key())
 
@@ -308,7 +308,7 @@ def _parse_jev(parsed, ms):
 
 def _default_jev(message_tail):
     """The real Jev call. Wrapped so the credential is read ONLY on this path — an injected
-    fake in a test must never cause a read of ~/.hermes/.env."""
+    fake in a test must never cause a read of a real env file."""
     return _call_jev(message_tail, _classifier_api_key(JEV_ENV_KEY))
 
 

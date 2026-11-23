@@ -213,7 +213,7 @@ def cmd_doctor(*, env=None, which=None, repo_root=None, read_settings=None, get=
     beyond one GET to the local jax-os API. Exit is non-zero iff a REQUIRED check is missing --
     an integration-gated check (cli:gh) and an enabled agent's cli:<a> are required only when that switch is on.
     `skill_dirs`/`hook_files`/`env_status` default to the real per-harness home locations and
-    `jev_client.env_file_status` — tests always inject fixtures so no test ever reads Rafa's
+    `jev_client.env_file_status` — tests always inject fixtures so no test ever reads the owner's
     real home directory or env file (plan review df958c45b481, F2)."""
     env = os.environ if env is None else env
     which = which or (lambda name, path=None: shutil.which(name, path=path or env.get("PATH")))

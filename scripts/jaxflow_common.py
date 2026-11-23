@@ -967,7 +967,7 @@ def _update_status_md(manifest, *, run, allowlist_root):
         elif kind == "spec" and outcome != "reject" and manifest.get("spec_gate_required"):
             gate = "awaiting-approval"
         elif kind == "pr-open":
-            # opening a PR always awaits Rafa's merge approval next -- unlike diff's
+            # opening a PR always awaits the owner's merge approval next -- unlike diff's
             # outcome-conditional gate, there is no "pr-open but not ready" state.
             gate = "awaiting-approval"
         remove_keys = ()
