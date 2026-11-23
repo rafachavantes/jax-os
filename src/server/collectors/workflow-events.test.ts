@@ -1283,7 +1283,11 @@ describe("merge-approved", () => {
     it.each([0, -1, 1.5, "7", null, true])("rejects mission_id %j", (bad) => {
       expect(parseIngress(withPayload({ mission_id: bad })).ok).toBe(false);
     });
-    it("still rejects approved_by other than rafa when mission_id is valid", () => {
+    it("accepts approved_by owner and the legacy rafa, rejects anything else", () => {
+      expect(parseIngress(withPayload({ approved_by: "owner" })).ok).toBe(true);
+      expect(parseIngress(withPayload({ approved_by: "rafa" })).ok).toBe(true);
+    });
+    it("still rejects approved_by other than owner/rafa when mission_id is valid", () => {
       expect(parseIngress(withPayload({ mission_id: 7, approved_by: "claude" })).ok).toBe(false);
     });
   });

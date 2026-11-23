@@ -13,7 +13,7 @@
     "prebuild": "node scripts/copy-monaco.mjs",
     "build": "next build",
     "start": "next start -H 127.0.0.1",
-    "test": "vitest run src"
+    "test": "vitest run --dir src"
   },
   "dependencies": {
     "@headless-tree/core": "^1.7.0",

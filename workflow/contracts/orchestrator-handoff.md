@@ -64,7 +64,7 @@ commands:
     `none`>
   build: <ONE shell command string — pipelines and `&&` chains are one command — or
     `none`>
-verification: rafa-verifies | agent-verify: <tool + check> |
+verification: owner-verifies | agent-verify: <tool + check> |
   agent-deploy-verify: target=<preset's Verification deployment target>; check=<check>
   # overrides the project AGENTS.md verification default for THIS phase
   # agent-deploy-verify is invalid when the preset's Verification deployment target is none

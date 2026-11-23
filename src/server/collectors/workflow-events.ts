@@ -425,7 +425,8 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
         const v = p[key];
         if (!(typeof v === "string" && SHA40.test(v))) fail(`${key} must be a full 40-hex sha`);
       }
-      if (p.approved_by !== "rafa") fail("approved_by must be rafa");
+      // "rafa" is the legacy value stored by older installs.
+      if (p.approved_by !== "owner" && p.approved_by !== "rafa") fail("approved_by must be owner");
       if ("pr_number" in p) posInt(p, "pr_number");
       if ("mission_id" in p) posInt(p, "mission_id");
       if ("pr_url" in p) reqStr(p, "pr_url", LIMITS.prUrl, GITHUB_PR_URL_RE);

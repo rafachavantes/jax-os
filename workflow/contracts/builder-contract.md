@@ -55,7 +55,7 @@ No session after, no human present. You build, report, exit.
   with exactly one of `result: success`, `result: failure`, or `result: blocked` — never
   the alternatives joined by `|`.
 - After the handoff's test/build commands, run `verification:` as spelled:
-  `rafa-verifies` ⇒ nothing more; `agent-verify` ⇒ run the named check; `agent-deploy-verify`
+  `owner-verifies` (legacy spelling `rafa-verifies`, treated the same) ⇒ nothing more; `agent-verify` ⇒ run the named check; `agent-deploy-verify`
   ⇒ deploy ONLY to the named target, then check. Record the command(s) and result.
 - On missing information, authority, or a decision absent from governing inputs: STOP,
   commit what's safe, write `result: blocked` with concrete questions in the report

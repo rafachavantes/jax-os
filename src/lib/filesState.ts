@@ -38,8 +38,8 @@ export function patchEdit(edits: Record<string, EditState>, key: string, id: sym
 export type SelectedEntry = { root: Root; rel: string; isDir: boolean };
 export type FilesUiState = { expanded: string[]; tabs: Tab[]; activeIdx: number | null; scope: SearchScope; selected: SelectedEntry | null };
 
-// §5's fixed first-run pick — a simple, deterministic default; the switcher is one click away.
-export const DEFAULT_SCOPE: RepoRef = { kind: "repo", name: "jax-os" };
+// First-run scope: every repo, so nothing depends on a particular repo name; the switcher is one click away.
+export const DEFAULT_SCOPE: SearchScope = { kind: "all" };
 
 function normalizeScope(raw: unknown): SearchScope {
   if (typeof raw !== "object" || raw === null) return DEFAULT_SCOPE;

@@ -351,8 +351,6 @@ import {
 import { openDb } from "../db";
 import {
   defaultNativeCollectorDeps,
-  hashFileStreaming,
-  OPENCODE_EXECUTABLE_SHA256,
   OPENCODE_HELPER_SOURCE,
   parseOpenCodeReply,
   runNativeUsagePass,
@@ -412,7 +410,6 @@ type MakeDepsOptions = {
   fs?: NativeFs;
   exec?: NativeCollectorDeps["opencode"]["exec"];
   stat?: (path: string) => Promise<StatLike | null>;
-  hash?: (path: string) => Promise<string | null>;
   base?: string;
   nowOffset?: number;
 };
@@ -426,7 +423,6 @@ function makeDeps(opts: MakeDepsOptions = {}): NativeCollectorDeps {
   mkdirSync(codex, { recursive: true });
   mkdirSync(data, { recursive: true });
   const enabled = opts.enabled ?? { claude: true, codex: true, opencode: true };
-  const hash = opts.hash ?? (async () => OPENCODE_EXECUTABLE_SHA256);
   const stat = opts.stat ?? (async () => ({
     dev: 1, ino: 1, size: 100, mtimeMs: Date.parse("2026-11-18T10:00:00Z"),
     isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
@@ -456,7 +452,6 @@ function makeDeps(opts: MakeDepsOptions = {}): NativeCollectorDeps {
       xdgConfigHome: join(base, "adapter-config"),
       exec: opts.exec ?? (async () => ({ stdout: emptyReply })),
       stat,
-      hash,
     },
   };
 }
@@ -649,7 +644,6 @@ describe("bounded JSONL collection", () => {
     deps.fs = spy;
     deps.opencode.ensureAdapter = async () => { throw new Error("must not prepare"); };
     deps.opencode.exec = async () => { throw new Error("must not execute"); };
-    deps.opencode.hash = async () => { throw new Error("must not hash"); };
     deps.opencode.stat = async () => { throw new Error("must not stat the executable"); };
     await runNativeUsagePass(deps);
     expect(getSourceStatuses(deps.db).map((s) => s.state)).toEqual(["disabled", "disabled", "disabled"]);
@@ -1046,30 +1040,6 @@ describe("OpenCode source pass through the injected executor", () => {
       .toEqual({ agent: "Claude Code", model: "claude-sonnet-5-5" });
     expect(deps.db.prepare("SELECT agent, model FROM native_usage_items WHERE harness = 'codex'").get())
       .toEqual({ agent: "Codex", model: "gpt-5.6-luna" });
-    deps.db.close();
-  });
-
-  it("treats a changed executable identity with a mismatched hash as incompatible, retaining last-good rows", async () => {
-    let calls = 0;
-    let hashCalls = 0;
-    let size = 100;
-    const deps = withDbFile({
-      exec: async () => { calls += 1; return { stdout: reply }; },
-      stat: async () => ({
-        dev: 1, ino: 1, size, mtimeMs: Date.parse("2026-11-18T10:00:00Z"),
-        isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
-      }),
-      hash: async () => { hashCalls += 1; return size === 100 ? OPENCODE_EXECUTABLE_SHA256 : "deadbeef"; },
-    });
-    await runNativeUsagePass(deps);
-    expect(calls).toBe(1);
-    expect(hashCalls).toBe(1);
-    size = 101;
-    await runNativeUsagePass({ ...deps, now: () => Math.floor((Date.parse("2026-11-18T13:00:00Z")) / 1000) });
-    const status = getSourceStatuses(deps.db).find((s) => s.source === "opencode");
-    expect(status?.state).toBe("incompatible");
-    expect(status?.warnings).toContain("executable-mismatch");
-    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).totalTokens).toBe(153);
     deps.db.close();
   });
 
@@ -1808,50 +1778,9 @@ describe("one owned IO scope and honest source lifecycle", () => {
     deps.db.close();
   });
 
-  it("keeps one original OpenCode hash reader across repeated preparation timeouts", async () => {
-    let hashCalls = 0;
-    const deps = makeDeps({
-      hash: () => {
-        hashCalls += 1;
-        return new Promise<never>(() => {});
-      },
-    });
-    writeFileSync(deps.roots.opencodeDb, "");
-    await runNativeUsagePass(deps);
-    expect(hashCalls).toBe(1);
-    await runNativeUsagePass({ ...deps, now: () => NOW + 61 });
-    expect(hashCalls).toBe(1);
-    const status = getSourceStatuses(deps.db).find((s) => s.source === "opencode");
-    expect(status?.warnings).toContain("io-pending");
-    deps.db.close();
-  });
-
-  it("hashes the default dependency with bounded chunks instead of readFile", async () => {
-    const { createHash } = await import("node:crypto");
-    const base = mkdtempSync(join(VERIFY_HOME, "hash-"));
-    const path = join(base, "executable.bin");
-    const content = Buffer.alloc(150 * 1024);
-    for (let i = 0; i < content.length; i += 1) content[i] = i % 251;
-    writeFileSync(path, content);
-    const deps = await defaultNativeCollectorDeps(openDb(":memory:"));
-    const hash = await deps.opencode.hash(path);
-    expect(hash).toBe(createHash("sha256").update(content).digest("hex"));
-    rmSync(base, { recursive: true, force: true });
-  });
 });
 
-describe("monotonic budgeting and cooperative hash cancellation", () => {
-  function openCodeOnlyDeps(opts: MakeDepsOptions = {}): NativeCollectorDeps {
-    const deps = makeDeps({ ...opts, enabled: { claude: false, codex: false, opencode: true } });
-    writeFileSync(deps.roots.opencodeDb, "");
-    return deps;
-  }
-
-  const fileStat = async () => ({
-    dev: 1, ino: 1, size: 8, mtimeMs: 0,
-    isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false,
-  });
-
+describe("monotonic budgeting", () => {
   it("keeps budget time monotonic across a backwards wall-clock step while UTC stays on wall time", async () => {
     const deps = await defaultNativeCollectorDeps(openDb(":memory:"));
     const wall = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-18T12:00:00Z"));
@@ -1864,117 +1793,6 @@ describe("monotonic budgeting and cooperative hash cancellation", () => {
     wall.mockRestore();
   });
 
-  it("stops the production-default streaming hash before the next chunk after its preparation timeout", async () => {
-    const deps = openCodeOnlyDeps();
-    let opens = 0;
-    let reads = 0;
-    let closes = 0;
-    let readStarted = false;
-    let releaseRead: (() => void) | null = null;
-    const fakeFs: NativeFs = {
-      ...nativeFs,
-      open: async () => {
-        opens += 1;
-        return {
-          read: async () => {
-            reads += 1;
-            if (reads === 1) {
-              readStarted = true;
-              return new Promise<{ bytesRead: number }>((resolve) => {
-                releaseRead = () => resolve({ bytesRead: 4 });
-              });
-            }
-            return { bytesRead: 0 };
-          },
-          close: async () => { closes += 1; },
-          stat: fileStat,
-        };
-      },
-    };
-    deps.opencode.hash = (path, cancellation) => hashFileStreaming(fakeFs, path, cancellation);
-
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const pass = runNativeUsagePass(deps);
-      for (let i = 0; i < 200 && !readStarted; i += 1) await vi.advanceTimersByTimeAsync(1);
-      // Reaching the hash before any timer advance is part of the scenario: the first
-      // read is the unabortable operation the public timeout must abandon.
-      expect(readStarted).toBe(true);
-      await vi.advanceTimersByTimeAsync(1300);
-      await pass;
-    } finally {
-      vi.useRealTimers();
-    }
-    const timedOut = getSourceStatuses(deps.db).find((s) => s.source === "opencode");
-    expect(timedOut).toMatchObject({ state: "unavailable" });
-    expect(timedOut?.warnings).toContain("io-pending");
-    expect({ opens, reads, closes }).toEqual({ opens: 1, reads: 1, closes: 0 });
-
-    await runNativeUsagePass(deps);
-    expect({ opens, reads }).toEqual({ opens: 1, reads: 1 });
-
-    releaseRead!();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect({ opens, reads, closes }).toEqual({ opens: 1, reads: 1, closes: 1 });
-
-    await runNativeUsagePass(deps);
-    expect({ opens, reads, closes }).toEqual({ opens: 2, reads: 2, closes: 2 });
-    deps.db.close();
-  });
-
-  it("keeps single flight while a cancelled hash close is still pending", async () => {
-    const deps = openCodeOnlyDeps();
-    let opens = 0;
-    let reads = 0;
-    let readStarted = false;
-    let releaseRead: (() => void) | null = null;
-    let releaseClose: (() => void) | null = null;
-    const fakeFs: NativeFs = {
-      ...nativeFs,
-      open: async () => {
-        opens += 1;
-        return {
-          read: async () => {
-            reads += 1;
-            if (reads === 1) {
-              readStarted = true;
-              return new Promise<{ bytesRead: number }>((resolve) => {
-                releaseRead = () => resolve({ bytesRead: 2 });
-              });
-            }
-            return { bytesRead: 0 };
-          },
-          close: () => new Promise<void>((resolve) => { releaseClose = resolve; }),
-          stat: fileStat,
-        };
-      },
-    };
-    deps.opencode.hash = (path, cancellation) => hashFileStreaming(fakeFs, path, cancellation);
-
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const pass = runNativeUsagePass(deps);
-      for (let i = 0; i < 200 && !readStarted; i += 1) await vi.advanceTimersByTimeAsync(1);
-      expect(readStarted).toBe(true);
-      await vi.advanceTimersByTimeAsync(1300);
-      await pass;
-    } finally {
-      vi.useRealTimers();
-    }
-    releaseRead!();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(releaseClose).not.toBeNull();
-
-    await runNativeUsagePass(deps);
-    expect({ opens, reads }).toEqual({ opens: 1, reads: 1 });
-    expect(getSourceStatuses(deps.db).find((s) => s.source === "opencode")?.warnings).toContain("io-pending");
-
-    releaseClose!();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await runNativeUsagePass(deps);
-    expect(opens).toBe(2);
-    deps.db.close();
-  });
 });
 
 describe("interrupted discovery registration and directory failure mapping", () => {

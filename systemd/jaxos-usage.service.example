@@ -3,5 +3,7 @@ Description=jax-os usage collection (one catch-up run)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/curl -fsS -m 45 -X POST http://127.0.0.1:3100/api/tokens/usage/collect
+# Keep in sync with Environment=PORT in jaxos.service.
+Environment=PORT=3100
+ExecStart=/usr/bin/curl -fsS -m 45 -X POST http://127.0.0.1:${PORT}/api/tokens/usage/collect
 SuccessExitStatus=0 7

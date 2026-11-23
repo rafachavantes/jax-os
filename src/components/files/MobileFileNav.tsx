@@ -6,7 +6,6 @@ import { ChevronLeft, ChevronRight, Folder } from "lucide-react";
 import type { DirListing, RepoRef } from "@/server/collectors/files";
 import { breadcrumbSegments } from "@/lib/breadcrumb";
 import { fetchRepoNames, repoNamesFromListing } from "@/lib/fileSearch";
-import { DEFAULT_SCOPE } from "@/lib/filesState";
 import { displayedTarget, relativeToScope, scopedRel } from "@/lib/filesWorkspace";
 import { iconForEntry } from "./FileTree";
 import { fmtSize } from "./FileEditor";
@@ -29,7 +28,7 @@ export function MobileFileNav({ onOpenFile }: { onOpenFile?: () => void } = {}) 
   const ws = useFilesTreeWorkspace();
   // Global Constraints move 3: the directory readers below assume a concrete repo/vault; at the
   // "all" scope the body renders the flat picker instead, so this fallback is never observed.
-  const treeScope: RepoRef = ws.scope.kind === "all" ? DEFAULT_SCOPE : ws.scope;
+  const treeScope: RepoRef = ws.scope.kind === "all" ? { kind: "repo", name: "" } : ws.scope;
   const target = displayedTarget(treeScope, ws.selected);
   const canGoBack = ws.scope.kind !== "all";
   const repoNamesQuery = useQuery({ queryKey: ["files", "repoNames"], queryFn: () => fetchRepoNames(), staleTime: 60_000 });

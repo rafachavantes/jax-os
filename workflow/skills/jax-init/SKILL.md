@@ -85,8 +85,8 @@ silently adopted. Fixed order:
     | `public-app` | Untrusted users reach this app; full OWASP scope. |
 
     Passed to the script as `--threat-model <mode>`.
-11. **Who verifies** -- one of `rafa-verifies` / `agent-verify: <check>` /
-    `agent-deploy-verify: target=<...>; check=<...>`. `rafa-verifies` is this workflow's
+11. **Who verifies** -- one of `owner-verifies` / `agent-verify: <check>` /
+    `agent-deploy-verify: target=<...>; check=<...>`. `owner-verifies` (legacy `rafa-verifies` is still accepted) is this workflow's
     fixed name for "the owner verifies by hand," independent of who the owner is.
 12. **Project-specific hard rules and "Do NOT" traps** -- open text; `"none"` is valid.
 13. **Remote** -- yes/no; default yes for every preset (a PR preset cannot work
