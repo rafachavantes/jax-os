@@ -272,6 +272,17 @@ def _delete_spool(control_repo, run_id):
     _spool_path(control_repo, run_id).unlink(missing_ok=True)
 
 
+def _launch_spool_path(control_repo, run_id, stamp):
+    """`<control-repo>/.local/runs/<run_id>/launch-<stamp>.json` -- one per managed
+    launch. A resume stamps its own file, so two launches never overwrite each other."""
+    return _manifest_dir(Path(control_repo), run_id) / f"launch-{stamp}.json"
+
+
+def _launch_spools(repo_runs_dir):
+    """Launch spools still pending replay under one repo's `.local/runs`, oldest name first."""
+    return sorted(Path(repo_runs_dir).glob("*/launch-*.json"))
+
+
 _CHAIN_MAX_DEPTH = 32
 
 

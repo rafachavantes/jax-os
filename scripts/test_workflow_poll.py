@@ -979,3 +979,67 @@ def test_poll_tick_survives_settings_read_exception(monkeypatch):
     assert wp.STALENESS_URL in calls  # staleness still ran
     assert "reap" in calls            # reap still ran
     assert "drain" in calls           # drain still attempted
+
+
+def _launch_spool(repo, event, name="launch-1.json"):
+    spool = repo / ".local" / "runs" / "aaaabbbbcccc" / name
+    spool.parent.mkdir(parents=True, exist_ok=True)
+    spool.write_text(json.dumps(event), encoding="utf-8")
+    return spool
+
+
+def test_replay_launch_spools_reposts_builder_repo_spools_and_deletes_them(tmp_path, monkeypatch):
+    db = tmp_path / "jaxos.db"
+    con = _fresh_db(db)
+    repo = tmp_path / "repos" / "demo"
+    _init_repo(repo)
+    other = tmp_path / "repos" / "other"
+    _init_repo(other)
+    _insert(con, "aaaabbbbcccc", "demo", "builder", "run-started", {"repo": str(repo)}, ts="t")
+    # A reviewer run-started never brings its repo into the launch-spool scan.
+    _insert(con, "aaaabbbbcccc", "demo", "reviewer", "run-started", {"repo": str(other)}, ts="t")
+    con.close()
+    event = {
+        "run_id": "aaaabbbbcccc", "project": "demo", "role": "builder",
+        "type": "builder-launched", "source": "deterministic", "emitter": "wrapper",
+        "payload": {
+            "launched_at": "2026-01-01T00:00:00Z", "worktree": str(repo),
+            "runtime_model": "fixture/jaxflow-builder-default",
+            "model": "fixture/real", "profile": "default",
+        },
+    }
+    spool = _launch_spool(repo, event)
+    other_spool = _launch_spool(other, event)
+    posted = []
+    monkeypatch.setattr(jaxflow, "ALLOWLIST_ROOT_DEFAULT", tmp_path / "repos")
+    wp._replay_launch_spools(db, post=lambda e: posted.append(e) or {"ok": True})
+    assert posted == [event]
+    assert not spool.exists()
+    assert other_spool.exists()
+
+
+def test_replay_launch_spools_keeps_a_spool_when_the_post_fails(tmp_path, monkeypatch):
+    db = tmp_path / "jaxos.db"
+    con = _fresh_db(db)
+    repo = tmp_path / "repos" / "demo"
+    _init_repo(repo)
+    _insert(con, "aaaabbbbcccc", "demo", "builder", "run-started", {"repo": str(repo)}, ts="t")
+    con.close()
+    event = {
+        "run_id": "aaaabbbbcccc", "project": "demo", "role": "builder",
+        "type": "builder-launched", "source": "deterministic", "emitter": "wrapper",
+        "payload": {
+            "launched_at": "2026-01-01T00:00:00Z", "worktree": str(repo),
+            "runtime_model": "fixture/jaxflow-builder-default",
+            "model": "fixture/real", "profile": "default",
+        },
+    }
+    spool = _launch_spool(repo, event)
+
+    def post(event):
+        raise ConnectionError("hub down")
+
+    monkeypatch.setattr(jaxflow, "ALLOWLIST_ROOT_DEFAULT", tmp_path / "repos")
+    wp._replay_launch_spools(db, post=post)
+    assert spool.exists()
+    assert json.loads(spool.read_text(encoding="utf-8")) == event

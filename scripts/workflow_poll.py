@@ -26,6 +26,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 import jaxflow
+import jaxflow_common as jc
 import jaxflow_run as jr
 import jaxflow_env as jenv
 import jev_client
@@ -592,6 +593,62 @@ def _reap_stale_runs(db_path=None, *, run=None, now=None, allowlist_root=None):
     print(f"reap: candidates={len(rows)} closed={closed}")
 
 
+def _launch_replay_repos(db_path):
+    """Distinct `repo` values of builder run-started rows -- the only places a launch spool
+    can live. Read-only, allowlist-checked; anything malformed is skipped."""
+    try:
+        con = jaxflow._open_ro(db_path)
+    except sqlite3.Error:
+        return []
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT json_extract(payload, '$.repo') AS repo FROM workflow_events "
+            "WHERE type = 'run-started' AND role = 'builder'"
+        ).fetchall()
+    finally:
+        con.close()
+    repos = []
+    for row in rows:
+        raw = row[0]
+        if not isinstance(raw, str) or not raw:
+            continue
+        try:
+            repo = Path(raw).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if jaxflow._contained(repo, jaxflow.ALLOWLIST_ROOT_DEFAULT):
+            repos.append(repo)
+    return repos
+
+
+def _replay_launch_spools(db_path, *, post=None):
+    """Re-post every pending launch spool under a known builder repo's `.local/runs`.
+    Success deletes the spool, a failure keeps it for the next tick. Never raises."""
+    post = post or jaxflow._post_event
+    try:
+        repos = _launch_replay_repos(db_path)
+    except Exception as e:
+        print(f"workflow-poll: launch spool repo query failed: {e}", file=sys.stderr)
+        return
+    replayed = 0
+    for repo in repos:
+        for spool in jc._launch_spools(repo / ".local" / "runs"):
+            try:
+                event = json.loads(spool.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            try:
+                post(event)
+            except Exception:
+                continue
+            try:
+                spool.unlink()
+            except OSError:
+                continue
+            replayed += 1
+    print(f"launch-spool: replayed={replayed}")
+
+
 def main():
     try:
         settings = general_settings.read_settings()  # once per tick (lean spec D16), shared below
@@ -610,6 +667,10 @@ def main():
         # MOA-474: own phase, own try/except -- a reap bug must never block the drain
         # phase below (spec §10.3's own framing).
         print(f"workflow-poll: reap crashed unexpectedly: {e}", file=sys.stderr)
+    try:
+        _replay_launch_spools(jr.DB_PATH)
+    except Exception as e:
+        print(f"workflow-poll: launch spool replay crashed unexpectedly: {e}", file=sys.stderr)
     try:
         _drain_deferred(settings=settings)
     except Exception as e:
