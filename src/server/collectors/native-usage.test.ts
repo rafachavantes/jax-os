@@ -512,6 +512,30 @@ describe("bounded JSONL collection", () => {
     deps.db.close();
   });
 
+  it("skips Claude subagent meta files silently while an unknown file still warns", async () => {
+    const run = async (extra: string) => {
+      const deps = makeDeps();
+      writeClaude(deps, "p/session/subagents/agent-x.jsonl", [claudeLine("m1", { agentId: "agent-x" })]);
+      writeFileSync(join(deps.roots.claude, "p", "session", "subagents", extra), "{}");
+      const warnings = new Set<string>();
+      for (let pass = 0; pass < 6; pass += 1) {
+        await runNativeUsagePass(deps);
+        const status = getSourceStatuses(deps.db).find((s) => s.source === "claude");
+        for (const w of status?.warnings ?? []) warnings.add(w);
+        if (status?.state === "available") break;
+      }
+      const child = deps.db
+        .prepare("SELECT COUNT(*) AS n FROM native_usage_files WHERE source = 'claude' AND child = 1")
+        .get() as { n: number };
+      deps.db.close();
+      return { warnings, child: child.n };
+    };
+    const meta = await run("agent-x.meta.json");
+    expect(meta.warnings).not.toContain("unsupported-layout");
+    expect(meta.child).toBe(1);
+    expect((await run("other.txt")).warnings).toContain("unsupported-layout");
+  });
+
   it("rejects a symlink escaping the native root", async () => {
     const deps = makeDeps();
     const outside = join(deps.roots.claude, "..", "outside.jsonl");

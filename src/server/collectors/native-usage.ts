@@ -871,6 +871,8 @@ async function registerEntry(
         if (await safeFile()) registerNativeFile(deps.db, source, rel, true, deps.now());
         return;
       }
+      // Claude writes agent-*.meta.json beside each subagent transcript; it carries no usage.
+      if (entry.name.startsWith("agent-") && entry.name.endsWith(".meta.json")) return;
       ctx.warnings.add("unsupported-layout");
       return;
     }
