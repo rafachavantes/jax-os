@@ -81,7 +81,7 @@ In a second shell, run `python3 scripts/jaxflow.py doctor`. On a fresh machine i
 Everything runs locally on the same host.
 
 - **Core**, no external account: tmux, git, rg, Python; at least one agent CLI (`claude`, `codex` or `opencode`); Files, Mission Control and the `jaxflow` CLI.
-- **Integrations**, off until you switch them on in `/settings`: Linear, ttyd, webhook, Hermes tokens, classifier, GitHub, vault.
+- **Integrations**, off until you switch them on in `/settings`: Linear, ttyd, webhook, classifier, GitHub, vault.
 
 ## Documentation
 

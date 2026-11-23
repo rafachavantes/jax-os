@@ -2,8 +2,8 @@
 """jax-os workflow fallback poll — runs once per systemd user timer tick (2 min).
 
 The ingress route (POST /api/workflow/events) tries ONE bounded synchronous
-forward to the Hermes `jax-workflow` webhook when an event is created. If
-that forward fails (Hermes restarting, timeout), the row stays
+forward to the notification webhook when an event is created. If
+that forward fails (receiver restarting, timeout), the row stays
 delivery='pending' and nothing retries it — this script is that retry: pull
 pending events from jax-os, re-forward each with the same HMAC recipe the
 ingress route uses, and ack whatever the webhook actually accepted.

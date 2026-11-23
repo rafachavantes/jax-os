@@ -7,7 +7,7 @@ const DEFAULTS = {
   ownerName: "", locale: "en-US", reposRoot: "/home/x/repos", vaultPath: null,
   monitoredUnits: { user: [], system: [] },
   integrations: {
-    linear: false, ttyd: false, webhook: false, hermesTokens: false,
+    linear: false, ttyd: false, webhook: false,
     agents: { claude: false, codex: false, opencode: false },
     classifier: false, github: false, vault: false,
   },

@@ -17,8 +17,9 @@ MONITORED_KEYS = {"user", "system"}
 AGENT_KEYS = ("claude", "codex", "opencode")
 # MOA-504 D2: legacy key, accepted on READ only and mapped into `agents`; never written back.
 LEGACY_SUBSCRIPTION_KEYS = ("claude", "codex", "opencodeGo")
-BOOL_INTEGRATION_KEYS = ("linear", "ttyd", "webhook", "hermesTokens", "classifier", "github", "vault")
-INTEGRATION_KEYS = set(BOOL_INTEGRATION_KEYS) | {"agents", "subscriptions"}
+BOOL_INTEGRATION_KEYS = ("linear", "ttyd", "webhook", "classifier", "github", "vault")
+# Legacy: `hermesTokens` was removed; old files still carry it, so it is accepted on read and dropped.
+INTEGRATION_KEYS = set(BOOL_INTEGRATION_KEYS) | {"agents", "subscriptions", "hermesTokens"}
 
 
 class _Absent:
@@ -52,7 +53,7 @@ def _default_settings():
         "vaultPath": None,
         "monitoredUnits": {"user": [], "system": []},
         "integrations": {
-            "linear": False, "ttyd": False, "webhook": False, "hermesTokens": False,
+            "linear": False, "ttyd": False, "webhook": False,
             "agents": {"claude": False, "codex": False, "opencode": False},
             "classifier": False, "github": False, "vault": False,
         },

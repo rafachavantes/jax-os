@@ -27,7 +27,7 @@ Never conflate the two, and no page may crash because a data source failed.
 ## Integrations on/off
 
 Every integration starts disabled on a fresh install. The integrations are
-Linear, ttyd, Hermes tokens, GitHub, vault, classifier, and the
+Linear, ttyd, GitHub, vault, classifier, and the
 notification webhook; each is enabled in `/settings`, and an integration that
 is off performs zero reads and zero calls. The per-integration toggle
 mechanics (what each one unlocks, which secret it expects) live in the code

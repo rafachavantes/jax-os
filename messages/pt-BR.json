@@ -256,7 +256,7 @@
     },
     "afk": {
       "label": "AFK",
-      "on": "eventos vão pro Telegram",
+      "on": "eventos vão para o canal de notificação",
       "off": "eventos ficam aqui",
       "loading": "…",
       "unavailable": "indisponível",
@@ -339,7 +339,7 @@
       "pendingQuestion": "Pergunta pendente",
       "noPendingQuestion": "Nenhuma pergunta pendente.",
       "multiSelect": "escolha um ou mais",
-      "answerHint": "Responda pelo Telegram, ou",
+      "answerHint": "Responda pelo canal de notificação, ou",
       "openInTmux": "abrir no tmux",
       "openUnavailable": "terminal indisponível",
       "timeline": "Linha do tempo",
@@ -684,7 +684,7 @@
         "missing-credentials": {
           "anthropic": "Credenciais não encontradas (~/.claude)",
           "codex": "Credenciais não encontradas (~/.codex)",
-          "opencode": "Defina OPENCODE_GO_API_KEY em ~/.hermes/.env ou .env.local"
+          "opencode": "Defina OPENCODE_GO_API_KEY em $JAXOS_HOME/.env ou .env.local"
         },
         "rate-limited": "Limite de consultas — aguardando",
         "generic": "Falha ao consultar"
@@ -791,27 +791,6 @@
       "unknownUnitCost": "{count} item(ns) de uso reportam custo com unidade não verificada; excluídos dos totais em moeda.",
       "staleCollection": "coleta atrasada",
       "unresolvedSuffix": "(não resolvido)"
-    },
-    "hermes": {
-      "promptTitle": "Prompt budget",
-      "perTurn": "injetado em cada turno",
-      "tools": "{count} tools",
-      "component": {
-        "systemPrompt": "System prompt",
-        "skillsIndex": "Índice de skills",
-        "memory": "Memória",
-        "userProfile": "Perfil",
-        "toolSchemas": "Schemas de tools"
-      },
-      "skillsTitle": "Skills",
-      "skillsHint": "candidatas a desativar sinalizadas",
-      "uses": "{count, plural, =0 {nunca usada} one {# uso} other {# usos}}",
-      "lowUse": "baixo uso",
-      "more": "+{count} skills",
-      "promptUnavailable": "Hermes indisponível. Confira se está no ar e espere o próximo refresh.",
-      "promptTimeout": "Hermes estourou o tempo. Confira se está no ar e espere o próximo refresh.",
-      "promptInvalid": "Hermes devolveu saída ilegível. Confira se está no ar e espere o próximo refresh.",
-      "skillsUnavailable": "Uso das skills indisponível. Confira o Hermes e espere o próximo refresh."
     }
   },
   "tools": {
@@ -884,7 +863,6 @@
       "integrationsHeading": "Integrações",
       "linearLabel": "Linear",
       "ttydLabel": "ttyd (terminal web)",
-      "hermesTokensLabel": "Tokens do Hermes",
       "classifierLabel": "Classificador (Jev)",
       "githubLabel": "GitHub (PRs)",
       "vaultLabel": "Vault de arquivos",
@@ -967,7 +945,7 @@
     "missionArchiveLabel": "Ocultar automaticamente após (dias)",
     "missionArchiveHint": "Cards sem atividade por esse número de dias entram em \"N recolhidos\".",
     "missionArchiveFailed": "Falha ao salvar",
-    "forwardTypesTitle": "Encaminhar para o Telegram",
+    "forwardTypesTitle": "Encaminhar para o canal de notificação",
     "forwardTypeQuestion": "Pergunta",
     "forwardTypeAttentionNeeded": "Precisa de atenção",
     "forwardTypeMissionFinished": "Missão concluída",

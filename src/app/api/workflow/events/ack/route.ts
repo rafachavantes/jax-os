@@ -4,7 +4,7 @@ import { collectorResponse, readJsonCapped, requireSameOrigin } from "@/server/a
 import { getDb } from "@/server/db";
 import { markDelivered } from "@/server/db/workflows";
 
-// Hermes acks exactly the ids it accepted from the poll (partial batches fine).
+// The webhook receiver acks exactly the ids it accepted from the poll (partial batches fine).
 export async function POST(req: Request) {
   const guard = requireSameOrigin(req);
   if (guard) return guard;

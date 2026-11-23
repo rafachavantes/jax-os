@@ -16,7 +16,7 @@ const DEFAULT_SETTINGS: GeneralSettings = {
   ownerName: "", locale: "en-US", reposRoot: "", vaultPath: null,
   monitoredUnits: { user: [], system: [] },
   integrations: {
-    linear: false, ttyd: false, webhook: false, hermesTokens: false,
+    linear: false, ttyd: false, webhook: false,
     agents: { claude: false, codex: false, opencode: false },
     classifier: false, github: false, vault: false,
   },
@@ -40,7 +40,6 @@ const INTEGRATION_ROWS: {
 }[] = [
   { flag: "linear", labelKey: "general.linearLabel", get: (i) => i.linear, set: (i, v) => ({ ...i, linear: v }) },
   { flag: "ttyd", labelKey: "general.ttydLabel", get: (i) => i.ttyd, set: (i, v) => ({ ...i, ttyd: v }) },
-  { flag: "hermesTokens", labelKey: "general.hermesTokensLabel", get: (i) => i.hermesTokens, set: (i, v) => ({ ...i, hermesTokens: v }) },
   { flag: "classifier", labelKey: "general.classifierLabel", get: (i) => i.classifier, set: (i, v) => ({ ...i, classifier: v }) },
   { flag: "github", labelKey: "general.githubLabel", get: (i) => i.github, set: (i, v) => ({ ...i, github: v }) },
   { flag: "vault", labelKey: "general.vaultLabel", get: (i) => i.vault, set: (i, v) => ({ ...i, vault: v }) },

@@ -256,7 +256,7 @@
     },
     "afk": {
       "label": "AFK",
-      "on": "events go to Telegram",
+      "on": "events go to the notification channel",
       "off": "events stay here",
       "loading": "…",
       "unavailable": "unavailable",
@@ -339,7 +339,7 @@
       "pendingQuestion": "Pending question",
       "noPendingQuestion": "No pending question.",
       "multiSelect": "choose one or more",
-      "answerHint": "Answer from Telegram, or",
+      "answerHint": "Answer from the notification channel, or",
       "openInTmux": "open in tmux",
       "openUnavailable": "terminal unavailable",
       "timeline": "Timeline",
@@ -684,7 +684,7 @@
         "missing-credentials": {
           "anthropic": "Credentials not found (~/.claude)",
           "codex": "Credentials not found (~/.codex)",
-          "opencode": "Set OPENCODE_GO_API_KEY in ~/.hermes/.env or .env.local"
+          "opencode": "Set OPENCODE_GO_API_KEY in $JAXOS_HOME/.env or .env.local"
         },
         "rate-limited": "Rate limited — backing off",
         "generic": "Fetch failed"
@@ -791,27 +791,6 @@
       "unknownUnitCost": "{count} usage item(s) report a cost with an unverified unit; excluded from currency totals.",
       "staleCollection": "collection stale",
       "unresolvedSuffix": "(unresolved)"
-    },
-    "hermes": {
-      "promptTitle": "Prompt budget",
-      "perTurn": "injected every turn",
-      "tools": "{count} tools",
-      "component": {
-        "systemPrompt": "System prompt",
-        "skillsIndex": "Skills index",
-        "memory": "Memory",
-        "userProfile": "Profile",
-        "toolSchemas": "Tool schemas"
-      },
-      "skillsTitle": "Skills",
-      "skillsHint": "deactivation candidates are flagged",
-      "uses": "{count, plural, =0 {never used} one {# use} other {# uses}}",
-      "lowUse": "low use",
-      "more": "+{count} skills",
-      "promptUnavailable": "Hermes is unavailable. Check that it is up and wait for the next refresh.",
-      "promptTimeout": "Hermes timed out. Check that it is up and wait for the next refresh.",
-      "promptInvalid": "Hermes returned unreadable output. Check that it is up and wait for the next refresh.",
-      "skillsUnavailable": "Skills usage is unavailable. Check Hermes and wait for the next refresh."
     }
   },
   "tools": {
@@ -884,7 +863,6 @@
       "integrationsHeading": "Integrations",
       "linearLabel": "Linear",
       "ttydLabel": "ttyd (web terminal)",
-      "hermesTokensLabel": "Hermes tokens",
       "classifierLabel": "Classifier (Jev)",
       "githubLabel": "GitHub (PRs)",
       "vaultLabel": "Files vault",
@@ -967,7 +945,7 @@
     "missionArchiveLabel": "Auto-hide after (days)",
     "missionArchiveHint": "Cards with no activity for this many days collapse into \"N collapsed\".",
     "missionArchiveFailed": "Failed to save",
-    "forwardTypesTitle": "Forward to Telegram",
+    "forwardTypesTitle": "Forward to the notification channel",
     "forwardTypeQuestion": "Question",
     "forwardTypeAttentionNeeded": "Needs attention",
     "forwardTypeMissionFinished": "Mission finished",

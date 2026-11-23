@@ -28,7 +28,7 @@ const EXPECTED: GeneralSettings = {
   vaultPath: "/home/rafa/obsidian-vault",
   monitoredUnits: { user: ["hermes-gateway.service"], system: ["tailscaled.service"] },
   integrations: {
-    linear: true, ttyd: false, webhook: true, hermesTokens: false,
+    linear: true, ttyd: false, webhook: true,
     agents: { claude: true, codex: false, opencode: false },
     classifier: true, github: false, vault: false,
   },
@@ -44,12 +44,21 @@ describe("parseSettings (spec schema table + Object handling + Error behaviour)"
     expect(parseSettings(JSON.parse(readFileSync(FIXTURE, "utf8")))).toEqual({ ok: true, data: EXPECTED });
   });
 
+  it("a legacy file still carrying the removed hermesTokens key parses, drops it, and round-trips", () => {
+    const result = parseSettings({ integrations: { linear: true, hermesTokens: true } });
+    expect(result.ok).toBe(true);
+    const data = (result as { ok: true; data: GeneralSettings }).data;
+    expect(data.integrations.linear).toBe(true);
+    expect("hermesTokens" in data.integrations).toBe(false);
+    expect(parseSettings(JSON.parse(JSON.stringify(data)))).toEqual({ ok: true, data });
+  });
+
   it("file absent (undefined input) -> ok:true with every default", () => {
     expect(DEFAULTS).toEqual({
       ownerName: "", locale: "en-US", reposRoot: expect.stringContaining("repos"), vaultPath: null,
       monitoredUnits: { user: [], system: [] },
       integrations: {
-        linear: false, ttyd: false, webhook: false, hermesTokens: false,
+        linear: false, ttyd: false, webhook: false,
         agents: { claude: false, codex: false, opencode: false },
         classifier: false, github: false, vault: false,
       },
@@ -329,7 +338,7 @@ describe("M5 raw settings presence (Task 1)", () => {
 
   it("settingsKeyPresence treats absent/unknown raw shapes as all-default, never malformed", () => {
     const none = {
-      linear: false, ttyd: false, webhook: false, hermesTokens: false,
+      linear: false, ttyd: false, webhook: false,
       classifier: false, github: false, vault: false,
       agents: { claude: false, codex: false, opencode: false },
     };
