@@ -4,7 +4,7 @@ import { agentsBannerKind } from "./settingsBanner";
 const ok = (claude: boolean, codex: boolean, opencode: boolean) =>
   ({ ok: true, data: { integrations: { agents: { claude, codex, opencode } } } }) as never;
 
-describe("agentsBannerKind (MOA-504 D7)", () => {
+describe("agentsBannerKind", () => {
   it.each([
     ["all off", ok(false, false, false), "none"],
     ["opencode only", ok(false, false, true), "no-reviewer"],

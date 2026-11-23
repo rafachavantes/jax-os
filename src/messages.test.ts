@@ -17,7 +17,7 @@ function flattenKeys(obj: unknown, prefix = ""): Set<string> {
   return keys;
 }
 
-describe("en-US / pt-BR key parity (spec MOA-499)", () => {
+describe("en-US / pt-BR key parity", () => {
   it("both locale files have exactly the same set of dotted keys", () => {
     const enKeys = flattenKeys(en);
     const ptKeys = flattenKeys(pt);

@@ -241,7 +241,7 @@ describe("bounded status reads", () => {
   });
 });
 
-// ---- MOA-467 Task 4: linked worktrees are filtered out before their status is parsed,
+// linked worktrees are filtered out before their status is parsed,
 // via git's own administrative metadata (gitdir/commondir shape), never folder names ----
 
 function runGit(cwd: string, ...args: string[]): void {
@@ -265,7 +265,7 @@ function addWorktree(root: string, control: string, branch: string, name: string
   return path;
 }
 
-describe("linked worktree metadata parsing (MOA-467 Task 4)", () => {
+describe("linked worktree metadata parsing", () => {
   it("parses the gitdir ref line out of a linked worktree's .git file", () => {
     expect(parseGitdirRef("gitdir: /home/rafa/repos/demo/.git/worktrees/w1\n"))
       .toBe("/home/rafa/repos/demo/.git/worktrees/w1");
@@ -304,7 +304,7 @@ describe("linked worktree metadata parsing (MOA-467 Task 4)", () => {
   });
 });
 
-describe("getProjects excludes linked worktrees (MOA-467 Task 4)", () => {
+describe("getProjects excludes linked worktrees", () => {
   let root: string;
   afterEach(() => {
     if (root) rmSync(root, { recursive: true, force: true });
@@ -671,8 +671,8 @@ describe("nested project discovery", () => {
   });
 });
 
-// ---- MOA-469 C3: canonical owner resolution (mirrors the hook's _git_owner) ----
-describe("canonicalOwner / ownerProjectName (MOA-469 C3)", () => {
+// canonical owner resolution (mirrors the hook's _git_owner) ----
+describe("canonicalOwner / ownerProjectName", () => {
   let root: string;
   afterEach(() => {
     if (root) rmSync(root, { recursive: true, force: true });

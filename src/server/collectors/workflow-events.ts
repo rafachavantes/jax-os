@@ -146,7 +146,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       );
       reqStr(p, "phase", LIMITS.phase, TOKEN);
       if (!oneOf(p.contract_status, CONTRACT_STATUSES)) fail("contract_status not allowed");
-      // MOA-474 D6: two families. `interrupted` joins `cancelled` in the not-finalized
+      // two families. `interrupted` joins `cancelled` in the not-finalized
       // family — the run never reached its own finalize step, so exit_code/report_path
       // stay null exactly like a cancelled row (spec §11.1 null-rules-by-family table).
       const notFinalized = p.contract_status === "cancelled" || p.contract_status === "interrupted";
@@ -164,7 +164,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       } else {
         reqStr(p, "report_path", LIMITS.reportPath);
       }
-      // MOA-474 §11.1: `[...v].length` counts Unicode code points, matching the
+      // `[...v].length` counts Unicode code points, matching the
       // producer's `_bound` (scripts/jaxflow_run.py:617-619) -- plain `.length` counts
       // UTF-16 units and over-rejects a producer-valid summary built from non-BMP chars
       // (the same fix `tail`'s check below already has, workflow-events.ts:190).
@@ -183,7 +183,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
         fail("head_sha only for builder runs");
       }
       // Reviewer verdicts require an ok report. Builder results may also come from
-      // jaxflow verification when the report is missing/invalid (MOA-472).
+      // jaxflow verification when the report is missing/invalid.
       if (role === "reviewer" && p.contract_status === "ok") {
         if (!oneOf(p.verdict, VERDICTS)) fail("verdict required for reviewer runs with contract_status ok");
       } else if ("verdict" in p) {
@@ -202,7 +202,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
         const valid = isObj(f) && boundedCount(f.high) && boundedCount(f.medium) && boundedCount(f.low);
         if (!valid) delete p.findings;
       }
-      // MOA-495 2.2: tally is presence-gated like verdict/findings -- a review-round
+      // tally is presence-gated like verdict/findings -- a review-round
       // comparison has nothing to say for a builder run or a report that isn't ok.
       if ("tally" in p) {
         if (role !== "reviewer" || p.contract_status !== "ok") {
@@ -220,7 +220,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       } else if ("result" in p) {
         fail("result only for builder runs with contract_status ok/missing/invalid/interrupted");
       }
-      // MOA-474 §11.1: stage/diagnostic are additive/optional on ok/missing/invalid
+      // stage/diagnostic are additive/optional on ok/missing/invalid
       // (backward compatible with a pre-spec row that has neither), MANDATORY on
       // interrupted, and FORBIDDEN on cancelled — that row's shape is untouched by this
       // spec (§11.2).
@@ -244,7 +244,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
           if (/[\u0000-\u001f]/.test(d)) fail("diagnostic must be a single line");
         }
       }
-      // MOA-470 §4.3: tail/reason travel together, and only on missing/invalid -- a
+      // tail/reason travel together, and only on missing/invalid -- a
       // stricter rule than verdict/result above (which are role-conditional; these two
       // are not). Backward compatibility: an older row may carry NEITHER key on a
       // missing/invalid row, which this passes (neither key present is never rejected
@@ -273,7 +273,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
           if ([...t].length > LIMITS.childTail) fail(`tail exceeds ${LIMITS.childTail} chars`);
         }
         if ("reason" in p && !oneOf(p.reason, CHILD_LOG_REASONS)) fail("reason not allowed");
-        // MOA-495 2.1: the Jev Score log slices, surfaced where `reason`/`tail` are --
+        // the Jev Score log slices, surfaced where `reason`/`tail` are --
         // optional (Jev failure keeps today's behaviour: nothing extra).
         if ("log_context" in p) {
           const lc = p.log_context;
@@ -399,10 +399,10 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       return;
     }
     case "merge-approved": {
-      // MOA-465: two OPTIONAL keys added for a PR-preset merge's PR metadata — a local-preset merge
+      // two OPTIONAL keys added for a PR-preset merge's PR metadata — a local-preset merge
       // omits them, unchanged from today.
-      // MOA-510: the OPTIONAL checks object records how --checks was satisfied (reused|run|resumed).
-      // MOA-508: OPTIONAL mission_id (positive integer) ties an autonomous-mission merge to its mission.
+      // the OPTIONAL checks object records how --checks was satisfied (reused|run|resumed).
+      // OPTIONAL mission_id (positive integer) ties an autonomous-mission merge to its mission.
       onlyKeys(p, ["phase", "branch", "sha", "target", "approved_by", "merge_sha", "pr_number", "pr_url", "checks", "mission_id"], "payload");
       // `phase` here is a human phase TITLE (free text, spec §5.1), not the TOKEN-shaped
       // `phase` of a run event. It carries a PATTERN, not just a bound, so this validator
@@ -445,7 +445,7 @@ function validatePayload(type: EventType, role: Role, source: Source, p: Obj): v
       return;
     }
     case "pr-opened": {
-      // MOA-465 Ledger & card: repo/branch/base reuse existing bounds (LIMITS.repo/target) —
+      // repo/branch/base reuse existing bounds (LIMITS.repo/target) —
       // this is a new FIELD, not a new concept, so it gets no new LIMITS key beyond prUrl.
       onlyKeys(p, ["repo", "branch", "sha", "base", "pr_number", "pr_url", "kind", "snapshot_sha"], "payload");
       reqStr(p, "repo", LIMITS.repo);
@@ -561,7 +561,7 @@ export function parseIngress(body: unknown): ParseResult {
       // through here; the events route rejects `emitter: "jaxos"` outright besides. `wrapper` is
       // the second: `merge-approved` is the only lead-role event the deterministic wrapper emits,
       // and `jaxflow merge` is a foreground command the tech lead may well run outside tmux.
-      // `codex-*` is the third (MOA-469 §3): native Codex hooks fire without TMUX, so the pane is
+      // `codex-*` is the third: native Codex hooks fire without TMUX, so the pane is
       // optional — but the canonical session UUID is REQUIRED as the identity. A missing or
       // malformed identity is refused rather than falling back to cwd or a pane.
       if (emitter === "jaxos" || emitter === "wrapper") {
@@ -716,7 +716,7 @@ export function renderMessage(
       return `Project ${proj}: worktree ${s("worktree")} removed (branch ${s("branch")}, ${s("reason")}).`;
     case "builder-launched":
       return `Project ${proj}: builder launched on ${s("runtime_model")} (${s("model")}).`;
-    // temporary until MOA-488 defines the payload (jaxflow-mission spec §9)
+    // temporary until the mission payload is defined (jaxflow-mission spec §9)
     case "mission-status-updated":
       return `Project ${proj}: mission status updated.`;
     case "mission-finished":

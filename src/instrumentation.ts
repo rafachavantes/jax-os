@@ -1,4 +1,4 @@
-// MOA-504 D4: seed settings.json once per process start, before Next serves any request.
+// seed settings.json once per process start, before Next serves any request.
 // Node runtime only, never during `next build`. Python never seeds (spec D4).
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs" || process.env.NEXT_PHASE === "phase-production-build") return;

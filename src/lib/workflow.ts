@@ -34,13 +34,13 @@ export const RUNTIMES = ["opencode-grok", "opencode-deepseek", "opencode-builder
 export const CONTRACT_STATUSES = ["ok", "missing", "invalid", "cancelled", "interrupted"] as const;
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];
 
-// MOA-474 §6: where the deciding evidence came from on a run-finished row. Additive/
+// where the deciding evidence came from on a run-finished row. Additive/
 // optional on every contract_status except `interrupted` (mandatory there) and
 // `cancelled` (forbidden there — that row shape is untouched by this spec).
 export const STAGES = ["runtime", "verify", "build", "worker", "report"] as const;
 export type Stage = (typeof STAGES)[number];
 
-// Native Codex emitters (MOA-469 §3): their hooks may fire with no TMUX at all, and a pane-less
+// Native Codex emitters: their hooks may fire with no TMUX at all, and a pane-less
 // event is legal — the canonical session UUID is the identity. All Codex identity queries MUST
 // constrain to these emitters, never match a UUID alone across runtimes.
 export const CODEX_EMITTERS = [
@@ -62,8 +62,8 @@ export const CALLERS = ["claude", "codex", "jaxos"] as const;
 export const VERDICTS = ["approve", "approve-with-changes", "reject"] as const;
 export const RESULTS = ["success", "failure", "blocked"] as const;
 
-// jaxflow child.log diagnosis (MOA-470 §4.3): emitted on run-finished iff
-// contract_status is missing/invalid, always as a pair. MOA-495 2.1 added the last
+// jaxflow child.log diagnosis: emitted on run-finished iff
+// contract_status is missing/invalid, always as a pair. a later change added the last
 // three (Jev Choice refinement of the regex-only fallback -- offline eval: 2/11 vs 10/11).
 export const CHILD_LOG_REASONS = [
   "provider-limit", "crash", "no-report", "unknown", "hung", "test-failure", "contract-violation",
@@ -112,18 +112,18 @@ export const EVENT_MATRIX: Record<EventType, MatrixRow> = {
     emitters: ["claude-notification", "codex-permission", "jaxos"], roles: ["lead", "adhoc"], runScoped: false, policy: "forward",
     suppressWhileQuestionPending: true,
   },
-  // MOA-469 live correction (approved 2026-09-10): stops are LOCAL telemetry for both emitters —
+  // live correction (approved 2026-09-10): stops are LOCAL telemetry for both emitters —
   // never forwarded to the notification channel. Ingestion, classification, timelines and session correlation are
   // unchanged; listPending additionally excludes any legacy pending stop row (workflows.ts).
   "turn-stopped": { emitters: ["claude-stop", "codex-stop"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   "turn-started": { emitters: ["claude-userprompt", "codex-userprompt"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   "question-answered": { emitters: ["jaxos"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   "merge-approved": { emitters: ["wrapper"], roles: ["lead"], runScoped: false, policy: "forward" },
-  // MOA-487 §5 Decision 4: reserved for MOA-488's "mission" entity — placeholder emitters/roles
-  // mirror merge-approved; MOA-488 owns emission, payload shape and the real call site.
+  // reserved for the "mission" entity — placeholder emitters/roles
+  // mirror merge-approved; the mission feature owns emission, payload shape and the real call site.
   "mission-status-updated": { emitters: ["wrapper"], roles: ["lead"], runScoped: false, policy: "forward" },
   "mission-finished": { emitters: ["wrapper"], roles: ["lead"], runScoped: false, policy: "forward" },
-  // MOA-465: PR-preset delivery — same shape class as merge-approved (forward,
+  // PR-preset delivery — same shape class as merge-approved (forward,
   // non-run-scoped, lead-only). Payload validated in workflow-events.ts; dedup key
   // (project, branch, sha) in workflows.ts insertEvent.
   "pr-opened": { emitters: ["wrapper"], roles: ["lead"], runScoped: false, policy: "forward" },
@@ -140,13 +140,13 @@ export const EVENT_MATRIX: Record<EventType, MatrixRow> = {
   "builder-launched": { emitters: ["wrapper"], roles: ["builder"], runScoped: true, policy: "local" },
 };
 
-// MOA-487 §5 Decision 2: every forward-policy type, derived from the matrix — never a second
+// every forward-policy type, derived from the matrix — never a second
 // hardcoded list, so the option list and the matrix can never drift.
 export const FORWARDABLE_EVENT_TYPES: readonly EventType[] = EVENT_TYPES.filter(
   (t) => EVENT_MATRIX[t].policy === "forward",
 );
 
-// MOA-487 §5 Decision 5: the three "needs Rafa now" signals default on. Also the migration's
+// the three "needs Rafa now" signals default on. Also the migration's
 // column DEFAULT literal (Task 2) — index.test.ts asserts the two never drift apart.
 export const DEFAULT_FORWARD_TYPES: readonly EventType[] = ["question", "attention-needed", "mission-finished"];
 
@@ -196,7 +196,7 @@ export const LIMITS = {
   session: 80,
   repo: 200,
   childTail: 4096,
-  // MOA-495: log_context (2.1) and tally (2.2) run-finished fields. logContextChunk
+  // log_context (2.1) and tally (2.2) run-finished fields. logContextChunk
   // matches scripts/jaxflow_run.py's LOG_CONTEXT_STORE_CHARS -- kept small (not the
   // full ~2KiB Jev scored) so up to 6 chunks plus childTail stay well under
   // LIMITS.payloadBytes.
@@ -219,7 +219,7 @@ export const LIMITS = {
   missionStatusLine: 280,
   milestoneTitle: 60,
   missionMilestonesMax: 12,
-  // MOA-465: a real GitHub PR URL is well under 300 chars.
+  // a real GitHub PR URL is well under 300 chars.
   prUrl: 300,
 } as const;
 
@@ -311,7 +311,7 @@ export type CapsuleStatus = (typeof CAPSULE_STATUSES)[number];
 export const CAPSULE_RULES = [
   "tag", "question_open", "attention", "run_in_flight", "run_finished",
   "trailing_question", "deferred", "classified", "abandoned",
-  "classifier-off", // MOA-502 Decision 1: settled on the spot when integrations.classifier is off
+  "classifier-off", // settled on the spot when integrations.classifier is off
   "merge-question", // merge question contract: the hook saw the canonical question; deterministic, Jev never consulted
 ] as const;
 export type CapsuleRule = (typeof CAPSULE_RULES)[number];

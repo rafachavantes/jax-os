@@ -278,7 +278,7 @@ describe("ruleStatusForOp (dialog-scoped operation identity)", () => {
   });
 });
 
-describe("RulesSection — agent switches (MOA-504 D10)", () => {
+describe("RulesSection — agent switches", () => {
   afterEach(() => { harness.settings = { data: undefined }; });
   const withAgents = (claude: boolean, codex: boolean, opencode: boolean) =>
     ({ data: { ok: true, data: { integrations: { agents: { claude, codex, opencode } } } } });
@@ -300,7 +300,7 @@ describe("RulesSection — agent switches (MOA-504 D10)", () => {
   });
 });
 
-describe("RulesSection — an open apply preview closes when its agent is switched off (MOA-504 D10)", () => {
+describe("RulesSection — an open apply preview closes when its agent is switched off", () => {
   const result = (claude: boolean, codex: boolean) =>
     ({ ok: true, data: { integrations: { agents: { claude, codex, opencode: true } } } }) as never;
   const preview = captureApplyPreview(makeData(), "claude")!;

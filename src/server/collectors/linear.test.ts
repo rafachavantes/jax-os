@@ -24,10 +24,10 @@ const BOARD_JSON = {
         nodes: [
           {
             id: "i1",
-            identifier: "MOA-1",
+            identifier: "ENG-1",
             title: "Full issue",
             priority: 2,
-            url: "https://linear.app/x/issue/MOA-1",
+            url: "https://linear.app/x/issue/ENG-1",
             createdAt: "2026-07-06T23:39:19.093Z",
             updatedAt: "2026-07-07T11:12:42.641Z",
             state: { id: "s-prog" },
@@ -37,10 +37,10 @@ const BOARD_JSON = {
           },
           {
             id: "i2",
-            identifier: "MOA-2",
+            identifier: "ENG-2",
             title: "Bare issue",
             priority: 0,
-            url: "https://linear.app/x/issue/MOA-2",
+            url: "https://linear.app/x/issue/ENG-2",
             createdAt: "2026-07-06T23:39:19.093Z",
             updatedAt: "2026-07-07T11:12:42.641Z",
             state: { id: "s-back" },
@@ -50,10 +50,10 @@ const BOARD_JSON = {
           },
           {
             id: "i3",
-            identifier: "MOA-3",
+            identifier: "ENG-3",
             title: "Parent with sub-issues",
             priority: 1,
-            url: "https://linear.app/x/issue/MOA-3",
+            url: "https://linear.app/x/issue/ENG-3",
             createdAt: "2026-07-06T23:39:19.093Z",
             updatedAt: "2026-07-07T11:12:42.641Z",
             state: { id: "s-prog" },
@@ -98,10 +98,10 @@ describe("mapBoard", () => {
     const { issues } = mapBoard(BOARD_JSON);
     expect(issues[0]).toEqual({
       id: "i1",
-      identifier: "MOA-1",
+      identifier: "ENG-1",
       title: "Full issue",
       priority: 2,
-      url: "https://linear.app/x/issue/MOA-1",
+      url: "https://linear.app/x/issue/ENG-1",
       createdAt: "2026-07-06T23:39:19.093Z",
       updatedAt: "2026-07-07T11:12:42.641Z",
       stateId: "s-prog",
@@ -118,8 +118,8 @@ describe("mapBoard", () => {
 
   it("counts sub-issues (done = completed state type) on parents, undefined on leaves", () => {
     const { issues } = mapBoard(BOARD_JSON);
-    expect(issues[0].subIssue).toBeUndefined(); // MOA-1 has no children
-    expect(issues[2].subIssue).toEqual({ total: 3, done: 2 }); // MOA-3: 2 completed of 3
+    expect(issues[0].subIssue).toBeUndefined(); // ENG-1 has no children
+    expect(issues[2].subIssue).toEqual({ total: 3, done: 2 }); // ENG-3: 2 completed of 3
   });
 
   it("throws on malformed response", () => {
@@ -174,8 +174,8 @@ const DETAIL_JSON = {
     },
     description: "## Hi\n\n- a\n- b",
     children: { nodes: [
-      { identifier: "MOA-9", title: "done one", state: { name: "Done", type: "completed" }, assignee: { displayName: "Rafa" } },
-      { identifier: "MOA-8", title: "open one", state: { name: "Backlog", type: "backlog" }, assignee: null },
+      { identifier: "ENG-9", title: "done one", state: { name: "Done", type: "completed" }, assignee: { displayName: "Rafa" } },
+      { identifier: "ENG-8", title: "open one", state: { name: "Backlog", type: "backlog" }, assignee: null },
     ] },
     comments: { nodes: [
       { id: "c1", body: "**hey**", createdAt: "2026-07-07T10:00:00.000Z", user: { displayName: "contato" }, botActor: null },
@@ -187,7 +187,7 @@ const DETAIL_JSON = {
 // minimal valid detail node for tests that only care about one field
 const MINIMAL_DETAIL = {
   id: "i1",
-  identifier: "MOA-1",
+  identifier: "ENG-1",
   title: "t",
   priority: 0,
   url: "https://linear.app/x",
@@ -202,10 +202,10 @@ describe("mapIssueDetail", () => {
     const d = mapIssueDetail(DETAIL_JSON);
     expect(d.description).toBe("## Hi\n\n- a\n- b");
     expect(d.subIssue).toEqual({ total: 2, done: 1 });
-    // API returned MOA-9 then MOA-8; detail lists them ascending → MOA-8 first
-    expect(d.children.map((c) => c.identifier)).toEqual(["MOA-8", "MOA-9"]);
-    expect(d.children[0]).toEqual({ identifier: "MOA-8", title: "open one", stateName: "Backlog", stateType: "backlog", assignee: undefined });
-    expect(d.children[1]).toEqual({ identifier: "MOA-9", title: "done one", stateName: "Done", stateType: "completed", assignee: "Rafa" });
+    // API returned ENG-9 then ENG-8; detail lists them ascending → ENG-8 first
+    expect(d.children.map((c) => c.identifier)).toEqual(["ENG-8", "ENG-9"]);
+    expect(d.children[0]).toEqual({ identifier: "ENG-8", title: "open one", stateName: "Backlog", stateType: "backlog", assignee: undefined });
+    expect(d.children[1]).toEqual({ identifier: "ENG-9", title: "done one", stateName: "Done", stateType: "completed", assignee: "Rafa" });
   });
   it("carries the issue, its team id and the FULL team state set from detail data, off-board or cross-team", () => {
     const d = mapIssueDetail(DETAIL_JSON);
@@ -592,9 +592,9 @@ describe("linear mutations", () => {
     // fail its toHaveBeenCalledOnce.
     fetchMock
       .mockResolvedValueOnce({ ok: true, json: async () => TEAMS_JSON })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "MOA-9" } } } }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "ENG-9" } } } }) })
       .mockResolvedValueOnce({ ok: true, json: async () => TEAMS_JSON })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "MOA-9" } } } }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "ENG-9" } } } }) });
     await getTeams();
     await getTeams();
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -605,12 +605,12 @@ describe("linear mutations", () => {
   });
 
   it("creates an issue on success:true, returns id/identifier", async () => {
-    jsonOk({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "MOA-9" } } } });
-    await expect(createIssue({ teamId: "t1", title: "New issue" })).resolves.toEqual({ id: "i9", identifier: "MOA-9" });
+    jsonOk({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "ENG-9" } } } });
+    await expect(createIssue({ teamId: "t1", title: "New issue" })).resolves.toEqual({ id: "i9", identifier: "ENG-9" });
   });
 
   it("sends the exact GraphQL query and { variables: { input } }, required-only and with every optional field (F8)", async () => {
-    jsonOk({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "MOA-9" } } } });
+    jsonOk({ data: { issueCreate: { success: true, issue: { id: "i9", identifier: "ENG-9" } } } });
     await createIssue({ teamId: "t1", title: "New issue" });
     const minimal = JSON.parse(fetchMock.mock.calls[0][1].body as string);
     expect(minimal.query).toContain("mutation Create($input: IssueCreateInput!)");

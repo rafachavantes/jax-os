@@ -5,7 +5,7 @@ import { readGeneralSettings } from "@/server/settings";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  // MOA-496: disabled acts like "not configured" (the terminal panel already renders the
+  // disabled acts like "not configured" (the terminal panel already renders the
   // existing not-configured SourceWarning for it) and TTYD_RO_URL/TTYD_RW_URL are never read.
   const settings = readGeneralSettings();
   if (!(settings.ok && settings.data.integrations.ttyd)) {

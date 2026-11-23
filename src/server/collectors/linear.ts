@@ -162,7 +162,7 @@ function mapComment(m: any): IssueComment {
   };
 }
 
-// ascending by trailing issue number (API returns descending); MOA-8 before MOA-9
+// ascending by trailing issue number (API returns descending); ENG-8 before ENG-9
 function sortChildren(children: SubIssue[]): SubIssue[] {
   return [...children].sort(
     (a, b) => (Number(a.identifier.split("-").pop()) || 0) - (Number(b.identifier.split("-").pop()) || 0),

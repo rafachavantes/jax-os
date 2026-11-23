@@ -13,7 +13,7 @@ afterEach(() => {
   seed.mockReset();
 });
 
-describe("register() (MOA-504 D4)", () => {
+describe("register()", () => {
   it("seeds on the node runtime, probing the CLIs through isCliPresent", async () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     await register();

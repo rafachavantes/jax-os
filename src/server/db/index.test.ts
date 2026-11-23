@@ -162,7 +162,7 @@ describe("db migrations", () => {
   });
 });
 
-describe("migration 10 adds forward_types (MOA-487 §5 Decision 1)", () => {
+describe("migration 10 adds forward_types", () => {
   it("backfills the exact DEFAULT_FORWARD_TYPES JSON onto an existing row, preserves enabled/archive_after_days, reaches user_version 10", () => {
     const db = openV9Fixture();
     db.prepare(

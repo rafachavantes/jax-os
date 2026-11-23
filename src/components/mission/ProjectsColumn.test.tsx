@@ -87,7 +87,7 @@ describe("ProjectsColumn — reposRoot display (spec: reposRoot/vaultPath consum
   });
 });
 
-describe("ProjectsColumn — Codex source warnings (MOA-469 §4)", () => {
+describe("ProjectsColumn — Codex source warnings", () => {
   it("a failed Codex source renders a warning without hiding the working card", () => {
     const html = renderToStaticMarkup(createElement(ProjectsColumn, {
       reposRoot: REPOS_ROOT_DISPLAY, expandedDir: null, onToggleExpand: () => {}, mission: missionOf({ cards: [workingCard as never], codexSource: "failed" }),
@@ -190,7 +190,7 @@ describe("Phase 3 — visibility filtering and management bars", () => {
     expect(html).not.toContain("Hidden H"); // the hidden summary carries no names; no per-project row until opened
   });
 
-  it("MOA-486 follow-up: an autoHidden card's name is NOT in the collapsed summary (compact count only), mostrar toggle present, pin button not yet rendered", () => {
+  it("follow-up: an autoHidden card's name is NOT in the collapsed summary (compact count only), mostrar toggle present, pin button not yet rendered", () => {
     const mission = missionWithVisibility(
       [{ dir: "a", name: "Auto A", visibility: "autoHidden" as const, prefs: { pinned: false, hiddenAt: null } }],
       { hiddenCount: 0, autoHiddenCount: 1 },
@@ -202,7 +202,7 @@ describe("Phase 3 — visibility filtering and management bars", () => {
   });
 });
 
-describe("ProjectsColumn — uncarded-projects collapsed toggle (MOA-486 follow-up)", () => {
+describe("ProjectsColumn — uncarded-projects collapsed toggle", () => {
   it("collapsed: the count sentence and show toggle render, names sit inside <details> markup", () => {
     const mission = missionOf({ uncardedProjectNames: ["repo-a", "repo-b"] });
     const html = renderToStaticMarkup(createElement(ProjectsColumn, { reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {} }));
@@ -224,7 +224,7 @@ describe("ProjectsColumn — uncarded-projects collapsed toggle (MOA-486 follow-
   });
 });
 
-describe("hiddenAutoHiddenSummary (spec §8, Decision 17; MOA-486 follow-up: counts only, no names)", () => {
+describe("hiddenAutoHiddenSummary (spec §8, Decision 17; counts only, no names)", () => {
   // `t` mirrors ProjectsColumn's OWN translator, already scoped to the "mission.projects"
   // namespace (`useTranslations("mission.projects")`) — the function under test must call
   // `t("hiddenBar")`/`t("autoHiddenBar")` unscoped, the same way the component's existing
@@ -255,7 +255,7 @@ describe("ProjectsColumn — lifted expandedDir (spec §6, Decision 13a, round-1
   });
 });
 
-describe("ProjectsColumn — hidden/auto-hidden disclosure (spec §8, Decision 17, round-1 F9; MOA-486 follow-up: compact line)", () => {
+describe("ProjectsColumn — hidden/auto-hidden disclosure (spec §8, Decision 17, round-1 F9; compact line)", () => {
   it("renders one compact summary line — counts + toggles only, no project names, no per-project row by default (collapsed)", () => {
     const mission = missionWithVisibility([{ ...cardBase, dir: "hidden1", name: "Hidden One", visibility: "hidden" as const }, { ...cardBase, dir: "auto1", name: "Auto One", visibility: "autoHidden" as const }]);
     const html = renderToStaticMarkup(createElement(ProjectsColumn, { reposRoot: REPOS_ROOT_DISPLAY, mission, counts: null, expandedDir: null, onToggleExpand: () => {} }));
@@ -266,7 +266,7 @@ describe("ProjectsColumn — hidden/auto-hidden disclosure (spec §8, Decision 1
     expect(html).toContain("autoHiddenBar");
     expect(html).toContain("projects.autoHiddenShow"); // lowercase "mostrar" toggle — gerenciar cannot reveal autoHidden cards (verified: setShowHidden never touches showAuto), so it stays a separate link
     expect(html).toContain("actions.manage"); // "gerenciar" toggle (unchanged key)
-    // MOA-486 follow-up: the compact line drops project names entirely from BOTH halves — the
+    // the compact line drops project names entirely from BOTH halves — the
     // three-line noise ("(Patient Insight Journal (PIJ))") is gone; names only ever appear once a
     // segment is expanded (disclosureVisibleCards' own test below covers that path).
     expect(html).not.toContain("Auto One");

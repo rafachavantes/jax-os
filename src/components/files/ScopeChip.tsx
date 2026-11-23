@@ -13,7 +13,7 @@ import { useGeneralSettings, vaultUsable } from "@/lib/settingsQuery";
 export type ScopeChipRow = { value: string; label: string };
 
 // Pure ordering (§9): recents first (valid, deduped), then every repo + "vault" alphabetically,
-// "All repos" always last. `vaultEnabled` (MOA-496) drops the vault row entirely when the
+// "All repos" always last. `vaultEnabled` drops the vault row entirely when the
 // integration is off — the ONE function both ScopeChip and RepoSwitcher build their lists with.
 export function scopeChipRows(repoNames: string[], recentScopes: string[], t: (key: string) => string, vaultEnabled: boolean): ScopeChipRow[] {
   const toValue = (name: string) => (name === "vault" ? "vault" : `repo:${name}`);

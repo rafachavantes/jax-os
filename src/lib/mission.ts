@@ -80,10 +80,10 @@ export type MissionPane = {
   capsuleEventId: number | null;
 };
 
-// Discriminated live-session row (MOA-469 §4): a tmux pane group or a native Codex thread. A
+// Discriminated live-session row: a tmux pane group or a native Codex thread. A
 // native row never fabricates a pane or incarnation and renders no tmux action.
 // The card's session list shows only what is alive: a dead tmux pane can't work, ask or be
-// answered (MOA-469 already keeps it off the inbox), so it is history, not a session. A Codex
+// answered (already kept off the inbox), so it is history, not a session. A Codex
 // thread the app-server no longer has loaded (state "unknown": notLoaded/systemError/no runtime
 // row) is dead the same way. Headline/staleness still read card.sessions.
 export function liveSessions(sessions: MissionSession[]): MissionSession[] {
@@ -162,7 +162,7 @@ export type MissionLastRun = {
   profileName: string | null;
   reportRel: string | null;
   targetRel: string | null;
-  // Cross-project provenance (MOA-532): where the child actually ran, and the discovered
+  // Cross-project provenance: where the child actually ran, and the discovered
   // repos-root-relative base its artifact links must use. Absent for a local run.
   destinationProject?: string;
   destinationPath?: string;
@@ -213,7 +213,7 @@ export type MissionCard = {
   key?: string;
   scope?: MissionCardScope;
   sessionStatus?: MissionSessionStatus | null;
-  // A single open session rendered standalone (MOA-533): the project facts the session card must
+  // A single open session rendered standalone: the project facts the session card must
   // keep reachable without letting status.md's historical builder/branch back onto the session.
   projectContext?: MissionProjectContext;
   // The destination's unlinked runs could not be proven ownerless (a transport failed or the
@@ -417,7 +417,7 @@ function isPastStuckDeadline(declaredAtIso: string, capsuleMinutes: number, nowM
   return nowMs > deadlineMs;
 }
 
-// Per-pane state. Liveness is checked FIRST (MOA-469 live correction): a dead pane's stale
+// Per-pane state. Liveness is checked FIRST: a dead pane's stale
 // needs_input/blocked capsule or pending question must never surface as current attention.
 // `working` already combines "live" and "has an open turn" (Task 4's
 // isWorking()) — since the branch below only reaches it after `p.live` is confirmed true, using
@@ -488,11 +488,11 @@ export function mosaicPaneAction(pane: Pick<MissionPane, "pendingQuestion" | "ca
   return { kind: "none" };
 }
 
-// Native Codex session state (MOA-469 §2/§4). Live runtime flags take precedence; idle consults
+// Native Codex session state. Live runtime flags take precedence; idle consults
 // this session's own pending attention and in-flight runs before its last capsule. "unknown" means
 // the live source is unavailable — it is never evidence of work, and headlineFor excludes it so a
 // source warning never hides a genuinely working Claude pane. Unavailable statuses are classified
-// BEFORE any stale capsule/attention is consulted (MOA-469 live correction): a not-loaded/systemError
+// BEFORE any stale capsule/attention is consulted: a not-loaded/systemError
 // session must never promote old attention into a current action.
 function codexSessionState(s: HubCodexSession, nowMs: number): MissionState {
   if (!s.sourceOk) return "unknown";
@@ -531,7 +531,7 @@ function headlineFor(gate: ProjectGate | null, panes: HubPane[], codexSessions: 
   const states = [
     ...panes.map((p) => paneState(p, nowMs)),
     // Native "unknown" (source unavailable / not loaded) is a visible warning on the row, never a
-    // headline downgrade that hides a genuinely working pane (MOA-469 §4).
+    // headline downgrade that hides a genuinely working pane.
     ...codexSessions.map((s) => codexSessionState(s, nowMs)).filter((s) => s !== "unknown"),
   ];
   // A gate waits on Rafa only once the tech lead has stopped. After `approve-with-changes` the
@@ -986,7 +986,7 @@ function buildModel(
 
     const pendingQuestions: MissionPendingQuestion[] = [];
     for (const p of panes) {
-      // MOA-469 live correction: actionable inbox/question rows come only from a LIVE pane — a dead
+      // actionable inbox/question rows come only from a LIVE pane — a dead
       // pane's stale capsule/question stays on its session display row below, never on the inbox.
       if (p.live) {
         const pendingQuestion = paneQuestion(p);
@@ -1096,7 +1096,7 @@ function buildModel(
       const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;
       card.group = buildGroup(card, hp!, split.seats, split.unlinked, wr && wr.ok ? wr.sessions : undefined, split.unownedLastRun, nowMs, hub?.ok ? hub.data.prefs ?? {} : {}, locations, split.unlinkedOwnershipUnknown === true);
     } else if (split && split.seats.length === 1) {
-      // One open seat: the SAME session projection grouped cards use (MOA-533), never status.md's
+      // One open seat: the SAME session projection grouped cards use, never status.md's
       // historical builder/branch. Project facts stay accessible through `projectContext`.
       card.key = seatKey(project.dir, split.seats[0]);
       const wr = worktrees !== undefined && worktrees.ok ? worktrees.data[project.dir] : undefined;

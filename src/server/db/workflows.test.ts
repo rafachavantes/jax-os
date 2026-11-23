@@ -13,14 +13,14 @@ const FIXTURE = vi.hoisted(() => {
   return { reposRoot };
 });
 
-// MOA-498: insertEvent's new delivery step reads integrations.webhook. Every existing
+// insertEvent's new delivery step reads integrations.webhook. Every existing
 // forward-policy test in this file predates that gate and expects `pending` with no settings
 // arrangement — default the mock to "on" (delegating to the real reader for every other
 // field, so import-time consumers like reposRoot()/REPOS_ROOT keep their real values) so this
 // build's own regression bar (every existing test keeps passing unmodified) holds; the few
 // tests THIS build adds for the off-path override the mock per-test via
 // vi.mocked(readGeneralSettings).mockReturnValueOnce(...).
-// MOA-502 Decision 1: same pattern for integrations.classifier — every existing test that
+// same pattern for integrations.classifier — every existing test that
 // inserts a turn-stopped with a text tail predates derive.ts's new rung-7 gate and expects
 // the row queued `deferred`; the gate's own off/malformed paths are covered in derive.test.ts.
 vi.mock("../settings", async (importOriginal) => {
@@ -95,7 +95,7 @@ const batchQuestion = (tool: string, pane = "%1"): WorkflowEventInput => ({
   pane, tmux_incarnation: INCARNATION,
 });
 
-// Fallout helper (MOA-487 §5 Decision 3, step 4): every "AFK on" fixture in this file predates
+// Fallout helper: every "AFK on" fixture in this file predates
 // the per-type gate and expects a forward-policy event to reach `pending` on AFK alone. Enabling
 // every forwardable type keeps each such site exercising what it always exercised; the gate's
 // OWN partial/default behavior is covered by the dedicated describe block added in Step 3 below,
@@ -285,7 +285,7 @@ describe("insertEvent — §3.3 pane-less question is terminal, not pending", ()
   });
 });
 
-describe("insertEvent — integrations.webhook gate (MOA-498 D3)", () => {
+describe("insertEvent — integrations.webhook gate", () => {
   it("marks a forward-policy event local, never pending, when the integration is off", () => {
     vi.mocked(readGeneralSettings).mockReturnValueOnce({ ok: true, data: { integrations: { webhook: false } } } as ReturnType<typeof readGeneralSettings>);
     const db = openDb(":memory:");
@@ -1883,7 +1883,7 @@ describe("insertEvent — terminal claim on a second run-finished (spec §2.6 co
   });
 });
 
-// spec §7.2 #39 (MOA-453). `jaxflow merge` POSTs this audit BEFORE it pushes, so §5.3's
+// spec §7.2 #39. `jaxflow merge` POSTs this audit BEFORE it pushes, so §5.3's
 // documented recovery re-runs the identical command and re-POSTs. The audit row must not
 // double, and — unlike #33's terminal claim — the caller must NOT be refused: it still has a
 // push to reach.
@@ -1897,7 +1897,7 @@ const mergeApproved = (over: Record<string, unknown> = {}): WorkflowEventInput =
   },
 });
 
-describe("insertEvent — merge-approved is idempotent on (project, target, merge_sha) (spec §2.6, MOA-453)", () => {
+describe("insertEvent — merge-approved is idempotent on (project, target, merge_sha) (spec §2.6)", () => {
   it("suppresses the duplicate, returns the stored row, and never throws", () => {
     const db = openDb(":memory:");
     const first = insertEvent(db, mergeApproved(), NOW);
@@ -1957,7 +1957,7 @@ const prOpened = (over: Record<string, unknown> = {}): WorkflowEventInput => ({
   },
 });
 
-describe("insertEvent — pr-opened is idempotent on (project, branch, sha) (spec MOA-465 Ledger & card)", () => {
+describe("insertEvent — pr-opened is idempotent on (project, branch, sha)", () => {
   it("suppresses the duplicate, returns the stored row, and never throws", () => {
     const db = openDb(":memory:");
     const first = insertEvent(db, prOpened(), NOW);
@@ -2002,7 +2002,7 @@ describe("insertEvent — pr-opened is idempotent on (project, branch, sha) (spe
   });
 });
 
-describe("MOA-462 — supersede inferred attention after session progress", () => {
+describe("supersede inferred attention after session progress", () => {
   const SESSION = "session-462";
   const LIVE: LiveSnapshot = { incarnation: INCARNATION, paneCommands: new Map(), paneIds: new Set(["%1"]) };
   const RUN_AT = new Date(NOW.getTime() + 1000);
@@ -2116,7 +2116,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     db.close();
   });
 
-  it("a pane-carrying codex stop is not pane authority: no pane capsule, the native session carries run-in-flight (MOA-469 F1)", () => {
+  it("a pane-carrying codex stop is not pane authority: no pane capsule, the native session carries run-in-flight", () => {
     const db = openDb(":memory:");
     const stop = insertEvent(db, {
       run_id: null, project: "p1", role: "lead", type: "turn-stopped",
@@ -2366,7 +2366,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     matchingRun(db);
     const { data, model } = readMission(db, { incarnation: "999:1", paneCommands: new Map(), paneIds: new Set(["%1"]) }, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" }); // stored capsule retained
-    // MOA-469 live correction: an expired-incarnation pane is dead, so its stored needs_input is
+    // an expired-incarnation pane is dead, so its stored needs_input is
     // retained but no longer surfaces as current card attention or an inbox row.
     expect(originalPane(data).live).toBe(false);
     expect(model.cards[0].headline).toBe("idle");
@@ -2386,7 +2386,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     const { data, model } = readMission(db, LIVE, RUN_AT);
     expect(originalPane(data).capsule).toMatchObject({ status: "needs_input" }); // stored capsule retained
     expect(originalPane(data).live).toBe(false);
-    // MOA-469 live correction: the pane left for p2 — its stale p1 capsule is no longer current.
+    // the pane left for p2 — its stale p1 capsule is no longer current.
     expect(model.cards[0].headline).toBe("idle");
     expect(model.inbox).toHaveLength(0);
     expectPreserved(db, stop, original, "needs_input", "classified");
@@ -2413,7 +2413,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
     db.close();
   });
 
-  it("a later turn-started that moved the pane to another project keeps the stored capsule but the pane reads dead for p1 (MOA-469 live correction)", () => {
+  it("a later turn-started that moved the pane to another project keeps the stored capsule but the pane reads dead for p1", () => {
     const db = openDb(":memory:");
     const stop = classifiedStop(db);
     const original = db.prepare("SELECT payload FROM workflow_events WHERE id = ?").get(stop.id);
@@ -2569,7 +2569,7 @@ describe("MOA-462 — supersede inferred attention after session progress", () =
   });
 });
 
-describe("MOA-464 — unfinished run hub projection", () => {
+describe("unfinished run hub projection", () => {
   const T_BUILD = new Date("2026-09-09T10:00:00.000Z");
   const T_DIFF = new Date("2026-09-09T10:02:00.000Z");
   const HUB_NOW = Date.parse("2026-09-09T12:00:00.000Z");
@@ -3083,7 +3083,7 @@ describe("MOA-464 — unfinished run hub projection", () => {
   });
 });
 
-describe("MOA-469 — native Codex session derivation", () => {
+describe("native Codex session derivation", () => {
   const UUID_A = "0191f0aa-bbbb-7000-8000-00000000000a";
   const UUID_B = "0191f0aa-bbcc-7000-8000-00000000000b";
   const codexEvent = (over: Partial<WorkflowEventInput> = {}): WorkflowEventInput => ({
@@ -3253,7 +3253,7 @@ describe("MOA-469 — native Codex session derivation", () => {
     db.close();
   });
 
-  // MOA-502 Decision 3: the CLI-present PATH check feeds getHubData's 9th positional param.
+  // the CLI-present PATH check feeds getHubData's 9th positional param.
   it("codexSource is absent when codexAbsent is true, regardless of the codex snapshot", () => {
     const db = openDb(":memory:");
     const live: LiveSnapshot = { paneIds: new Set(), incarnation: null, paneCommands: new Map() };
@@ -3367,7 +3367,7 @@ describe("M3b — proven Codex terminal enrichment", () => {
   });
 });
 
-describe("MOA-469 — native Codex staleness", () => {
+describe("native Codex staleness", () => {
   const UUID = "0191f0aa-abcd-7000-8000-00000000000f";
   const INC = "234790:1787586213";
   const idleThread = () => ({
@@ -3535,7 +3535,7 @@ describe("MOA-469 — native Codex staleness", () => {
   });
 });
 
-describe("MOA-469 F1 — a stored Codex row carrying a pane is never pane authority (review 8dc843212345)", () => {
+describe("a stored Codex row carrying a pane is never pane authority (review 8dc843212345)", () => {
   const UUID = "0191f0aa-f1f1-7000-8000-0000000000f1";
   const thread = (over: Partial<CodexThread> = {}): CodexThread => ({
     threadId: UUID, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli",
@@ -3672,7 +3672,7 @@ describe("MOA-469 F1 — a stored Codex row carrying a pane is never pane author
   });
 });
 
-describe("MOA-469 live corrections — turn-stopped is local telemetry, not a notification", () => {
+describe("live corrections — turn-stopped is local telemetry, not a notification", () => {
   const UUID = "0191f0aa-c0de-7000-8000-0000000000c0";
   const stopFor = (over: Partial<WorkflowEventInput> = {}): WorkflowEventInput => ({
     run_id: null, project: "p1", role: "lead", type: "turn-stopped", source: "deterministic",

@@ -153,7 +153,7 @@ export function extractResiduals(markdown: string): string[] {
   return items;
 }
 
-// MOA-467 Task 4 (acceptance fixes): a linked worktree's `.git` is a plain FILE whose
+// a linked worktree's `.git` is a plain FILE whose
 // `gitdir:` line points at the worktree's administrative dir under the control repo's
 // common dir; that admin dir carries its own `commondir` file naming the common dir.
 // Both metadata reads are pure and testable; only the collector touches the filesystem.
@@ -190,12 +190,12 @@ export function isLinkedWorktreeGitdir(gitdirRef: string, commondir: string | nu
   return dirname(dirname(gitdir)) === resolve(gitdir, commondir);
 }
 
-// MOA-469 C3: canonical owner resolution shared with the collector boundary, mirroring
-// scripts/jaxflow_hook.py's `_git_owner` (MOA-467). Pure over an injected probe so the collector
+// canonical owner resolution shared with the collector boundary, mirroring
+// scripts/jaxflow_hook.py's `_git_owner`. Pure over an injected probe so the collector
 // supplies the real subprocess and tests stay filesystem-free. An ordinary checkout and a
 // `--separate-git-dir` main checkout both have gitdir == common dir and resolve to their own
 // toplevel; a linked worktree (gitdir != common) resolves to the MAIN entry of `git worktree list`.
-// `signal` lets the collector share ONE deadline across every git probe (MOA-469 F2): a probe after
+// `signal` lets the collector share ONE deadline across every git probe: a probe after
 // the collection deadline returns null without spawning, and an in-flight probe is aborted at expiry.
 export type GitProbe = (args: string[], cwd: string, signal?: AbortSignal) => Promise<{ ok: boolean; stdout: string } | null>;
 
@@ -225,7 +225,7 @@ export async function canonicalOwner(cwd: string, probe: GitProbe, signal?: Abor
 
 // Project identity = the basename of the session's canonical repository root, or null whenever the
 // repository cannot be resolved (any probe failure, timeout or a non-repository cwd). Never a
-// basename-only guess: MOA-469 C3 / spec §4 "Unknown ownership must not be guessed from cwd". The
+// basename-only guess: spec §4 "Unknown ownership must not be guessed from cwd". The
 // Python hook keeps its own pre-existing non-repository fallback as a separate code path.
 export async function ownerProjectName(cwd: string, probe: GitProbe, signal?: AbortSignal): Promise<string | null> {
   if (!cwd) return null;
@@ -244,7 +244,7 @@ function isLinkedWorktree(checkout: string, fs: StatusFs = defaultStatusFs): boo
     return false;
   }
   if (ref === null) return false;
-  // MOA-467 (acceptance fix): a relative gitdir reference is resolved against the
+  // A relative gitdir reference is resolved against the
   // checkout dir that CONTAINS this `.git` file, never the collector's own cwd, before
   // `commondir` is read or the relationship is classified.
   const gitdir = resolve(checkout, ref);
@@ -330,7 +330,7 @@ export function getProjects(root: string = REPOS_ROOT): ProjectScan {
     // Dirent reports symlinks as symlinks, so directory symlinks are never followed.
     if (!entry.isDirectory()) continue;
     const abs = join(root, entry.name);
-    // MOA-467 Task 4: a linked worktree is another directory's checkout — the CONTROL
+    // a linked worktree is another directory's checkout — the CONTROL
     // repo owns its project card. Filter BEFORE any status read or descent, so a
     // worktree's valid status never becomes a duplicate card and never counts as
     // skipped; a positively identified worktree is excluded even when its control repo

@@ -30,7 +30,7 @@ function loadFixtures(): [string, Fixture][] {
 
 const fixtures = loadFixtures();
 
-describe("MOA-474 Part A cross-language boundary (Python producer -> TS ingress -> DB)", () => {
+describe("Part A cross-language boundary (Python producer -> TS ingress -> DB)", () => {
   // This task only proves the Python producer's runStarted/runFinished envelopes pass
   // real ingress and land in the DB unchanged. The read-back through
   // lastRunFor/getHubData's projection (the "expected" block) is the second describe
@@ -65,7 +65,7 @@ describe("MOA-474 Part A cross-language boundary (Python producer -> TS ingress 
   }
 });
 
-describe("MOA-474 cross-language boundary — Part A fixtures read back through lastRunFor", () => {
+describe("cross-language boundary — Part A fixtures read back through lastRunFor", () => {
   // Fixed set, one per representative decision-table row -- must match Part A2 Task 3's
   // `_write_fixture` names exactly; a missing or extra file fails here, not silently.
   const EXPECTED_FIXTURES = [

@@ -21,7 +21,7 @@ afterEach(() => {
   dirs.length = 0;
 });
 
-describe("isCliPresent (MOA-504 D4)", () => {
+describe("isCliPresent", () => {
   it("is true for an executable regular file on PATH, false for absent / non-executable / directory / unset PATH", () => {
     const root = tmp();
     bin(join(root, "a"), "claude");

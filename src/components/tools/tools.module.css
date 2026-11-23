@@ -308,7 +308,7 @@
   margin: 6px 0 10px;
 }
 
-/* GeneralSettingsSection (MOA-496) */
+/* GeneralSettingsSection */
 /* Scoped modifier, never the shared .sectionHeading itself (AgentSettingsSection/InventorySection
    also use it): every GeneralSettingsSection heading gets a gap above it, none on the first. */
 .sectionHeadingGap {

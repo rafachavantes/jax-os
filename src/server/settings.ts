@@ -1,4 +1,4 @@
-// MOA-497 Build A: the $JAXOS_HOME/settings.json schema, reader, and writer. All fields
+// the $JAXOS_HOME/settings.json schema, reader, and writer. All fields
 // optional on disk (a partial file is not malformed); every object is CLOSED (an unknown
 // key at any level is settings-malformed), and a nested object's missing child fields
 // default independently of the rest of the file. See scripts/general_settings.py for the
@@ -54,7 +54,7 @@ export type SettingsResult =
 const ROOT_KEYS = ["ownerName", "locale", "reposRoot", "vaultPath", "monitoredUnits", "integrations"] as const;
 const MONITORED_KEYS = ["user", "system"] as const;
 const AGENT_KEYS = ["claude", "codex", "opencode"] as const;
-// MOA-504 D2: the old key is accepted on READ only and mapped into `agents`; it is never written back.
+// the old key is accepted on READ only and mapped into `agents`; it is never written back.
 const LEGACY_SUBSCRIPTION_KEYS = ["claude", "codex", "opencodeGo"] as const;
 const BOOL_INTEGRATION_KEYS = ["linear", "ttyd", "webhook", "classifier", "github", "vault"] as const;
 // Legacy: `hermesTokens` was removed; old files still carry it, so it is accepted on read and dropped.
@@ -89,7 +89,7 @@ function parseBools<K extends string>(v: unknown, keys: readonly K[]): Record<K,
   return out;
 }
 
-// MOA-504 D2: `agents` present -> strict; else legacy `subscriptions` mapped; else all off.
+// `agents` present -> strict; else legacy `subscriptions` mapped; else all off.
 function parseAgents(v: Obj): GeneralSettings["integrations"]["agents"] | null {
   if ("agents" in v) return parseBools(v.agents, AGENT_KEYS);
   if ("subscriptions" in v) {
@@ -229,7 +229,7 @@ const systemWriteFs: WriteFs = { mkdirSync, writeFileSync, renameSync };
 // dependency-injected (never `getDb()` internally) so this module never touches the real
 // ~/.jax-os database from a test. Records the full set of top-level field names as
 // "changed" -- the whole file is written every call, so this is an honest audit, not a
-// diff; a future PATCH-shaped consumer (MOA-496) can narrow it at the call site.
+// diff; a future PATCH-shaped consumer can narrow it at the call site.
 //
 // Round 1 F1: the audit store is checked BEFORE any write to settings.json -- an
 // unavailable mutations table throws SettingsAuditUnavailableError and settings.json is
@@ -262,7 +262,7 @@ export function writeGeneralSettings(
   }
 }
 
-// MOA-504 D4: seeds integrations.agents ONCE, from the CLIs found at server start. "First run" is
+// seeds integrations.agents ONCE, from the CLIs found at server start. "First run" is
 // settings.json absent (ENOENT only; any other stat error is not first run). `has` is injected so
 // this module never touches PATH (collectors boundary). Throws what writeGeneralSettings throws.
 export function seedAgentsIfFirstRun(

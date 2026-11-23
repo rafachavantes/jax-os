@@ -53,12 +53,12 @@ describe("Topbar rendering", () => {
     expect(html).not.toContain("animate-pulse");
     expect(html).toContain("states.idle");
     expect((html.match(/<svg width="40" height="40"/g) ?? []).length).toBe(3);
-    // MOA-486 follow-up: each ring's slot is now a tappable button, aria-labelled with the provider name.
+    // each ring's slot is now a tappable button, aria-labelled with the provider name.
     expect(html).toContain('aria-label="Anthropic"');
     expect(html).toContain('aria-label="OpenAI Codex"');
     expect(html).toContain('aria-label="OpenCode GO"');
     expect((html.match(/<button/g) ?? []).length).toBeGreaterThanOrEqual(3);
-    // MOA-486 follow-up: a short provider name renders under every ring, on every viewport.
+    // a short provider name renders under every ring, on every viewport.
     expect(html).toContain(">Claude<");
     expect(html).toContain(">Codex<");
     expect(html).toContain(">Go<");
@@ -153,7 +153,7 @@ describe("Topbar — third ring is OpenCode GO", () => {
   });
 });
 
-describe("Topbar meters follow the agents (MOA-504 D6)", () => {
+describe("Topbar meters follow the agents", () => {
   it("renders no ring slot until the payload exists", () => {
     const html = renderWith(undefined);
     expect(html.match(RING) ?? []).toHaveLength(0);

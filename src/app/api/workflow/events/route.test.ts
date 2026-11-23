@@ -35,12 +35,12 @@ vi.mock("../../../../server/collectors/workflow-webhook", () => ({
   },
 }));
 
-// MOA-498: insertEvent's delivery ladder now reads integrations.webhook via
+// insertEvent's delivery ladder now reads integrations.webhook via
 // readGeneralSettings. Force it on (delegating to the real reader for every other field, so
 // import-time consumers like reposRoot()/REPOS_ROOT keep their real values) so this route's
 // forward-path tests (AFK on + forward types enabled) keep exercising the same behavior they
 // always did. The gate itself is covered in server/db/workflows.test.ts.
-// MOA-502 Decision 1: same pattern for integrations.classifier — the classify-route tests
+// same pattern for integrations.classifier — the classify-route tests
 // here settle rows inserted through the real derive.ts rung 7, which now gates queueing on it.
 vi.mock("../../../../server/settings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../../server/settings")>();
@@ -215,7 +215,7 @@ describe("POST /api/workflow/events/classify", () => {
   });
 });
 
-// spec §7.2 #39 (MOA-453). The DB-level suppression is covered in workflows.test.ts; what is
+// spec §7.2 #39. The DB-level suppression is covered in workflows.test.ts; what is
 // pinned HERE is that the route answers 200 (never 409 — the retry still has a push to reach)
 // and that the suppression path adds NO forwarding rule of its own: the returned stored row
 // meets route.ts's existing `delivery !== "pending"` early return, and that alone decides.
@@ -228,7 +228,7 @@ const MERGE_APPROVED_BODY = {
   },
 };
 
-describe("POST /api/workflow/events — duplicate merge-approved (spec §2.6, MOA-453)", () => {
+describe("POST /api/workflow/events — duplicate merge-approved (spec §2.6)", () => {
   beforeEach(() => {
     testDb = openDb(":memory:");
     hermesTarget = null;
@@ -285,7 +285,7 @@ describe("POST /api/workflow/events — duplicate merge-approved (spec §2.6, MO
   });
 });
 
-describe("POST /api/workflow/events — turn-stopped is local telemetry (MOA-469 live corrections)", () => {
+describe("POST /api/workflow/events — turn-stopped is local telemetry", () => {
   const STOP_BODY = (over: Record<string, unknown> = {}) => ({
     project: "p1", role: "lead", type: "turn-stopped", source: "deterministic", emitter: "claude-stop",
     pane: "%1", tmux_incarnation: "100:1000",

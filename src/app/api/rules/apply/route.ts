@@ -59,7 +59,7 @@ export async function POST(req: Request) {
 
   const deps = (req as Request & { jaxDeps?: RulesApplyDeps }).jaxDeps ?? systemDeps;
   const appKey = app as AppKey;
-  // MOA-504 D10: fail CLOSED on unreadable settings, refuse a disabled agent; both before any mutation.
+  // fail CLOSED on unreadable settings, refuse a disabled agent; both before any mutation.
   const settings = deps.readSettings();
   if (!settings.ok) return NextResponse.json({ ok: false, error: settings.error }, { status: 409 });
   if (!settings.data.integrations.agents[appKey]) {

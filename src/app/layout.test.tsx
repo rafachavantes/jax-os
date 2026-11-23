@@ -74,7 +74,7 @@ describe("RootLayout settings warning banner — actual wiring, not just the key
   });
 });
 
-describe("RootLayout metadata (MOA-501 D3)", () => {
+describe("RootLayout metadata", () => {
   it("describes the product neutrally and registers no manual icons", async () => {
     const { metadata } = await import("./layout");
     expect(metadata.title).toBe("Jax OS");

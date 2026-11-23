@@ -206,7 +206,7 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
     // Cold review round 3, Finding 3: a pane whose last capsule is blocked/needs_input but has no
     // PARSED pending question (the "question" branch above) used to surface only as a needs-you
     // CARD, with nothing in the strip at all — this row is that same signal, at the same place
-    // every other "waiting on you" item lives. MOA-469 §4 adds the native Codex variant: a native
+    // every other "waiting on you" item lives. A native
     // session needing attention has no pane and therefore no tmux action.
     const respondKey = card ? attentionRespondTarget(card, row.capsuleEventId) : null;
     const respond = respondKey !== null ? (

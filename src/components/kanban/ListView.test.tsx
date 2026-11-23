@@ -12,7 +12,7 @@ vi.mock("next-intl", () => ({
 const state: KanbanState = { id: "s1", name: "In Progress", color: "#0f0", position: 1, type: "started" };
 const issue: KanbanIssue = {
   id: "i1",
-  identifier: "MOA-1",
+  identifier: "ENG-1",
   title: "Build the cockpit",
   priority: 2,
   url: "https://x",

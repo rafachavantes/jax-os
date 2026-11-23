@@ -22,7 +22,7 @@ describe("signBody", () => {
   });
 });
 
-describe("notificationTargetFromEnv (MOA-498 D3 — integrations.webhook gate)", () => {
+describe("notificationTargetFromEnv (integrations.webhook gate)", () => {
   // Isolates $JAXOS_HOME from the real ~/.jax-os so these tests never touch Rafa's real .env.
   let dir: string;
   beforeEach(() => {

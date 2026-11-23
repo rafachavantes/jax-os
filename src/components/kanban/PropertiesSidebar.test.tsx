@@ -24,7 +24,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 const issue: KanbanIssue = {
   id: "i1",
-  identifier: "MOA-1",
+  identifier: "ENG-1",
   title: "t",
   priority: 2,
   url: "https://x",
@@ -225,7 +225,7 @@ describe("reconcileWrite", () => {
 
 describe("parseCreateResponse", () => {
   it("maps a successful create response through unchanged", () => {
-    expect(parseCreateResponse({ ok: true, id: "i9", identifier: "MOA-9" })).toEqual({ ok: true, id: "i9", identifier: "MOA-9" });
+    expect(parseCreateResponse({ ok: true, id: "i9", identifier: "ENG-9" })).toEqual({ ok: true, id: "i9", identifier: "ENG-9" });
   });
   it("maps a MutationFailure shape to its typed failure", () => {
     const failure = { ok: false, code: "mutation-rejected", effect: "not-applied", audit: "recorded", error: "nope" };
@@ -245,10 +245,10 @@ describe("postCreateIssue", () => {
   const UNCONFIRMED_CREATE = { ok: false, code: "mutation-unconfirmed", effect: "unconfirmed", audit: "unavailable", error: "unavailable" };
 
   it("POSTs the exact endpoint, method, headers and serialized body, returning the parsed success shape (F7)", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({ ok: true, id: "i9", identifier: "MOA-9" }) });
+    const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({ ok: true, id: "i9", identifier: "ENG-9" }) });
     vi.stubGlobal("fetch", fetchMock);
     const body = { teamId: "t1", title: "New issue" };
-    await expect(postCreateIssue(body)).resolves.toEqual({ ok: true, id: "i9", identifier: "MOA-9" });
+    await expect(postCreateIssue(body)).resolves.toEqual({ ok: true, id: "i9", identifier: "ENG-9" });
     expect(fetchMock).toHaveBeenCalledWith("/api/kanban/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

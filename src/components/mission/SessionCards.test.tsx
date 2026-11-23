@@ -398,7 +398,7 @@ describe("group frame render (spec §7.1–§7.3, §13)", () => {
     expect(html).not.toContain("board.unlinkedTitle");
     expect(html).not.toContain("board.footerNoSession");
     expect(html).not.toContain('data-testid="group-header"');
-    // The lone seat still uses the session projection (spec MOA-533), not the project card.
+    // The lone seat still uses the session projection, not the project card.
     expect(html).toContain('data-card-key="Alpha#session:' + A + '"');
     expect(html).toContain("board.location");
   });
@@ -526,7 +526,7 @@ describe("display names and remaining consumers (Task 9)", () => {
   });
 });
 
-describe("standalone project context and cross-project provenance (MOA-532/533)", () => {
+describe("standalone project context and cross-project provenance", () => {
   const lastRun = {
     runId: "r9", role: "builder" as const, contractStatus: "ok" as const, stage: "build" as const, diagnostic: null,
     finishedAt: null, headSha: null, labelKey: "buildOk" as const, tone: "success" as const, findings: null, target: null,

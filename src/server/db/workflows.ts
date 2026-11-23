@@ -200,7 +200,7 @@ export function upsertSession(db: Database.Database, input: WorkflowSessionInput
 export const pruneState = { lastMs: 0 };
 const PRUNE_INTERVAL_MS = 60_000;
 
-// MOA-498 D3: a forward-policy event is only ever queued while the webhook integration is
+// a forward-policy event is only ever queued while the webhook integration is
 // on — fail closed when settings are unreadable, exactly like an explicit off.
 function webhookIntegrationEnabled(): boolean {
   const settings = readGeneralSettings();
@@ -250,7 +250,7 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
         .get(ev.run_id);
       if (existing) throw new Error(RUN_ALREADY_FINISHED);
     }
-    // Idempotent audit (spec §2.6, MOA-453). `jaxflow merge` POSTs this BEFORE it pushes, so
+    // Idempotent audit (spec §2.6). `jaxflow merge` POSTs this BEFORE it pushes, so
     // §5.3's recovery re-runs the identical command and re-POSTs. Unlike the terminal claim
     // above, this SUPPRESSES instead of throwing: a 409 would make the retry's post() raise,
     // refuse `hub-unreachable`, and strand a merge that is already committed.
@@ -272,7 +272,7 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
       const existing = firstByPayloadKeys(db, "merge-approved", ev.project, { target, merge_sha });
       if (existing) return rowOf(existing);
     }
-    // MOA-465 Ledger & card: same idempotent-audit shape as merge-approved above, keyed on
+    // same idempotent-audit shape as merge-approved above, keyed on
     // (project, branch, sha) instead of (project, target, merge_sha) — a re-run of `pr open`
     // at the SAME sha (already-open reuse, decision 8) must never double-post; a fast-forward
     // refresh posts a NEW sha and therefore a NEW row on purpose.
@@ -301,9 +301,9 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
     } else if (!getAfkEnabled(db)) {
       delivery = "local"; // step 3 (§4.5, Task B4) — uniform AFK gate, no type carve-out
     } else if (!getForwardTypes(db).includes(ev.type)) {
-      delivery = "local"; // step 4 (MOA-487 §5 Decision 3) — a forward-policy type not opted in
+      delivery = "local"; // step 4 — a forward-policy type not opted in
     } else if (!webhookIntegrationEnabled()) {
-      // MOA-498 D3: an event created while the integration is off is never queued for future
+      // an event created while the integration is off is never queued for future
       // delivery — enabling it later delivers only future events, never a backlog.
       delivery = "local"; // step 4.5
     } else if (rule.suppressWhileQuestionPending && pane && tmux_incarnation && hasPendingQuestion(db, { pane, tmuxIncarnation: tmux_incarnation })) {
@@ -333,7 +333,7 @@ export function insertEvent(db: Database.Database, ev: WorkflowEventInput, now =
 }
 
 // Cursorless poll: the server-side pending filter IS the cursor (spec §4.2). turn-stopped is local
-// telemetry (MOA-469 correction) — excluded here so a legacy pending stop row can never leak through
+// telemetry — excluded here so a legacy pending stop row can never leak through
 // the fallback poll or crowd out an eligible run notification; it is not marked delivered or deleted.
 export function listPending(db: Database.Database, limit: number): WorkflowEventRow[] {
   return (
@@ -719,7 +719,7 @@ export function evaluateStaleness(
     }
   }
 
-  // Native Codex staleness: exact-session identity against the live snapshot (MOA-469 §6). An
+  // Native Codex staleness: exact-session identity against the live snapshot. An
   // unavailable source skips ONLY this source. An unloaded/systemError/unknown thread, or a failed
   // runtime query, can never become a "possibly stuck" alert; a working (active) thread is not idle.
   const codexSourceOk = codex?.ok === true;
@@ -940,7 +940,7 @@ export type HubPane = {
   questionAnswerable?: boolean;
 };
 
-// A native Codex session row (MOA-469 §2) — NEVER a fabricated pane or incarnation. Membership is
+// A native Codex session row — NEVER a fabricated pane or incarnation. Membership is
 // derived from validated Codex agent events plus the live runtime snapshot; the runtime is the
 // liveness source. `working`/`attention` are live-runtime facts; `pendingAttention`/`runInFlight`
 // are the current-session correlation used when the runtime is idle. `sourceOk` records whether
@@ -986,7 +986,7 @@ export type HubActiveRun = {
   target: string | null;
   count: number;
   lastStep: string | null;
-  // Provenance only for a run a session owns in ANOTHER project (MOA-532): the project the child
+  // Provenance only for a run a session owns in ANOTHER project: the project the child
   // actually targets. Absent for a local run, so old fixtures/envelopes parse unchanged.
   destinationProject?: string;
   // The run's unlinked ownership could not be proven because the transport that could hold its
@@ -1123,7 +1123,7 @@ const HISTORICAL_CAP = 50; // §7.1b
 // incarnation (Rule A, §4.1). A pane reused under a new incarnation, or absent from the
 // snapshot, is never "working" — it resolves to idle.
 //
-// MOA-469 §4: an old Claude open turn on a pane whose CURRENT process is positively Codex must
+// an old Claude open turn on a pane whose CURRENT process is positively Codex must
 // not keep the project "working" indefinitely — that turn belongs to the previous occupant. A
 // generic shell/unknown command is NOT proof of a runtime switch: uncertainty is flagged (the
 // open turn keeps its working claim) rather than assigning a different session by cwd.
@@ -1842,7 +1842,7 @@ export function lastRunFor(db: Database.Database, project: string, relToRepos: R
 }
 
 // The bounded public projection of one run-finished row, resolved against `project` — the run's
-// OWN destination. Shared by lastRunFor and the cross-project owner merge (MOA-532), so a bound
+// OWN destination. Shared by lastRunFor and the cross-project owner merge, so a bound
 // foreign result can never be projected with the parent's root.
 function finishedRunProjection(
   db: Database.Database, project: string, row: WorkflowEventRow, relToRepos: RelToRepos | null,
@@ -2088,7 +2088,7 @@ export function getLoopSummary(db: Database.Database, project: string): LoopSumm
   return { specCount: specs.length, planCount: plans.length, buildCount: anchors.length, diffCount: diffs.length, rounds, approved, wallDays };
 }
 
-// ---- Native Codex sessions (MOA-469 §2) -------------------------------------------------------
+// ---- Native Codex sessions -------------------------------------------------------
 
 // Last codex-stop capsule for one exact session (harness_session), project-scoped. Unlike the
 // pane variant, this never consults pane_key — the thread UUID is the identity.
@@ -2319,7 +2319,7 @@ function unownedLastRunFor(
   return session === null || !openSessions.includes(session) ? last : null;
 }
 
-// ---- Cross-project run ownership (MOA-532) ---------------------------------------------------
+// ---- Cross-project run ownership ---------------------------------------------------
 //
 // A jaxflow run is stored in its DESTINATION project; its explicit `caller`/`caller_session`
 // payload identifies the parent conversation, which may sit in another project. Bindings are

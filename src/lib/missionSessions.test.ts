@@ -403,7 +403,7 @@ describe("unlinked card", () => {
   });
 });
 
-describe("standalone single-session card (MOA-533)", () => {
+describe("standalone single-session card", () => {
   const lastRun = {
     runId: "r9", role: "builder" as const, kind: "build" as const, runtime: "claude" as const, target: "feat/x",
     finishedAt: "2026-11-12T10:00:00.000Z", outcome: "success", contractStatus: "ok" as const, stage: "build" as const,

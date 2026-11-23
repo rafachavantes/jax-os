@@ -10,7 +10,7 @@ import { useGeneralSettings } from "@/lib/settingsQuery";
 import { useTokensApi } from "@/lib/useTokensApi";
 import type { ProviderUsage, RateWindow, SubscriptionsPayload } from "@/server/collectors/subscriptions";
 
-// shortName: the label under each topbar ring (MOA-486 follow-up) — brand names, untranslated.
+// shortName: the label under each topbar ring — brand names, untranslated.
 export const PROVIDERS = [
   { key: "anthropic", name: "Anthropic", shortName: "Claude" },
   { key: "codex", name: "OpenAI Codex", shortName: "Codex" },
@@ -96,7 +96,7 @@ export function SubscriptionCards() {
   const agents = settings?.ok === true ? settings.data.integrations.agents : undefined;
   const anyEnabled = Boolean(agents?.claude || agents?.codex || agents?.opencode);
   const { data, isError, dataUpdatedAt } = useTokensApi<SubscriptionsPayload>("subscriptions", 60_000, anyEnabled);
-  // MOA-504: one switch per agent — a disabled agent's card is not rendered.
+  // one switch per agent — a disabled agent's card is not rendered.
   const enabledKeys = new Set<string>();
   if (agents?.claude) enabledKeys.add("anthropic");
   if (agents?.codex) enabledKeys.add("codex");

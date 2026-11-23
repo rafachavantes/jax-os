@@ -23,7 +23,7 @@ export async function handleAfkGet(_req?: Request, deps: AfkRouteDeps = systemDe
   }));
 }
 
-// MOA-487 §5 Decision 6: forwardTypes, if present, must be a JSON array of forwardable types
+// forwardTypes, if present, must be a JSON array of forwardable types
 // with no duplicates.
 function isValidForwardTypes(v: unknown): v is EventType[] {
   if (!Array.isArray(v)) return false;

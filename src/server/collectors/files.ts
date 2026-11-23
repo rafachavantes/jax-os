@@ -22,7 +22,7 @@ export type Root = keyof typeof ROOTS;
 // A generic root-taking operation dereferencing a null (unconfigured) vault throws "disabled"
 // — collectorResponse's existing catch (src/server/api.ts) turns that into exactly
 // {ok:false,error:"disabled"}, status 200, no new response shape. The `integrations.vault`
-// on/off UI gate is MOA-496's job (ownership matrix); this is just "vault not configured".
+// on/off UI gate belongs to the settings layer (ownership matrix); this is just "vault not configured".
 export function rootPath(root: Root): string {
   const path = ROOTS[root];
   if (path === null) throw new Error("disabled");

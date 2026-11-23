@@ -40,7 +40,7 @@ export type ProvidersRouteDeps = {
 };
 
 const systemDeps: ProvidersRouteDeps = {
-  // MOA-498: no more provider-credential mutations are ever written (Bitwarden removed) — a
+  // no more provider-credential mutations are ever written (Bitwarden removed) — a
   // saved binding's env name/kind now lives directly in the connection's own profile, not a
   // separate audit trail this snapshot used to decorate itself with.
   snapshot: () => snapshotProviders({}),
@@ -241,7 +241,7 @@ async function handlePost(req: Request, deps: ProvidersRouteDeps = systemDeps) {
   return reply({ ok: false, error: "invalid payload" });
 }
 
-// MOA-498 D4/12: a pure env-name status check for the credential dialog — same class as
+// a pure env-name status check for the credential dialog — same class as
 // Part 1's envFileStatus(), non-secret, never a value, no new filesystem mechanism
 // (loadJaxosEnv already exists and is reused unmodified). Never touches deps/jaxDeps.
 async function credentialEnvStatus(name: string) {

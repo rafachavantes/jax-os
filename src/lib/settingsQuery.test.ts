@@ -34,7 +34,7 @@ describe("vaultUsable (diff review e52d9e6dc555 F2)", () => {
   });
 });
 
-describe("agentsOf (MOA-504 D10: fail OPEN)", () => {
+describe("agentsOf (fail OPEN)", () => {
   it("returns the saved agents when the result is ok", () => {
     const r = { ok: true, data: { integrations: { agents: { claude: false, codex: true, opencode: false } } } } as never;
     expect(agentsOf(r)).toEqual({ claude: false, codex: true, opencode: false });

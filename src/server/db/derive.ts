@@ -116,7 +116,7 @@ export function deriveCapsule(
   }
 
   // Rungs 4 and 5 — pair this turn with the jaxflow run its own session dispatched.
-  // Identity proven by Task 0 (MOA-469): codex-stop pairs too, but Codex runs are constrained to
+  // Identity proven by Task 0: codex-stop pairs too, but Codex runs are constrained to
   // caller=codex and the same project — a legacy run with a missing caller is never proof. Claude
   // keeps its legacy pairing (missing caller still counts) but never pairs with a codex-dispatched
   // run: a UUID-shaped harness_session on a Claude emitter must not collide with a Codex identity.
@@ -184,7 +184,7 @@ export function deriveCapsule(
   // Rung 7 — the leftover guess, queued for the poller, UNLESS integrations.classifier is off:
   // a live, uncached read (no consumer here is high-volume enough to need caching) — {ok:false}
   // (missing/malformed settings.json) takes the same off path, the safe no-egress default
-  // (spec MOA-502 Decision 1; the malformed-settings warning itself is MOA-496's own row).
+  // (spec Decision 1; the malformed-settings warning itself is a separate row).
   const settings = readSettings();
   const classifierOn = settings.ok && settings.data.integrations.classifier;
   if (!classifierOn) {

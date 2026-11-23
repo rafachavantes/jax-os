@@ -333,7 +333,7 @@ it("F4: an ingress-settled abandoned row carries capsule_attempts 0", () => {
 });
 
 // ---------------------------------------------------------------------------
-// MOA-469 F1 (review 8dc843212345): a Codex event's optional pane is NOT
+// A Codex event's optional pane is NOT
 // authority for Claude pane derivation. Each test fails if codex rows are
 // allowed back into a pane-keyed predicate.
 // ---------------------------------------------------------------------------
@@ -383,7 +383,7 @@ it("F1: hasOpenQuestion is not closed by a later codex-stop on the same pane", (
 });
 
 // ---------------------------------------------------------------------------
-// MOA-502 Decision 1: rung 7 reads integrations.classifier live through the
+// rung 7 reads integrations.classifier live through the
 // injected reader (defaults to the real readGeneralSettings).
 // ---------------------------------------------------------------------------
 
@@ -391,7 +391,7 @@ type ReadSettings = typeof readGeneralSettings;
 const classifierOn = () => ({ ok: true, data: { integrations: { classifier: true } } }) as ReturnType<ReadSettings>;
 const classifierOff = () => ({ ok: true, data: { integrations: { classifier: false } } }) as ReturnType<ReadSettings>;
 
-describe("deriveCapsule rung 7 — integrations.classifier gate (spec MOA-502 Decision 1)", () => {
+describe("deriveCapsule rung 7 — integrations.classifier gate", () => {
   it("settles unknown/classifier-off with no queueing when the setting is off", () => {
     const db = openDb(":memory:");
     const result = deriveCapsule(db, tail("still thinking about the approach"), classifierOff);

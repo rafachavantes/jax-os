@@ -11,7 +11,7 @@ const ALL_SVG = [...LOGO, ...MARK, "src/app/icon.svg"];
 const paths = (svg: string) => [...svg.matchAll(/<path [^>]*\bd="([^"]+)"/g)].map((m) => m[1]);
 const hexes = (svg: string) => [...new Set([...svg.matchAll(/#[0-9A-Fa-f]{6}\b/g)].map((m) => m[0].toUpperCase()))].sort();
 
-describe("brand SVG assets (MOA-511 Deliverables)", () => {
+describe("brand SVG assets", () => {
   it.each(ALL_SVG)("%s is a self-contained SVG with a viewBox", (rel) => {
     const svg = text(rel);
     expect(svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg" viewBox="')).toBe(true);
@@ -69,7 +69,7 @@ describe("brand SVG assets (MOA-511 Deliverables)", () => {
   });
 });
 
-describe("favicon.ico (MOA-511 acceptance 2)", () => {
+describe("favicon.ico (acceptance 2)", () => {
   const ico = readFileSync(file("src/app/favicon.ico"));
   it("is a genuine ICO directory with 16, 32 and 48 px PNG frames", () => {
     expect([ico.readUInt16LE(0), ico.readUInt16LE(2), ico.readUInt16LE(4)]).toEqual([0, 1, 3]);

@@ -200,7 +200,7 @@ describe("GET /api/mission/hub (wiring)", () => {
     db.close();
   });
 
-  // MOA-502 Decision 3: a Claude-only install must not warn about an absent codex CLI.
+  // a Claude-only install must not warn about an absent codex CLI.
   it("codexAbsent skips collectCodexSnapshot entirely when the codex CLI is not on PATH", async () => {
     const db = openDb(":memory:");
     const collectCodexSnapshot = vi.fn(async () => {
@@ -331,7 +331,7 @@ describe("GET /api/mission/hub (wiring)", () => {
     db.close();
   });
 
-  it("codexEnabled false skips collectCodexSnapshot and reports absent even when the CLI is on PATH (MOA-504 D11)", async () => {
+  it("codexEnabled false skips collectCodexSnapshot and reports absent even when the CLI is on PATH", async () => {
     const db = openDb(":memory:");
     const collectCodexSnapshot = vi.fn(async () => { throw new Error("must not be called"); });
     const deps: HubRouteDeps = {

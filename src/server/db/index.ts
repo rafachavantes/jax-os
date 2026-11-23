@@ -194,11 +194,11 @@ export const MIGRATIONS: readonly string[] = [
   );
   ALTER TABLE workflow_afk ADD COLUMN archive_after_days INTEGER NOT NULL DEFAULT 14;
   CREATE INDEX workflow_events_project_ts ON workflow_events (project, ts);`,
-  `-- MOA-487 (migration 10): per-type forward options (spec §5 Decision 1). One new
+  `-- Migration 10: per-type forward options (spec §5 Decision 1). One new
   -- column on the existing workflow_afk singleton — this literal MUST equal lib/workflow.ts's
   -- DEFAULT_FORWARD_TYPES exactly; index.test.ts's migration-10 test asserts it.
   ALTER TABLE workflow_afk ADD COLUMN forward_types TEXT NOT NULL DEFAULT '["question","attention-needed","mission-finished"]';`,
-  `-- MOA-488 (migration 11): jaxflow mission tracking (spec §6). ONE table, no join --
+  `-- Migration 11: jaxflow mission tracking (spec §6). ONE table, no join --
   -- 'milestones' is a whole JSON array (Decision 1/2): at up to 12 items a join table buys
   -- nothing and forces mark <title> to run a second query. The partial unique index is the
   -- DB-level backstop for "exactly one active mission" (Decision 3) -- the route's own
@@ -214,10 +214,10 @@ export const MIGRATIONS: readonly string[] = [
     milestones  TEXT NOT NULL
   );
   CREATE UNIQUE INDEX missions_one_active ON missions (state) WHERE state = 'active';`,
-  `-- MOA-508 (migration 12): missions.autonomous -- the owner's opt-in to the autonomous mission
+  `-- Migration 12: missions.autonomous -- the owner's opt-in to the autonomous mission
   -- mode (spec §6 #1). One bit; existing rows read 0 (normal mission).
   ALTER TABLE missions ADD COLUMN autonomous INTEGER NOT NULL DEFAULT 0;`,
-  `-- MOA-529 (migration 13): singleton cockpit preferences. layout_revision gates optimistic
+  `-- Migration 13: singleton cockpit preferences. layout_revision gates optimistic
   -- saves (a stale expected revision conflicts without writing); layout is a bounded ordered
   -- JSON list of {project,width} or NULL for "no override" (automatic urgency/time/dir ranking).
   -- pr_scope persists the Mine/All selection without bumping the layout revision. No seed row:
@@ -228,12 +228,12 @@ export const MIGRATIONS: readonly string[] = [
     layout          TEXT NULL,
     pr_scope        TEXT NOT NULL DEFAULT 'mine' CHECK (pr_scope IN ('mine', 'all'))
   );`,
-  `-- MOA-535 (migration 14): the execution-history scan. One additive PARTIAL index over the
+  `-- Migration 14: the execution-history scan. One additive PARTIAL index over the
   -- only admissible lifecycle rows, covering the (project, run_id, id DESC) grouped-ID CTE.
   -- Non-run events (the overwhelming majority) are not indexed at all.
   CREATE INDEX workflow_events_executions ON workflow_events (project, run_id, id DESC)
     WHERE run_id IS NOT NULL AND type IN ('run-started', 'run-finished');`,
-  `-- MOA-536 (migration 15): native agent-usage accounting. Numeric facts only: no prompts,
+  `-- Migration 15: native agent-usage accounting. Numeric facts only: no prompts,
   -- messages, tool output, raw lines or native JSON. Item identity is global per harness
   -- (Claude message.id, Codex thread_id|response_id, OpenCode session|message|projection);
   -- item upsert and file-offset advance share the caller's immediate transaction.

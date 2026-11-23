@@ -710,7 +710,7 @@ describe("stripPresentation — pure title/warning decision (branch review, Find
   });
 });
 
-describe("buildMission — activeRun presentation (MOA-464)", () => {
+describe("buildMission — activeRun presentation", () => {
   const ACTIVE: HubActiveRun = {
     runId: "diff1", startedAt: "2026-09-09T10:02:00.000Z", kind: "diff",
     runtime: "claude", target: "fix/example", count: 1, lastStep: null,
@@ -812,7 +812,7 @@ describe("buildMission — activeRun presentation (MOA-464)", () => {
   });
 });
 
-describe("buildMission — lastRun classification (spec §12.4 rendering table, MOA-474)", () => {
+describe("buildMission — lastRun classification (spec §12.4 rendering table)", () => {
   const LAST_RUN_BASE: HubLastRun = {
     runId: "r1", role: "builder", kind: "build", runtime: "codex", target: "feat/x",
     finishedAt: "2026-09-09T10:02:00.000Z", outcome: null, contractStatus: "ok",
@@ -930,7 +930,7 @@ describe("buildMission — lastRun classification (spec §12.4 rendering table, 
   });
 });
 
-describe("buildMission — native Codex sessions (MOA-469 §4)", () => {
+describe("buildMission — native Codex sessions", () => {
   const mkCodex = (overrides: Partial<import("../server/db/workflows").HubCodexSession> = {}) => ({
     threadId: overrides.threadId ?? "0191f0aa-1234-7000-8000-000000000001",
     status: overrides.status ?? "idle",
@@ -1035,7 +1035,7 @@ describe("buildMission — native Codex sessions (MOA-469 §4)", () => {
   });
 });
 
-describe("buildMission — MOA-469 live corrections: dead panes and unavailable sessions carry no current attention", () => {
+describe("buildMission — live corrections: dead panes and unavailable sessions carry no current attention", () => {
   const mkCodex = (overrides: Partial<import("../server/db/workflows").HubCodexSession> = {}) => ({
     threadId: overrides.threadId ?? "0191f0aa-7777-7000-8000-000000000077",
     status: overrides.status ?? "idle",

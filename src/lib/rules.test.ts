@@ -183,7 +183,7 @@ describe("ruleOutline (Task 1 — conservative H2 outline)", () => {
   });
 });
 
-describe("slotVisible (MOA-504 D10)", () => {
+describe("slotVisible", () => {
   const agents = { claude: false, codex: true, opencode: true };
   it("global is always visible; an app slot follows its agent", () => {
     expect(slotVisible("global", { claude: false, codex: false, opencode: false })).toBe(true);

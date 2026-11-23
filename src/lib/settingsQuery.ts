@@ -7,7 +7,7 @@ export type { GeneralSettings };
 export const SETTINGS_QUERY_KEY = ["settings"];
 
 // The route's `ok:true` response carries sibling fields the plain `Envelope<T>` shape doesn't
-// have — `webhookConfigured` (Task 2), `credentialsConfigured` (F3) and `envFileState` (MOA-498):
+// have — `webhookConfigured` (Task 2), `credentialsConfigured` (F3) and `envFileState`:
 // read-only configured/missing status for NOTIFICATION_WEBHOOK_URL/NOTIFICATION_WEBHOOK_SECRET,
 // for the native Claude/Codex/OpenCode GO credentials, and for $JAXOS_HOME/.env itself, never
 // part of GeneralSettings (not persisted, not editable). `ok:false` stays the plain `Envelope`
@@ -49,7 +49,7 @@ export function useGeneralSettings() {
 export type Agents = GeneralSettings["integrations"]["agents"];
 const ALL_AGENTS_ON: Agents = { claude: true, codex: true, opencode: true };
 
-// MOA-504 D10: every client gate fails OPEN. While the settings query is loading, not ok, or the
+// every client gate fails OPEN. While the settings query is loading, not ok, or the
 // payload is not a settings payload at all, nothing is hidden: never hide configuration on unknown.
 export function agentsOf(result: GeneralSettingsResult | undefined): Agents {
   return (result?.ok === true ? result.data?.integrations?.agents : undefined) ?? ALL_AGENTS_ON;

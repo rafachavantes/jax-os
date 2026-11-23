@@ -140,7 +140,7 @@ describe("injectAnswers", () => {
   });
 });
 
-describe("runtime command association (MOA-469)", () => {
+describe("runtime command association", () => {
   it("recognizes positive Codex commands and refuses generic shells", () => {
     expect(isCodexCommand("codex")).toBe(true);
     expect(isCodexCommand("/home/rafa/.local/bin/codex")).toBe(true);

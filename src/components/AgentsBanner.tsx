@@ -5,7 +5,7 @@ import { SourceWarning } from "@/components/mission/SourceWarning";
 import { agentsBannerKind } from "@/lib/settingsBanner";
 import { useGeneralSettings } from "@/lib/settingsQuery";
 
-// MOA-504 D7: client-side on purpose. Layouts do not re-render on client navigation, and this must
+// client-side on purpose. Layouts do not re-render on client navigation, and this must
 // update the moment the owner saves (the shared ["settings"] query is refreshed by that save).
 export function AgentsBanner() {
   const t = useTranslations("settings");

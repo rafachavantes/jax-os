@@ -71,7 +71,7 @@ const settingsWith = (opencode: boolean) => ({
   },
 });
 
-describe("SettingsPage — Providers tab follows OpenCode (MOA-504 D10)", () => {
+describe("SettingsPage — Providers tab follows OpenCode", () => {
   afterEach(() => { harness.settings = undefined; });
   it("OpenCode off: no providers tab button and no providers panel; the other tabs stay", () => {
     harness.settings = settingsWith(false);

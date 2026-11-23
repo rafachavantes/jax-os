@@ -672,7 +672,7 @@ export type SettingsWriteKind = "ok" | "activation-pending" | "applied-unrecorde
 export const CLAUDE_REVIEWER_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export const CODEX_REVIEWER_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
-// MOA-504 D10: the Providers tab configures OpenCode, so it exists only while OpenCode is on.
+// the Providers tab configures OpenCode, so it exists only while OpenCode is on.
 export function visibleToolsTabs(agents: { opencode: boolean }): readonly ToolsTab[] {
   return agents.opencode ? TOOLS_TABS : TOOLS_TABS.filter((tab) => tab !== "providers");
 }

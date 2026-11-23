@@ -407,7 +407,7 @@ describe("codexSocketPath", () => {
   });
 });
 
-describe("isCodexCliPresent (spec MOA-502 Decision 3)", () => {
+describe("isCodexCliPresent", () => {
   const dirs: string[] = [];
   function tmpBin(files: Record<string, { mode: number; dir?: boolean }>): string {
     const dir = mkdtempSync(join(tmpdir(), "jax-codex-path-"));

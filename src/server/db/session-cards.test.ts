@@ -563,7 +563,7 @@ describe("session seats", () => {
   });
 });
 
-describe("cross-project run ownership (MOA-532)", () => {
+describe("cross-project run ownership", () => {
   const Q = "qproj";
   const R = "rproj";
   const RUN = "aaaabbbbcccc";

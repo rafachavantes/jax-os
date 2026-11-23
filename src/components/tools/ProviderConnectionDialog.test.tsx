@@ -45,7 +45,7 @@ function render(model?: ConnectionChoice | null) {
 }
 
 describe("ProviderConnectionDialog", () => {
-  it("carries the pinned dialog class with no credential step (MOA-498 D4/12)", () => {
+  it("carries the pinned dialog class with no credential step", () => {
     const html = render(null);
     expect(html).toContain("providerDialog");
     expect(html).not.toContain("credentialOnboarding");
@@ -67,7 +67,7 @@ describe("ProviderConnectionDialog", () => {
     expect(html).not.toContain("secretId");
   });
 
-  it("registration-then-credential flow is gone from the source (MOA-498 D4/12)", () => {
+  it("registration-then-credential flow is gone from the source", () => {
     const text = readFileSync(fileURLToPath(new URL("ProviderConnectionDialog.tsx", import.meta.url)), "utf8");
     expect(text).not.toContain("/api/opencode-providers/credentials");
     expect(text).not.toContain("ProviderCredentialDialog");
