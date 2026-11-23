@@ -23,15 +23,14 @@ from jaxflow_env import jaxos_home
 
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = "jev-latest"
-# MOA-498 D1: the one secret file jax-os reads for its own service secrets — was
-# ~/.hermes/.env (Bitwarden-backed, Rafa-only). $JAXOS_HOME/.env is owner-filled, never
-# written by jax-os itself.
+# MOA-498 D1: the one secret file jax-os reads for its own service secrets.
+# $JAXOS_HOME/.env is owner-filled, never written by jax-os itself.
 ENV_PATH = jaxos_home() / ".env"
 # MOA-498 F1: mirrors Next's own .env.local precedence (Next loads it into process.env before
 # next.config.ts runs) on the Python side, which has no automatic loader of its own. Derived
 # from this script's own location, not cwd, so it resolves correctly regardless of where the
 # process is invoked from. Read-only, no _check_secure call — a dev convenience file, never
-# Rafa's secret store.
+# the secret store.
 LOCAL_ENV_PATH = Path(__file__).resolve().parent.parent / ".env.local"
 JEV_ENV_KEY = "TYPESAFE_API"
 
@@ -75,7 +74,7 @@ def _read_kv(path, name):
 
 
 def api_key(name=JEV_ENV_KEY):
-    """Rafa's own file; jax-os only reads it. Precedence (MOA-498 D1/F1): process env, then
+    """The owner's own file; jax-os only reads it. Precedence (MOA-498 D1/F1): process env, then
     LOCAL_ENV_PATH (<repo>/.env.local, read-only, no secure-file check), then the secure
     $JAXOS_HOME/.env file. Any failure returns "" and the caller degrades to its own fallback
     without a network call."""

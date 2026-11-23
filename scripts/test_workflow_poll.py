@@ -921,13 +921,50 @@ def test_reap_keeps_the_spool_on_a_transport_failure(monkeypatch):
         assert json.loads(spool.read_text(encoding="utf-8"))["payload"]["contract_status"] == "interrupted"
         assert callbacks[0]["ledger_pending"] is True
 
-# ---- model defaults from the shared fixture (spec: One source of model defaults) ----
+# ---- classifier fallback: configurable URL/model, defaults unchanged ----
 
-_MODEL_DEFAULTS = json.loads((Path(__file__).resolve().parents[1] / "workflow" / "fixtures" / "model-defaults-v1.json").read_text())
+def _classifier_request(monkeypatch, env):
+    seen = {}
+    body = json.dumps({"choices": [{"message": {"content": json.dumps({"status": "done"})}}]}).encode("utf-8")
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def read(self):
+            return body
+
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["model"] = json.loads(request.data)["model"]
+        return _FakeResponse()
+
+    monkeypatch.setattr(jev_client, "api_key", lambda name=None: env.get(name, ""))
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    assert wp._call_classifier("prompt", "key") == "done"
+    return seen
 
 
-def test_classifier_model_reads_the_bare_fixture_value_with_no_prefix():
-    assert wp.CLASSIFIER_MODEL == _MODEL_DEFAULTS["builders"]["fallback"]["model"]
+def test_classifier_fallback_defaults_are_openrouter_and_the_documented_model(monkeypatch):
+    assert _classifier_request(monkeypatch, {}) == {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "model": "deepseek/deepseek-v4-flash-0731",
+    }
+
+
+def test_classifier_fallback_url_and_model_are_configurable(monkeypatch):
+    seen = _classifier_request(monkeypatch, {
+        "CLASSIFIER_FALLBACK_URL": "https://llm.example.com/v1/chat/completions",
+        "CLASSIFIER_FALLBACK_MODEL": "my/model",
+    })
+    assert seen == {"url": "https://llm.example.com/v1/chat/completions", "model": "my/model"}
+
+
+def test_classifier_fallback_url_must_be_https_or_loopback(monkeypatch):
+    monkeypatch.setattr(jev_client, "api_key", lambda name=None: {"CLASSIFIER_FALLBACK_URL": "http://evil.example.com/x"}.get(name, ""))
+    with pytest.raises(ValueError):
+        wp._call_classifier("prompt", "key")
 
 
 def test_poll_tick_reads_settings_once(monkeypatch):
