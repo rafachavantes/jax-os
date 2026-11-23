@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { NextResponse } from "next/server";
 import { getDb } from "../../../../../server/db";
 import { getSourceStatuses } from "../../../../../server/db/native-usage";
-import { defaultNativeCollectorDeps, runNativeUsagePass } from "../../../../../server/collectors/native-usage";
+import { backfillCodexZst, defaultNativeCollectorDeps, runNativeUsagePass } from "../../../../../server/collectors/native-usage";
 
 export type CollectDeps = {
   db: () => Database.Database;
@@ -28,6 +28,16 @@ export async function handleUsageCollect(req: Request, overrides: Partial<Collec
     db = deps.db();
   } catch {
     return NextResponse.json({ ok: false, error: "usage unavailable" });
+  }
+
+  const q = new URL(req.url).searchParams;
+  if (q.get("backfill") === "codex-zst") {
+    try {
+      const nativeDeps = await defaultNativeCollectorDeps(db);
+      return NextResponse.json(await backfillCodexZst(nativeDeps, { apply: q.get("apply") === "1", after: q.get("after") ?? undefined }));
+    } catch {
+      return NextResponse.json({ ok: false, error: "backfill failed" });
+    }
   }
 
   const start = deps.now();

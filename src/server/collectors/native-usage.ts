@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, stat as nodeStatAsync, realpath as nodeRealpathAsync, opendir as nodeOpendirAsync, open as nodeOpenAsync, writeFile, access } from "node:fs/promises";
+import { mkdir, readdir, realpath, readFile, stat as nodeStatAsync, realpath as nodeRealpathAsync, opendir as nodeOpendirAsync, open as nodeOpenAsync, writeFile, access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
+import { zstdDecompressSync } from "node:zlib";
 import type Database from "better-sqlite3";
 import {
   addPendingDir,
@@ -19,6 +20,7 @@ import {
   getRegistryCounts,
   getSourceStatuses,
   hasPendingDirs,
+  insertNativeContext,
   markDirDone,
   markFileCurrent,
   markFileFailure,
@@ -29,6 +31,7 @@ import {
   selectIngestionCandidates,
   setDiscoveryCurrentDir,
   setSourceStatus,
+  upsertNativeUsageItem,
   type FileCheckpoint,
   type NativeContextRow,
   type OpenCodeCursorState,
@@ -897,6 +900,8 @@ async function registerEntry(
       if (await safeFile()) registerNativeFile(deps.db, source, rel, false, deps.now());
       return;
     }
+    // Compressed rollouts are read only by the one-shot backfill, never by steady-state collection.
+    if (entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl.zst")) return;
   }
   ctx.warnings.add("unsupported-layout");
 }
@@ -2481,4 +2486,48 @@ export async function defaultNativeCollectorDeps(db: Database.Database): Promise
       hash: (path, cancellation) => hashFileStreaming(fs, path, cancellation),
     },
   };
+}
+
+/** One-shot backfill of Codex rollouts that Codex compressed in place. Stateless: the caller
+ * passes back `next` as `after` until `remaining` is 0. Reuses parseCodexLine + the item upsert. */
+export async function backfillCodexZst(
+  deps: NativeCollectorDeps,
+  opts: { apply: boolean; after?: string; deadlineMs?: number },
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
+  if (typeof zstdDecompressSync !== "function") return { ok: false, error: "zstd unavailable" };
+  try {
+    const root = deps.roots.codex;
+    const realRoot = await realpath(root);
+    const cutoff = utcDay(deps.now() - 90 * 86400);
+    const files = (await readdir(root, { recursive: true }))
+      .filter((f) => /^\d{4}\/\d{2}\/\d{2}\/rollout-[^/]*\.jsonl\.zst$/.test(f) && f.slice(0, 10).replaceAll("/", "-") >= cutoff)
+      .sort();
+    const todo = files.filter((f) => f > (opts.after ?? ""));
+    const end = deps.nowMs() + (opts.deadlineMs ?? 30_000);
+    let processed = 0, upserted = 0, failures = 0, next = opts.after ?? "";
+    for (const rel of todo) {
+      if (deps.nowMs() > end) break;
+      next = rel;
+      processed += 1;
+      try {
+        const real = await realpath(join(root, rel));
+        if (!insideRealRoot(realRoot, real)) throw new Error("outside");
+        const text = zstdDecompressSync(await readFile(real)).toString("utf8");
+        const fileIdentity = rel.slice(0, -4); // same identity as the plain rollout
+        deps.db.transaction(() => {
+          for (const line of text.split("\n")) {
+            if (!line) continue;
+            const out = parseCodexLine(line, { fileIdentity, now: deps.now() });
+            if ("context" in out) { if (opts.apply) insertNativeContext(deps.db, out.context, deps.now()); }
+            else if ("item" in out) { upserted += 1; if (opts.apply) upsertNativeUsageItem(deps.db, out.item); }
+          }
+        })();
+      } catch {
+        failures += 1;
+      }
+    }
+    return { ok: true, data: { apply: opts.apply, scanned: files.length, processed, remaining: todo.length - processed, upserted, failures, next } };
+  } catch {
+    return { ok: false, error: "backfill failed" };
+  }
 }
