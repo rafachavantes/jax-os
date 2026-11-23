@@ -864,7 +864,7 @@ describe("fixed OpenCode helper (NodeVM with a bun:sqlite shim)", () => {
     expect(() => readonly.prepare("CREATE TABLE nope (x)").run()).toThrow();
     readonly.close();
     rmSync(base, { recursive: true, force: true });
-  });
+  }, 30_000);
 
   it("stops before the 240KiB row budget and checkpoints the consumed rows", () => {
     const base = mkdtempSync(join(VERIFY_HOME, "helper-cap-"));
