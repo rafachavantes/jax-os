@@ -649,7 +649,7 @@ describe("createFilesController production path", () => {
   describe("createFilesController — scope/selected (spec §5)", () => {
     it("starts with the default scope and no selection; setSelected sets the given entry directly; openFile/openFilePinned also select the opened file and record its repo as recent", () => {
       const { ctl, recordRecentRepo } = make();
-      expect(ctl.snapshot().scope).toEqual({ kind: "repo", name: "jax-os" });
+      expect(ctl.snapshot().scope).toEqual({ kind: "all" });
       expect(ctl.snapshot().selected).toBeNull();
       ctl.setSelected("repos", "jax-os/src", true);
       expect(ctl.snapshot().selected).toEqual({ root: "repos", rel: "jax-os/src", isDir: true });
@@ -674,6 +674,7 @@ describe("createFilesController production path", () => {
       + "-> a further back is a true no-op; a fresh vault scope with no selection also reaches the Files "
       + "root in one step (spec §4.5)", () => {
       const { ctl } = make();
+      ctl.setScope({ kind: "repo", name: "jax-os" });
       ctl.setSelected("repos", "jax-os/src", true);
       ctl.setSelected("repos", "jax-os/src/lib", true);
       ctl.openFile("repos", "jax-os/src/lib/a.ts");

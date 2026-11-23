@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { isCliPresent } from "./cli-presence";
+import { isCliPresent, resolveOpenCodeExecutable } from "./cli-presence";
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -47,5 +47,20 @@ describe("isCliPresent (MOA-504 D4)", () => {
     expect(isCliPresent("opencode", env(join(root, "empty"), home))).toBe(false);
     bin(join(home, ".opencode", "bin"), "claude");
     expect(isCliPresent("claude", env(join(root, "empty"), home))).toBe(false);
+  });
+});
+
+describe("resolveOpenCodeExecutable", () => {
+  it("prefers $HOME/.opencode/bin, then PATH, then the installer path", () => {
+    const home = tmp();
+    const binDir = tmp();
+    const installed = join(home, ".opencode", "bin", "opencode");
+    const onPath = join(binDir, "opencode");
+    writeFileSync(onPath, "#!/bin/sh\n", { mode: 0o755 });
+    expect(resolveOpenCodeExecutable({ HOME: home, PATH: binDir })).toBe(onPath);
+    expect(resolveOpenCodeExecutable({ HOME: home, PATH: "" })).toBe(installed);
+    mkdirSync(join(home, ".opencode", "bin"), { recursive: true });
+    writeFileSync(installed, "#!/bin/sh\n", { mode: 0o755 });
+    expect(resolveOpenCodeExecutable({ HOME: home, PATH: binDir })).toBe(installed);
   });
 });

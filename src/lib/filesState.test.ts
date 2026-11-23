@@ -7,7 +7,7 @@ const B: Tab = { root: "repos", rel: "dir/b.ts", pinned: false };
 describe("normalizeState", () => {
   it("returns clean state for junk input", () => {
     for (const junk of [null, undefined, 42, "x", [], { tabs: "no" }]) {
-      expect(normalizeState(junk)).toEqual({ expanded: [], tabs: [], activeIdx: null, scope: { kind: "repo", name: "jax-os" }, selected: null });
+      expect(normalizeState(junk)).toEqual({ expanded: [], tabs: [], activeIdx: null, scope: { kind: "all" }, selected: null });
     }
   });
   it("keeps valid entries, drops invalid ones, dedupes, enforces one preview", () => {
@@ -27,11 +27,11 @@ describe("normalizeState", () => {
 });
 
 describe("normalizeState — scope/selected (spec §6)", () => {
-  it("defaults scope to {kind:'repo',name:'jax-os'} and selected to null when the field is absent or the wrong shape", () => {
-    expect(normalizeState(null).scope).toEqual({ kind: "repo", name: "jax-os" });
+  it("defaults scope to {kind:'all'} and selected to null when the field is absent or the wrong shape", () => {
+    expect(normalizeState(null).scope).toEqual({ kind: "all" });
     expect(normalizeState(null).selected).toBeNull();
-    expect(normalizeState({ scope: "bogus", selected: "bogus" }).scope).toEqual({ kind: "repo", name: "jax-os" });
-    expect(normalizeState({ scope: { kind: "repo" } }).scope).toEqual({ kind: "repo", name: "jax-os" }); // missing name
+    expect(normalizeState({ scope: "bogus", selected: "bogus" }).scope).toEqual({ kind: "all" });
+    expect(normalizeState({ scope: { kind: "repo" } }).scope).toEqual({ kind: "all" }); // missing name
     expect(normalizeState({ scope: { kind: "all" } }).scope).toEqual({ kind: "all" }); // spec §4.1
   });
 

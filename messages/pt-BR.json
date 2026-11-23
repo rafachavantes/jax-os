@@ -684,7 +684,7 @@
         "missing-credentials": {
           "anthropic": "Credenciais não encontradas (~/.claude)",
           "codex": "Credenciais não encontradas (~/.codex)",
-          "opencode": "Defina OPENCODE_GO_API_KEY em ~/.hermes/.env ou .env.local"
+          "opencode": "Defina OPENCODE_GO_API_KEY em $JAXOS_HOME/.env ou .env.local"
         },
         "rate-limited": "Limite de consultas — aguardando",
         "generic": "Falha ao consultar"

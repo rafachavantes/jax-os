@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, readdir, realpath, readFile, stat as nodeStatAsync, realpath as nodeRealpathAsync, opendir as nodeOpendirAsync, open as nodeOpenAsync, writeFile, access } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -38,6 +37,7 @@ import {
 } from "../db/native-usage";
 import { readGeneralSettings, type SettingsResult } from "../settings";
 import { jaxosHome } from "../env";
+import { resolveOpenCodeExecutable } from "./cli-presence";
 
 export const HARNESSES = ["claude", "codex", "opencode"] as const;
 export type Harness = (typeof HARNESSES)[number];
@@ -466,10 +466,6 @@ export function accountingSummary(items: NativeUsageItem[]): {
 // roots, run the installed OpenCode binary, or perform synchronous native IO in
 // the request-triggered after() callback.
 
-export const OPENCODE_EXECUTABLE = "/home/rafa/.opencode/bin/opencode";
-export const OPENCODE_EXECUTABLE_SHA256 =
-  "9ca0b9953d49997601655e54f846a3efa464f237e47c6f1b04716d0f2e64c4c2";
-
 const JSONL_BUDGET = {
   maxFilesPerPass: 6,
   maxBytesPerSource: 16 * 1024 * 1024,
@@ -526,11 +522,6 @@ export type NativeExec = (
   opts: { cwd: string; env: Record<string, string>; timeout: number; maxBuffer: number },
 ) => Promise<NativeExecResult>;
 
-// Cooperative cancellation for the streaming hash: a chunk that already started may
-// settle, but the loop must observe this flag before reading the next one. It is not a
-// claim that an AbortSignal cancels a kernel read.
-export type HashCancellation = { cancelled: boolean };
-
 export type NativeCollectorDeps = {
   db: Database.Database;
   now: () => number;
@@ -547,7 +538,6 @@ export type NativeCollectorDeps = {
     ensureAdapter?: () => Promise<void>;
     exec: NativeExec;
     stat: (path: string) => Promise<StatLike | null>;
-    hash: (path: string, cancellation?: HashCancellation) => Promise<string | null>;
   };
 };
 
@@ -1879,8 +1869,6 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
 export const OPENCODE_RUNTIME = "Bun 1.3.14";
 export const OPENCODE_SCHEMA = "1.18.34";
 
-const executableIdentityCache = new Map<string, string>();
-
 // OpenCode preparation shares the same bounded single-flight boundary as JSONL sources:
 // a timed-out reader keeps its latch until it settles; later polls start nothing new.
 const openCodeRuntimes = new WeakMap<Database.Database, PendingOwner>();
@@ -1895,35 +1883,6 @@ function openCodeRuntime(db: Database.Database): PendingOwner {
 }
 
 type PrepFailure = { ok: false; state: SourceState; warning: string; pending: boolean };
-
-// One bounded streaming pass over the executable. Cancellation is checked before each
-// new chunk, so a timed-out preparation stops after the in-flight read settles and only
-// closes the owned handle.
-export async function hashFileStreaming(
-  fs: Pick<NativeFs, "open">,
-  path: string,
-  cancellation?: HashCancellation,
-): Promise<string | null> {
-  let handle: FileHandleLike | null = null;
-  try {
-    handle = await fs.open(path);
-    const digest = createHash("sha256");
-    const buffer = Buffer.alloc(64 * 1024);
-    let position = 0;
-    for (;;) {
-      if (cancellation?.cancelled) return null;
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
-      if (bytesRead <= 0) break;
-      digest.update(buffer.subarray(0, bytesRead));
-      position += bytesRead;
-    }
-    return digest.digest("hex");
-  } catch {
-    return null;
-  } finally {
-    await handle?.close().catch(() => undefined);
-  }
-}
 
 async function openCodeExecutableState(
   scope: IoWindow,
@@ -1945,32 +1904,7 @@ async function openCodeExecutableState(
   if (!info || !info.isFile()) {
     return { ok: false, state: "unavailable", warning: "executable-missing", pending: false };
   }
-  const identity = `${deps.opencode.executable}:${info.dev}:${info.ino}:${info.size}:${Math.floor(info.mtimeMs)}`;
-  const cachedHash = executableIdentityCache.get(identity);
-  let hash: string | null;
-  if (cachedHash !== undefined) {
-    hash = cachedHash;
-  } else {
-    const cancellation: HashCancellation = { cancelled: false };
-    try {
-      hash = await scope.io(
-        () => deps.opencode.hash(deps.opencode.executable, cancellation),
-        scope.wallDeadline,
-        () => undefined,
-      );
-    } catch (error) {
-      if (isTimeout(error)) {
-        // The original hash stays owned through close; it just stops reading chunks.
-        cancellation.cancelled = true;
-        return { ok: false, state: "unavailable", warning: "io-pending", pending: error.started };
-      }
-      hash = null;
-    }
-  }
-  if (hash !== null && cachedHash === undefined) executableIdentityCache.set(identity, hash);
-  if (hash !== OPENCODE_EXECUTABLE_SHA256) {
-    return { ok: false, state: "incompatible", warning: "executable-mismatch", pending: false };
-  }
+  // ponytail: no binary pin; the helper reply is validated (runtime + schema) by parseOpenCodeReply.
   return { ok: true };
 }
 
@@ -2453,7 +2387,7 @@ export async function defaultNativeCollectorDeps(db: Database.Database): Promise
     roots: startup.roots,
     configWarnings: startup.warnings,
     opencode: {
-      executable: OPENCODE_EXECUTABLE,
+      executable: resolveOpenCodeExecutable(),
       cwd,
       configPath,
       xdgConfigHome,
@@ -2483,8 +2417,6 @@ export async function defaultNativeCollectorDeps(db: Database.Database): Promise
           return null;
         }
       },
-      // Streams fixed bounded chunks; the whole executable is never materialized.
-      hash: (path, cancellation) => hashFileStreaming(fs, path, cancellation),
     },
   };
 }

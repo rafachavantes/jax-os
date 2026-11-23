@@ -1,5 +1,6 @@
 import type { Root, RepoRef, SearchScope } from "@/server/collectors/files";
 import {
+  DEFAULT_SCOPE,
   closeTab,
   createEdit,
   openPreview,
@@ -339,7 +340,7 @@ export type WorkspaceDeps = {
 };
 
 export function createFilesController(opts: { getDeps: () => WorkspaceDeps }) {
-  let treeSnap: FilesTreeState = { expanded: new Set(), tabs: [], activeIdx: null, hydrated: false, scope: { kind: "repo", name: "jax-os" }, selected: null };
+  let treeSnap: FilesTreeState = { expanded: new Set(), tabs: [], activeIdx: null, hydrated: false, scope: DEFAULT_SCOPE, selected: null };
   let editSnap: FilesEditState = { edits: {} };
   let locks: { root: Root; rel: string }[] = [];
   let notes: OpNote[] = [];

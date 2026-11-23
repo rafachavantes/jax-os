@@ -44,8 +44,8 @@ hardcoded string.
 
 ## i18n
 
-Every UI string lives in both `messages/pt-BR.json` and `messages/en-US.json`
-— both locales, always. The locale is a cookie (no URL routing), pt-BR by
+Every UI string lives in both `messages/en-US.json` and `messages/pt-BR.json`
+— both locales, always. The locale is a cookie (no URL routing), en-US by
 default. Components never embed a user-facing string of their own.
 
 ## Mutations audit

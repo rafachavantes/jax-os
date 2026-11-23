@@ -16,7 +16,6 @@ import type { InlineEdit, OpNote } from "@/lib/filesWorkspace";
 import { affectedPath, relativeToScope, scopedRel, serializeScope } from "../../lib/filesWorkspace";
 import { breadcrumbSegments } from "../../lib/breadcrumb";
 import { fetchRepoNames, repoNamesFromListing } from "../../lib/fileSearch";
-import { DEFAULT_SCOPE } from "../../lib/filesState";
 import { useGeneralSettings, vaultUsable } from "../../lib/settingsQuery";
 import { ancestorKeys } from "./FileEditor";
 import { ContextMenu, useContextMenu, type MenuItem } from "./ContextMenu";
@@ -283,7 +282,7 @@ export function FileTree({ expanded, onToggle, onOpenFile, onOpenFilePinned, act
   const ws = useFilesTreeWorkspace();
   // Global Constraints move 3: every ws.scope read below assumes a concrete repo/vault; in the
   // "all" scope the tree body renders the flat picker instead, so this fallback is never observed.
-  const treeScope: RepoRef = ws.scope.kind === "all" ? DEFAULT_SCOPE : ws.scope;
+  const treeScope: RepoRef = ws.scope.kind === "all" ? { kind: "repo", name: "" } : ws.scope;
   const repoNamesQuery = useQuery({ queryKey: ["files", "repoNames"], queryFn: () => fetchRepoNames(), staleTime: 60_000 });
   const repoNames = repoNamesQuery.data?.ok ? repoNamesFromListing(repoNamesQuery.data.data) : [];
   const repoNamesFailed = repoNamesQuery.isError || (repoNamesQuery.data != null && !repoNamesQuery.data.ok);

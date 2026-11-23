@@ -22,3 +22,12 @@ export function isCliPresent(name: string, env: NodeJS.ProcessEnv = process.env)
   // mirrors scripts/jaxflow_settings_io.py's own fallback.
   return executableFile(join(env.HOME || homedir(), ".opencode", "bin", "opencode"));
 }
+
+// Resolves the opencode binary: the official installer location first, else the first one on PATH.
+// Falls back to the installer path so a missing binary reports "executable-missing" there.
+export function resolveOpenCodeExecutable(env: Record<string, string | undefined> = process.env): string {
+  const installed = join(env.HOME || homedir(), ".opencode", "bin", "opencode");
+  if (executableFile(installed)) return installed;
+  const onPath = (env.PATH ?? "").split(delimiter).filter(Boolean).map((dir) => join(dir, "opencode"));
+  return onPath.find(executableFile) ?? installed;
+}
