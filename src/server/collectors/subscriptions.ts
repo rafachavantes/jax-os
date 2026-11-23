@@ -35,8 +35,23 @@ export function parseClaudeUsage(json: unknown, plan: string | null): ProviderUs
   const models: ProviderUsage["models"] = [];
   const opus = claudeWindow(pick("sevenDayOpus", "seven_day_opus"));
   const sonnet = claudeWindow(pick("sevenDaySonnet", "seven_day_sonnet"));
-  if (opus) models.push({ name: "Opus", weekly: opus });
-  if (sonnet) models.push({ name: "Sonnet", weekly: sonnet });
+  // Per-model weekly limits now arrive in `limits`; the legacy windows come back null.
+  if (Array.isArray(o.limits)) {
+    for (const l of o.limits as unknown[]) {
+      const e = (l && typeof l === "object" ? l : {}) as Json;
+      const model = ((e.scope ?? {}) as Json).model as Json | null | undefined;
+      const name = str(model?.display_name);
+      const pct = num(e.percent);
+      if (e.kind === "weekly_scoped" && name && pct !== null) {
+        models.push({ name, weekly: { usedPercent: Math.round(pct), resetsAt: str(e.resets_at) } });
+      }
+    }
+  }
+  const legacy = (name: string, weekly: RateWindow | null) => {
+    if (weekly && !models.some((m) => m.name === name)) models.push({ name, weekly });
+  };
+  legacy("Opus", opus);
+  legacy("Sonnet", sonnet);
   return {
     provider: "anthropic",
     plan,
