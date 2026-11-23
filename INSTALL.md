@@ -215,9 +215,14 @@ systemctl --user enable --now jaxos.service
 The units use `%h`, which resolves to your home directory — no path
 substitution needed for the default clone path. If you cloned `$JAXOS_REPO`
 somewhere else, edit the paths inside the copied units before enabling them.
-The metrics timer and the workflow poll timer (`jaxos-metrics.timer`,
-`jaxos-workflow-poll.timer`) are optional extras; enable them with
-`systemctl --user enable --now <unit>` the same way.
+The metrics timer, the workflow poll timer and the usage collection timer
+(`jaxos-metrics.timer`, `jaxos-workflow-poll.timer`, `jaxos-usage.timer`) are
+optional extras; enable them with `systemctl --user enable --now <unit>` the
+same way.
+
+`jaxos-usage.timer` feeds the /tokens page in the background: every minute it
+asks the running app for one bounded catch-up collection pass, so usage keeps
+updating whether or not the page is open.
 
 This is the persistent alternative to the Run step's foreground `pnpm start`.
 
