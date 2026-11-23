@@ -3844,7 +3844,7 @@ def test_worker_builder_handoff_is_contract_valid_with_plan_fallback_spec():
         assert "assumptions: The plan is the sole authority" in prompt
         assert "commands:" in prompt
         assert "test: true" in prompt
-        assert "verification: rafa-verifies" in prompt
+        assert "verification: owner-verifies" in prompt
         assert "out-of-scope: Anything the plan does not name" in prompt
         # §2.7's fixed inputs. No AGENTS.md exists in this fixture's control repo -- the
         # path is still named explicitly (kept as-is, fixes Part 3 diff-review F6), it just

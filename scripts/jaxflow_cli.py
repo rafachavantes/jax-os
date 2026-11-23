@@ -847,7 +847,7 @@ def _add_pr_parser(sub):
         description="Open (or resume) the GitHub PR a PR-preset delivery merges through: "
                      "push <branch> and open its PR into the Delivery target (or, for a "
                      "release/* head, the Production target). Run it once the diff review "
-                     "passes; no Rafa approval is needed to open a PR -- the merge approval "
+                     "passes; no owner approval is needed to open a PR -- the merge approval "
                      "is the only gate.",
     )
     pr_sub = pr.add_subparsers(dest="pr_command", required=True)
@@ -872,7 +872,7 @@ def _add_release_parser(sub):
         help="Cut and open the staging -> production promotion PR (dual-branch-pr only).",
         description="Snapshots the Delivery target, names release/<date>-staging-promotion, "
                      "and opens its PR into the Production target, reusing an open release PR. A SEPARATE "
-                     "Rafa approval then runs jaxflow merge on the printed branch/sha.",
+                     "owner approval then runs jaxflow merge on the printed branch/sha.",
     )
     _add_from(release, _FROM_HELP_MERGE)
     release.set_defaults(func=_cli_release)
@@ -881,8 +881,8 @@ def _add_release_parser(sub):
 def _add_merge_parser(sub):
     merge = sub.add_parser(
         "merge",
-        help="Merge a branch Rafa has explicitly approved by SHA.",
-        description="Merge an approved branch in the foreground. Run only after Rafa's "
+        help="Merge a branch the owner has explicitly approved by SHA.",
+        description="Merge an approved branch in the foreground. Run only after the owner's "
                      "explicit approval naming the branch, the full 40-hex head SHA, and "
                      "the destination (--target); there is no run_id and no status/result "
                      "for a merge. Local presets merge here and push the configured target. "
@@ -906,7 +906,7 @@ def _add_merge_parser(sub):
     )
     merge.add_argument(
         "--sha", required=True,
-        help="Full 40-hex head SHA Rafa approved. Refuses sha-mismatch if it is not full "
+        help="Full 40-hex head SHA the owner approved. Refuses sha-mismatch if it is not full "
              "40-hex or HEAD does not match it.",
     )
     merge.add_argument(
@@ -976,11 +976,11 @@ def _add_run_query_parsers(sub):
 def _add_mission_parser(sub):
     mission = sub.add_parser(
         "mission",
-        help="Track Rafa's own multi-phase objective (opt-in, cross-project).",
+        help="Track the owner's own multi-phase objective (opt-in, cross-project).",
         description="Start, update, and finish the ONE active mission -- a name, goal, "
                      "milestone checklist, and free-text status line, entirely separate "
                      "from jaxflow's own per-run tracking. Never invoked automatically; "
-                     "only /jaxflow-mission or Rafa's own explicit request drives it. No "
+                     "only /jaxflow-mission or the owner's own explicit request drives it. No "
                      "--from, no git-repo requirement, no caller-identity check -- same "
                      "carve-out status/result/cancel already have.",
     )

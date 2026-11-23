@@ -367,7 +367,7 @@ Refuses `preset-no-release` on every preset except `dual-branch-pr`, before any 
 
 ## Merge an approved branch
 
-ONLY after the owner agrees to your question, phrased exactly "Posso mergear `<branch>` em `<destination>`?" or "May I merge `<branch>` into `<destination>`?" (backticks required, no SHA in the text, or the dashboard's Approve merge button stays off) —
+ONLY after the owner agrees to your question, phrased as "May I merge `<branch>` into `<destination>`?" (the Portuguese "Posso mergear `<branch>` em `<destination>`?" is also accepted; backticks required, no SHA in the text, or the dashboard's Approve merge button stays off) —
 any clear yes is enough. Resolve the branch head SHA when you ask and pass it as `--sha`; if
 the branch moves afterwards, ask again. The detector tolerates the verb in either language, a backticked branch and target, an optional (`sha`) and any trailing words before the `?`; the legacy gate fallback applies only to rows stored before this change. Run it from the control repo:
 

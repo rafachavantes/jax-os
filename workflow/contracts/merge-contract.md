@@ -10,8 +10,8 @@ official code — treat it as the most restricted action in the workflow.
 ## MUST
 
 - Ask the owner exactly one question naming the branch and the destination, each in
-  backticks, in one of these two forms: "Posso mergear `<branch>` em `<destination>`?" or
-  "May I merge `<branch>` into `<destination>`?". The dashboard lights its "Approve merge"
+  backticks, in the canonical form "May I merge `<branch>` into `<destination>`?" (the
+  Portuguese form "Posso mergear `<branch>` em `<destination>`?" is also accepted). The dashboard lights its "Approve merge"
   button only for this phrasing (anywhere in the turn); put no SHA in the question text, and
   any other wording simply shows no button. Any clear agreement to that question ("sim", "ok",
   "pode", "merge aprovado") is the approval — the owner never has to repeat identifiers.

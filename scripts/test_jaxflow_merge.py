@@ -1850,7 +1850,7 @@ def test_merge_happy_path_call_order_and_printed_outcome_with_remote(tmp_path, m
     assert ev["type"] == "merge-approved" and ev["role"] == "lead" and ev["emitter"] == "wrapper"
     assert ev["payload"] == {
         "phase": "Phase X", "branch": "feat/x", "sha": sha, "target": "main",
-        "approved_by": "rafa", "merge_sha": "c" * 40,
+        "approved_by": "owner", "merge_sha": "c" * 40,
         "checks": {"mode": "run"},
     }
     assert ev["pane"] == "%1"
@@ -3703,7 +3703,7 @@ def test_merge_local_path_adds_mission_id_for_an_autonomous_mission(tmp_path, mo
     rc, _ = _local_merge(tmp_path, monkeypatch, get=_fake_get(_AUTONOMOUS), post=posted.append)
     assert rc == jaxflow_common.OK
     assert posted[0]["payload"]["mission_id"] == 7
-    assert posted[0]["payload"]["approved_by"] == "rafa"
+    assert posted[0]["payload"]["approved_by"] == "owner"
 
 
 @pytest.mark.parametrize("get", [
@@ -3771,7 +3771,7 @@ def test_merge_pr_path_adds_mission_id_for_an_autonomous_mission(tmp_path, monke
     rc, events = _pr_merge(tmp_path, monkeypatch, get=_fake_get(_AUTONOMOUS))
     assert rc == jaxflow_common.OK
     assert events[-1]["payload"]["mission_id"] == 7
-    assert events[-1]["payload"]["approved_by"] == "rafa"
+    assert events[-1]["payload"]["approved_by"] == "owner"
 
 
 @pytest.mark.parametrize("get", [

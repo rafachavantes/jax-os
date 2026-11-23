@@ -154,9 +154,9 @@ mode: internal-single-user
 
 ## Verification policy  <!-- CHOOSE ONE DEFAULT; the phase handoff may override -->
 
-- `rafa-verifies` — after completing the handoff's named test/build commands, the
+- `owner-verifies` — after completing the handoff's named test/build commands, the
   builder runs no additional verification command; the owner checks by hand.
-  — `rafa-verifies` is this workflow's fixed name for "the owner verifies by hand,"
+  — `owner-verifies` (legacy `rafa-verifies` is still accepted) is this workflow's fixed name for "the owner verifies by hand,"
   independent of who the owner is.
 - `agent-verify: <Playwright | agent browser | curl smoke | …>` — the builder runs the
   named check and pastes evidence in the report.

@@ -829,7 +829,7 @@ def _run_doc_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowli
     # opts into Rafa's gate -- captured here (the only place the worker has this text),
     # read back by `_update_status_md` via `manifest["spec_gate_required"]`.
     manifest["spec_gate_required"] = any(
-        line.strip().lower().startswith("rafa gate: required")
+        line.strip().lower().startswith(("owner gate: required", "rafa gate: required"))  # "rafa" = legacy
         for line in target_text.splitlines()[:10]
     )
     handoff = framing

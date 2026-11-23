@@ -334,7 +334,7 @@ def _build_builder_handoff(*, plan_dest, spec_dest, agents_path, branch, head_sh
         "commands:\n"
         f"  test: {verify_cmd}\n"
         f"  build: {build_cmd or 'none'}\n"
-        "verification: rafa-verifies\n"
+        "verification: owner-verifies\n"
         "out-of-scope: Anything the plan does not name. No push, no merge, no rebase.\n\n"
         f"whitelist: {', '.join(whitelist)}\n"
     )

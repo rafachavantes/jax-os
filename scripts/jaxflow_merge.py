@@ -1486,7 +1486,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
         post, env, project,
         _attach_mission_id(
             {"phase": phase, "branch": args.branch, "sha": args.sha, "target": target,
-             "approved_by": "rafa", "merge_sha": merge_sha, "pr_number": number,
+             "approved_by": "owner", "merge_sha": merge_sha, "pr_number": number,
              "pr_url": view["url"], "checks": checks_audit},
             resumed=resumed, get=get),
         retry_msg=f"PR #{number} merged as {merge_sha}; re-run the same jaxflow merge to resume",
@@ -1630,7 +1630,7 @@ def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=No
             post, env, project,
             _attach_mission_id(
                 {"phase": phase, "branch": args.branch, "sha": args.sha,   # already <= 200
-                 "target": target, "approved_by": "rafa", "merge_sha": merge_sha,
+                 "target": target, "approved_by": "owner", "merge_sha": merge_sha,
                  "checks": checks_audit},
                 resumed=resuming, get=get),
             retry_msg=f"merge commit {merge_sha} kept; re-run the same jaxflow merge to resume",
