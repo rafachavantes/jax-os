@@ -6,7 +6,7 @@
 // Needs a finished `pnpm build` (.next/). It never builds, never uses ports 3000/3100 and deletes only the
 // scratch directory it created itself. DEMO_SHOTS_EXTRA_DENY=a,b adds denylist words (also the fault-injection hook).
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { hostname, tmpdir, userInfo } from "node:os";
@@ -21,7 +21,7 @@ const RESERVED_PORTS = [3000, 3100];
 const THEMES = ["dark", "light"];
 const PAGES = [
   { name: "mission-control", path: "/", ready: "Acme API", w: 1440, h: 900 },
-  { name: "tokens", path: "/tokens", ready: "demo-model-a", w: 1440, h: 900 },
+  { name: "tokens", path: "/tokens", ready: "5h window", w: 1440, h: 900 },
   // Health renders seeded service names, not hostname (page.tsx strips the .service suffix).
   { name: "health", path: "/health", ready: "demo-web", w: 1440, h: 900 },
   { name: "mobile-mission-control", path: "/", ready: "Acme API", w: 390, h: 844 },
@@ -118,26 +118,8 @@ function seedWorld(p, nowMs) {
   // One reviewer agent on, so the app-wide "no agent" banner does not cover every shot.
   writeFileSync(join(p.jaxos, "settings.json"), JSON.stringify({ ownerName: "Alex", locale: "en-US", reposRoot: p.repos, vaultPath: null,
     monitoredUnits: { user: [], system: [] },
-    integrations: { linear: false, ttyd: false, webhook: false, hermesTokens: true, agents: { claude: true, codex: false, opencode: true },
+    integrations: { linear: false, ttyd: false, webhook: false, agents: { claude: true, codex: false, opencode: true },
       classifier: false, github: false, vault: false } }, null, 2));
-  const hermesBin = join(p.home, ".local", "bin");
-  mkdirSync(hermesBin, { recursive: true });
-  writeFileSync(join(hermesBin, "hermes"), "#!/bin/sh\nprintf '%s\\n' '{\"system_prompt\":{\"bytes\":12000},\"skills_index\":{\"bytes\":4000},\"memory\":{\"bytes\":1800},\"user_profile\":{\"bytes\":900},\"tools\":{\"count\":12,\"json_bytes\":6400},\"platform\":\"demo\",\"model\":\"demo-model-a\"}'\n");
-  chmodSync(join(hermesBin, "hermes"), 0o755);
-  const Database = createRequire(join(REPO, "package.json"))("better-sqlite3");
-  const r = rng(512);
-  const h = new Database(join(p.home, ".hermes", "state.db"));
-  h.exec(`CREATE TABLE sessions (id INTEGER PRIMARY KEY, model TEXT, started_at INTEGER, input_tokens INTEGER, output_tokens INTEGER,
-    cache_read_tokens INTEGER, cache_write_tokens INTEGER, reasoning_tokens INTEGER, estimated_cost_usd REAL)`);
-  const ins = h.prepare("INSERT INTO sessions (model, started_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_usd) VALUES (?,?,?,?,?,?,?,?)");
-  for (let i = 0; i < 40; i++) {
-    const inp = 20000 + Math.floor(r() * 90000), out = 3000 + Math.floor(r() * 20000), cr = Math.floor(r() * 250000);
-    ins.run(r() < 0.65 ? "demo-model-a" : "demo-model-b", Math.floor(nowMs / 1000) - Math.floor(r() * 14 * 86400), inp, out, cr, Math.floor(r() * 30000), Math.floor(r() * 8000), (inp + out) * 0.000004 + cr * 0.0000004);
-  }
-  h.close();
-  const skills = { "triage-inbox": 42, "weekly-digest": 17, "release-notes": 9, "stale-branch-sweep": 3 };
-  writeFileSync(join(p.home, ".hermes", "skills", ".usage.json"), JSON.stringify(Object.fromEntries(Object.entries(skills).map(([k, v]) =>
-    [k, { use_count: v, last_used_at: new Date(nowMs - v * 3600e3).toISOString(), state: "active" }]))));
 }
 
 function seedMetrics(p, nowMs) { // after the first /api/health request has run the migrations
@@ -252,7 +234,7 @@ async function main() {
   const dynamic = [userInfo().username, hostname().split(".")[0]];
   const root = mkdtempSync(join(tmpdir(), "jaxos-demo."));
   const p = { root, home: join(root, "home"), jaxos: join(root, "home", ".jax-os"), repos: join(root, "repos"), tmux: join(root, "tmux"), shots: join(root, "shots") };
-  for (const d of [p.jaxos, p.repos, p.tmux, p.shots, join(p.home, ".hermes", "skills")]) mkdirSync(d, { recursive: true });
+  for (const d of [p.jaxos, p.repos, p.tmux, p.shots]) mkdirSync(d, { recursive: true });
   // SWC refuses a native cache under tmpdir or a group-writable parent. The real user cache already passes that check.
   const env = { PATH: process.env.PATH, HOME: p.home, JAXOS_HOME: p.jaxos, TMUX_TMPDIR: p.tmux, LANG: "C.UTF-8",
     SWC_NATIVE_BINDING_CACHE: join(userInfo().homedir, ".cache") }; // allow-list: no inherited credentials

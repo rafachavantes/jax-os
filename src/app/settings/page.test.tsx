@@ -66,7 +66,7 @@ const settingsWith = (opencode: boolean) => ({
   ok: true, webhookConfigured: false, envFileState: "ok",
   data: {
     ownerName: "", locale: "en-US", reposRoot: "/x", vaultPath: null, monitoredUnits: { user: [], system: [] },
-    integrations: { linear: false, ttyd: false, webhook: false, hermesTokens: false,
+    integrations: { linear: false, ttyd: false, webhook: false,
       agents: { claude: true, codex: true, opencode }, classifier: false, github: false, vault: false },
   },
 });

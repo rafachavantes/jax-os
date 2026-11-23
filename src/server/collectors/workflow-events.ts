@@ -623,8 +623,8 @@ export function parseSessionBody(body: unknown): SessionParse {
   }
 }
 
-// ---- Outbound shape (spec §4.2 "Hermes/Telegram action" column) ----
-// The one-liner Hermes relays verbatim; deterministic + tested so Hermes never
+// ---- Outbound shape (spec §4.2 notification-action column) ----
+// The one-liner the webhook receiver relays verbatim; deterministic + tested so the receiver never
 // has to compose (and never reads more than this). Option numbering is
 // 1-based in array order — the Phase C answer route maps digits to it.
 

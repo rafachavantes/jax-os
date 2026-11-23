@@ -112,7 +112,7 @@ export const EVENT_MATRIX: Record<EventType, MatrixRow> = {
     suppressWhileQuestionPending: true,
   },
   // MOA-469 live correction (approved 2026-09-10): stops are LOCAL telemetry for both emitters —
-  // never forwarded to Telegram. Ingestion, classification, timelines and session correlation are
+  // never forwarded to the notification channel. Ingestion, classification, timelines and session correlation are
   // unchanged; listPending additionally excludes any legacy pending stop row (workflows.ts).
   "turn-stopped": { emitters: ["claude-stop", "codex-stop"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   "turn-started": { emitters: ["claude-userprompt", "codex-userprompt"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
@@ -135,7 +135,7 @@ export const EVENT_MATRIX: Record<EventType, MatrixRow> = {
   "subagent-started": { emitters: ["claude-subagentstart", "codex-subagentstart"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   "subagent-stopped": { emitters: ["claude-subagentstop", "codex-subagentstop"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   // Usage attribution: one silent row per managed OpenCode launch. Local only — it must
-  // never reach Telegram, the cards or the project timeline.
+  // never reach the notification channel, the cards or the project timeline.
   "builder-launched": { emitters: ["wrapper"], roles: ["builder"], runScoped: true, policy: "local" },
 };
 

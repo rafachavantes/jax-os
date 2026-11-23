@@ -20,7 +20,7 @@ import { GeneralSettingsSection } from "./GeneralSettingsSection";
 const BASE_SETTINGS = {
   ownerName: "", locale: "en-US", reposRoot: "/home/x/repos", vaultPath: null,
   monitoredUnits: { user: [], system: [] },
-  integrations: { linear: false, ttyd: false, webhook: false, hermesTokens: false,
+  integrations: { linear: false, ttyd: false, webhook: false,
     agents: { claude: false, codex: false, opencode: false }, classifier: false, github: false, vault: false },
 };
 useQueryMock.mockReturnValue({ data: { ok: true, data: BASE_SETTINGS, webhookConfigured: false }, isLoading: false, isError: false });
@@ -28,7 +28,7 @@ useQueryMock.mockReturnValue({ data: { ok: true, data: BASE_SETTINGS, webhookCon
 describe("GeneralSettingsSection — fresh install (every toggle off)", () => {
   it("renders every integration row, all unchecked, discoverable even though off (spec: Geral's own toggles stay rendered)", () => {
     const html = renderToStaticMarkup(createElement(GeneralSettingsSection));
-    for (const flag of ["linear", "ttyd", "hermesTokens", "agentClaude", "agentCodex", "agentOpenCode", "classifier", "github", "vault"]) {
+    for (const flag of ["linear", "ttyd", "agentClaude", "agentCodex", "agentOpenCode", "classifier", "github", "vault"]) {
       expect(html).toContain(`data-integration="${flag}"`);
     }
     expect(html).not.toContain('aria-checked="true"'); // no toggle pre-checked on a fresh install
@@ -86,7 +86,7 @@ describe("GeneralSettingsSection — toggles render as switches", () => {
     useQueryMock.mockReturnValueOnce({ data: { ok: true, data: BASE_SETTINGS, webhookConfigured: false }, isLoading: false, isError: false });
     const html = renderToStaticMarkup(createElement(GeneralSettingsSection));
     expect(html).not.toContain('type="checkbox"');
-    expect(html.match(/role="switch"/g)?.length).toBe(10); // 9 integration rows + webhook
+    expect(html.match(/role="switch"/g)?.length).toBe(9); // 8 integration rows + webhook
   });
 });
 

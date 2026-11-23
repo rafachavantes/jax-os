@@ -1,5 +1,5 @@
 [Unit]
-Description=jax-os workflow fallback poll (re-deliver pending events to Hermes)
+Description=jax-os workflow fallback poll (re-deliver pending events to the notification webhook)
 
 [Service]
 Type=oneshot

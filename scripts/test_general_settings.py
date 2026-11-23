@@ -16,7 +16,7 @@ EXPECTED = {
     "vaultPath": "/home/rafa/obsidian-vault",
     "monitoredUnits": {"user": ["hermes-gateway.service"], "system": ["tailscaled.service"]},
     "integrations": {
-        "linear": True, "ttyd": False, "webhook": True, "hermesTokens": False,
+        "linear": True, "ttyd": False, "webhook": True,
         "agents": {"claude": True, "codex": False, "opencode": False},
         "classifier": True, "github": False, "vault": False,
     },
@@ -36,11 +36,17 @@ def test_missing_input_returns_every_default():
         "ownerName": "", "locale": "en-US", "reposRoot": str(Path.home() / "repos"),
         "vaultPath": None, "monitoredUnits": {"user": [], "system": []},
         "integrations": {
-            "linear": False, "ttyd": False, "webhook": False, "hermesTokens": False,
+            "linear": False, "ttyd": False, "webhook": False,
             "agents": {"claude": False, "codex": False, "opencode": False},
             "classifier": False, "github": False, "vault": False,
         },
     }
+
+
+def test_legacy_hermes_tokens_key_is_accepted_and_dropped():
+    parsed = gs.parse_settings({"integrations": {"linear": True, "hermesTokens": True}})
+    assert parsed["integrations"]["linear"] is True
+    assert "hermesTokens" not in parsed["integrations"]
 
 
 def test_a_partial_nested_object_defaults_its_missing_child_independently():

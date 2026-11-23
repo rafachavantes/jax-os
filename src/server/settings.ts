@@ -42,7 +42,7 @@ export type GeneralSettings = {
   vaultPath: string | null;
   monitoredUnits: { user: string[]; system: string[] };
   integrations: {
-    linear: boolean; ttyd: boolean; webhook: boolean; hermesTokens: boolean;
+    linear: boolean; ttyd: boolean; webhook: boolean;
     agents: { claude: boolean; codex: boolean; opencode: boolean };
     classifier: boolean; github: boolean; vault: boolean;
   };
@@ -56,8 +56,9 @@ const MONITORED_KEYS = ["user", "system"] as const;
 const AGENT_KEYS = ["claude", "codex", "opencode"] as const;
 // MOA-504 D2: the old key is accepted on READ only and mapped into `agents`; it is never written back.
 const LEGACY_SUBSCRIPTION_KEYS = ["claude", "codex", "opencodeGo"] as const;
-const BOOL_INTEGRATION_KEYS = ["linear", "ttyd", "webhook", "hermesTokens", "classifier", "github", "vault"] as const;
-const INTEGRATION_KEYS = [...BOOL_INTEGRATION_KEYS, "agents", "subscriptions"] as const;
+const BOOL_INTEGRATION_KEYS = ["linear", "ttyd", "webhook", "classifier", "github", "vault"] as const;
+// Legacy: `hermesTokens` was removed; old files still carry it, so it is accepted on read and dropped.
+const INTEGRATION_KEYS = [...BOOL_INTEGRATION_KEYS, "agents", "subscriptions", "hermesTokens"] as const;
 
 type Obj = Record<string, unknown>;
 const isStrArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
@@ -68,7 +69,7 @@ function defaultSettings(): GeneralSettings {
     ownerName: "", locale: "en-US", reposRoot: join(homedir(), "repos"), vaultPath: null,
     monitoredUnits: { user: [], system: [] },
     integrations: {
-      linear: false, ttyd: false, webhook: false, hermesTokens: false,
+      linear: false, ttyd: false, webhook: false,
       agents: { claude: false, codex: false, opencode: false },
       classifier: false, github: false, vault: false,
     },
@@ -180,7 +181,7 @@ export function readRawSettings(path: string = defaultPath()): RawSettingsRead {
 }
 
 export type KeyPresence = {
-  linear: boolean; ttyd: boolean; webhook: boolean; hermesTokens: boolean;
+  linear: boolean; ttyd: boolean; webhook: boolean;
   classifier: boolean; github: boolean; vault: boolean;
   agents: { claude: boolean; codex: boolean; opencode: boolean };
 };
@@ -190,7 +191,7 @@ export type KeyPresence = {
 // `subscriptions` names count as explicit for the same agent they map to.
 export function settingsKeyPresence(raw: unknown): KeyPresence {
   const none = (): KeyPresence => ({
-    linear: false, ttyd: false, webhook: false, hermesTokens: false,
+    linear: false, ttyd: false, webhook: false,
     classifier: false, github: false, vault: false,
     agents: { claude: false, codex: false, opencode: false },
   });

@@ -194,7 +194,7 @@ export const MIGRATIONS: readonly string[] = [
   );
   ALTER TABLE workflow_afk ADD COLUMN archive_after_days INTEGER NOT NULL DEFAULT 14;
   CREATE INDEX workflow_events_project_ts ON workflow_events (project, ts);`,
-  `-- MOA-487 (migration 10): per-type Telegram-forward options (spec §5 Decision 1). One new
+  `-- MOA-487 (migration 10): per-type forward options (spec §5 Decision 1). One new
   -- column on the existing workflow_afk singleton — this literal MUST equal lib/workflow.ts's
   -- DEFAULT_FORWARD_TYPES exactly; index.test.ts's migration-10 test asserts it.
   ALTER TABLE workflow_afk ADD COLUMN forward_types TEXT NOT NULL DEFAULT '["question","attention-needed","mission-finished"]';`,

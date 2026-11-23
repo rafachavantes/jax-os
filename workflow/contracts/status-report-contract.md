@@ -40,7 +40,7 @@ concrete frontmatter example. This file states the grammar both roles share; it 
 neither key.
 
 `summary` is the only report content that machines forward (it is what reaches
-the owner's Telegram). Make it carry the decision-relevant fact: outcome + the one thing
+the notification channel). Make it carry the decision-relevant fact: outcome + the one thing
 that matters. Detail belongs in the body.
 
 **Body (free markdown, read by the tech lead and the owner):**
