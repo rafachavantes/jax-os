@@ -30,7 +30,8 @@ const PROJECT = {
 };
 const HUB = {
   byProject: {}, historicalTruncated: false, codexSource: "ok", tmuxSource: "ok",
-  prefs: {}, settings: { archiveAfterDays: 14 },
+  // Pinned: an idle project with no session or run would otherwise collapse off the board.
+  prefs: { Alpha: { pinned: true, hiddenAt: null } }, settings: { archiveAfterDays: 14 },
 };
 const COCKPIT = { ok: true, data: { revision: 1, layout: null, prScope: "mine" } };
 

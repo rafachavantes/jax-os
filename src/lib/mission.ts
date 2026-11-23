@@ -1022,6 +1022,10 @@ function buildModel(
       .map((v) => (v ? Date.parse(v) : NaN)).filter((n) => Number.isFinite(n));
     const lastActivityMs = lastActivityCandidates.length > 0 ? Math.max(...lastActivityCandidates) : null;
     const archiveAfterDays = hub && hub.ok ? (hub.data.settings?.archiveAfterDays ?? 14) : 14;
+    // The board is for open work: no open session and no run in flight collapses the card, once
+    // both session sources answered (a failed source must not empty the board).
+    const noOpenWork = hubReady && hubMapTmuxSource === "ok" && hubMapCodexSource !== "failed"
+      && liveSessions(sessions).length === 0 && (hp?.activeRuns?.length ?? 0) === 0;
     // Order pinned > archived > hidden > autoHidden > visible — the spec names pinned as the one
     // override; the other three are mutually protective in practice and no acceptance criterion
     // exercises a tie, so this order is a deliberate, documented pick.
@@ -1031,7 +1035,7 @@ function buildModel(
         ? "archived"
         : prefs.hiddenAt !== null && (lastActivityMs === null || lastActivityMs <= Date.parse(prefs.hiddenAt))
           ? "hidden"
-          : lastActivityMs !== null && nowMs - lastActivityMs >= archiveAfterDays * 24 * 60 * 60 * 1000
+          : noOpenWork || lastActivityMs !== null && nowMs - lastActivityMs >= archiveAfterDays * 24 * 60 * 60 * 1000
             ? "autoHidden"
             : "visible";
     const timeline: MissionTimelineEntry[] = hubReady
