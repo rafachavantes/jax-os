@@ -2406,7 +2406,6 @@ describe("background refresh and genuinely pending work", () => {
     expect(cycleOf(deps)!.cycle).toBeGreaterThan(initialCycle);
     const refreshCycle = cycleOf(deps)!.cycle;
     let refreshPasses = 0;
-    let sawBackground = false;
     const refreshStates: string[] = [];
     while (guard < 600) {
       await pass();
@@ -2414,12 +2413,10 @@ describe("background refresh and genuinely pending work", () => {
       refreshPasses += 1;
       const status = statusOf(deps);
       refreshStates.push(status?.state ?? "none");
-      if ((status?.warnings ?? []).includes("background-refresh")) sawBackground = true;
       if (cycleOf(deps)!.cycle !== refreshCycle) break;
       if (cycleOf(deps)!.state === "complete") break;
     }
     expect(refreshStates.every((s) => s === "available")).toBe(true);
-    expect(sawBackground).toBe(true);
     expect(refreshPasses).toBeGreaterThan(0);
 
     // Wait for the next cycle to start, then add files before its final unvisited
@@ -2630,7 +2627,7 @@ describe("background refresh and genuinely pending work", () => {
     expect(calls).toBe(callsBeforeWait);
     await pass();
     expect(statusOf(deps, "opencode")?.state).toBe("available");
-    expect(statusOf(deps, "opencode")?.warnings).toContain("background-refresh");
+    expect(statusOf(deps, "opencode")?.warnings).not.toContain("background-refresh");
     expect(getOpenCodeCursor(deps.db).complete).toBe(true);
     expect(Object.keys(JSON.parse(argvStates.at(-1)!)).sort()).toEqual(["v", "v1", "v2"]);
     const updated = queryNativeUsage(deps.db, { period: 30, now: NOW });
@@ -2639,7 +2636,7 @@ describe("background refresh and genuinely pending work", () => {
     // Several bounded background pages stay available until the re-sweep completes.
     await pass();
     expect(statusOf(deps, "opencode")?.state).toBe("available");
-    expect(statusOf(deps, "opencode")?.warnings).toContain("background-refresh");
+    expect(statusOf(deps, "opencode")?.warnings).not.toContain("background-refresh");
     expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).byAgent.find((a) => a.name === "OpenCode")?.allOutput).toBe(52);
 
     await pass();

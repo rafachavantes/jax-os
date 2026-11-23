@@ -1687,8 +1687,6 @@ async function runJsonlSourcePass(
     : pending
       ? "indexing"
       : stateFor(source, deps.db, deps.now(), coverageFailure);
-  const discovery = discoveryCompletion(deps.db, source);
-  if (discovery.active && !discovery.initial) warnings.add("background-refresh");
   return {
     items: ingestion?.items ?? 0,
     filesProcessed: ingestion?.filesProcessed ?? 0,
@@ -2196,7 +2194,6 @@ export async function runOpenCodeSourcePass(deps: NativeCollectorDeps): Promise<
       }
     : { v: 1, complete: cursor.complete, v1: next.v1, v2: next.v2 };
   persistOpenCodeBatch(deps.db, items, persisted, deps.now());
-  if (!complete && cursor.complete) warnings.add("background-refresh");
   return {
     items: items.length,
     warnings: warnings.values,
