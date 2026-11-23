@@ -19,7 +19,7 @@ import jev_client
 
 @pytest.fixture(autouse=True)
 def _integration_on_by_default(monkeypatch):
-    # MOA-502 Decision 1: `refine_reason` now reads integrations.classifier live through
+    # `refine_reason` now reads integrations.classifier live through
     # general_settings.read_settings(). Pre-existing tests exercise the real (non-injected)
     # Jev path, so default it ON here; the gate-specific test below re-patches read_settings
     # with its own off fixture, which wins (its setattr applies after this autouse one).
@@ -209,14 +209,14 @@ def test_report_contract_the_a070500df0bc_shape_recovers_the_bold_prefixed_summa
     # "**summary:**" line needs no row-8 fallback: recovered verbatim, bold markup
     # stripped, never a body line.
     text = (
-        "# Report — a070500df0bc (builder, jax-os, moa-470)\n"
+        "# Report — a070500df0bc (builder, jax-os, run-1)\n"
         "**verdict:** success\n"
         "**commit:** 6127c1153b4070b01e32e6c821d0c6586efa8de9\n"
         "**summary:** Persist every jaxflow worker's child stdout+stderr into redacted "
         "child.log and surface classified reason/tail on missing/invalid run-finished.\n"
     )
     status, summary, outcome = jr.validate_report(
-        text, "a070500df0bc", "jax-os", "builder", "moa-470")
+        text, "a070500df0bc", "jax-os", "builder", "run-1")
     assert status == "invalid"  # row 5: "verdict:" is the wrong label for a builder
     assert outcome is None
     assert summary == (
@@ -438,7 +438,7 @@ def test_runtime_argv_is_pinned_and_prompt_content_stays_out_of_argv():
             ]
             with pytest.raises(ValueError):
                 jr.runtime_argv(legacy, "builder", Path("/repo"), prompt, out)
-        # `codex` is a REVIEWER runtime only (MOA-451): its workspace-write sandbox cannot
+        # `codex` is a REVIEWER runtime only: its workspace-write sandbox cannot
         # write a linked worktree's git dir, so a Codex builder could implement but never
         # commit, and could not spawn `next build`'s TypeScript child either.
         try:
@@ -1084,7 +1084,7 @@ def test_runtime_argv_codex_reviewer_codex_cwd_override_bare_call_stays_tmp():
 
 
 def test_runtime_argv_claude_dedupes_read_dir_grants_and_keeps_spaces():
-    # MOA-467: the read-only directory grants (control repo, worktree, external document
+    # the read-only directory grants (control repo, worktree, external document
     # parents) must appear exactly once each, in order, with spaces intact -- argv
     # entries, never a shell-joined string.
     with TemporaryDirectory() as raw:
@@ -1230,7 +1230,7 @@ def test_parse_tests_frames_empty_text_is_frame_one_missing():
     assert error == "frame-1-missing"
 
 
-# ---- MOA-470: child.log path, tail excerpt, reason classifier ----
+# ---- child.log path, tail excerpt, reason classifier ----
 
 def test_child_log_path_matches_the_manifest_dir_shape():
     # spec §4.1: child.log is a sibling of manifest.json, which `jaxflow.py`'s
@@ -1319,7 +1319,7 @@ def test_classify_reason_billing_and_quota_patterns():
     assert jr.classify_reason("403 Forbidden\n", exit_code=1, contract_status="missing") == "crash"
 
 
-# ---- MOA-495 2.1: refine_reason (Jev Choice refinement) ------------------------
+# ---- refine_reason (Jev Choice refinement) ------------------------
 
 def test_refine_reason_regex_wins_without_calling_jev():
     def unreachable(_window):
@@ -1385,7 +1385,7 @@ def test_default_reason_jev_rejects_a_choice_outside_the_criteria(monkeypatch):
         jr._default_reason_jev("plain traceback\n")
 
 
-# ---- MOA-495 2.1: log_context (Jev Score over ~2KiB chunks) ---------------------
+# ---- log_context (Jev Score over ~2KiB chunks) ---------------------
 
 def test_log_context_keeps_top_scored_chunks_and_always_the_last_one():
     # 7 chunks (A..G); the last (G) scores lowest of all and would not make the top 5 --
@@ -1454,7 +1454,7 @@ def test_log_context_calls_scorer_when_classifier_is_on(monkeypatch):
     assert result is not None
 
 
-# ---- MOA-495 cold review F2: _bound_bytes / cap_payload_bytes --------------------
+# ---- _bound_bytes / cap_payload_bytes --------------------
 
 def test_bound_bytes_cuts_at_a_valid_utf8_character_boundary():
     assert jr._bound_bytes("€" * 10, 5) == "€"  # 1 whole char (3B); the 2 leftover bytes of the 2nd are dropped
@@ -1502,7 +1502,7 @@ def test_cap_payload_bytes_multibyte_regression():
     assert "log_context" not in result_extreme
 
 
-# ---- MOA-495 2.2: extract_findings ----------------------------------------------
+# ---- extract_findings ----------------------------------------------
 
 def test_extract_findings_splits_on_each_numbered_line():
     text = (
@@ -1534,7 +1534,7 @@ def test_child_log_classify_window_is_byte_bounded_not_char_bounded():
     assert len(window) <= 65536 // 3 + 1  # at most ~limit/3 chars fit in a 3-byte-per-char stream
 
 
-# ---- MOA-474: derive_outcome fixtures -------------------------------------------
+# ---- derive_outcome fixtures -------------------------------------------
 # Trimmed, hand-built envelopes matching the exact key shapes spec §2.1 describes for
 # the xAI/OpenRouter/unknown incidents -- never copied from a real .local/runs log.
 
@@ -1682,7 +1682,7 @@ def test_derive_outcome_row10_nonzero_exit_with_clean_last_line_is_still_failure
 
 
 def test_derive_outcome_row10_nonzero_exit_uses_last_stream_text_when_present():
-    # MOA-474 cold review F4: `last_stream_text`, once populated by the caller via
+    # `last_stream_text`, once populated by the caller via
     # _last_stream_text_line, replaces the "no cause emitted" tail.
     out = jr.derive_outcome(_builder_evidence(
         stream_last_line=_CLEAN_STREAM_LAST_LINE, exit_code=1,
@@ -1719,7 +1719,7 @@ def test_derive_outcome_row11_verify_red_reports_verify_stage():
 
 
 def test_derive_outcome_verify_diagnostic_redacts_secrets():
-    # MOA-474 cold review F2: a verify/build frame's command and output can both carry
+    # a verify/build frame's command and output can both carry
     # a secret (an inline env assignment, a leaked token in a stack trace) -- both must
     # come out through the same redact() _write_verify_tests_file already applies.
     command = "TOKEN=sk-abc1234567890abcd1234 pytest -q"
@@ -1762,7 +1762,7 @@ def test_derive_outcome_row7_tests_evidence_file_write_failure_reports_verify_st
     assert out["stage"] == "verify"
 
 
-# ---- rows 13/14: MOA-472 fallback, gated behind 9-12 ----
+# ---- rows 13/14: fallback, gated behind 9-12 ----
 
 def test_derive_outcome_row13_all_green_and_descendant_is_success():
     out = jr.derive_outcome(_builder_evidence(stream_last_line=_CLEAN_STREAM_LAST_LINE))
@@ -1801,7 +1801,7 @@ def test_derive_outcome_row3_claimed_blocked_stays_blocked_even_with_red_verify(
     ))
     assert out["result"] == "blocked"
     assert out["stage"] == "report"
-    # MOA-474 cold review F8: row 3's diagnostic is the report's own summary, verbatim
+    # row 3's diagnostic is the report's own summary, verbatim
     # -- never None (a None diagnostic renders as the literal string "None" on the
     # callback line, spec §12.1).
     assert out["diagnostic"] == "blocked: waiting on API access"
@@ -1830,7 +1830,7 @@ def test_derive_outcome_row3_claimed_failure_with_no_report_summary_is_never_non
 
 
 def test_derive_outcome_out_of_enum_report_label_normalizes_to_no_label():
-    # Judgment call (spec review, MOA-474 plan split): a garbage result:/verdict:
+    # Judgment call (spec review, plan split): a garbage result:/verdict:
     # label out-of-enum for RESULTS never reaches Part 2 -- it folds into Part 3
     # (no-label) exactly like report_result is None, same green-checks-plus-
     # descendant success this fixture would get if the label were absent entirely.
@@ -1962,15 +1962,14 @@ def test_runtime_stream_diagnostic_tolerates_the_flat_shape_too():
     assert jr._runtime_stream_diagnostic(json.loads(_FLAT_ERROR_LINE)) == "APIError 500 flat"
 
 
-# ---- MOA-474 §16: cross-language boundary fixtures ------------------------------
+# ---- cross-language boundary fixtures ------------------------------
 # One {runStarted, runFinished, expected} JSON file per representative decision-table
-# row, regenerated by this test and committed to scripts/fixtures/moa-474/ -- read
-# back by src/server/db/moa-474-boundary.test.ts (this task, parseIngress + persisted
-# payload only) and later by Part B's src/server/db/moa-474-boundary.test.ts additions
-# (lastRunFor read-back, not built here). Shape is fixed by Part B's existing
+# row, regenerated by this test and committed to scripts/fixtures/run-outcomes/ -- read
+# back by the TypeScript boundary test under src/server/db/ (parseIngress + persisted
+# payload). Shape is fixed by that test's existing
 # contract -- do not rename these three top-level keys.
 
-_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "moa-474"
+_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "scripts" / "fixtures" / "run-outcomes"
 
 
 def _run_started_event(run_id, role, repo="/home/rafa/repos/demo", kind="build"):
@@ -2017,7 +2016,7 @@ def _write_fixture(name, run_id, role, finished_payload, expected, kind="build")
     (_FIXTURES_DIR / f"{name}.json").write_text(json.dumps(fixture, indent=2) + "\n", encoding="utf-8")
 
 
-def test_export_moa474_boundary_fixtures():
+def test_export_run_outcome_boundary_fixtures():
     import jaxflow_workerkit
 
     happy = jr.derive_outcome(_builder_evidence(stream_last_line=_CLEAN_STREAM_LAST_LINE))

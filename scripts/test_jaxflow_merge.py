@@ -390,7 +390,7 @@ def test_required_target_for_branch_on_a_local_preset_refuses_a_release_head(tmp
 
 # ------------------------------------------------------------------ slice d: PR delivery (github helpers)
 
-# MOA-502 Decision 2: every gh call site refuses `github-integration-disabled` before any
+# every gh call site refuses `github-integration-disabled` before any
 # git/GitHub mutation when integrations.github is off. The pre-gate probes (each command's
 # own toplevel/branch reads) already ran — the assertion is that no gh/push call followed.
 
@@ -1687,7 +1687,7 @@ def _merge_run_real_ref_format(tmp_path, *, script=None, agents=None):
 
 
 def _assert_no_delivery(calls, *, policy_target="release"):
-    """MOA-458: mismatch/invalid target must not reach resume, switch, or delivery."""
+    """Mismatch/invalid target must not reach resume, switch, or delivery."""
     _assert_no_mutation(calls)
     flat = [" ".join(c) for c in calls]
     for banned in (f"git rev-parse --verify {policy_target}^2", "git switch",
@@ -2975,7 +2975,7 @@ _TARGET_512 = "ab/" * 170 + "cd"
 @pytest.mark.parametrize("release_carries_merge", [True, False])
 def test_merge_refuses_when_approved_target_differs_from_policy(
         tmp_path, monkeypatch, release_carries_merge):
-    """MOA-458: approve main, policy now release — refuse before resume or fresh delivery."""
+    """Approve main, policy now release — refuse before resume or fresh delivery."""
     monkeypatch.chdir(tmp_path)
     sha = "a" * 40
     status = tmp_path / ".jax-os" / "status.md"
@@ -3173,7 +3173,7 @@ def test_merge_rejects_a_blank_checks_command():
                                "--target", "main"]).checks == "true"
 
 
-# ---- MOA-510: merge reuses the test evidence a diff review recorded ----
+# ---- merge reuses the test evidence a diff review recorded ----
 
 _REUSE_SHA = "a" * 40
 
@@ -3644,7 +3644,7 @@ def test_main_routes_merge_and_maps_a_refusal_to_exit_2(monkeypatch, capsys):
     assert "preset-unsupported" in err and "hint: PR preset" in err
 
 
-# ---- MOA-508: mission_id on merge-approved ------------------------------------------------
+# ---- mission_id on merge-approved ------------------------------------------------
 
 _MISSION_URL = f"{jenv.api_base_url()}/api/mission/current"
 _AUTONOMOUS = {"ok": True, "data": {"id": 7, "autonomous": True}}

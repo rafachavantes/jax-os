@@ -534,7 +534,7 @@ def _connection_health(native, meta_cred, env=None):
             return "api-key", "registered", {"kind": "env", "env": env_name}
         return "api-key", "registered", {"kind": "native"}
     if env_name is not None:
-        # MOA-498: report WHICH env var is missing instead of collapsing to no credential at
+        # report WHICH env var is missing instead of collapsing to no credential at
         # all — Task 12's dialog needs the bound name to prefill and to check status.
         return "api-key", "missing", {"kind": "env", "env": env_name}
     return "none", "missing", None
@@ -761,7 +761,7 @@ def _validate_bind_credential(intent):
     cid = intent.get("connection")
     if type(cid) is not str or not jset.CONNECTION_RE.fullmatch(cid):
         raise Refusal("agent-settings-malformed")
-    # MOA-498: the ONE shared credential validator now accepts both {"kind":"native"} and
+    # the ONE shared credential validator now accepts both {"kind":"native"} and
     # {"kind":"env",...} — bind-credential is a general "set this connection's credential
     # binding" intent, not an env-only one, so it delegates instead of re-checking `kind`
     # itself (the earlier gate only ever allowed one of the two valid shapes).

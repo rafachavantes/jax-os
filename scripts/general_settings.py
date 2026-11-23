@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""$JAXOS_HOME/settings.json schema, reader (MOA-497 Build A). Mirrors
+"""$JAXOS_HOME/settings.json schema, reader. Mirrors
 src/server/settings.ts field-for-field -- same JSON keys, same closed-object rule at every
 level, same independent-nested-defaults rule. Stdlib only, plus the local jaxflow_env
 resolver."""
@@ -15,7 +15,7 @@ LOCALES = {"en-US", "pt-BR"}
 ROOT_KEYS = {"ownerName", "locale", "reposRoot", "vaultPath", "monitoredUnits", "integrations"}
 MONITORED_KEYS = {"user", "system"}
 AGENT_KEYS = ("claude", "codex", "opencode")
-# MOA-504 D2: legacy key, accepted on READ only and mapped into `agents`; never written back.
+# legacy key, accepted on READ only and mapped into `agents`; never written back.
 LEGACY_SUBSCRIPTION_KEYS = ("claude", "codex", "opencodeGo")
 BOOL_INTEGRATION_KEYS = ("linear", "ttyd", "webhook", "classifier", "github", "vault")
 # Legacy: `hermesTokens` was removed; old files still carry it, so it is accepted on read and dropped.
@@ -92,7 +92,7 @@ def _parse_bool_object(v, keys):
 
 
 def _parse_agents(integrations):
-    """MOA-504 D2, identical to the TS parseAgents: `agents` present -> strict, `subscriptions`
+    """identical to the TS parseAgents: `agents` present -> strict, `subscriptions`
     ignored; else legacy `subscriptions` mapped (opencodeGo -> opencode); else all off."""
     if "agents" in integrations:
         return _parse_bool_object(integrations["agents"], AGENT_KEYS)

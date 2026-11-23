@@ -210,7 +210,7 @@ def test_doc_review_file_inputs_and_directory_grants(monkeypatch, caller, runtim
         source = allowed / "other repo" if external else root
         if external:
             _init_repo(source)
-        marker = "MOA460_BODY_MUST_BE_READ_FROM_DISK"
+        marker = "PLAN_BODY_MUST_BE_READ_FROM_DISK"
         target = _spec_file(source, text=f"# Document\nRafa gate: required\n\n{marker}\n")
         manifest_path, manifest = _write_manifest_for_worker(
             root, target, runtime=runtime, caller=caller, kind=kind,
@@ -271,7 +271,7 @@ def test_doc_review_refuses_outside_repo_before_directory_grant(capsys):
         assert "path-outside-allowlist" in capsys.readouterr().err
 
 
-# ---- MOA-467: minimal read-only directory grants for the Claude reviewer, derived from
+# ---- minimal read-only directory grants for the Claude reviewer, derived from
 # git metadata (never folder names), deduplicated, no sibling-repo grants, Codex argv
 # unchanged ----
 
@@ -306,7 +306,7 @@ def test_claude_doc_review_from_linked_worktree_grants_control_repo(kind):
 
 
 def test_claude_doc_review_from_separate_git_dir_main_grants_its_linked_worktree():
-    # MOA-467 acceptance fixes: a `--separate-git-dir` main whose common dir IS named
+    # a `--separate-git-dir` main whose common dir IS named
     # `.git` (the shape the old common-dir NAME check misread) must resolve to the
     # CHECKOUT -- the review grants the main plus the linked worktree holding the named
     # document, never the gitdir's parent.
@@ -340,7 +340,7 @@ def test_claude_doc_review_from_separate_git_dir_main_grants_its_linked_worktree
 
 @pytest.mark.parametrize("kind", ["spec", "plan"])
 def test_claude_doc_review_from_main_grants_the_linked_worktree_root(kind):
-    # MOA-467 acceptance: a review launched in the CONTROL repo but targeting a document
+    # a review launched in the CONTROL repo but targeting a document
     # inside one of its linked worktrees grants that worktree's ROOT -- not just the
     # nested document folder -- plus the control repo: the same inputs a review started
     # in the worktree would get.
@@ -579,7 +579,7 @@ def test_interrupted_payload_reviewer_has_no_builder_only_fields():
 
 
 def test_interrupted_payload_uses_a_terminal_error_last_line_when_given():
-    # MOA-474 cold review F3: an existing diagnostic line upgrades stage to "runtime"
+    # an existing diagnostic line upgrades stage to "runtime"
     # with the real cause, instead of the plain worker-interrupted text.
     last_line = json.dumps({  # real OpenCode shape: the cause nests under `error`
         "type": "error", "sessionID": "ses_x",
@@ -608,7 +608,7 @@ def test_worker_signal_during_wait_kills_process_group_then_posts_interrupted(mo
     signal.raise_signal (reliable synchronous delivery, unlike os.kill). The handler's
     real os._exit(0) is neutralized so the test process survives; the pre-existing
     `if terminated["flag"]: return 0` guard is what then makes run_worker return
-    cleanly instead of falling through to finalize/post. MOA-474 §10.2: the handler
+    cleanly instead of falling through to finalize/post. The handler
     itself now posts exactly one interrupted row."""
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve()
@@ -657,7 +657,7 @@ def test_worker_signal_during_wait_kills_process_group_then_posts_interrupted(mo
         assert code == 0
         assert [sig for _pgid, sig in killpg_calls] == [signal.SIGTERM, signal.SIGKILL]
         assert killpg_calls[0][0] == killpg_calls[1][0]
-        # MOA-474 §10.2: the signal path now posts exactly ONE terminal row, built
+        # the signal path now posts exactly ONE terminal row, built
         # directly (never through derive_outcome, D5) -- never the normal-completion
         # path's own post (which this fake child's .wait() never reaches: `wait_calls
         # == 2` raises TimeoutExpired, so run_worker's own child.wait() call is what
@@ -683,7 +683,7 @@ def test_worker_builder_signal_posts_interrupted_with_real_head_and_checkpoint(m
         _git(worktree, "add", "changed.txt")
         _git(worktree, "commit", "-m", "feat: partial work before the crash")
         head_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
-        # MOA-474 cold review 887b1d3994d4 F2: a NON-managed manifest (no requested_profile)
+        # a NON-managed manifest (no requested_profile)
         # -- a managed one makes run_worker resolve the launch selection (agent settings,
         # DB row) and refuse before the child ever runs. The checkpoint half of this
         # behaviour is proven separately below over the managed-worker helpers.
@@ -814,7 +814,7 @@ def test_worker_diff_reviewer_signal_posts_interrupted_no_verdict(monkeypatch):
         root = Path(raw).resolve() / "demo"
         _init_repo(root)
         worktree = _init_worktree(root)
-        # MOA-474 cold review 887b1d3994d4 F3: the diff worker runs a real
+        # the diff worker runs a real
         # `git diff --name-only <base>..<head>` before Popen, so the helper's default
         # placeholder SHAs (a*40/b*40) would refuse before the handler is ever exercised.
         base_sha = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
@@ -1101,7 +1101,7 @@ def test_codex_callback_queue_failures_warn_once_without_tmux(monkeypatch, capsy
 
 
 def test_post_event_treats_409_as_delivered_not_a_failure():
-    # MOA-474 D3: a 409 is the DB's own terminal-claim race (src/server/db/workflows.ts:
+    # a 409 is the DB's own terminal-claim race (src/server/db/workflows.ts:
     # 117-122) -- another writer (worker vs reaper, or a worker vs cmd_cancel) already
     # posted this run's terminal row first. That is a DELIVERED outcome, not an error.
     def opener(req, timeout):
@@ -1149,7 +1149,7 @@ def test_spool_write_read_delete_roundtrip(tmp_path):
 
 @pytest.mark.parametrize("refuse_kind", ["builder", "unvalidated", "diff"])
 def test_refusal_paths_spool_before_post_keep_on_failure_delete_on_delivery(tmp_path, monkeypatch, refuse_kind):
-    # MOA-474 cold review F1: a failed refusal POST must leave a recoverable spool
+    # a failed refusal POST must leave a recoverable spool
     # behind; a delivered one must not.
     monkeypatch.setattr(jr, "DB_PATH", tmp_path / "unused-jaxos.db")
     root = tmp_path / "demo"
@@ -1724,7 +1724,7 @@ def test_worker_builder_runs_both_commands_writes_both_frames_and_wires_the_hand
     """Spec §7.1 #35, plus the WIRING (cold-review F4). Asserting only on the evidence file
     would let the whole change pass while the worker still called
     `_build_builder_handoff(..., build_cmd=None)` -- the handoff would keep saying
-    `commands.build: none`, which is the exact defect MOA-454 is named for. So this test
+    `commands.build: none`, which is the exact defect this guards against. So this test
     reads the prompt the builder actually received."""
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
@@ -1843,7 +1843,7 @@ def _run_failing_builder(root, worktree, fake, *, verify):
 
 
 def test_worker_builder_failure_with_passing_verify_flags_the_contradiction(monkeypatch):
-    """MOA-455. The verify chain is a veto on SUCCESS only -- it never overturns a
+    """The verify chain is a veto on SUCCESS only -- it never overturns a
     builder's claimed failure, because the builder can know something the verify cannot
     see. That asymmetry stays; what changes is that the disagreement stops being
     invisible. The ledger `result` is untouched: only the callback line says so."""
@@ -1864,7 +1864,7 @@ def test_worker_builder_failure_with_passing_verify_flags_the_contradiction(monk
 
 
 def test_worker_builder_failure_with_failing_verify_stays_a_plain_failure(monkeypatch):
-    """The other half of MOA-455: when both agree, the note must NOT appear. Without
+    """The other half of the previous test: when both agree, the note must NOT appear. Without
     this the fix passes by appending the note unconditionally."""
     monkeypatch.setattr(time, "sleep", lambda _s: None)
     with TemporaryDirectory() as raw:
@@ -2164,9 +2164,9 @@ def test_builder_fallback_records_the_result_from_verify_and_commits(commit, ver
 
 
 def test_builder_fallback_applies_when_the_only_result_label_is_out_of_enum():
-    # MOA-474 spec review: an out-of-enum result:/verdict: label is not a label at all
+    # an out-of-enum result:/verdict: label is not a label at all
     # for the decision table -- it folds into Part 3 (no-label) exactly like a report
-    # with no label anywhere, so the MOA-472 fallback DOES apply here (green verify +
+    # with no label anywhere, so the fallback DOES apply here (green verify +
     # commit beyond base -> success). Before this spec the row shipped with no `result`
     # key at all (the "neither branch" gap, §2.3 item 5).
     with TemporaryDirectory() as raw:
@@ -2225,7 +2225,7 @@ def test_builder_fallback_survives_a_non_string_base_sha_in_a_hand_edited_manife
     # F4: manifest.json can carry ANY JSON value at "base_sha" once hand-edited (or
     # corrupted) -- a non-string reaching `re.match` after the child has already exited
     # crashed the whole worker with no terminal event posted, exactly the failure
-    # MOA-470 shipped to prevent.
+    # the earlier hardening was meant to prevent.
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
         _init_repo(root)
@@ -2314,7 +2314,7 @@ def test_cmd_status_renders_a_garbage_value_row_unchanged():
         _insert(con, "r1", "demo", "builder", "run-started", {"session": "jax-demo-build-r1"})
         _insert(con, "r1", "demo", "builder", "run-finished",
                 {"contract_status": "invalid", "exit_code": 0})
-        # MOA-474 §12.2 branch 4 (§Backward compatibility): a legacy row with NEITHER
+        # (§Backward compatibility): a legacy row with NEITHER
         # result nor reason changes from finished(failed) to finished(no result) --
         # this is the one pinned test §Backward compatibility names explicitly.
         assert jaxflow_cli.cmd_status("r1", run=_run_with_tmux(fake), db_path=db) == "finished(no result)"
@@ -2543,7 +2543,7 @@ def test_worker_builder_report_chmod_failure_is_invalid_not_ok(monkeypatch):
         )
         payload = events[0]["payload"]
         assert payload["contract_status"] == "invalid"
-        # MOA-474 §5.1 item 4: the report CONTENT parsed a claimed success, so this is
+        # the report CONTENT parsed a claimed success, so this is
         # Part 2's labeled-success branch -- the run's execution outcome is `success`
         # even though the report is invalid (the lock, not the content, failed).
         assert payload["result"] == "success"
@@ -3784,7 +3784,7 @@ def test_status_and_result_checkpoint_hint_from_fixed_path():
 # ---- worker: builder handoff is contract-valid (fixes cold review F2) ----
 
 def test_builder_handoff_carries_both_commands_and_never_hardcodes_none():
-    """MOA-454, the defect this issue is named for: `commands.build` was the literal
+    """The defect:  `commands.build` was the literal
     `none` no matter what, so a tech lead who chained a build into --verify got a handoff
     that told the builder it had no build command."""
     handoff = jaxflow_worker._build_builder_handoff(
@@ -3888,7 +3888,7 @@ def test_worker_builder_handoff_names_target_and_existing_copied_agents_md():
 
 
 def test_worker_builder_handoff_names_referenced_spec_original_without_copy():
-    # MOA-467: the declared **Spec:** file is resolved to its ORIGINAL validated
+    # the declared **Spec:** file is resolved to its ORIGINAL validated
     # location and named in the handoff -- no copy is made into the worktree.
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
@@ -3948,7 +3948,7 @@ def test_worker_builder_handoff_names_spec_fragment_when_the_plan_declares_a_hea
         assert f"  spec: {spec_src}#Section Two" in prompt
 
 
-# ---- MOA-467: original-path manifests and the validated read identity ----
+# ---- original-path manifests and the validated read identity ----
 
 def test_worker_builder_handoff_names_original_plan_and_declared_spec_without_copies():
     # A NEW-style manifest: plan_path points at the ORIGINAL plan in the control repo,
@@ -4026,7 +4026,7 @@ def test_worker_builder_refuses_plan_outside_the_allowlist(capsys):
 
 
 def test_external_plan_survives_dispatch_builder_and_diff_launch(monkeypatch):
-    # The MOA-467 acceptance regression: a plan in ANOTHER allowlist repo, explicitly
+    # The regression: a plan in ANOTHER allowlist repo, explicitly
     # named by the caller and validated at dispatch, must survive the builder launch and
     # the later diff launch -- no asynchronous refusal, no permission-only copy.
     with TemporaryDirectory() as raw:
@@ -4622,7 +4622,7 @@ def test_worker_builder_invalid_report_is_invalid_not_missing():
         )
         payload = events[0]["payload"]
         assert payload["contract_status"] == "invalid"
-        # MOA-474: an out-of-enum label is "no label" for the decision table -> Part 3,
+        # an out-of-enum label is "no label" for the decision table -> Part 3,
         # where no base_sha in this manifest means no commit beyond base -> failure.
         assert payload["result"] == "failure"
         assert payload["stage"] == "report"
@@ -4863,7 +4863,7 @@ def test_worker_diff_review_accepts_original_control_repo_plan_and_spec():
 def test_worker_diff_review_accepts_a_legacy_spec_copy_when_the_original_is_gone():
     # A legacy diff manifest (created by the old dispatch) named the spec COPY it placed
     # inside the worktree. The plan text may declare an original that no longer exists --
-    # the copy must keep working, exactly as it did before MOA-467 ("existing legacy
+    # the copy must keep working, exactly as it did before that change ("existing legacy
     # copied inputs still work").
     with TemporaryDirectory() as raw:
         root = Path(raw).resolve() / "demo"
@@ -5125,7 +5125,7 @@ def test_worker_diff_review_prompt_names_the_git_diff_command_and_never_embeds_t
                 assert captured["argv"][captured["argv"].index("-C") + 1] == str(worktree), runtime
             if runtime == "claude":
                 granted = captured["argv"][captured["argv"].index("--add-dir") + 1:]
-                # MOA-467: the Claude reviewer is granted the build worktree AND its
+                # the Claude reviewer is granted the build worktree AND its
                 # canonical control repo (the default-manifest plan/spec live in the
                 # worktree here, so no extra document parent is added).
                 assert granted == [str(worktree), str(root)]
@@ -5259,7 +5259,7 @@ def test_worker_diff_review_git_diff_failure_is_a_hard_failure_not_placeholder_t
         assert events == []
 
 
-# ---- MOA-470: child.log capture/finalize helpers, isolated from any worker ----
+# ---- child.log capture/finalize helpers, isolated from any worker ----
 
 def test_open_child_log_creates_the_file_mode_0600_before_anything_is_written():
     with TemporaryDirectory() as raw:
@@ -5372,7 +5372,7 @@ def test_finalize_child_log_is_lossless_for_non_secret_bytes_crlf_and_invalid_ut
         assert result == expected
 
 
-# ---- MOA-470: FakePopen/FakeBuilderPopen accept piped stdout/stderr ----
+# ---- FakePopen/FakeBuilderPopen accept piped stdout/stderr ----
 
 def test_fake_popen_exposes_stdout_as_a_readable_stream_when_piped():
     fake = FakePopen(["codex"], stdout=subprocess.PIPE)
@@ -5417,7 +5417,7 @@ def test_fault_fakes_still_expose_none_stdout_without_setting_it_themselves():
     assert FakePopen.stderr is None
 
 
-# ---- MOA-470: builder worker captures child.log ----
+# ---- builder worker captures child.log ----
 
 DEEPSEEK_CLEAN_EXIT_NO_REPORT_WINDOW = (
     '{"type":"message.updated","properties":{"info":{"finish":"length"}}}\n'
@@ -5561,7 +5561,7 @@ def test_worker_builder_ok_row_has_no_tail_or_reason():
     assert "tail" not in payload
 
 
-# ---- MOA-470: diff-reviewer and doc-reviewer workers capture child.log ----
+# ---- diff-reviewer and doc-reviewer workers capture child.log ----
 
 def test_worker_diff_review_codex_merges_stdout_stderr_into_child_log():
     with TemporaryDirectory() as raw:
@@ -5799,7 +5799,7 @@ def test_worker_doc_review_call_order_is_open_then_popen_then_capture_then_wait_
     assert calls == ["open", "popen", "capture", "wait", "finalize"]
 
 
-# ---- MOA-470 §7: the ONE test that must not fake Popen (real OS pipe, real deadlock
+# ---- the ONE test that must not fake Popen (real OS pipe, real deadlock
 # risk if drain-before-wait ever regresses back to wait-then-read) ----
 
 CHILD_FLOOD_SCRIPT = (

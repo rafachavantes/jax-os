@@ -10,7 +10,7 @@ os.environ.setdefault("JAXFLOW_EVENTS_URL", "http://127.0.0.1:1/api/workflow/eve
 # The stop hook would otherwise start the real jaxos-workflow-poll.service on every text stop.
 os.environ["JAXFLOW_NO_CLASSIFY_KICK"] = "1"
 
-# MOA-495/MOA-498: jev_client.api_key() reads real secret files for real -- ENV_PATH
+# jev_client.api_key() reads real secret files for real -- ENV_PATH
 # ($JAXOS_HOME/.env) and LOCAL_ENV_PATH (this repo's own .env.local), and both may exist
 # with valid 0600 perms on this machine -- the SAME shape of risk workflow_poll.py's own
 # tests guard per-test (`patch.object(jev_client, "ENV_PATH", ...)`), applied once here
@@ -23,7 +23,7 @@ from pathlib import Path
 import jev_client
 
 jev_client.ENV_PATH = Path("/nonexistent/jaxflow-tests-must-never-read-this/.env")
-# MOA-498 F1 added a second read source (LOCAL_ENV_PATH, derived from jev_client.py's own file
+# added a second read source (LOCAL_ENV_PATH, derived from jev_client.py's own file
 # location) that resolves to this repo's REAL .env.local when not overridden — neuter it here
 # too, for the same reason as ENV_PATH above: any test that reaches the default api_key() path
 # must fail closed, never read a real file.

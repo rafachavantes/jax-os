@@ -27,7 +27,7 @@ REVIEWER_PROMPT_PREAMBLE = (
     "questions, no offers to edit. This is a read-only review, not a conversation.\n\n"
 )
 
-# ---- MOA-495 2.2: review-round tally --------------------------------------------
+# ---- review-round tally --------------------------------------------
 # ONE batched Jev Noul request per tally (one "noul" question per new x previous
 # finding pair, all in a single call), comparing this round's report against the
 # immediately previous round of the SAME document/branch -- mirrors jaxflow_run's
@@ -238,7 +238,7 @@ def _interrupted_payload(*, role, phase, signal_name, worktree=None, base_sha=No
     already known-good in-process (validated moments earlier), so this read is
     unconditional whenever `worktree` is given at all.
 
-    MOA-474 cold review F3: `last_line`, when given, is the redacted last non-empty
+    `last_line`, when given, is the redacted last non-empty
     physical line of child.log at signal time -- reuses `jr._stream_terminal_error`/
     `jr._runtime_stream_diagnostic` (the exact helpers A2's reaper also reuses for its
     own row 1a) instead of a second parser. A terminal error event there upgrades
@@ -308,7 +308,7 @@ def _run_verify_commands(run, worktree, verify_cmd, build_cmd):
     """Runs the TEST command, then the BUILD command when there is one, and returns the
     frames for `_write_verify_tests_file`. BOTH always run: the build is never
     short-circuited by a failing test (spec §4.2 step 4). Short-circuiting would restore
-    exactly the `&&` semantics MOA-454 removes -- when the tests fail you would still not
+    exactly the `&&` semantics it replaced -- when the tests fail you would still not
     learn whether the tree builds, which is the one thing the split exists to tell you."""
     frames = [(verify_cmd, run(["/bin/sh", "-c", verify_cmd], cwd=worktree))]
     if build_cmd:
@@ -321,7 +321,7 @@ def _write_verify_tests_file(path, frames, *, worktree):
     verification command, test first then build (spec §4.2 step 4; the framing itself is
     status-report-contract.md's, unchanged). With a single frame the output is
     byte-identical to what this wrote when the CLI had one command, which is what keeps
-    `review --diff` working on builds recorded before MOA-454.
+    `review --diff` working on builds recorded before the build command existed.
 
     Same COMMAND:/EXIT: framing status-report-contract.md already defines -- this is
     jaxflow's OWN post-build/pre-review verify evidence, a distinct file convention
@@ -449,7 +449,7 @@ def threat_model_line(mode):
 
 def _send_callback(manifest, *, kind, outcome, report_path, stage=None,
                     diagnostic=None, contract_status=None, ledger_pending=False):
-    """MOA-474 §12.1 line: `[JAXFLOW] <kind> <run_id> finished — <outcome>[ · <stage> —
+    """line: `[JAXFLOW] <kind> <run_id> finished — <outcome>[ · <stage> —
     <diagnostic>][ [report <status>]] — <report_path | no report>[ · ledger pending][ (fallback: <agent> off)]`.
     `stage`/`diagnostic` are omitted TOGETHER (the ` · <stage> — <diagnostic>` segment
     drops out whole) when `stage is None` -- the happy-path omission (§Builder
@@ -544,7 +544,7 @@ def _related_worktree_for(document, control, *, run):
 
 def _review_read_roots(review_repo, control_base, *, run, allowlist_root, documents=()):
     """The deduplicated EXTRA read-only directory grants for a Claude reviewer
-    (MOA-467): the canonical control repo of `control_base` when it differs from
+   The canonical control repo of `control_base` when it differs from
     `review_repo` (which the launch site already grants) -- so a document review started
     in a linked worktree also gets its control repo -- plus, for each named document
     that lives outside every granted root, the ROOT of the related linked worktree it
@@ -597,7 +597,7 @@ def _deliver_terminal_event(post, repo, run_id, event):
 
 
 def _log_diagnosis(payload, child_log_text, *, exit_code, contract_status):
-    """MOA-470 §4.3 / MOA-495 2.1: `reason`, `tail` (and `log_context` when Jev found
+    """`reason`, `tail` (and `log_context` when Jev found
     relevant slices) travel together and are added iff `contract_status` needed a diagnosis
     -- never for "ok". `refine_reason` keeps `classify_reason`'s regex/exit precedence and
     only asks Jev to pick among the wider reason set when the regex did not already decide
@@ -628,9 +628,7 @@ def _install_worker_signal_handler(manifest, *, role, kind, outcome, run, post, 
                                    run_id, project, phase, spool_repo, log_path, child_box,
                                    terminated, worktree=None, base_sha=None, persist=False):
     """Registers the SIGTERM/SIGHUP handler of a worker and returns it. `log_path` MUST
-    already be bound by the caller (MOA-474 cold review 887b1d3994d4 F1: a signal landing
-    between registration and a late assignment raised NameError inside the handler and
-    left no terminal row). `child_box`/`terminated` are the caller's shared dicts, so a
+    already be bound by the caller. `child_box`/`terminated` are the caller's shared dicts, so a
     signal that lands before the child exists is a plain no-op. Exact order inside the
     handler, which tests pin: terminate child -> best-effort PLAIN read of child.log (never
     through the log fd `_capture_child_output` may still be writing) -> `_interrupted_payload`
@@ -733,7 +731,7 @@ def _reviewer_finish_payload(manifest, *, post, repo, paths, run_id, project, ph
         payload["verdict"] = report_verdict
         if findings is not None:
             payload["findings"] = findings
-        # MOA-495 2.2: one-line tally against the immediately previous round of the
+        # one-line tally against the immediately previous round of the
         # same document/branch -- absent when there is none, or Jev fails/errs.
         try:
             new_report_text = paths["report"].read_text(encoding="utf-8")
@@ -785,7 +783,7 @@ def _finish_reviewer_worker(manifest, *, run, post, repo, paths, run_id, project
         # Fixes branch review F6: the callback line stays fixed regardless of whether this
         # POST succeeds -- a delivery failure is reported separately, to the worker's own
         # stdout (the pane), never by mutating the callback line; `ledger_pending` below is
-        # the one sanctioned addition (MOA-474 §12.1).
+        # the one sanctioned addition.
         jc._update_status_md(manifest, run=run, allowlist_root=allowlist_root)
     _send_callback(
         manifest, kind=kind, outcome=payload.get("verdict", "no verdict"),
@@ -802,7 +800,7 @@ def _refuse_diff_run(message, *, manifest, run, post, manifest_path):
     row. Unlike     `_refuse_builder_run`, this never calls `_cleanup_worktree` -- a diff
     review never owns the worktree (the `build` that created it does), so there is
     nothing here for this worker to undo.
-    MOA-474 F1: `manifest_path` (the argv path this worker was invoked with) is the only
+    `manifest_path` (the argv path this worker was invoked with) is the only
     trustworthy location for the `finished.json` spool -- the manifest body's own paths
     cannot be trusted, exactly like `_refuse_unvalidated_builder_run`."""
     print(message, file=sys.stderr)

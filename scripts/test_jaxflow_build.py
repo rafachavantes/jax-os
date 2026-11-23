@@ -200,7 +200,7 @@ def test_build_refuses_secret_plan_path_via_symlink(capsys, monkeypatch):
 
 
 def test_build_refuses_effort_override_for_opencode_runtime_before_reservation(capsys, monkeypatch):
-    # fixes cold review round 2 F3, amended 2026-09-07 (MOA-451): an OpenCode builder's
+    # fixes cold review round 2 F3, amended 2026-09-07: an OpenCode builder's
     # reasoning effort belongs to its RUNTIME definition (`jr.VARIANT_BY_RUNTIME` ->
     # `opencode run --variant`), not to the call -- picking the runtime IS picking the
     # effort, exactly as it is picking the model id. Accepting `--effort` here would
@@ -397,7 +397,7 @@ def test_build_accepts_combined_id_within_hub_limit(monkeypatch, tmp_path):
 
 
 def test_build_refuses_codex_as_a_builder_runtime(capsys, monkeypatch):
-    # MOA-451: `codex` is a REVIEWER runtime only. Its `--sandbox workspace-write` cannot
+    # `codex` is a REVIEWER runtime only. Its `--sandbox workspace-write` cannot
     # write a LINKED worktree's git dir (which lives in <main-repo>/.git/worktrees/<name>,
     # outside the sandbox), so a Codex builder implemented ARC's B4 and could never commit
     # it; a second run then could not spawn `next build`'s TypeScript child. Refused at the
@@ -459,7 +459,7 @@ def test_build_refuses_branch_exists_when_worktree_path_already_a_directory(monk
 
 
 def test_build_base_stacks_the_new_branch_on_the_named_ref(monkeypatch):
-    """MOA-452: without --base every build starts from the default branch, so a plan split
+    """Without --base every build starts from the default branch, so a plan split
     in two could not be built at all -- part 2 had to be dispatched outside jaxflow. The new
     branch must start from the named ref's commit, not from main."""
     with TemporaryDirectory() as raw:
@@ -570,7 +570,7 @@ def test_build_refuses_a_well_shaped_base_that_does_not_resolve(monkeypatch):
 
 def test_build_without_base_still_starts_from_the_default_branch(monkeypatch):
     """The default path must be untouched: no --base means the repo's default branch, which
-    is what every build did before MOA-452."""
+    is what every build did before that change."""
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
@@ -799,7 +799,7 @@ def test_build_default_branch_probe_failure_after_reservation_removes_empty_dir(
 
 def test_build_post_add_exception_cleans_up_worktree_branch_and_admin_entry(monkeypatch):
     # fixes Part 1 diff-review F1: an exception AFTER `git worktree add -b` succeeded
-    # (here, the AGENTS.md copy `read_bytes` call -- MOA-467 stopped copying the plan, and
+    # (here, the AGENTS.md copy `read_bytes` call -- stopped copying the plan, and
     # the AGENTS.md copy is the only control-repo file still read after the add) must undo
     # everything that call created -- the
     # worktree directory, the branch ref, and Git's own `.git/worktrees/<id>` admin entry
@@ -967,7 +967,7 @@ def test_build_keeps_original_plan_path_and_copies_only_agents_md(monkeypatch):
         )
         worktree = allow_root / "demo-feat-my-phase"
         manifest = json.loads((root / ".local" / "runs" / run_id / "manifest.json").read_text())
-        # MOA-467: the manifest stores the ORIGINAL plan path, never a worktree copy,
+        # the manifest stores the ORIGINAL plan path, never a worktree copy,
         # and no plan/spec copy is created anywhere in the worktree.
         assert manifest["plan_path"] == str(plan)
         assert not (worktree / ".local" / "docs" / "plans").exists()
@@ -1018,7 +1018,7 @@ def test_build_records_the_saved_profile_model_and_refuses_cli_model_overrides(c
 
 
 def test_build_records_the_build_command_in_manifest_and_started_payload(monkeypatch):
-    """MOA-454 spec §2.6. The build command rides alongside `verify` in BOTH places: the
+    """spec §2.6. The build command rides alongside `verify` in BOTH places: the
     manifest (read by the builder worker) and the run-started payload (read later by
     `review --diff`, which never sees the manifest)."""
     with TemporaryDirectory() as raw:
@@ -1247,7 +1247,7 @@ def test_build_resume_reuses_worktree_without_cleanup(monkeypatch, tmp_path):
 
 
 def test_resume_is_eligible_on_an_interrupted_row_with_a_valid_checkpoint(monkeypatch, tmp_path):
-    # MOA-474 §5.1 conflict 2: line 999's `contract_status == "cancelled"` exclusion is
+    # conflict 2: line 999's `contract_status == "cancelled"` exclusion is
     # DROPPED -- eligibility rests on `result not in ("failure", "blocked")` (line 1000)
     # plus the checkpoint match alone. An interrupted row's result is always "failure",
     # so it is eligible under the exact same predicate a plain failure/blocked row is.

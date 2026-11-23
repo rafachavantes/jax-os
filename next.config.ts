@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { loadJaxosEnv } from "./src/server/envFile";
 
-// MOA-498 D1/D2: every jax-os-managed secret comes from $JAXOS_HOME/.env (owner-filled,
+// every jax-os-managed secret comes from $JAXOS_HOME/.env (owner-filled,
 // 0600), never ~/.hermes/.env. Precedence: process env (systemd/shell) > .env.local (Next
 // loads that before this file runs) > $JAXOS_HOME/.env. The approval webhook secret
 // is deliberately NOT in this list.

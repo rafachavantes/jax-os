@@ -217,7 +217,7 @@ def _no_callback(args, caller):
 
 
 def _enabled_agents():
-    """MOA-504 D8: the integrations.agents switches, read live. Fail CLOSED: a malformed or
+    """The integrations.agents switches, read live. Fail CLOSED: a malformed or
     unreadable settings.json refuses review and build, never falls back to defaults."""
     settings = general_settings.read_settings()
     if not settings.get("ok"):
@@ -251,7 +251,7 @@ def _spool_path(control_repo, run_id):
 def _write_spool_at(path, event):
     """tmp + os.replace (spec D3) -- the shared write primitive. `_write_spool` (below)
     is the normal-completion/signal-path caller, which always has a trustworthy
-    `control_repo`; MOA-474 cold review F1's pre-launch refusal fix (Task 3 Step 2.4)
+    `control_repo`; the pre-launch refusal path
     calls this directly for the two refusal functions that do NOT (identity
     validation is exactly what just failed there), deriving the run directory from
     `manifest_path` instead -- one write implementation, not two."""
@@ -582,7 +582,7 @@ def _post_event(event, *, url=jr.EVENTS_URL, opener=urllib.request.urlopen):
     the observable contract the retired jr.post_event already had, but built on jaxflow's own _post
     so there is one HTTP code path in this file, not two.
 
-    MOA-474 D3: a 409 is treated as delivered, not a failure -- it means another
+    A 409 is treated as delivered, not a failure -- it means another
     writer (worker vs reaper, or worker vs cmd_cancel) already posted this run's
     terminal row first (the DB's first-run-finished-wins claim,
     src/server/db/workflows.ts:117-122). A worker/reaper race is an accepted edge
@@ -659,7 +659,7 @@ def _builder_run_rows(con, run_id):
 
 
 def _decide_verify_reuse(*, head_matches, porcelain_clean, commands_match, frames, parse_error):
-    """Pure decision for MOA-471 item 8. Returns `(should_reuse: bool, reason: str)`.
+    """Pure decision for the review-reuse check. Returns `(should_reuse: bool, reason: str)`.
     `frames`/`parse_error` come from `jr.parse_tests_frames` (the caller passes
     `parse_error="tests-file-missing"` when no evidence file existed at all)."""
     if not head_matches:
@@ -708,8 +708,7 @@ def _find_heading(text, fragment):
 
 def _resolve_handoff_spec_path(plan_text, plan_dest, worktree, allowlist_root):
     """Resolves the plan header's own **Spec:** file to its ORIGINAL, validated, readable
-    file (MOA-467 -- no copy is made anywhere; the path itself is what the handoff names
-    and the reviewer/builder reads). When the header has NO **Spec:** line at all, falls
+    file. When the header has NO **Spec:** line at all, falls
     back to the plan itself for BOTH paths.spec and paths.plan -- orchestrator-
     handoff.md requires paths.spec non-empty (`none` is not in its allowed-none list),
     and `build` has no other spec input of its own (round-1 cold review F2; flagged as an
@@ -722,7 +721,7 @@ def _resolve_handoff_spec_path(plan_text, plan_dest, worktree, allowlist_root):
     `worktree` is retained only for call-site signature stability; the original doc
     location is what governs now.
 
-    MOA-471 item 2: the declared value may carry a `#<heading>` fragment, split off by
+    The declared value may carry a `#<heading>` fragment, split off by
     `_split_spec_fragment`. When present, the resolved file must also contain a
     Markdown heading whose text matches (`_find_heading`) -- a miss returns the
     `spec-fragment-not-found` refusal code. On success `spec_dest` becomes the STRING
@@ -758,8 +757,7 @@ def _resolve_handoff_spec_path(plan_text, plan_dest, worktree, allowlist_root):
 def _control_owner(repo, run, allowlist_root):
     """The canonical control checkout behind `repo` and whether that relationship is
     resolved -- the ONE git relationship probe shared by read grants (`_control_repo_of`)
-    and status ownership (`_update_status_md`), so the two can never diverge (MOA-467
-    acceptance fixes). `(repo, True)` means `repo` IS the owner: a directory `.git`
+    and status ownership (`_update_status_md`), so the two can never diverge. `(repo, True)` means `repo` IS the owner: a directory `.git`
     (ordinary main checkout), no git metadata at all (status.md writes are best-effort
     and never required a repo), or a main checkout whose gitdir equals its common dir --
     a `--separate-git-dir` MAIN included, whose `.git` is a FILE. A linked worktree
@@ -813,7 +811,7 @@ _STATUS_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.S)
 _STATUS_NOW_RE = re.compile(r"(^##[ \t]+Now[ \t]*\r?\n)((?:.*\r?\n?)*?)(?=\r?\n##[ \t]|\Z)", re.M)
 
 # spec §4.5's stage-mapping table.
-# MOA-465: pr-open lands on "review" -- the PR exists and awaits the SAME merge approval a
+# pr-open lands on "review" -- the PR exists and awaits the SAME merge approval a
 # diff review's own approve/approve-with-changes gate awaits (spec Ledger & card).
 _STAGE_BY_KIND = {"spec": "spec", "plan": "spec", "build": "build", "diff": "review",
                    "merge": "ship", "pr-open": "review"}
@@ -888,7 +886,7 @@ def _update_status_md(manifest, *, run, allowlist_root):
     under the allowlist root -- a forged builder/diff/doc-review manifest must never be
     able to redirect this write to an arbitrary status.md outside the allowlist; this one
     check covers all three call sites in `run_worker`.
-    MOA-467 Task 4 (acceptance fixes): the CONTROL repo owns project status, derived
+    The CONTROL repo owns project status, derived
     through the shared `_control_owner` relationship (the same one the read grants use);
     when that lookup cannot establish the owner (a linked worktree whose git probe
     failed), the write is SKIPPED -- it must never fall back to writing the worktree's
@@ -969,7 +967,7 @@ def _update_status_md(manifest, *, run, allowlist_root):
         elif kind == "spec" and outcome != "reject" and manifest.get("spec_gate_required"):
             gate = "awaiting-approval"
         elif kind == "pr-open":
-            # MOA-465: opening a PR always awaits Rafa's merge approval next -- unlike diff's
+            # opening a PR always awaits Rafa's merge approval next -- unlike diff's
             # outcome-conditional gate, there is no "pr-open but not ready" state.
             gate = "awaiting-approval"
         remove_keys = ()

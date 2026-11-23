@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract tests for jaxflow_settings (MOA-473 Part 1 Task 1)."""
+"""Contract tests for jaxflow_settings."""
 import hashlib
 import json
 import os

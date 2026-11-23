@@ -1124,7 +1124,7 @@ def test_discovery_unresolved_env_is_missing_not_registered(tmp_path):
     result = snapshot(paths, run=_fake_run({"provider": {}}), env={})
     row = _row(result["connections"])
     assert row["health"] == "missing"
-    # MOA-498: the missing env NAME is reported (it is not a secret); no value exists to leak.
+    # the missing env NAME is reported (it is not a secret); no value exists to leak.
     assert row["credential"] == {"kind": "env", "env": "MISSING_JAX_PROVIDER_KEY"}
 
 

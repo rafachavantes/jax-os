@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract-text guards (MOA-471, trimmed by jaxflow-lean P0).
+"""Contract-text guards.
 
 Stdlib-only: reads the contract markdown files as text. Only NEGATIVE guards live here:
 each one catches a future edit silently reintroducing an obsolete claim (`--prompt-file`,
@@ -19,7 +19,7 @@ def _read(name):
 def _section(text, heading):
     """Slices from an exact `##`-heading line through the line before the next `##`
     heading, or EOF -- so an assertion scoped to ONE contract section never sees
-    another section's own example block or prose (MOA-472 F2)."""
+    another section's own example block or prose."""
     lines = text.split("\n")
     start = next(i for i, line in enumerate(lines) if line == heading)
     end = start + 1

@@ -53,8 +53,8 @@ URL_CASES = [
 
 @pytest.mark.parametrize("module,expr,suffix", PATH_CASES, ids=[f"{m}:{e}" for m, e, _ in PATH_CASES])
 def test_path_consumer_resolves_under_jaxos_home(module, expr, suffix):
-    out = _resolve(module, expr, {"JAXOS_HOME": "/tmp/moa497x"})
-    assert out == (f"/tmp/moa497x/{suffix}" if suffix else "/tmp/moa497x")
+    out = _resolve(module, expr, {"JAXOS_HOME": "/tmp/jaxos-home"})
+    assert out == (f"/tmp/jaxos-home/{suffix}" if suffix else "/tmp/jaxos-home")
 
 
 @pytest.mark.parametrize("module,expr,suffix", PATH_CASES, ids=[f"{m}:{e}" for m, e, _ in PATH_CASES])

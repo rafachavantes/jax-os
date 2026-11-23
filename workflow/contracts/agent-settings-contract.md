@@ -81,8 +81,7 @@ No `adapter`, `base_url`, `model_config`, or other copies of native config.
 
 ### Credential
 
-Exactly `{"kind":"native"}` or `{"kind":"env","env":"..."}` (MOA-498 — no remote secret
-id).
+Exactly `{"kind":"native"}` or `{"kind":"env","env":"..."}`.
 
 `env` is `JAX_PROVIDER_[A-Z0-9_]+_API_KEY` or a verified native provider API-key
 name (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `XAI_API_KEY`,

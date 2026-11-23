@@ -119,7 +119,7 @@ def test_dispatch_from_codex_caller_defaults_to_claude_sonnet_xhigh(capsys, monk
         assert payload["effort"] == "xhigh"
 
 
-# ---- MOA-495 2.2: review-round tally ----
+# ---- review-round tally ----
 
 def _all_pairs_noul(score):
     """Test helper: a `noul_batch` fake that scores every (new, prev) pair the same,
@@ -358,7 +358,7 @@ def test_status_derivation_unknown_running_finished_dead():
         assert jaxflow_cli.cmd_status("r1", run=_run_with_tmux(fake), db_path=db) == "dead"
 
         _insert(con, "r1", "demo", "reviewer", "run-finished", {"contract_status": "ok"})
-        # MOA-474 §12.2: a reviewer row with no verdict now renders the literal
+        # a reviewer row with no verdict now renders the literal
         # "no verdict" instead of the old bare-ok fold.
         assert jaxflow_cli.cmd_status("r1", run=_run_with_tmux(fake), db_path=db) == "finished(no verdict)"
 
@@ -443,7 +443,7 @@ def test_result_refuses_report_path_mismatch_on_dot_dot_traversal():
 
 
 def test_result_refuses_report_missing_when_the_recorded_path_has_no_file():
-    """MOA-455's sibling, MOA-456. When the recorded path IS the one this run's dispatch
+    """When the recorded path IS the one this run's dispatch
     would have written but the file itself is gone, `cmd_result` used to fall through to
     `read_text` and escape as a raw `FileNotFoundError` -- the only failure path in the
     CLI that was a traceback instead of a kebab-case code. It gets its OWN code rather
@@ -831,14 +831,14 @@ def test_cancel_falls_back_to_a_plain_cancelled_row_when_neither_a_row_nor_a_spo
         assert events[0]["payload"]["contract_status"] == "cancelled"
 
 
-# ---- MOA-470: cmd_status/cmd_result render reason/tail; merge leaves child.log alone ----
+# ---- cmd_status/cmd_result render reason/tail; merge leaves child.log alone ----
 
 def test_status_prints_failed_reason_and_exit_when_reason_is_present():
     with TemporaryDirectory() as raw:
         db = Path(raw) / "jaxos.db"
         con = _fresh_db(db)
         fake = FakeTmux()
-        # MOA-474 §12.2: the legacy `reason` branch (branch 4) is builder-only -- for a
+        # the legacy `reason` branch (branch 4) is builder-only -- for a
         # reviewer row, branch 3 (`no verdict`) fires first. This test's own subject is
         # the reason branch, so the fixture stays a builder row.
         _insert(con, "r9", "demo", "builder", "run-started", {"session": "jax-demo-spec-r9"})
@@ -856,7 +856,7 @@ def test_status_unaffected_for_ok_and_cancelled_rows():
         fake = FakeTmux()
         _insert(con, "r10", "demo", "reviewer", "run-started", {"session": "jax-demo-spec-r10"})
         _insert(con, "r10", "demo", "reviewer", "run-finished", {"contract_status": "ok"})
-        # MOA-474 §12.2 branch 2's own note: this row has no verdict key at all (a
+        # Note: this row has no verdict key at all (a
         # pre-verdict-tracking fixture) -- branch 3 fires (role reviewer, neither
         # result nor verdict present), the literal "no verdict", not the old bare-ok
         # fallback.
@@ -934,7 +934,7 @@ def test_result_invalid_row_prints_block_then_report_body(capsys):
 
 
 def test_result_older_missing_invalid_row_with_neither_key_is_unaffected():
-    # Backward compatibility (spec §4.3): a pre-MOA-470 row has neither key -- the
+    # Backward compatibility (spec §4.3): a legacy row has neither key -- the
     # extra block must simply not appear, not raise a KeyError reading `tail`/`reason`.
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
@@ -985,7 +985,7 @@ class FindingsPopen(FakePopen):
 
 
 def test_worker_reviewer_ok_report_posts_findings_counts_beside_verdict():
-    # Round-3 cold review F1 (MOA-480): findings travels beside verdict on an ok report,
+    # Round-3 cold review F1: findings travels beside verdict on an ok report,
     # for both reviewer worker paths (doc review and --diff review call the same
     # finalize_reviewer_report -- representative test on the doc-review path here).
     with TemporaryDirectory() as raw:
@@ -1772,7 +1772,7 @@ def test_doctor_api_reachable_true_on_any_http_response_false_only_on_transport_
 
 
 def test_doctor_makes_no_write_and_no_gh_or_git_mutation(tmp_path, monkeypatch):
-    """Doctor is read-only (spec MOA-502 Decision 8): patch the actual mutation boundary --
+    """Doctor is read-only: patch the actual mutation boundary --
     subprocess.run/Popen, the only way jaxflow.py could shell out to git/gh -- to raise if
     called at all, instead of asserting on a `which`-call log that never records a mutation
     (the old assertion was `... or True`, unconditionally true)."""

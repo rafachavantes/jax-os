@@ -699,7 +699,7 @@ def test_dispatch_quotes_tmux_command_for_space_and_semicolon_in_repo_path(monke
 
 
 def test_diff_dispatch_on_a_legacy_build_run_without_a_build_key(monkeypatch):
-    """Spec §7.1 #36. A run-started payload recorded before MOA-454 has `verify` and NO
+    """Spec §7.1 #36. A run-started payload recorded before the build command existed has `verify` and NO
     `build` key. `review --diff` must re-run only the test command and must not raise.
     A subscript read (`started_payload["build"]`) fails this test with a KeyError."""
     with TemporaryDirectory() as raw:
@@ -710,7 +710,7 @@ def test_diff_dispatch_on_a_legacy_build_run_without_a_build_key(monkeypatch):
         db = Path(raw) / "jaxos.db"
         con = _fresh_db(db)
         head = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
-        # no `build=` -- the seeded payload has the pre-MOA-454 shape
+        # no `build=` -- the seeded payload has the legacy shape
         _seed_finished_build(con, "b1", root, worktree, verify="true", head_sha=head)
         con.close()
         monkeypatch.chdir(root)
@@ -728,7 +728,7 @@ def test_diff_dispatch_on_a_legacy_build_run_without_a_build_key(monkeypatch):
 def test_diff_dispatch_reviews_a_finished_build_whose_report_was_invalid(monkeypatch):
     """A build that finished with `contract_status: invalid` (report missing its
     frontmatter) and no `result` still has a real diff and a recorded head_sha; `review
-    --diff` must dispatch a reviewer instead of refusing `unknown-run` (MOA-471)."""
+    --diff` must dispatch a reviewer instead of refusing `unknown-run`."""
     with TemporaryDirectory() as raw:
         allow_root = Path(raw) / "repos"
         root = allow_root / "demo"
@@ -2779,7 +2779,7 @@ def test_diff_dispatch_handoff_stub_and_manifest_name_plan_before_test_output(mo
 
 
 def test_diff_dispatch_original_plan_flows_into_diff_manifest_without_copies(monkeypatch):
-    # MOA-467: a NEW-style build manifest stores the ORIGINAL plan path (control repo),
+    # a NEW-style build manifest stores the ORIGINAL plan path (control repo),
     # and a declared **Spec:** is resolved to its ORIGINAL too -- the diff manifest names
     # those originals and copies nothing into the worktree. (The legacy copied-path
     # shape is covered by the tests above and below, which seed plan_path inside the
@@ -2844,7 +2844,7 @@ def test_diff_dispatch_resolves_declared_spec_original_and_refuses_unresolvable_
             now=_fixed_now, allowlist_root=allow_root, db_path=db,
         )
         manifest = json.loads((root / ".local" / "runs" / run_id / "manifest.json").read_text())
-        # MOA-467: the spec is resolved to its ORIGINAL validated file, never copied.
+        # the spec is resolved to its ORIGINAL validated file, never copied.
         assert manifest["spec_path"] == str(spec_src)
         assert not (worktree / ".local" / "docs" / "specs").exists()
 
@@ -3096,7 +3096,7 @@ def test_worker_diff_review_handoff_omits_threat_model_line_when_absent():
         assert "threat-model:" not in prompt
 
 
-# ---- review --diff reviews the build's own recorded base (MOA-503) ----
+# ---- review --diff reviews the build's own recorded base ----
 
 def _stacked_diff_dispatch(monkeypatch, capsys, recorded):
     """main -> feat/p1 (a.txt, b.txt) -> feat/x (c.txt, built `--base feat/p1`). `recorded`

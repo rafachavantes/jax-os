@@ -421,7 +421,7 @@ def test_credential_is_read_from_one_secure_env_file_only(monkeypatch):
     second source could only ever disagree with BWS. No test may touch a real credential, so
     every assertion here runs against a temporary file.
 
-    MOA-498: `_classifier_api_key` now delegates to `jev_client.api_key`, whose precedence
+    `_classifier_api_key` now delegates to `jev_client.api_key`, whose precedence
     is process env > LOCAL_ENV_PATH > ENV_PATH. Patch jev_client's own constants (not
     workflow_poll's deleted ENV_PATH) and neuter the repo's real `.env.local` + process env
     so this test can only ever see the temporary file. The surrounding-quote strip matters:

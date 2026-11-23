@@ -6,9 +6,9 @@ import { openDb } from "./index";
 import { insertEvent, getHubData, type HubLastRun, type LiveSnapshot } from "./workflows";
 import { parseIngress } from "../collectors/workflow-events";
 
-// src/server/db -> ../../../scripts/fixtures/moa-474
+// src/server/db -> ../../../scripts/fixtures/run-outcomes
 const FIXTURES_DIR = join(
-  dirname(fileURLToPath(import.meta.url)), "../../../scripts/fixtures/moa-474",
+  dirname(fileURLToPath(import.meta.url)), "../../../scripts/fixtures/run-outcomes",
 );
 const LIVE: LiveSnapshot = { paneCommands: new Map(), paneIds: new Set(), incarnation: null };
 

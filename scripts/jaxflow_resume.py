@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resume checkpoint helpers for jaxflow managed builder retry (MOA-473 P1)."""
+"""Resume checkpoint helpers for jaxflow managed builder retry."""
 from __future__ import annotations
 
 import hashlib

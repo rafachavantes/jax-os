@@ -32,7 +32,7 @@ import jaxflow_env as jenv
 import jev_client
 import general_settings
 
-# MOA-498 D3: HERMES_ENV_PATH/LOCAL_ENV_PATH/DEFAULT_WEBHOOK_URL are deleted outright — no
+# HERMES_ENV_PATH/LOCAL_ENV_PATH/DEFAULT_WEBHOOK_URL are deleted outright — no
 # default URL, no .env.local literal, no second hardcoded credential path; the poller now
 # shares jev_client's single reader and reads NOTIFICATION_WEBHOOK_URL/_SECRET from there.
 EVENTS_URL = f"{jenv.api_base_url()}/api/workflow/events?pending=1&limit=20"
@@ -54,7 +54,7 @@ CLASSIFIER_URL_ENV = "CLASSIFIER_FALLBACK_URL"
 CLASSIFIER_MODEL_ENV = "CLASSIFIER_FALLBACK_MODEL"
 CLASSIFIER_EFFORT = "low"        # a 4-way classification needs no deliberation
 ENV_KEY = "OPENROUTER_API_KEY_BUILDER"
-# MOA-493 §1.2 — Jev (TypeSafe System One) is the PRIMARY rung-7 classifier: one call per row,
+# — Jev (TypeSafe System One) is the PRIMARY rung-7 classifier: one call per row,
 # its `choice` posts directly (no confidence threshold -- shadow data showed a threshold made
 # accuracy worse). deepseek is the fallback, used only when the Jev call itself raises. Every
 # row still writes one line to JEV_SHADOW_PATH after the post, for the ongoing benchmark.
@@ -84,7 +84,7 @@ JEV_CRITERIA = {
                "is not waiting",
 }
 def _classifier_api_key(name=ENV_KEY):
-    """Delegates to jev_client's shared env-file reader (MOA-498 D1) — this used to be a
+    """Delegates to jev_client's shared env-file reader — this used to be a
     byte-for-byte duplicate of jev_client's own check, kept separate because it predated the
     retarget to $JAXOS_HOME; both now need the identical behavior, so one copy remains."""
     return jev_client.api_key(name)
@@ -169,7 +169,7 @@ def _request(url, method="GET", body=None, headers=None):
 
 def _forward_pending(settings=None):
     """Best-effort: pull pending events, forward each to the owner's notification webhook,
-    ack what was delivered. Never raises (see the module docstring's guard rationale). MOA-498
+    ack what was delivered. Never raises (see the module docstring's guard rationale).
     D3: gated end to end by integrations.webhook, read fresh (general_settings.read_settings()
     never raises per its own contract); URL/secret read fresh via jev_client.api_key() every
     tick — no cached/persisted destination, so a retargeted webhook is honored immediately."""
@@ -334,7 +334,7 @@ def _drain_deferred(get=None, classify=None, post=None, shadow=None, jev=None, s
     """Settle every queued rung-7 row. Jev is the PRIMARY classifier: exactly one call per row,
     and its `choice` posts as-is (no confidence threshold — shadow data showed a threshold made
     accuracy worse). Only when the Jev call itself raises (transport, shape, missing key) does
-    the row fall back to the deepseek classifier exactly as before MOA-493: an honest `unknown`
+    the row fall back to the deepseek classifier exactly as before: an honest `unknown`
     settles at once as `indeterminate` (no retry budget spent); any other exception posts
     `failed`. A bad row never stops the loop — one bad row must not strand the rest of the
     queue. `shadow` gets the single Jev answer (or its error) already produced here — it makes
@@ -393,7 +393,7 @@ def _check_staleness():
         print(f"workflow-poll: staleness-check request failed: {e}", file=sys.stderr)
 
 
-# ---- MOA-474 §10.3: the reaper -- closes a dead worker's run-started row that never
+# ---- the reaper -- closes a dead worker's run-started row that never
 # got a run-finished. Own phase, own try/except (main() below) so a bug here never
 # blocks _forward_pending/_check_staleness/_drain_deferred. ----
 
@@ -666,7 +666,7 @@ def main():
     try:
         _reap_stale_runs()
     except Exception as e:
-        # MOA-474: own phase, own try/except -- a reap bug must never block the drain
+        # own phase, own try/except -- a reap bug must never block the drain
         # phase below (spec §10.3's own framing).
         print(f"workflow-poll: reap crashed unexpectedly: {e}", file=sys.stderr)
     try:

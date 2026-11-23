@@ -208,7 +208,7 @@ def _doctor_hook(harness, repo_root, hook_files):
 
 def cmd_doctor(*, env=None, which=None, repo_root=None, read_settings=None, get=None,
                skill_dirs=None, hook_files=None, env_status=None, home=None):
-    """Read-only health check (spec MOA-502 Decision 8): one line per check, `ok`/`missing`
+    """Read-only health check: one line per check, `ok`/`missing`
     plus a fix hint on `missing`; never writes, never calls gh/git, never reaches the network
     beyond one GET to the local jax-os API. Exit is non-zero iff a REQUIRED check is missing --
     an integration-gated check (cli:gh) and an enabled agent's cli:<a> are required only when that switch is on.
@@ -398,7 +398,7 @@ def cmd_status(run_id, *, run=jr.run_command, db_path=None):
             status = payload["contract_status"]
             stage = payload.get("stage")
             diagnostic = payload.get("diagnostic")
-            # MOA-474 §12.2: branches checked in order, first match wins.
+            # branches checked in order, first match wins.
             if status == "interrupted":
                 # branch 1 -- checked BEFORE branch 2 on purpose: an interrupted
                 # builder row also carries result: failure, which would otherwise
@@ -481,7 +481,7 @@ def cmd_result(run_id, *, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
             f"{finished_payload['diagnostic']}"
         )
         return f"{extras}\n{text}" if extras else text
-    # MOA-470 §4.5, final review 1f119d5d1420 F1: PRINTED immediately (flushed), not
+    # final review 1f119d5d1420 F1: PRINTED immediately (flushed), not
     # folded into the return value -- a `missing` row's checks below still raise
     # `Refusal("report-missing")`, which would discard a local variable never
     # returned. Sourced ENTIRELY from the loaded row, never re-opens child.log.
@@ -499,7 +499,7 @@ def cmd_result(run_id, *, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
             lines.append(f"diagnostic: {finished_payload['diagnostic']}\n")
         lines.append(f"reason: {reason}\n")
         lines.append(f"tail:\n{finished_payload['tail']}\n")
-        # MOA-495 2.1: the log slices Jev found most relevant to the failure, in place
+        # the log slices Jev found most relevant to the failure, in place
         # of the tech lead having to open the raw child.log themselves. Absent whenever
         # Jev didn't run or failed (today's behaviour: nothing extra).
         log_context = finished_payload.get("log_context")
@@ -507,7 +507,7 @@ def cmd_result(run_id, *, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
             lines.append("log context:\n" + "\n---\n".join(log_context) + "\n")
         lines.append(f"child.log: {log_path}\n\n")
         print("".join(lines), end="", flush=True)
-    # MOA-495 2.2: the review-round tally, printed the same way (immediately, before the
+    # the review-round tally, printed the same way (immediately, before the
     # report body below) -- reviewer-only, only on a finished-ok row.
     tally = finished_payload.get("tally")
     if tally is not None:
@@ -526,7 +526,7 @@ def cmd_result(run_id, *, allowlist_root=ALLOWLIST_ROOT_DEFAULT, db_path=None):
     resolved = expected.resolve()
     if not _contained(resolved, allowlist_root):
         raise Refusal("path-outside-allowlist")
-    # MOA-456. Containment is checked FIRST -- existence is never reported for a path
+    # Containment is checked FIRST -- existence is never reported for a path
     # outside the allowlist. A distinct code rather than widening `report-path-mismatch`:
     # a mismatch means the ledger disagrees with the dispatch convention, while this means
     # the file is gone and re-running is pointless. `git worktree remove` deleting the
@@ -566,7 +566,7 @@ def cmd_cancel(run_id, *, run, post=jc._post, now, db_path=None, wait_s=15.0, po
     finally:
         con.close()
     run(["tmux", "kill-session", "-t", payload["session"]])
-    # MOA-474 §10.4: `tmux kill-session` delivers SIGHUP to the worker, whose own
+    # `tmux kill-session` delivers SIGHUP to the worker, whose own
     # signal path (§10.2, A1 Task 4) now finalizes with real evidence, HEAD, and a
     # checkpoint. Wait up to `wait_s`, polling the DB, before falling back to the
     # plain cancelled row this function used to post unconditionally.
@@ -738,19 +738,18 @@ def _add_review_parser(sub):
         "--since", metavar="PRIOR_REVIEW_RUN_ID",
         help="Correction round: review only the delta since a prior terminal diff "
              "review's head_sha, instead of merge-base..HEAD. Also bypasses the "
-             "terminal-verdict re-review guard (MOA-471 items 7/9). Mutually "
+             "terminal-verdict re-review guard. Mutually "
              "exclusive with --full.",
     )
     since_full.add_argument(
         "--full", metavar="REASON",
         help="Bypass the terminal-verdict re-review guard and run a full review "
-             "anyway. Requires a non-blank reason, recorded verbatim in the manifest "
-             "(MOA-471 item 7). Mutually exclusive with --since.",
+             "anyway. Requires a non-blank reason, recorded verbatim in the manifest. "
+             "Mutually exclusive with --since.",
     )
     review.add_argument(
         "--reverify", action="store_true",
-        help="For --diff: force a full verify+build re-run, ignoring the reuse check "
-             "(MOA-471 item 8).",
+        help="For --diff: force a full verify+build re-run, ignoring the reuse check.",
     )
     review.set_defaults(func=_cli_review)
 
@@ -929,7 +928,7 @@ def _add_merge_parser(sub):
     merge.add_argument(
         "--recheck", action="store_true",
         help="Force the --checks run even when an up-to-date diff review already proved the "
-             "same command on this exact SHA (MOA-510). No effect when the delivery is "
+             "same command on this exact SHA. No effect when the delivery is "
              "already merged and only needs recording.",
     )
     merge.add_argument(

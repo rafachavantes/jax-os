@@ -18,7 +18,7 @@ message, in this order:
 
 | # | Field | Rule | Becomes |
 |---|---|---|---|
-| 1 | Final result | ONE verifiable sentence of what must be true when the mission ends, at most 280 chars. Example: "MOA-506 in Done: five phases each with a PR open and a diff review approved." | `--goal` |
+| 1 | Final result | ONE verifiable sentence of what must be true when the mission ends, at most 280 chars. Example: "Feature X in Done: five phases each with a PR open and a diff review approved." | `--goal` |
 | 2 | Source of truth | A Linear issue id and/or a spec/plan path. | Mission log header; no CLI field |
 | 3 | Milestones | The intermediate deliverables, 1 to 12; a title is never a bare number (numbers are `mark`'s index shorthand) and no two titles match (case/whitespace-insensitive). | `--milestone` (repeatable) |
 | 4 | Out of scope | What the agent must not touch even when it looks useful. | Mission log header; no CLI field |
