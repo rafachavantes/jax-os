@@ -127,8 +127,8 @@ describe("pr-opened hub event type", () => {
   });
 
   it("GITHUB_PR_URL_RE matches only a github.com pull URL with a numeric PR number", () => {
-    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/route-converter-se/pull/123")).toBe(true);
-    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/route-converter-se/pull/0")).toBe(false);
+    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/sample-project/pull/123")).toBe(true);
+    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/sample-project/pull/0")).toBe(false);
     expect(GITHUB_PR_URL_RE.test("https://gitlab.com/acme/x/pull/1")).toBe(false);
     expect(GITHUB_PR_URL_RE.test("https://github.com/acme/x/issues/1")).toBe(false);
     expect(GITHUB_PR_URL_RE.test("not a url")).toBe(false);

@@ -327,7 +327,7 @@ describe("ProjectCard — border state and stage track (Decisions 9/10)", () => 
 
   it("shows no absolute filesystem path anywhere", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: base }));
-    expect(html).not.toContain("/home/rafa/repos");
+    expect(html).not.toContain("/home/user/repos");
   });
 });
 
@@ -922,7 +922,7 @@ describe("Phase 3 — heartbeat, ultima acao, subagentCount, run links, hide/pin
   // Item 1 (mobile hide/pin UX): the header's two icon buttons are now one "···" trigger
   // that opens a menu carrying both items, state-dependent labels only.
   // the trigger drops its border and shrinks to a 32px icon-only box
-  // (Rafa's phone review) — no more bordered 44px target.
+  // — no more bordered 44px target.
   it("the header renders a single more-options trigger, 32px, no border", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: base }));
     expect(html).toContain('aria-label="actions.more"');
@@ -1389,14 +1389,14 @@ describe("ProjectCard — dispatch form: one row + collapsed extras (spec item 8
 
 
 describe("PrSummary — M2 factual provider fields (spec AC10)", () => {
-  const base = { number: 12, ci: "green" as const, author: "rafa", reviewDecision: "APPROVED", isDraft: false, mergeStateStatus: "CLEAN" };
+  const base = { number: 12, ci: "green" as const, author: "alice", reviewDecision: "APPROVED", isDraft: false, mergeStateStatus: "CLEAN" };
   const render = (newest: Record<string, unknown> | null) => renderToStaticMarkup(createElement(PrSummary, {
     pr: { status: "ok", count: 1, ci: "green" as const, truncated: false, newest: newest as never }, githubEnabled: true,
   }));
 
   it("shows author, review and merge facts for a known PR", () => {
     const html = render(base);
-    expect(html).toContain("@rafa");
+    expect(html).toContain("@alice");
     expect(html).toContain("prFields.reviewApproved");
     expect(html).toContain("prFields.mergeCLEAN");
     expect(html).not.toContain("prFields.draft");

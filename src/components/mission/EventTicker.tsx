@@ -16,7 +16,7 @@ function TickerClock({ epochMs }: { epochMs: number }) {
 const PAGE_SIZE = 10;
 const PAGE_BTN = "font-semibold text-body-ink underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline";
 
-// Rafa (2026-09-19): 10 items/page over buildTicker's already-capped, already-sorted set.
+// 10 items/page over buildTicker's already-capped, already-sorted set.
 // Each item's (source, dir, ts) is a cheap stable-enough signature — keying TickerPage on it
 // remounts (and so resets to page 1) whenever the underlying item set actually changes,
 // without a manual "did the list change" effect.

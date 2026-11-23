@@ -276,7 +276,7 @@ const RUN = (over: Record<string, unknown> = {}) => ({
   payload: { phase: "B", runtime: "opencode-grok", kind: "plan", target: "/x/p.md",
              caller: "claude", caller_session: "sess-a", caller_pane: "%3",
              model: "grok-4.6", effort: "high", verify: "true",
-             session: "jax-p1-builder-r1", repo: "/home/rafa/repos/jax-os" },
+             session: "jax-p1-builder-r1", repo: "/home/user/repos/jax-os" },
   ...over,
 });
 const FINISH = (run_id: string) => ({
@@ -287,7 +287,7 @@ const FINISH = (run_id: string) => ({
 
 it("F2: rung 2 fires with AFK OFF, where a question is stored delivery:local", () => {
   const db = openDb(":memory:");
-  // No setAfk — AFK defaults off, which is Rafa's normal state. 16 of 20 live questions are
+  // No setAfk — AFK defaults off, which is the normal state. 16 of 20 live questions are
   // `local`; scoping rung 2 to delivered questions made the most important rung nearly dead.
   const q = insertEvent(db, { ...STOP, type: "question", source: "deterministic", emitter: "claude-pretool",
                               payload: { tool_use_id: "t1", questions: [{ question: "q?" }] } });

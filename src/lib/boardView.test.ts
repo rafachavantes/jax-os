@@ -14,7 +14,7 @@ describe("filterIssues", () => {
   ];
   it("filters by text on title+identifier", () => {
     expect(filterIssues(issues, { query: "alpha", project: null, priority: null, label: null, assignee: null }).map((i) => i.id)).toEqual(["a"]);
-    expect(filterIssues(issues, { query: "moa-2", project: null, priority: null, label: null, assignee: null }).map((i) => i.id)).toEqual(["b"]);
+    expect(filterIssues(issues, { query: "eng-2", project: null, priority: null, label: null, assignee: null }).map((i) => i.id)).toEqual(["b"]);
   });
   it("combines project + priority + label (AND)", () => {
     expect(filterIssues(issues, { query: "", project: "Jax OS", priority: 1, label: "bug", assignee: null }).map((i) => i.id)).toEqual(["a"]);
@@ -22,10 +22,10 @@ describe("filterIssues", () => {
   });
   it("combines assignee with the other three (AND)", () => {
     const withAssignee = [
-      mk({ id: "a", identifier: "ENG-1", assignee: "Rafa", project: "Jax OS", priority: 1, labels: [{ id: "l1", name: "bug", color: "#000" }] }),
+      mk({ id: "a", identifier: "ENG-1", assignee: "Alex", project: "Jax OS", priority: 1, labels: [{ id: "l1", name: "bug", color: "#000" }] }),
       mk({ id: "b", identifier: "ENG-2", assignee: "Ana" }),
     ];
-    expect(filterIssues(withAssignee, { query: "", project: null, priority: null, label: null, assignee: "Rafa" }).map((i) => i.id)).toEqual(["a"]);
+    expect(filterIssues(withAssignee, { query: "", project: null, priority: null, label: null, assignee: "Alex" }).map((i) => i.id)).toEqual(["a"]);
     expect(filterIssues(withAssignee, { query: "", project: null, priority: null, label: null, assignee: "Ana" }).map((i) => i.id)).toEqual(["b"]);
   });
 });

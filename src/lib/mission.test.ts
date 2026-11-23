@@ -1509,7 +1509,7 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
     expect(stopped.model.inbox).toEqual([]); // the gate and an unqualified capsule are status context, not a request
   });
 
-  it("an awaiting-approval gate does not claim Rafa while the tech lead waits on its own run (2026-09-24, arc)", () => {
+  it("an awaiting-approval gate does not claim the owner while the tech lead waits on its own run (2026-09-24)", () => {
     const gated = { ...projectBase, gate: "awaiting-approval" as const, statusMtime: "2026-09-19T11:30:00.000Z" };
     const waitingPane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: false, capsule: { status: "waiting", minutes: 120, declaredAt: "2026-09-19T11:59:00.000Z", eventId: 9 }, pendingQuestion: null, subagentCount: 0, lastEventTs: "2026-09-19T11:59:00.000Z" };
     const m = buildMission(scan([gated]), hub({ p1: { ...HUB_BASE, panes: [waitingPane as unknown as HubProject["panes"][number]] } }), undefined, NOW5);
@@ -1584,7 +1584,7 @@ describe("Phase 3 — buildTicker (spec §9, Decisions 12/13)", () => {
       { ts: "2026-09-19T09:00:00.000Z", type: "run-started", pane: null, capsuleStatus: null, outcome: null, contractStatus: null, stage: null, role: null, diagnostic: null },
     ];
     const cards = [{ dir: "p1", name: "P1", timeline }];
-    const commits = [{ repo: "p1", hash: "abc", author: "rafa", message: "fix: x", epoch: Date.parse("2026-09-19T11:00:00.000Z") / 1000 }];
+    const commits = [{ repo: "p1", hash: "abc", author: "alice", message: "fix: x", epoch: Date.parse("2026-09-19T11:00:00.000Z") / 1000 }];
     const prs = { p1: { ok: true as const, truncated: false, prs: [{ number: 1, title: "T", isDraft: false, url: "https://x", ciState: "green" as const, mergeReady: true, author: "a", reviewDecision: "unknown/not reported" as const, mergeStateStatus: "unknown" as const, updatedAt: "2026-09-19T08:00:00.000Z" }] } };
     const items = buildTicker(cards, commits, prs, FIXTURE_NOW);
     expect(items.map((i) => i.source)).toEqual(["commit", "event", "pr"]);
@@ -1600,7 +1600,7 @@ describe("Phase 3 — buildTicker (spec §9, Decisions 12/13)", () => {
     expect(buildTicker(cards, [], {}, FIXTURE_NOW)).toHaveLength(30);
   });
 
-  // Rafa: "o activity tá muito grande... precisa ter um cut dos últimos 7 dias só" — the window
+  // The activity feed is capped to the last 7 days — the window
   // is applied BEFORE sort/cap, against an injected `nowMs` (default Date.now()).
   describe("7-day cutoff", () => {
     const NOW_ISO2 = "2026-09-19T12:00:00.000Z";

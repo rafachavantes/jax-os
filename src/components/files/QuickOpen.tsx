@@ -78,7 +78,7 @@ export function shouldApplyIndexFetch(requestSeq: number, currentSeq: number): b
 // same inline pattern FilesWorkspaceProvider.tsx already uses for tabs/expanded — this component is
 // never server-rendered with `open: true` (it starts closed and only opens from a client keydown),
 // so there is no SSR hazard; not component-tested for the same reason page.tsx's effects aren't
-// (this repo has no jsdom to mount a real DOM/localStorage — verified instead by pnpm build + Rafa's
+// (this repo has no jsdom to mount a real DOM/localStorage — verified instead by pnpm build + the owner's
 // visual pass). fuzzyScore/rankHits above carry the actual test coverage for this file.
 export function QuickOpen({
   onOpenFilePinned, activeFile, scopeOverride, onScopeChange,

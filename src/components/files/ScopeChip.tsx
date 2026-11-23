@@ -54,7 +54,7 @@ function toScope(value: string): SearchScope {
 }
 
 // Filter field + recents + repo/vault/all list (§9). No dedicated interaction test — this file's
-// JSX is verified by `pnpm build` + Rafa's live check, matching this codebase's existing
+// JSX is verified by `pnpm build` + a live check, matching this codebase's existing
 // convention for QuickOpen/FileSearch (only their pure helpers are unit-tested).
 export function ScopeChip({ scope, onChange }: { scope: SearchScope; onChange: (scope: SearchScope) => void }) {
   const t = useTranslations("files");

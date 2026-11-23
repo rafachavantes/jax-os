@@ -890,7 +890,7 @@ function zipEndOfCentralDirectory(count: number, centralSize: number, centralOff
 // (zlib.crc32 takes a running value) while yielding the same bytes — sizes are known upfront from
 // planZipAt's stat, CRC only after reading, hence the streaming-flag + trailing data-descriptor
 // technique (never buffers or re-reads a file). One shared archive-creation timestamp for all
-// entries — ponytail: source mtimes not preserved, upgrade if Rafa asks.
+// entries — ponytail: source mtimes not preserved, upgrade if needed.
 export async function* zipStream(entries: ZipEntry[]): AsyncGenerator<Uint8Array> {
   let offset = 0;
   const central: Buffer[] = [];

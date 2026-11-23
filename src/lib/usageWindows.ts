@@ -12,7 +12,7 @@ export function usageWindows(usage: ProviderUsage, t: (key: string) => string): 
   return candidates;
 }
 
-// Rafa's rule: the ring's percent is whichever window (5h/weekly/monthly/per-model
+// Rule: the ring's percent is whichever window (5h/weekly/monthly/per-model
 // weekly) is closest to its cap -- any of them can be the one about to block work.
 // The tooltip (native `title`) lists every window so the peak isn't the only thing visible.
 export function highestWindow(usage: ProviderUsage, t: (key: string) => string): { percent: number; tooltip: string } | null {
@@ -25,7 +25,7 @@ export function highestWindow(usage: ProviderUsage, t: (key: string) => string):
   return { percent: worst.win.usedPercent, tooltip };
 }
 
-// Exact reset time, never vague text (Rafa's rule of thumb):
+// Exact reset time, never vague text (rule of thumb):
 // under 1h -> "in N min", under 24h -> "in Xh Ymin", otherwise weekday + local 24h clock time.
 // Minutes are rounded UP (ceil) so the line never reads more generous than reality.
 export function formatResetLine(resetsAt: string | null, nowMs: number, locale: string, t: (key: string, values?: Record<string, string | number>) => string): string | null {

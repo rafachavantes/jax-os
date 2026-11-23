@@ -41,7 +41,7 @@ import { enterOrganize } from "@/lib/cockpitPrefsQuery";
 import { announceDrop, disclosureVisibleCards, hiddenAutoHiddenSummary, ProjectsColumn } from "./ProjectsColumn";
 
 // Any fixed string: the component renders whatever reposRoot the server passes it.
-const REPOS_ROOT_DISPLAY = "/home/rafa/repos";
+const REPOS_ROOT_DISPLAY = "/home/user/repos";
 
 function missionOf(over: Partial<Mission["model"]> = {}): Mission {
   return {
@@ -267,7 +267,7 @@ describe("ProjectsColumn — hidden/auto-hidden disclosure (spec §8, Decision 1
     expect(html).toContain("projects.autoHiddenShow"); // lowercase "mostrar" toggle — gerenciar cannot reveal autoHidden cards (verified: setShowHidden never touches showAuto), so it stays a separate link
     expect(html).toContain("actions.manage"); // "gerenciar" toggle (unchanged key)
     // the compact line drops project names entirely from BOTH halves — the
-    // three-line noise ("(Patient Insight Journal (PIJ))") is gone; names only ever appear once a
+    // three-line noise ("(Sample Project Name (SPN))") is gone; names only ever appear once a
     // segment is expanded (disclosureVisibleCards' own test below covers that path).
     expect(html).not.toContain("Auto One");
     expect(html).not.toContain("actions.pin");

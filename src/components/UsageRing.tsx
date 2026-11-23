@@ -71,7 +71,7 @@ export function UsageRingUnavailable({ label, shortName, caption, onOpenDetails 
   );
 }
 
-// One dialog for ALL providers (Rafa's spec: a single tap shows the full picture,
+// One dialog for ALL providers (a single tap shows the full picture,
 // not a per-ring modal). Close on backdrop click, Escape and a close button; `title`
 // stays on each ring for desktop hover, this is the tap/click path.
 export function ProviderUsageModal({

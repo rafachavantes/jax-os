@@ -34,8 +34,8 @@ type Props = {
 // toggles and the joining " · " between them are Part 2's JSX. `t` is the caller's OWN
 // `useTranslations("mission.projects")` (already scoped, matching this component's existing
 // `t("hiddenBar", ...)` call) — never re-prefixed with "projects." here.
-// dropped the autoHidden half's inline name list ("(Patient Insight Journal
-// (PIJ))") — it wrapped badly on the phone. Both halves are now plain ICU-plural counts; names
+// dropped the autoHidden half's inline name list ("(Sample Project Name
+// (SPN))") — it wrapped badly on the phone. Both halves are now plain ICU-plural counts; names
 // only ever show once a segment is expanded (the per-project rows below, unchanged).
 export function hiddenAutoHiddenSummary(
   hiddenCount: number,
@@ -277,7 +277,7 @@ export function ProjectsColumn({ navigation, mission, reposRoot, counts, filter 
     // none match; boardEntries owns both rules.
     const entries = boardEntries(orderedCards, filter);
     body = entries.length > 0 ? (
-      // Rafa 2026-09-20: flex-wrap instead of the 1→2→3→4 column grid — at most 3 cards per row
+      // flex-wrap instead of the 1→2→3→4 column grid — at most 3 cards per row
       // (30% basis + gaps), and a partial row's cards grow to fill the line (2 cards = half each,
       // 1 = full). Tablet 2 per row, phone 1. The expanded card takes a 2-of-3 basis.
       <div className="project-grid">

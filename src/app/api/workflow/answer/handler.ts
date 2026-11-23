@@ -78,20 +78,20 @@ export async function handleAnswerPost(req: Request, deps: AnswerRouteDeps = sys
   // settings file or an empty ownerName drops the name, never the prefix.
   const settings = deps.readGeneralSettings();
   const ownerName = settings.ok ? settings.data.ownerName : "";
-  const rafaPrefix = ownerName ? `[Jax OS · ${ownerName}] ` : "[Jax OS] ";
+  const ownerPrefix = ownerName ? `[Jax OS · ${ownerName}] ` : "[Jax OS] ";
   let ok = false;
   let error: string | null = null;
   try {
     if (claim.kind === "structured") {
       await deps.injectAnswers(claim.pane ?? "", claim.question_shapes ?? [], claim.answers ?? [], claim.tmux_incarnation ?? "");
     } else if (claim.emitter === "codex-stop") {
-      await deps.codexQueueMessage(claim.harnessSession ?? "", `${rafaPrefix}${claim.text ?? ""}`);
+      await deps.codexQueueMessage(claim.harnessSession ?? "", `${ownerPrefix}${claim.text ?? ""}`);
     } else {
       // Review F1 (plan round 1): an expired/absent watcher must fail the click, not accept a file nobody reads.
       if (!deps.isAnswerWatcherAlive(claim.harnessSession ?? "", claim.question_event_id)) {
         throw new Error("answer watcher not live");
       }
-      deps.writeAnswerLine(claim.harnessSession ?? "", claim.question_event_id, `${rafaPrefix}${claim.text ?? ""}`);
+      deps.writeAnswerLine(claim.harnessSession ?? "", claim.question_event_id, `${ownerPrefix}${claim.text ?? ""}`);
     }
     ok = true;
   } catch (e) {

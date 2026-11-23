@@ -177,7 +177,7 @@ class SymlinkRefusedError extends Error {}
 // the whole apply; a component that doesn't exist yet is fine (it gets
 // created below). ponytail: this walks from the filesystem root rather than
 // scoping strictly to $HOME as spec §5.2's prose describes — checking a
-// handful of extra always-real system dirs (/, /home, /home/rafa) costs
+// handful of extra always-real system dirs (/, /home, /home/user) costs
 // nothing, is a strict superset of the required check, and keeps this
 // function fully path-injectable for tmp-dir tests instead of hardcoding
 // $HOME into the walk itself.

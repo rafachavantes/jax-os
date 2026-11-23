@@ -5,7 +5,7 @@ vi.hoisted(() => {
   const { join } = require("node:path");
   const dir = mkdtempSync(join(tmpdir(), "jaxos-files-test-"));
   const vaultDir = mkdtempSync(join(tmpdir(), "jaxos-files-test-vault-"));
-  // A plain, empty mkdtempSync vault fixture (portable — CI has no `/home/rafa/obsidian-vault`
+  // A plain, empty mkdtempSync vault fixture (portable — CI has no `/home/user/obsidian-vault`
   // and must never depend on it). Empty is enough: every existing "vault" assertion below is
   // satisfied by an empty directory as-is — "walks only the vault root" checks `.every(...)`
   // over the hit list (vacuously true on zero hits), the nonexistent-query search already

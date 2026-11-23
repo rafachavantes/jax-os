@@ -9,16 +9,16 @@ const RUN_STARTED = {
   project: "jax-os", run_id: "r-001", role: "builder", type: "run-started",
   source: "deterministic", emitter: "wrapper",
   payload: {
-    phase: "B", runtime: "opencode-deepseek", kind: "plan", target: "/home/rafa/repos/jax-os/.local/docs/plans/example.md",
+    phase: "B", runtime: "opencode-deepseek", kind: "plan", target: "/home/user/repos/jax-os/.local/docs/plans/example.md",
     caller: "claude", caller_session: "sess-abc123", caller_pane: "%3", model: "grok-4.6", effort: "high",
-    session: "jax-jax-os-builder-r-001", repo: "/home/rafa/repos/jax-os",
+    session: "jax-jax-os-builder-r-001", repo: "/home/user/repos/jax-os",
   },
 };
 const RUN_FINISHED = {
   project: "jax-os", run_id: "r-001", role: "builder", type: "run-finished",
   source: "deterministic", emitter: "wrapper",
   payload: {
-    phase: "B", exit_code: 0, contract_status: "ok", report_path: "/home/rafa/repos/jax-os/.local/reports/r-001.md",
+    phase: "B", exit_code: 0, contract_status: "ok", report_path: "/home/user/repos/jax-os/.local/reports/r-001.md",
     summary: "done", head_sha: "a".repeat(40), result: "success",
   },
 };
@@ -380,7 +380,7 @@ describe("parseIngress — question-answered payload schema (§6 route 5)", () =
 });
 
 describe("parseIngress — PROJECT_LABEL replaces PROJECT_SLUG at ingress (Finding 34)", () => {
-  it.each(["PIJ", "Acme.AI", "CS_standalone", "comenta.ia.br", "EBPMN 2"])("accepts real repo basename %s", (project) => {
+  it.each(["sample-app", "Acme.AI", "Sample_Standalone", "example.com", "Sample App 2"])("accepts real repo basename %s", (project) => {
     expect(parseIngress({
       project, role: "lead", pane: "%1", type: "turn-stopped",
       source: "deterministic", emitter: "claude-stop", payload: { capsule_status: "done", capsule_rule: "tag" },
@@ -432,7 +432,7 @@ describe("parseSessionBody — re-keyed shape + backward-compat (§3.1b, Finding
   });
 
   it("reuses the PROJECT_LABEL fixtures", () => {
-    for (const project of ["PIJ", "Acme.AI", "CS_standalone", "comenta.ia.br", "EBPMN 2"]) {
+    for (const project of ["sample-app", "Acme.AI", "Sample_Standalone", "example.com", "Sample App 2"]) {
       expect(parseSessionBody({ project, session: "s", pane: "%7", role: "lead", tmux_incarnation: "1:2" })).toMatchObject({ ok: true });
     }
   });
@@ -1122,12 +1122,12 @@ const prOpenedEvent = (over: Record<string, unknown> = {}) => ({
   source: "deterministic",
   emitter: "wrapper",
   payload: {
-    repo: "acme/route-converter-se",
+    repo: "acme/sample-project",
     branch: "feat/x",
     sha: "a".repeat(40),
     base: "staging",
     pr_number: 7,
-    pr_url: "https://github.com/acme/route-converter-se/pull/7",
+    pr_url: "https://github.com/acme/sample-project/pull/7",
     kind: "feature",
   },
   ...over,
@@ -1254,7 +1254,7 @@ describe("merge-approved", () => {
   it("accepts optional pr_number/pr_url metadata for a PR-preset merge (spec Ledger & card growth)", () => {
     const ev = mergeEvent();
     (ev.payload as Record<string, unknown>).pr_number = 7;
-    (ev.payload as Record<string, unknown>).pr_url = "https://github.com/acme/route-converter-se/pull/7";
+    (ev.payload as Record<string, unknown>).pr_url = "https://github.com/acme/sample-project/pull/7";
     expect(parseIngress(ev).ok).toBe(true);
   });
 
@@ -1382,7 +1382,7 @@ describe("run-finished — findings (round-3 cold review F1)", () => {
 describe("gc-removed", () => {
   const GC_REMOVED = {
     project: "demo", role: "lead" as const, type: "gc-removed" as const, source: "deterministic" as const, emitter: "wrapper" as const,
-    payload: { run_id: "aaaabbbbcccc", branch: "feat/x", worktree: "/home/rafa/repos/demo-feat-x", reason: "success", age_days: 12 },
+    payload: { run_id: "aaaabbbbcccc", branch: "feat/x", worktree: "/home/user/repos/demo-feat-x", reason: "success", age_days: 12 },
   };
 
   it("accepts the exact shape, rejects extra/missing keys and a top-level run_id, renders non-empty", () => {
@@ -1401,7 +1401,7 @@ describe("builder-launched", () => {
     source: "deterministic" as const, emitter: "wrapper" as const,
     payload: {
       launched_at: "2026-11-23T12:00:00Z",
-      worktree: "/home/rafa/repos/demo-feat-x",
+      worktree: "/home/user/repos/demo-feat-x",
       runtime_model: "opencode-go/jaxflow-builder-default",
       model: "opencode-go/deepseek-v4.1-flash",
       profile: "default" as const,

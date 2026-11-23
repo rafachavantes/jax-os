@@ -14,7 +14,7 @@ export const paneAgentFilter = (alias = ""): string => `${alias}emitter NOT IN (
 
 /**
  * MOVED VERBATIM from workflows.ts (it was at :49-74). Not rewritten — the delivery decision in
- * insertEvent and rung 2 of the ladder must answer "does Rafa still owe an answer?" identically,
+ * insertEvent and rung 2 of the ladder must answer "does the owner still owe an answer?" identically,
  * and two definitions would eventually disagree. workflows.ts re-exports it, so every existing
  * importer and its tests keep working untouched.
  */
@@ -23,15 +23,15 @@ export function hasPendingQuestion(db: Database.Database, ref: PaneRef): boolean
 }
 
 /**
- * "Does Rafa still owe an answer on this pane?"
+ * "Does the owner still owe an answer on this pane?"
  *
  * `deliveredOnly` is the ONE difference between the two callers, and it is a scope, not a
  * second definition of "unresolved":
  *  - the forwarding/suppression decision (insertEvent) cares only about questions that were
- *    actually SENT to Rafa, so it passes true;
+ *    actually SENT to the owner, so it passes true;
  *  - rung 2 of the ladder cares whether an answer is owed AT ALL. A question asked while AFK
  *    is off is stored `delivery: "local"` and never forwarded, but it is still sitting on
- *    Rafa's screen unanswered. Passing true here would make rung 2 nearly dead in normal use.
+ *    the owner's screen unanswered. Passing true here would make rung 2 nearly dead in normal use.
  */
 export function hasOpenQuestion(db: Database.Database, ref: PaneRef, deliveredOnly: boolean): boolean {
   const key = paneKey(ref.pane, ref.tmuxIncarnation);
@@ -92,7 +92,7 @@ export function deriveCapsule(
     ? paneKey(ev.pane, ev.tmux_incarnation)
     : null;
   if (key) {
-    // Rung 2 — Rafa owes an answer. Same "unresolved" definition the delivery decision uses,
+    // Rung 2 — the owner owes an answer. Same "unresolved" definition the delivery decision uses,
     // WITHOUT its delivery scope: an unanswered question counts whether or not it was forwarded.
     if (hasOpenQuestion(db, { pane: ev.pane!, tmuxIncarnation: ev.tmux_incarnation! }, false)) {
       return det("needs_input", "question_open");

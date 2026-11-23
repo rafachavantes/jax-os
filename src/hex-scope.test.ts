@@ -14,7 +14,7 @@ const FN_DECL_RE = /function\s+(\w+)\s*\(/;
 // - *.test.ts / *.test.tsx: fixture data mimicking an EXTERNAL system's own color field
 //   (Linear issue/label colors) -- never DS-token-governed UI. This is this plan's OWN 4th
 //   exclusion, beyond the spec's literal 3-item list (see Global Constraints) -- flagged for
-//   Rafa, not silently invented.
+//   the owner, not silently invented.
 function isExcludedPath(relPath: string): boolean {
   return relPath.startsWith("styles/ds/") || /\.test\.tsx?$/.test(relPath);
 }

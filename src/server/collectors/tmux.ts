@@ -52,7 +52,7 @@ export function joinAgents(sessions: TmuxSession[], projects: Project[]): Agent[
 }
 
 // tmux exits 1 both when the server is down and when it has no sessions
-// (exit-empty default kills the empty server) — Rafa's call: that reads as
+// (exit-empty default kills the empty server) — a deliberate call: that reads as
 // "zero agents" (quiet empty), not source-unavailable. Real failures
 // (missing binary, socket permissions) still throw -> {ok:false} warning.
 export function isNoServerError(stderr: string): boolean {

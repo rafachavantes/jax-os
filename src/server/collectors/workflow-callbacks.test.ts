@@ -11,11 +11,11 @@ describe("writeAnswerLine (D3)", () => {
       writeFileSync: vi.fn((path: string, text: string) => { calls.push(`write ${path} ${text}`); }),
       renameSync: vi.fn((from: string, to: string) => { calls.push(`rename ${from} -> ${to}`); }),
     };
-    writeAnswerLine(UUID, 42, "[Jax OS · Rafa] pode", fs as never);
+    writeAnswerLine(UUID, 42, "[Jax OS · Alex] pode", fs as never);
     const dir = `${CALLBACKS_ROOT}/${UUID}`;
     expect(calls).toEqual([
       `mkdir ${dir}`,
-      `write ${dir}/answer-42.answer.tmp [Jax OS · Rafa] pode`,
+      `write ${dir}/answer-42.answer.tmp [Jax OS · Alex] pode`,
       `rename ${dir}/answer-42.answer.tmp -> ${dir}/answer-42.answer`,
     ]);
   });

@@ -25,11 +25,11 @@ describe("childLogPath (spec §8, cold review F1 — mirrors jaxflow_run.py's ch
   });
 
   it("round 2 F1: a malformed run_id (traversal/length/case) or an out-of-allowlist repo (sibling escape or ..) returns null", () => {
-    expect(childLogPath("/home/rafa/repos/jax-os", "../../etc/passwd")).toBeNull();
-    expect(childLogPath("/home/rafa/repos/jax-os", "a1b2c3d4e5f")).toBeNull();
-    expect(childLogPath("/home/rafa/repos/jax-os", "A1B2C3D4E5F6")).toBeNull();
+    expect(childLogPath("/home/user/repos/jax-os", "../../etc/passwd")).toBeNull();
+    expect(childLogPath("/home/user/repos/jax-os", "a1b2c3d4e5f")).toBeNull();
+    expect(childLogPath("/home/user/repos/jax-os", "A1B2C3D4E5F6")).toBeNull();
     expect(childLogPath(mkdtempSync(join(tmpdir(), "jax-childlog-repo-")), "a1b2c3d4e5f6")).toBeNull();
-    expect(childLogPath("/home/rafa/repos/jax-os/../../etc", "a1b2c3d4e5f6")).toBeNull();
+    expect(childLogPath("/home/user/repos/jax-os/../../etc", "a1b2c3d4e5f6")).toBeNull();
   });
 });
 

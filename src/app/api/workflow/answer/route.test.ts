@@ -60,14 +60,14 @@ function answerRequest(reply = "1: 2\n2: 1,3\n3: ship without deploy"): Request 
 }
 
 // Only `ownerName` matters to this route — 497A's real reader returns the full GeneralSettings,
-// so a loose cast keeps every pre-existing "[Jax OS · Rafa] ..." assertion byte-identical.
-const rafaSettings = (ownerName: string) =>
+// so a loose cast keeps every pre-existing "[Jax OS · Alex] ..." assertion byte-identical.
+const ownerSettings = (ownerName: string) =>
   (() => ({ ok: true, data: { ownerName } })) as unknown as AnswerRouteDeps["readGeneralSettings"];
 
 function fakeDeps(overrides: Partial<AnswerRouteDeps> = {}): AnswerRouteDeps {
   return {
     getDb: vi.fn(() => ({} as ReturnType<AnswerRouteDeps["getDb"]>)),
-    readGeneralSettings: rafaSettings("Rafa"),
+    readGeneralSettings: ownerSettings("Alex"),
     loadEventType: vi.fn(() => "question"),
     claimAnswer: vi.fn(() => ({ ok: true, claim: CLAIM })),
     claimFreeformAnswer: vi.fn(() => ({ ok: true, claim: FREEFORM_CLAIM })),
@@ -219,7 +219,7 @@ describe("handleAnswerPost — generalized dispatch (D4)", () => {
     expect((await res.json()).ok).toBe(true);
     expect(deps.claimFreeformAnswer).toHaveBeenCalled();
     expect(deps.claimAnswer).not.toHaveBeenCalled();
-    expect(deps.writeAnswerLine).toHaveBeenCalledWith(FREEFORM_CLAIM.harnessSession, FREEFORM_CLAIM.question_event_id, "[Jax OS · Rafa] ship it");
+    expect(deps.writeAnswerLine).toHaveBeenCalledWith(FREEFORM_CLAIM.harnessSession, FREEFORM_CLAIM.question_event_id, "[Jax OS · Alex] ship it");
     expect(deps.codexQueueMessage).not.toHaveBeenCalled();
     expect(deps.injectAnswers).not.toHaveBeenCalled();
   });
@@ -231,12 +231,12 @@ describe("handleAnswerPost — generalized dispatch (D4)", () => {
     });
     const res = await handleAnswerPost(req({ event_id: 1, reply: "ship it" }), deps);
     expect((await res.json()).ok).toBe(true);
-    expect(deps.codexQueueMessage).toHaveBeenCalledWith(CODEX_FREEFORM_CLAIM.harnessSession, "[Jax OS · Rafa] ship it");
+    expect(deps.codexQueueMessage).toHaveBeenCalledWith(CODEX_FREEFORM_CLAIM.harnessSession, "[Jax OS · Alex] ship it");
     expect(deps.writeAnswerLine).not.toHaveBeenCalled();
     expect(deps.injectAnswers).not.toHaveBeenCalled();
   });
 
-  it("never prefixes the structured AskUserQuestion path — only the two native freeform deliveries get [Jax OS · Rafa] (D5)", async () => {
+  it("never prefixes the structured AskUserQuestion path — only the two native freeform deliveries get [Jax OS · Alex] (D5)", async () => {
     const deps = fakeDeps({ loadEventType: vi.fn(() => "question") });
     await handleAnswerPost(answerRequest(), deps);
     expect(deps.injectAnswers).toHaveBeenCalledWith(CLAIM.pane, CLAIM.question_shapes, CLAIM.answers, CLAIM.tmux_incarnation);
@@ -254,7 +254,7 @@ describe("handleAnswerPost — generalized dispatch (D4)", () => {
     const res = await handleAnswerPost(req({ event_id: 1, reply: "ship it" }), deps);
     expect((await res.json()).ok).toBe(true);
     expect(deps.isAnswerWatcherAlive).toHaveBeenCalledWith(FREEFORM_CLAIM.harnessSession, FREEFORM_CLAIM.question_event_id);
-    expect(deps.writeAnswerLine).toHaveBeenCalledWith(FREEFORM_CLAIM.harnessSession, FREEFORM_CLAIM.question_event_id, "[Jax OS · Rafa] ship it");
+    expect(deps.writeAnswerLine).toHaveBeenCalledWith(FREEFORM_CLAIM.harnessSession, FREEFORM_CLAIM.question_event_id, "[Jax OS · Alex] ship it");
   });
 
   it("rejects an attention-needed source as not-answerable before any claim or tmux call (Finding 26)", async () => {
@@ -286,7 +286,7 @@ describe("handleAnswerPost — generalized dispatch (D4)", () => {
   it("empty ownerName drops the name from the prefix (decision 11)", async () => {
     const deps = fakeDeps({
       loadEventType: vi.fn(() => "turn-stopped"),
-      readGeneralSettings: rafaSettings(""),
+      readGeneralSettings: ownerSettings(""),
       writeAnswerLine: vi.fn(),
     });
     await handleAnswerPost(req({ event_id: 1, reply: "ship it" }), deps);
@@ -318,7 +318,7 @@ describe("handleAnswerPost integration", () => {
     });
     const deps: AnswerRouteDeps = {
       getDb: () => db,
-      readGeneralSettings: rafaSettings("Rafa"),
+      readGeneralSettings: ownerSettings("Alex"),
       loadEventType: (d, id) => {
         const row = d.prepare("SELECT type FROM workflow_events WHERE id = ?").get(id) as { type: string } | undefined;
         return row?.type ?? null;
@@ -363,7 +363,7 @@ describe("handleAnswerPost integration", () => {
     expect(second.ok).toBe(true);
     const deps: AnswerRouteDeps = {
       getDb: () => db,
-      readGeneralSettings: rafaSettings("Rafa"),
+      readGeneralSettings: ownerSettings("Alex"),
       loadEventType: (d, id) => {
         const row = d.prepare("SELECT type FROM workflow_events WHERE id = ?").get(id) as { type: string } | undefined;
         return row?.type ?? null;

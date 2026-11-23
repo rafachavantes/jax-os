@@ -20,7 +20,7 @@ describe("parseGitHubRemote", () => {
   });
 
   it("returns null for a non-GitHub remote", () => {
-    expect(parseGitHubRemote("git@gitlab.com:rafa/other.git")).toBeNull();
+    expect(parseGitHubRemote("git@gitlab.com:alice/other.git")).toBeNull();
   });
 
   it("returns null for a host that merely CONTAINS github.com as a substring, never treating it as GitHub (cold review Finding 6)", () => {
@@ -176,9 +176,9 @@ describe("M2 factual provider fields (plan F3 / Task 4)", () => {
 
   it("keeps known author/review/merge states exactly as GitHub reports them", () => {
     const { prs } = parsePrListJson(JSON.stringify([{
-      ...base, author: { login: "rafa" }, reviewDecision: "APPROVED", mergeStateStatus: "CLEAN",
+      ...base, author: { login: "alice" }, reviewDecision: "APPROVED", mergeStateStatus: "CLEAN",
     }]));
-    expect(prs[0]).toMatchObject({ author: "rafa", reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" });
+    expect(prs[0]).toMatchObject({ author: "alice", reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" });
   });
 
   it("covers every known review and merge state as factual", () => {
@@ -213,11 +213,11 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
     const run = async (file: string, args: string[]): Promise<string> => {
       calls.push({ file, args });
       if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
-      if (args[0] === "api") return "rafa\n";
-      return JSON.stringify([{ number: 3, title: "mine", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-11-18T00:00:00Z", author: { login: "rafa" }, reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" }]);
+      if (args[0] === "api") return "alice\n";
+      return JSON.stringify([{ number: 3, title: "mine", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-11-18T00:00:00Z", author: { login: "alice" }, reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" }]);
     };
-    const out = await getPrsForProjects(["a", "b"], "/home/rafa/repos", run, "mine");
-    expect(out["a"]).toMatchObject({ ok: true, prs: [{ number: 3, author: "rafa" }] });
+    const out = await getPrsForProjects(["a", "b"], "/home/user/repos", run, "mine");
+    expect(out["a"]).toMatchObject({ ok: true, prs: [{ number: 3, author: "alice" }] });
     expect(out["b"]).toMatchObject({ ok: true });
     // Viewer resolved exactly once for the whole collection (two projects).
     expect(calls.filter((c) => c.file === "gh" && c.args[0] === "api")).toHaveLength(1);
@@ -225,7 +225,7 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
     expect(listCalls).toHaveLength(2);
     for (const call of listCalls) {
       const authorIdx = call.args.indexOf("--author");
-      expect(call.args[authorIdx + 1]).toBe("rafa");
+      expect(call.args[authorIdx + 1]).toBe("alice");
       expect(authorIdx).toBeLessThan(call.args.indexOf("--limit"));
     }
   });
@@ -233,12 +233,12 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
   it("more than 50 other-author PRs never matter: the provider-filtered response is what Mine returns", async () => {
     const run = async (file: string, args: string[]): Promise<string> => {
       if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
-      if (args[0] === "api") return "rafa\n";
+      if (args[0] === "api") return "alice\n";
       // A Mine-filtered provider answers with ONLY the viewer's PRs (the --author flag is the
       // filter that makes this true upstream); assert we do not locally re-filter it away.
-      return JSON.stringify([{ number: 7, title: "my pr", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-11-18T00:00:00Z", author: { login: "rafa" } }]);
+      return JSON.stringify([{ number: 7, title: "my pr", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-11-18T00:00:00Z", author: { login: "alice" } }]);
     };
-    const out = await getPrsForProjects(["jax-os"], "/home/rafa/repos", run, "mine");
+    const out = await getPrsForProjects(["jax-os"], "/home/user/repos", run, "mine");
     expect(out["jax-os"]).toMatchObject({ ok: true, prs: [{ number: 7 }] });
   });
 
@@ -255,7 +255,7 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
       if (args[0] === "api") throw new Error("gh: To use GitHub CLI, set GH_TOKEN");
       return JSON.stringify([]);
     };
-    const out = await getPrsForProjects(["local", "other", "gh-a", "gh-b"], "/home/rafa/repos", run, "mine");
+    const out = await getPrsForProjects(["local", "other", "gh-a", "gh-b"], "/home/user/repos", run, "mine");
     // No remote / non-GitHub are resolved, successful, quiet-empty outcomes — not identity failures.
     expect(out["local"]).toEqual({ ok: true, prs: [], truncated: false });
     expect(out["other"]).toEqual({ ok: true, prs: [], truncated: false });
@@ -277,7 +277,7 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
       }
       return JSON.stringify([]);
     };
-    const out = await getPrsForProjects(["local", "other"], "/home/rafa/repos", run, "mine");
+    const out = await getPrsForProjects(["local", "other"], "/home/user/repos", run, "mine");
     expect(out["local"]).toEqual({ ok: true, prs: [], truncated: false });
     expect(out["other"]).toEqual({ ok: true, prs: [], truncated: false });
     expect(calls.some((c) => c.args[0] === "api")).toBe(false);
@@ -290,7 +290,7 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
       if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
       return JSON.stringify([]);
     };
-    await getPrsForProjects(["jax-os"], "/home/rafa/repos", run, "all");
+    await getPrsForProjects(["jax-os"], "/home/user/repos", run, "all");
     expect(calls.some((c) => c.args[0] === "api")).toBe(false);
     expect(calls.some((c) => c.args.includes("--author"))).toBe(false);
   });
@@ -301,7 +301,7 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
       if (args[0] === "api") throw new Error("gh: To use GitHub CLI, set GH_TOKEN (secret-value)");
       return JSON.stringify([]);
     };
-    const out = await getPrsForProjects(["a", "b"], "/home/rafa/repos", run, "mine");
+    const out = await getPrsForProjects(["a", "b"], "/home/user/repos", run, "mine");
     expect(out["a"]).toEqual({ ok: false, error: "github identity unavailable" });
     expect(out["b"]).toEqual({ ok: false, error: "github identity unavailable" });
   });
@@ -312,7 +312,7 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
       if (args[0] === "api") return "not a login\n";
       return JSON.stringify([]);
     };
-    expect(await getPrsForProjects(["a"], "/home/rafa/repos", run, "mine")).toMatchObject({
+    expect(await getPrsForProjects(["a"], "/home/user/repos", run, "mine")).toMatchObject({
       a: { ok: false, error: "github identity unavailable" },
     });
   });
@@ -321,7 +321,7 @@ describe("M2 Mine/All provider scope (plan Task 4, spec AC8/AC9)", () => {
     const noOrigin = async (): Promise<string> => {
       throw Object.assign(new Error("fatal: No such remote 'origin'"), { code: 2 });
     };
-    expect(await fetchProjectPrs("x", "/home/rafa/repos", noOrigin, { scope: "all" })).toEqual({ ok: true, prs: [], truncated: false });
+    expect(await fetchProjectPrs("x", "/home/user/repos", noOrigin, { scope: "all" })).toEqual({ ok: true, prs: [], truncated: false });
   });
 });
 
@@ -366,8 +366,8 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
       return JSON.stringify([{ number: 1, title: "t", isDraft: false, url: "u", statusCheckRollup: [], updatedAt: "2026-09-19T00:00:00Z" }]);
     };
-    const result = await fetchProjectPrs("jax-os", "/home/rafa/repos", run);
-    expect(calls[0]).toEqual({ file: "git", args: ["-C", "/home/rafa/repos/jax-os", "remote", "get-url", "origin"] });
+    const result = await fetchProjectPrs("jax-os", "/home/user/repos", run);
+    expect(calls[0]).toEqual({ file: "git", args: ["-C", "/home/user/repos/jax-os", "remote", "get-url", "origin"] });
     expect(calls[1]).toEqual({
       file: "gh",
       args: [
@@ -384,7 +384,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       err.code = 2; // git's real exit code for a missing remote
       throw err;
     };
-    expect(await fetchProjectPrs("no-remote", "/home/rafa/repos", run)).toEqual({ ok: true, prs: [], truncated: false });
+    expect(await fetchProjectPrs("no-remote", "/home/user/repos", run)).toEqual({ ok: true, prs: [], truncated: false });
   });
 
   it("a git failure that is NOT a missing remote (git unavailable, bad path, ...) reports {ok:false}, not a quiet empty result (cold review Finding 1)", async () => {
@@ -396,7 +396,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       err.code = "ENOENT";
       throw err;
     };
-    const result = await fetchProjectPrs("broken", "/home/rafa/repos", run);
+    const result = await fetchProjectPrs("broken", "/home/user/repos", run);
     expect(result).toMatchObject({ ok: false });
   });
 
@@ -409,7 +409,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       err.code = 2;
       throw err;
     };
-    const result = await fetchProjectPrs("corrupt", "/home/rafa/repos", run);
+    const result = await fetchProjectPrs("corrupt", "/home/user/repos", run);
     expect(result).toMatchObject({ ok: false });
   });
 
@@ -418,7 +418,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       if (file === "git") return "git@github.com:octo-owner/x.git\n";
       return JSON.stringify([]);
     };
-    const out = await getPrsForProjects(["__proto__"], "/home/rafa/repos", run);
+    const out = await getPrsForProjects(["__proto__"], "/home/user/repos", run);
     expect(Object.prototype.hasOwnProperty.call(out, "__proto__")).toBe(true);
     expect(out["__proto__"]).toEqual({ ok: true, prs: [], truncated: false });
   });
@@ -429,7 +429,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       if (args.includes("bad")) throw new Error("gh: authentication failed");
       return JSON.stringify([]);
     };
-    const out = await getPrsForProjects(["good-a", "bad", "good-b"], "/home/rafa/repos", async (file, args) => {
+    const out = await getPrsForProjects(["good-a", "bad", "good-b"], "/home/user/repos", async (file, args) => {
       if (file === "git") {
         const dir = args[1].split("/").pop();
         return `git@github.com:octo-owner/${dir}.git\n`;
@@ -447,7 +447,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
       if (file === "git") return "git@github.com:octo-owner/jax-os.git\n";
       return JSON.stringify([{ number: 9, title: "t", isDraft: false, url: "u" }]); // no statusCheckRollup key
     };
-    const result = await fetchProjectPrs("jax-os", "/home/rafa/repos", run);
+    const result = await fetchProjectPrs("jax-os", "/home/user/repos", run);
     expect(result).toMatchObject({ ok: false });
   });
 
@@ -455,7 +455,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
     const run = async () => {
       throw Object.assign(new Error("timeout"), { code: "ETIMEDOUT", stdout: "git@github.com:a/b.git\n" });
     };
-    expect(await fetchProjectPrs("jax-os", "/home/rafa/repos", run)).toMatchObject({ ok: false });
+    expect(await fetchProjectPrs("jax-os", "/home/user/repos", run)).toMatchObject({ ok: false });
   });
 
   it("treats gh overflow as source failure, not partial parsed PRs", async () => {
@@ -469,7 +469,7 @@ describe("fetchProjectPrs / getPrsForProjects — invocation and failure isolati
         stdout: leaked,
       });
     };
-    const result = await fetchProjectPrs("jax-os", "/home/rafa/repos", run);
+    const result = await fetchProjectPrs("jax-os", "/home/user/repos", run);
     expect(result).toMatchObject({ ok: false });
     if (result.ok) throw new Error("parsed overflow stdout");
   });

@@ -10,7 +10,7 @@ vi.hoisted(() => {
   const vaultDir = mkdtempSync(join(tmpdir(), "jaxos-fcs-test-vault-"));
   // Below, every "daily" hit comes from a FAKE spawnImpl — content is never read from disk —
   // but relativeWithin's realpathSync containment check still needs the file to actually
-  // exist. A portable temp fixture, never Rafa's real vault (CI has neither).
+  // exist. A portable temp fixture, never the owner's real vault (CI has neither).
   writeFileSync(join(vaultDir, "daily"), "", "utf8");
   // Portable repos fixture: the repo-scope tests use fake rg output, but relativeWithin still
   // needs `package.json` and `.git/config` (the EXCLUDES burst) to exist under the repo cwd.
@@ -145,7 +145,7 @@ describe("searchContent — 'all' shares ONE 200 cap and kills the still-running
     let vaultKilled = false;
     // "all"'s repos-side cwd is ROOTS.repos itself (the parent of every checkout), so a real hit's
     // path already carries its repo's own name — "package.json" alone would resolve to a
-    // non-existent /home/rafa/repos/package.json and get silently dropped by the F2 fix below.
+    // non-existent /home/user/repos/package.json and get silently dropped by the F2 fix below.
     const lines = Array.from({ length: CONTENT_SEARCH_CAP }, (_, i) => matchLine("jax-os/package.json", i + 1, "x")).join("\n") + "\n";
     const reposSpawn = fakeSpawn((emit) => emit.data(lines)); // never closes — mimics a slow rg process
     const vaultSpawn = fakeSpawn(() => {}, () => { vaultKilled = true; }); // never emits/closes — would hang the test if not killed

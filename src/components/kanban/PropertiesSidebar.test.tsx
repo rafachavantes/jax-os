@@ -292,7 +292,7 @@ describe("runWriteField", () => {
 
 describe("PropertiesSidebar", () => {
   it("renders labeled selects and no fabricated values before data", () => {
-    harness.members = { data: { ok: true, data: [{ id: "m1", displayName: "Rafa" }] } };
+    harness.members = { data: { ok: true, data: [{ id: "m1", displayName: "Alex" }] } };
     harness.labels = { data: { ok: true, data: [{ id: "l1", name: "bug", color: "#f00" }] } };
     const html = renderToStaticMarkup(
       createElement(PropertiesSidebar, { issue, states: [{ id: "s1", name: "Done", color: "#0f0", position: 1, type: "completed" }], teamId: "t1" }),

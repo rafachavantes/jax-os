@@ -21,10 +21,10 @@ const project = (over: Partial<Project>): Project => ({
 describe("parseTmuxLs", () => {
   it("parses the 5-field -F output (verified on tmux 3.4)", () => {
     const out =
-      "Acme-AI|1783254396|0|2|/home/rafa/repos/Acme.AI\nPIJ|1783254396|1|1|/home/rafa/repos/PIJ\n";
+      "Acme-AI|1783254396|0|2|/home/user/repos/Acme.AI\nsample-app|1783254396|1|1|/home/user/repos/sample-app\n";
     expect(parseTmuxLs(out)).toEqual([
-      { name: "Acme-AI", createdEpoch: 1783254396, attached: false, windows: 2, path: "/home/rafa/repos/Acme.AI" },
-      { name: "PIJ", createdEpoch: 1783254396, attached: true, windows: 1, path: "/home/rafa/repos/PIJ" },
+      { name: "Acme-AI", createdEpoch: 1783254396, attached: false, windows: 2, path: "/home/user/repos/Acme.AI" },
+      { name: "sample-app", createdEpoch: 1783254396, attached: true, windows: 1, path: "/home/user/repos/sample-app" },
     ]);
   });
 
@@ -47,12 +47,12 @@ describe("parseTmuxLs", () => {
 
 describe("joinAgents", () => {
   it("links sessions to projects via the tmux field, leaves others unmanaged", () => {
-    const sessions = parseTmuxLs("example-build|100|1|2|/home/rafa/repos/example\nrandom|200|0|1|/tmp");
+    const sessions = parseTmuxLs("example-build|100|1|2|/home/user/repos/example\nrandom|200|0|1|/tmp");
     const agents = joinAgents(sessions, [
       project({ dir: "example", name: "Example Platform", tmux: "example-build" }),
     ]);
     expect(agents).toEqual([
-      { session: "example-build", createdEpoch: 100, attached: true, windows: 2, path: "/home/rafa/repos/example", project: "Example Platform", builder: "claude-code" },
+      { session: "example-build", createdEpoch: 100, attached: true, windows: 2, path: "/home/user/repos/example", project: "Example Platform", builder: "claude-code" },
       { session: "random", createdEpoch: 200, attached: false, windows: 1, path: "/tmp", project: undefined, builder: undefined },
     ]);
   });

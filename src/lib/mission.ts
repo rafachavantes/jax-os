@@ -534,11 +534,11 @@ function headlineFor(gate: ProjectGate | null, panes: HubPane[], codexSessions: 
     // headline downgrade that hides a genuinely working pane.
     ...codexSessions.map((s) => codexSessionState(s, nowMs)).filter((s) => s !== "unknown"),
   ];
-  // A gate waits on Rafa only once the tech lead has stopped. After `approve-with-changes` the
+  // A gate waits on the owner only once the tech lead has stopped. After `approve-with-changes` the
   // tech lead is still applying the findings: the branch is merge-eligible, but nobody owes an
   // approval yet, so a working pane keeps the card "working" and the merge button off
-  // (2026-09-21, arc: "Merge now" shown while the fixes were being applied).
-  // Same while it waits on a run it dispatched itself (2026-09-24, arc: a stale gate showed
+  // (2026-09-21: "Merge now" shown while the fixes were being applied).
+  // Same while it waits on a run it dispatched itself (2026-09-24: a stale gate showed
   // needs-you during a correction build).
   if (gate !== null) {
     if (states.includes("working")) return "working";
@@ -1343,7 +1343,7 @@ export function summarizeBuckets(readiness: MissionReadiness, cards: MissionCard
   for (const card of cards) {
     // A hidden card is off the board, so it is off the pills too: a hidden project whose
     // status.md still carries `gate: awaiting-approval` counted as a phantom "needs you" that no
-    // visible card explained (2026-09-21, route-converter-se). Same rule as the inbox strip.
+    // visible card explained (2026-09-21). Same rule as the inbox strip.
     if (card.visibility !== "visible") continue;
     const bucket = bucketOf(card.headline);
     if (bucket) counts[bucket] += 1;
@@ -1499,7 +1499,7 @@ export function answerEventId(body: unknown): number | null {
 
 // ---- Ticker (spec §9, Decisions 12/13) — a pure client-side merge, no new API route -----------
 const TICKER_EVENT_TYPES = new Set(["question", "question-resolved", "attention-needed", "turn-stopped", "run-finished", "merge-approved"]);
-// Rafa (2026-09-19): the activity feed grows unbounded — cap it to the last 7 days. 30 stays the
+// The activity feed grows unbounded — cap it to the last 7 days. 30 stays the
 // total retained: at 10 items/page (EventTicker's paging) that's 3 pages, comfortably above what
 // a 7-day window fills for this single-user cockpit.
 const TICKER_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1597,7 +1597,7 @@ export function buildTicker(
   return withinWindow.slice(0, TICKER_CAP);
 }
 
-// ---- Ticker paging (Rafa, 2026-09-19) — pure, unit-tested clamping math shared by EventTicker.
+// ---- Ticker paging (2026-09-19) — pure, unit-tested clamping math shared by EventTicker.
 export function pageSlice<T>(items: T[], page: number, size: number): { items: T[]; page: number; pages: number } {
   const pages = Math.max(1, Math.ceil(items.length / size));
   const clamped = Math.min(Math.max(1, Math.trunc(page)), pages);

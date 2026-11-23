@@ -32,7 +32,7 @@ const BOARD_JSON = {
             updatedAt: "2026-07-07T11:12:42.641Z",
             state: { id: "s-prog" },
             project: { id: "proj1", name: "Jax OS" },
-            assignee: { id: "u1", displayName: "Rafa" },
+            assignee: { id: "u1", displayName: "Alex" },
             labels: { nodes: [{ id: "l1", name: "bug", color: "#eb5757" }] },
           },
           {
@@ -107,7 +107,7 @@ describe("mapBoard", () => {
       stateId: "s-prog",
       project: "Jax OS",
       projectId: "proj1",
-      assignee: "Rafa",
+      assignee: "Alex",
       assigneeId: "u1",
       labels: [{ id: "l1", name: "bug", color: "#eb5757" }],
     });
@@ -174,7 +174,7 @@ const DETAIL_JSON = {
     },
     description: "## Hi\n\n- a\n- b",
     children: { nodes: [
-      { identifier: "ENG-9", title: "done one", state: { name: "Done", type: "completed" }, assignee: { displayName: "Rafa" } },
+      { identifier: "ENG-9", title: "done one", state: { name: "Done", type: "completed" }, assignee: { displayName: "Alex" } },
       { identifier: "ENG-8", title: "open one", state: { name: "Backlog", type: "backlog" }, assignee: null },
     ] },
     comments: { nodes: [
@@ -205,7 +205,7 @@ describe("mapIssueDetail", () => {
     // API returned ENG-9 then ENG-8; detail lists them ascending → ENG-8 first
     expect(d.children.map((c) => c.identifier)).toEqual(["ENG-8", "ENG-9"]);
     expect(d.children[0]).toEqual({ identifier: "ENG-8", title: "open one", stateName: "Backlog", stateType: "backlog", assignee: undefined });
-    expect(d.children[1]).toEqual({ identifier: "ENG-9", title: "done one", stateName: "Done", stateType: "completed", assignee: "Rafa" });
+    expect(d.children[1]).toEqual({ identifier: "ENG-9", title: "done one", stateName: "Done", stateType: "completed", assignee: "Alex" });
   });
   it("carries the issue, its team id and the FULL team state set from detail data, off-board or cross-team", () => {
     const d = mapIssueDetail(DETAIL_JSON);
@@ -311,7 +311,7 @@ describe("getIssueDetail pagination", () => {
         attachments: { nodes: [] },
         parent: null,
         comments: {
-          nodes: Array.from({ length: c.count }, (_, i) => ({ id: `c${i}`, body: "x", createdAt: "2026-01-01T00:00:00Z", user: { displayName: "Rafa" }, botActor: null })),
+          nodes: Array.from({ length: c.count }, (_, i) => ({ id: `c${i}`, body: "x", createdAt: "2026-01-01T00:00:00Z", user: { displayName: "Alex" }, botActor: null })),
           pageInfo: { hasNextPage: c.hasNextPage, endCursor: c.endCursor },
         },
         children: {

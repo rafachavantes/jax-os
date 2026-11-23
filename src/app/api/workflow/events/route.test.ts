@@ -71,16 +71,16 @@ const RUN_STARTED_BODY = {
   project: "p1", run_id: "r1", role: "builder", type: "run-started",
   source: "deterministic", emitter: "wrapper",
   payload: {
-    phase: "B", runtime: "opencode-deepseek", kind: "plan", target: "/home/rafa/repos/jax-os/.local/docs/plans/example.md",
+    phase: "B", runtime: "opencode-deepseek", kind: "plan", target: "/home/user/repos/jax-os/.local/docs/plans/example.md",
     caller: "claude", caller_session: "sess-abc123", model: "grok-4.6", effort: "high",
-    session: "jax-p1-builder-r1", repo: "/home/rafa/repos/jax-os",
+    session: "jax-p1-builder-r1", repo: "/home/user/repos/jax-os",
   },
 };
 const RUN_FINISHED_BODY = {
   project: "p1", run_id: "r1", role: "builder", type: "run-finished",
   source: "deterministic", emitter: "wrapper",
   payload: {
-    phase: "B", exit_code: 0, contract_status: "ok", report_path: "/home/rafa/repos/jax-os/.local/reports/r1.md",
+    phase: "B", exit_code: 0, contract_status: "ok", report_path: "/home/user/repos/jax-os/.local/reports/r1.md",
     summary: "done", head_sha: "a".repeat(40), result: "success",
   },
 };

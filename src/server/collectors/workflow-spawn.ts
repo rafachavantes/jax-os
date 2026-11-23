@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { LIMITS } from "../../lib/workflow";
 import { redactSecrets } from "./redact";
 
-// The same script `~/.local/bin/jaxflow` execs (`exec python3 /home/rafa/repos/jax-os/scripts/jaxflow.py "$@"`),
+// The same script `~/.local/bin/jaxflow` execs (`exec python3 /home/user/repos/jax-os/scripts/jaxflow.py "$@"`),
 // addressed absolutely so `cwd` can be the PROJECT repo. jaxos.service runs from the jax-os checkout.
 export const JAXFLOW_PROGRAM = "python3";
 export const JAXFLOW_SCRIPT = join(process.cwd(), "scripts", "jaxflow.py");

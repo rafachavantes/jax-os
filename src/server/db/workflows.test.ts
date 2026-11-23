@@ -1950,8 +1950,8 @@ const prOpened = (over: Record<string, unknown> = {}): WorkflowEventInput => ({
   run_id: null, project: "p1", role: "lead", type: "pr-opened",
   source: "deterministic", emitter: "wrapper",
   payload: {
-    repo: "acme/route-converter-se", branch: "feat/x", sha: "a".repeat(40),
-    base: "staging", pr_number: 7, pr_url: "https://github.com/acme/route-converter-se/pull/7",
+    repo: "acme/sample-project", branch: "feat/x", sha: "a".repeat(40),
+    base: "staging", pr_number: 7, pr_url: "https://github.com/acme/sample-project/pull/7",
     kind: "feature",
     ...over,
   },
@@ -1971,12 +1971,12 @@ describe("insertEvent — pr-opened is idempotent on (project, branch, sha)", ()
   it("keeps the FIRST payload when a same-key retry differs in a non-key field (first wins)", () => {
     const db = openDb(":memory:");
     const first = insertEvent(db, prOpened(), NOW);
-    const second = insertEvent(db, prOpened({ pr_url: "https://github.com/acme/route-converter-se/pull/8" }), NOW);
+    const second = insertEvent(db, prOpened({ pr_url: "https://github.com/acme/sample-project/pull/8" }), NOW);
     expect(second.id).toBe(first.id);
     const rows = db.prepare("SELECT id, payload FROM workflow_events WHERE type = 'pr-opened'")
       .all() as { id: number; payload: string }[];
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0].payload).pr_url).toBe("https://github.com/acme/route-converter-se/pull/7");
+    expect(JSON.parse(rows[0].payload).pr_url).toBe("https://github.com/acme/sample-project/pull/7");
     db.close();
   });
 
@@ -2552,7 +2552,7 @@ describe("supersede inferred attention after session progress", () => {
     db.close();
   });
 
-  it("a matching active run plus a project gate reads waiting: the lead owes nothing while its own run is in flight (2026-09-24, arc)", () => {
+  it("a matching active run plus a project gate reads waiting: the lead owes nothing while its own run is in flight (2026-09-24)", () => {
     const db = openDb(":memory:");
     const stop = classifiedStop(db);
     const original = db.prepare("SELECT payload FROM workflow_events WHERE id = ?").get(stop.id);
@@ -2649,8 +2649,8 @@ describe("unfinished run hub projection", () => {
   it.each([
     ["build", "builder", "fix/example", "fix/example"],
     ["diff", "reviewer", "fix/example", "fix/example"],
-    ["spec", "reviewer", "/home/rafa/repos/jax-os/.local/docs/specs/foo.md", "foo.md"],
-    ["plan", "reviewer", "/home/rafa/repos/jax-os/.local/docs/plans/bar.md", "bar.md"],
+    ["spec", "reviewer", "/home/user/repos/jax-os/.local/docs/specs/foo.md", "foo.md"],
+    ["plan", "reviewer", "/home/user/repos/jax-os/.local/docs/plans/bar.md", "bar.md"],
   ] as const)("projects kind %s target as %s", (kind, role, target, displayed) => {
     const db = openDb(":memory:");
     start(db, { run_id: kind, role }, { kind, runtime: "claude", target }, T_DIFF);
@@ -3093,7 +3093,7 @@ describe("native Codex session derivation", () => {
   });
   type RawThread = { threadId?: string; cwd?: string; owner?: string | null; source?: string; status?: string; activeFlags?: string[]; canAcceptDirectInput?: boolean };
   const thread = (over: RawThread = {}): CodexThread => ({
-    threadId: UUID_A, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli",
+    threadId: UUID_A, cwd: "/home/user/repos/p1", owner: "p1", source: "cli",
     status: "idle", activeFlags: [], canAcceptDirectInput: true, ...over,
   });
   const SNAP = (over: { threads?: CodexThread[]; truncated?: boolean } = {}): CodexSnapshot => ({
@@ -3284,7 +3284,7 @@ describe("M3b — proven Codex terminal enrichment", () => {
   const OTHER = "0191f0aa-bbbb-7000-8000-00000000000a";
   const INC = "3421408:1793045754";
   const thread = (over: Partial<CodexThread> = {}): CodexThread => ({
-    threadId: ID, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli", status: "idle",
+    threadId: ID, cwd: "/home/user/repos/p1", owner: "p1", source: "cli", status: "idle",
     activeFlags: [], canAcceptDirectInput: true, ...over,
   });
   const snap = (over: Partial<Extract<CodexSnapshot, { ok: true }>> = {}): CodexSnapshot => ({
@@ -3326,7 +3326,7 @@ describe("M3b — proven Codex terminal enrichment", () => {
         observation({ pane: "%184", session: "p2-lead", title: `⠹ p2 | p2 | ${OTHER.slice(0, 29)}...` }),
       ],
     }), {}, snap({
-      threads: [thread(), thread({ threadId: OTHER, owner: "p2", cwd: "/home/rafa/repos/p2" })],
+      threads: [thread(), thread({ threadId: OTHER, owner: "p2", cwd: "/home/user/repos/p2" })],
       loadedThreadIds: [ID, OTHER],
     }), NOW.getTime());
     expect(data.byProject["p1"].codexSessions[0].terminal).toEqual({ pane: "%183", tmuxIncarnation: INC, session: "p1-lead" });
@@ -3371,7 +3371,7 @@ describe("native Codex staleness", () => {
   const UUID = "0191f0aa-abcd-7000-8000-00000000000f";
   const INC = "234790:1787586213";
   const idleThread = () => ({
-    threadId: UUID, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli",
+    threadId: UUID, cwd: "/home/user/repos/p1", owner: "p1", source: "cli",
     status: "idle" as const, activeFlags: [], canAcceptDirectInput: true,
   });
   const SNAP = (threads: CodexThread[], ok = true) => (ok
@@ -3538,7 +3538,7 @@ describe("native Codex staleness", () => {
 describe("a stored Codex row carrying a pane is never pane authority (review 8dc843212345)", () => {
   const UUID = "0191f0aa-f1f1-7000-8000-0000000000f1";
   const thread = (over: Partial<CodexThread> = {}): CodexThread => ({
-    threadId: UUID, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli",
+    threadId: UUID, cwd: "/home/user/repos/p1", owner: "p1", source: "cli",
     status: "idle", activeFlags: [], canAcceptDirectInput: true, ...over,
   });
   const SNAP = (threads: CodexThread[] = [thread()]): CodexSnapshot => ({
@@ -4198,7 +4198,7 @@ describe("builder-launched (local, silent)", () => {
     run_id: "r-launch", project: "p1", role: "builder", type: "builder-launched", source: "deterministic", emitter: "wrapper",
     payload: {
       launched_at: "2026-11-23T12:00:00Z",
-      worktree: "/home/rafa/repos/demo-feat-x",
+      worktree: "/home/user/repos/demo-feat-x",
       runtime_model: "opencode-go/jaxflow-builder-default",
       model: "opencode-go/deepseek-v4.1-flash",
       profile: "default",

@@ -12,7 +12,7 @@ const TITLE = `⠹ jax-os-new-features | jax-os | ${SHORT}`;
 
 function thread(over: Partial<CodexThread> = {}): CodexThread {
   return {
-    threadId: ID, cwd: "/home/rafa/repos/jax-os", owner: "jax-os", source: "cli", status: "active",
+    threadId: ID, cwd: "/home/user/repos/jax-os", owner: "jax-os", source: "cli", status: "active",
     activeFlags: [], canAcceptDirectInput: true, ...over,
   };
 }

@@ -298,7 +298,7 @@ export function InboxStrip({ mission, onExpand }: Props) {
         ? t("title", { count: needsYouCount })
         : t("titleUnknown");
 
-  // Nothing waits on Rafa and no source warning applies — the confident empty state, the stuck
+  // Nothing waits on the owner and no source warning applies — the confident empty state, the stuck
   // rail and the source/skeleton banner above all have nothing to say, so the strip itself stays
   // out of the layout instead of showing an empty card.
   // Still loading with nothing known yet: stay out of the layout too, instead of flashing an empty skeleton card.

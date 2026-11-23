@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // A real temp repos root with a "jax-os" dir: parseScope("repo:jax-os") runs for real in this
-// suite (importOriginal below), and it checks listRepoNames() on disk — never Rafa's machine.
+// suite (importOriginal below), and it checks listRepoNames() on disk — never the owner's machine.
 const settingsState = vi.hoisted(() => {
   const { mkdirSync, mkdtempSync } = require("node:fs");
   const { tmpdir } = require("node:os");

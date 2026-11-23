@@ -73,7 +73,7 @@ describe("GET /api/tmux/target", () => {
     const lost = await json(await handleTargetGet(url("kind=tmux&session=a"), deps(new SessionAccessError("lost-target")) as never));
     expect(lost).toEqual({ ok: false, code: "lost-target", error: "session target lost" });
 
-    const boom = await json(await handleTargetGet(url("kind=tmux&session=a"), deps(new Error("/home/rafa/secret token=abc")) as never));
+    const boom = await json(await handleTargetGet(url("kind=tmux&session=a"), deps(new Error("/home/user/secret token=abc")) as never));
     expect(boom).toEqual({ ok: false, code: "source-failure", error: "session source unavailable" });
     expect(JSON.stringify(boom)).not.toContain("secret");
   });

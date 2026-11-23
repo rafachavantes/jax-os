@@ -8,7 +8,7 @@ import { milestoneDotStyle, selectMissionBlockState } from "@/lib/missionBlock";
 import type { UserMission } from "@/server/db/missions";
 
 // Spec §10: reads its own small, independent query — NOT buildMission/MissionModel
-// (spec §4a naming collision: this UserMission is Rafa's declared cross-project
+// (spec §4a naming collision: this UserMission is the owner's declared cross-project
 // objective, unrelated to the existing per-project Mission dashboard model). Absent
 // entirely with no active mission, still loading, or the source unreachable — this
 // block never raises its own warning; that job belongs elsewhere (Global Constraints).

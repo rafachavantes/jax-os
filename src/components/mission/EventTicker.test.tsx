@@ -23,7 +23,7 @@ import { EventTicker } from "./EventTicker";
 describe("EventTicker", () => {
   it("renders one line per item", () => {
     const items: TickerItem[] = [
-      { source: "commit", dir: "p1", name: "P1", ts: "2026-09-19T10:00:00.000Z", author: "rafa", message: "fix: x", hash: "abc1234" },
+      { source: "commit", dir: "p1", name: "P1", ts: "2026-09-19T10:00:00.000Z", author: "alice", message: "fix: x", hash: "abc1234" },
       { source: "pr", dir: "p1", name: "P1", ts: "2026-09-19T09:00:00.000Z", number: 1, url: "https://x", ci: "green", title: "T" },
     ];
     const html = renderToStaticMarkup(createElement(EventTicker, { items }));
@@ -75,7 +75,7 @@ describe("EventTicker — sentences and a fixed clock (spec §9, Decisions 19/20
   });
 });
 
-describe("EventTicker — paging (Rafa, 2026-09-19)", () => {
+describe("EventTicker — paging (2026-09-19)", () => {
   const runFinished = { source: "event" as const, dir: "p1", name: "P1", type: "run-finished" as const, pane: null, capsuleStatus: null, contractStatus: "ok" as const, stage: null, role: "builder" as const, outcome: "success", diagnostic: null };
   const items = (n: number): TickerItem[] =>
     Array.from({ length: n }, (_, i) => ({ ...runFinished, ts: new Date(Date.parse("2026-09-19T00:00:00.000Z") + i * 1000).toISOString() }));
@@ -98,7 +98,7 @@ describe("EventTicker — title/subtitle + one-line rows (spec item 7)", () => {
   });
   it("a row renders the clock, name, and sentence in one flex row, no separate clock line below", () => {
     const items: TickerItem[] = [
-      { source: "commit", dir: "p1", name: "P1", ts: "2026-09-19T10:00:00.000Z", author: "rafa", message: "fix: x", hash: "abc1234" },
+      { source: "commit", dir: "p1", name: "P1", ts: "2026-09-19T10:00:00.000Z", author: "alice", message: "fix: x", hash: "abc1234" },
     ];
     const html = renderToStaticMarkup(createElement(EventTicker, { items }));
     const rowStart = html.indexOf('data-testid="ticker-row"');

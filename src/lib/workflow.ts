@@ -146,7 +146,7 @@ export const FORWARDABLE_EVENT_TYPES: readonly EventType[] = EVENT_TYPES.filter(
   (t) => EVENT_MATRIX[t].policy === "forward",
 );
 
-// the three "needs Rafa now" signals default on. Also the migration's
+// the three "needs the owner now" signals default on. Also the migration's
 // column DEFAULT literal (Task 2) — index.test.ts asserts the two never drift apart.
 export const DEFAULT_FORWARD_TYPES: readonly EventType[] = ["question", "attention-needed", "mission-finished"];
 
