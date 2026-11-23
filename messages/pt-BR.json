@@ -716,7 +716,6 @@
       "unknownModel": "Modelo desconhecido",
       "sources": "Fontes",
       "lastRefresh": "última atualização",
-      "indexing": "indexando enquanto esta tela está aberta",
       "utcNote": "Os dias usam UTC; o dia atual é parcial.",
       "historyNote": "O histórico numérico é mantido por 91 dias UTC (desde {cutoff}).",
       "cacheNote": "Cache e raciocínio são detalhes nativos e não entram duas vezes no total.",
@@ -729,7 +728,7 @@
       "state": {
         "available": "disponível",
         "empty": "vazia",
-        "indexing": "indexando",
+        "indexing": "coletando",
         "unavailable": "indisponível",
         "disabled": "desativada",
         "incompatible": "incompatível"
@@ -790,7 +789,9 @@
       },
       "allDisabled": "Todas as fontes nativas de uso estão desativadas. Ative-as nas Configurações.",
       "retainedData": "Algumas fontes estão indisponíveis; exibindo os dados retidos da última coleta bem-sucedida.",
-      "unknownUnitCost": "{count} item(ns) de uso reportam custo com unidade não verificada; excluídos dos totais em moeda."
+      "unknownUnitCost": "{count} item(ns) de uso reportam custo com unidade não verificada; excluídos dos totais em moeda.",
+      "staleCollection": "coleta atrasada",
+      "unresolvedSuffix": "(não resolvido)"
     },
     "hermes": {
       "promptTitle": "Prompt budget",

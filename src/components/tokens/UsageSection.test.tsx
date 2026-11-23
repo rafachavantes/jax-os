@@ -6,16 +6,18 @@ import type { NativeUsageSnapshot } from "@/server/collectors/tokens-usage";
 const harness = vi.hoisted(() => ({
   query: { data: undefined as unknown, isError: false, dataUpdatedAt: 0 },
   paths: [] as string[],
+  intervals: [] as unknown[],
 }));
 
 vi.mock("next-intl", () => {
-  const translate = (key: string) => key;
+  const translate = (key: string) => (key === "state.indexing" ? "collecting" : key);
   translate.has = () => true;
   return { useTranslations: () => translate, useLocale: () => "en-US" };
 });
 vi.mock("@/lib/useTokensApi", () => ({
-  useTokensApi: (_path: string) => {
+  useTokensApi: (_path: string, interval: unknown) => {
     harness.paths.push(_path);
+    harness.intervals.push(interval);
     return harness.query;
   },
 }));
@@ -40,7 +42,7 @@ function snapshot(over: Partial<NativeUsageSnapshot> = {}): NativeUsageSnapshot 
     byModel: [{ name: "__unknown__", allInput: 10, allOutput: 5, tokens: 15, cost: null, currency: null, items: 1 }],
     byAgent: [
       { name: "Claude Code", allInput: 10, allOutput: 5, tokens: 15, cost: null, currency: null, items: 1 },
-      { name: "build", allInput: 120, allOutput: 33, tokens: 153, cost: null, currency: null, items: 1 },
+      { name: "OpenCode", allInput: 120, allOutput: 33, tokens: 153, cost: null, currency: null, items: 1 },
     ],
     sessions: { lead: 2, child: 0 },
     sources: [
@@ -48,7 +50,7 @@ function snapshot(over: Partial<NativeUsageSnapshot> = {}): NativeUsageSnapshot 
       { source: "codex", state: "empty", lastRefresh: 1_794_913_200, progress: null, warnings: [] },
       { source: "opencode", state: "available", lastRefresh: 1_794_913_200, progress: null, warnings: [] },
     ],
-    filters: { agents: ["Claude Code", "build"], models: ["__unknown__"] },
+    filters: { agents: ["Claude Code", "OpenCode"], models: ["__unknown__"] },
     mixedProjectionSessions: 0,
     excludedV1Items: 0,
     history: { cutoffDay: "2026-08-20", indexing: false, includesCurrentPartialDay: true },
@@ -75,9 +77,10 @@ describe("UsageSection", () => {
     const html = render();
     expect(html).toContain("168");
     expect(html).toContain("state.unavailable");
-    expect(html).toContain("state.indexing");
+    expect(html).toContain("collecting");
     expect(html).toContain("warning.read-failed");
-    expect(html).toContain("4/9");
+    expect(html).not.toContain("indexing");
+    expect(html).not.toContain("4/9");
   });
 
   it("distinguishes all-unavailable from a healthy empty period", () => {
@@ -124,7 +127,7 @@ describe("UsageSection", () => {
     expect(allDisabled).toContain("state.disabled");
   });
 
-  it("shows disabled and indexing as distinct states with view-open progress", () => {
+  it("keeps every state pill but drops the indexing/progress line", () => {
     harness.query = {
       data: { ok: true, data: snapshot({
         sources: [
@@ -138,10 +141,61 @@ describe("UsageSection", () => {
     };
     const html = render();
     expect(html).toContain("state.disabled");
-    expect(html).toContain("state.indexing");
+    expect(html).toContain("collecting");
     expect(html).toContain("state.incompatible");
-    expect(html).toContain("indexing");
-    expect(html).toContain("1/3");
+    expect(html).not.toContain("indexing");
+    expect(html).not.toContain("1/3");
+  });
+
+  it("polls at one steady 60s interval in every state", () => {
+    harness.intervals.length = 0;
+    for (const state of ["available", "indexing", "unavailable", "disabled"] as const) {
+      harness.query = {
+        data: { ok: true, data: snapshot({ sources: [
+          { source: "claude", state, lastRefresh: null, progress: null, warnings: [] },
+        ] }) },
+        isError: false,
+        dataUpdatedAt: 0,
+      };
+      render();
+    }
+    expect(harness.intervals).toEqual([60_000, 60_000, 60_000, 60_000]);
+  });
+
+  it("warns when a source's last refresh is older than five minutes", () => {
+    harness.query = {
+      data: { ok: true, data: snapshot({ sources: [
+        { source: "claude", state: "available", lastRefresh: 1_700_000_000, progress: null, warnings: [] },
+      ] }) },
+      isError: false,
+      dataUpdatedAt: 0,
+    };
+    expect(render()).toContain("staleCollection");
+
+    harness.query = {
+      data: { ok: true, data: snapshot({ sources: [
+        { source: "claude", state: "available", lastRefresh: Math.floor(Date.now() / 1000), progress: null, warnings: [] },
+      ] }) },
+      isError: false,
+      dataUpdatedAt: 0,
+    };
+    expect(render()).not.toContain("staleCollection");
+  });
+
+  it("marks alias-only model names as unresolved while keeping the raw filter value", () => {
+    harness.query = {
+      data: { ok: true, data: snapshot({
+        byModel: [
+          { name: "opencode-go/jaxflow-builder-default", allInput: 10, allOutput: 5, tokens: 15, cost: null, currency: null, items: 1 },
+        ],
+        filters: { agents: ["OpenCode"], models: ["opencode-go/jaxflow-builder-default"] },
+      }) },
+      isError: false,
+      dataUpdatedAt: 0,
+    };
+    const html = render();
+    expect(html).toContain("opencode-go/jaxflow-builder-default unresolvedSuffix");
+    expect(html).toContain('value="opencode-go/jaxflow-builder-default"');
   });
 
   it("never renders an unknown cost as zero spend", () => {
