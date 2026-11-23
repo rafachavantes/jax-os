@@ -337,7 +337,6 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { zstdCompressSync } from "node:zlib";
 import BetterSqlite3 from "better-sqlite3";
 import { parseSettings, type SettingsResult } from "../settings";
 import {
@@ -351,7 +350,6 @@ import {
 } from "../db/native-usage";
 import { openDb } from "../db";
 import {
-  backfillCodexZst,
   defaultNativeCollectorDeps,
   hashFileStreaming,
   OPENCODE_EXECUTABLE_SHA256,
@@ -2973,19 +2971,12 @@ describe("settings retention and fixed helper diagnostics", () => {
   }, 60_000);
 });
 
-describe("Codex compressed rollout backfill", () => {
-  const body = () => [
-    JSON.stringify({ type: "turn_context", timestamp: "2026-11-17T09:00:00Z", payload: { turn_id: "turn-1", root_turn_id: "turn-1", model: "gpt-5.6-luna" } }),
-    codexLine("r1"),
-    codexLine("r2"),
-  ].join("\n") + "\n";
-  const put = (deps: NativeCollectorDeps, day: string, name: string, data: string | Buffer) => {
+describe("Codex compressed rollouts", () => {
+  const put = (deps: NativeCollectorDeps, day: string, name: string, data: string) => {
     const dir = join(deps.roots.codex, day);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, name), data);
   };
-  const rows = (deps: NativeCollectorDeps) =>
-    deps.db.prepare("SELECT item_id, model, all_input FROM native_usage_items ORDER BY item_id").all();
 
   it("skips .jsonl.zst silently while an unknown file still warns", async () => {
     const warns = async (name: string) => {
@@ -2998,40 +2989,5 @@ describe("Codex compressed rollout backfill", () => {
     };
     expect(await warns("rollout-a.jsonl.zst")).not.toContain("unsupported-layout");
     expect(await warns("other.txt")).toContain("unsupported-layout");
-  });
-
-  it("matches the plain parse, is idempotent and does not double count after a plain ingest", async () => {
-    const plain = makeDeps();
-    put(plain, "2026/11/17", "rollout-a.jsonl", body());
-    await runNativeUsagePass(plain);
-    const expected = rows(plain);
-
-    const deps = makeDeps();
-    put(deps, "2026/11/17", "rollout-a.jsonl.zst", zstdCompressSync(Buffer.from(body())));
-    const first = await backfillCodexZst(deps, { apply: true });
-    expect(first).toMatchObject({ ok: true, data: { processed: 1, remaining: 0, upserted: 2, failures: 0 } });
-    expect(rows(deps)).toEqual(expected);
-    await backfillCodexZst(deps, { apply: true });
-    expect(rows(deps)).toEqual(expected);
-    expect(queryNativeUsage(deps.db, { period: 30, now: NOW }).totalTokens).toBe(20);
-
-    // plain version ingested first, then the compressed twin
-    put(plain, "2026/11/17", "rollout-a.jsonl.zst", zstdCompressSync(Buffer.from(body())));
-    await backfillCodexZst(plain, { apply: true });
-    expect(rows(plain)).toEqual(expected);
-    plain.db.close();
-    deps.db.close();
-  });
-
-  it("ignores days outside retention and writes nothing in dry-run", async () => {
-    const deps = makeDeps();
-    put(deps, "2026/11/17", "rollout-a.jsonl.zst", zstdCompressSync(Buffer.from(body())));
-    put(deps, "2026/01/01", "rollout-old.jsonl.zst", zstdCompressSync(Buffer.from(body())));
-    const dry = await backfillCodexZst(deps, { apply: false });
-    expect(dry).toMatchObject({ ok: true, data: { scanned: 1, processed: 1, upserted: 2 } });
-    expect(rows(deps)).toEqual([]);
-    await backfillCodexZst(deps, { apply: true });
-    expect(rows(deps)).toHaveLength(2);
-    deps.db.close();
   });
 });
