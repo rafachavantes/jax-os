@@ -74,6 +74,8 @@ export type NativeUsageItem = {
   fileIdentity: string | null;
   turnId: string | null;
   rootTurnId: string | null;
+  cwd?: string | null;
+  rawModel?: string | null;
 };
 
 export type SourceState = "available" | "empty" | "indexing" | "unavailable" | "disabled" | "incompatible";

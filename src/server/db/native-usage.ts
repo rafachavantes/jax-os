@@ -95,6 +95,8 @@ type ItemRow = {
   file_identity: string | null;
   turn_id: string | null;
   root_turn_id: string | null;
+  cwd: string | null;
+  raw_model: string | null;
 };
 
 function rowToItem(row: ItemRow): NativeUsageItem {
@@ -134,6 +136,8 @@ function rowToItem(row: ItemRow): NativeUsageItem {
     fileIdentity: row.file_identity,
     turnId: row.turn_id,
     rootTurnId: row.root_turn_id,
+    cwd: row.cwd,
+    rawModel: row.raw_model,
   };
 }
 
@@ -150,8 +154,8 @@ function writeItem(db: Database.Database, item: NativeUsageItem): void {
        model, model_conflict, identity_conflict, ts, updated_ts, day, all_input, all_output,
        input_tokens, output_tokens, cache_read, cache_write, reasoning,
        cost_amount, cost_provenance, cost_currency, projection,
-       file_identity, turn_id, root_turn_id
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       file_identity, turn_id, root_turn_id, cwd, raw_model
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (harness, item_id) DO UPDATE SET
        session_id = excluded.session_id, child_id = excluded.child_id,
        parent_id = excluded.parent_id, is_child = excluded.is_child,
@@ -164,7 +168,8 @@ function writeItem(db: Database.Database, item: NativeUsageItem): void {
        reasoning = excluded.reasoning, cost_amount = excluded.cost_amount,
        cost_provenance = excluded.cost_provenance, cost_currency = excluded.cost_currency,
        projection = excluded.projection, file_identity = excluded.file_identity,
-       turn_id = excluded.turn_id, root_turn_id = excluded.root_turn_id`,
+       turn_id = excluded.turn_id, root_turn_id = excluded.root_turn_id,
+       cwd = excluded.cwd, raw_model = excluded.raw_model`,
   ).run(
     item.harness,
     item.itemId,
@@ -194,6 +199,8 @@ function writeItem(db: Database.Database, item: NativeUsageItem): void {
     item.fileIdentity,
     item.turnId,
     item.rootTurnId,
+    item.cwd ?? null,
+    item.rawModel ?? null,
   );
 }
 
@@ -227,10 +234,80 @@ function resolveCodexModel(db: Database.Database, item: NativeUsageItem): Native
 export function upsertNativeUsageItem(db: Database.Database, item: NativeUsageItem): "inserted" | "updated" {
   const resolved = resolveCodexModel(db, item);
   const existing = getItemRow(db, resolved.harness, resolved.itemId);
-  const merged = existing ? mergeNativeItem(rowToItem(existing), resolved) : resolved;
+  let merged = existing ? mergeNativeItem(rowToItem(existing), resolved) : resolved;
+  if (resolved.harness === "opencode") {
+    // An existing RESOLVED model vs the incoming raw alias would read as a conflict and null
+    // the label; attribution owns the final model, so the incoming row always wins here.
+    merged = {
+      ...merged,
+      model: resolved.model,
+      modelConflict: false,
+      cwd: resolved.cwd ?? null,
+      rawModel: resolved.rawModel ?? null,
+    };
+  }
   writeItem(db, merged);
   recordSessionFact(db, merged);
   return existing ? "updated" : "inserted";
+}
+
+type LaunchRecord = { worktree: string; runtimeModel: string; model: string; seconds: number };
+
+function opencodeLaunchRecords(db: Database.Database): Map<string, LaunchRecord[]> {
+  const rows = db
+    .prepare("SELECT payload FROM workflow_events WHERE type = 'builder-launched'")
+    .all() as { payload: string | null }[];
+  const byKey = new Map<string, LaunchRecord[]>();
+  for (const row of rows) {
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(row.payload ?? "{}") as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const { worktree, runtime_model: runtimeModel, model, launched_at: launchedAt } = payload;
+    if (typeof worktree !== "string" || typeof runtimeModel !== "string" || typeof model !== "string" || typeof launchedAt !== "string") continue;
+    const seconds = Math.floor(Date.parse(launchedAt) / 1000);
+    if (!Number.isFinite(seconds)) continue;
+    const key = `${worktree}\u0000${runtimeModel}`;
+    const list = byKey.get(key) ?? [];
+    list.push({ worktree, runtimeModel, model, seconds });
+    byKey.set(key, list);
+  }
+  for (const list of byKey.values()) list.sort((a, b) => a.seconds - b.seconds);
+  return byKey;
+}
+
+/** Rewrite alias-labelled OpenCode rows from the latest launch at or before their timestamp.
+ * Returns the number of rows changed; with no matching launch the raw alias stays. */
+export function attributeOpenCodeModels(db: Database.Database): number {
+  const launches = opencodeLaunchRecords(db);
+  if (launches.size === 0) return 0;
+  const rows = db
+    .prepare(
+      `SELECT item_id, ts, cwd, raw_model, model FROM native_usage_items
+       WHERE harness = 'opencode' AND cwd IS NOT NULL AND raw_model LIKE '%/jaxflow-builder-%'`,
+    )
+    .all() as { item_id: string; ts: number; cwd: string; raw_model: string; model: string | null }[];
+  const update = db.prepare(
+    "UPDATE native_usage_items SET model = ? WHERE harness = 'opencode' AND item_id = ?",
+  );
+  let changed = 0;
+  db.transaction(() => {
+    for (const row of rows) {
+      const list = launches.get(`${row.cwd}\u0000${row.raw_model}`);
+      if (!list) continue;
+      let next = row.raw_model;
+      for (const launch of list) {
+        if (launch.seconds <= row.ts) next = launch.model;
+        else break;
+      }
+      if (next === row.model) continue;
+      update.run(next, row.item_id);
+      changed += 1;
+    }
+  })();
+  return changed;
 }
 
 export function insertNativeContext(
