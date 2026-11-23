@@ -234,6 +234,31 @@ describe("migration 16 and model attribution", () => {
     db.close();
   });
 
+  it("two launches sharing one run_id both persist and attribute by time", () => {
+    const db = openDb(":memory:");
+    for (const [at, model] of [[1000, "opencode-go/deepseek-v4.1-flash"], [2000, "xai/grok-4.7"]] as const) {
+      insertEvent(db, {
+        run_id: "same-run", project: "p1", role: "builder", type: "builder-launched",
+        source: "deterministic", emitter: "wrapper",
+        payload: {
+          launched_at: new Date(at * 1000).toISOString(),
+          worktree: "/w1", runtime_model: "opencode-go/jaxflow-builder-default", model, profile: "default",
+        },
+      }, new Date(at * 1000));
+    }
+    expect(db.prepare("SELECT COUNT(*) AS n FROM workflow_events WHERE type = 'builder-launched'").get())
+      .toEqual({ n: 2 });
+    for (const [id, ts] of [["first", 1500], ["second", 2500]] as const) {
+      upsertNativeUsageItem(db, attrItem(
+        id, ts, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default",
+      ));
+    }
+    expect(attributeOpenCodeModels(db)).toBe(2);
+    expect(storedModel(db, "first")).toBe("opencode-go/deepseek-v4.1-flash");
+    expect(storedModel(db, "second")).toBe("xai/grok-4.7");
+    db.close();
+  });
+
   it("a launch record arriving after the rows were collected relabels them on the next pass", () => {
     const db = openDb(":memory:");
     upsertNativeUsageItem(db, attrItem(

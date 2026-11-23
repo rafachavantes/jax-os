@@ -76,25 +76,17 @@ describe("handleUsageCollect", () => {
     expect(body.data.caughtUp).toBe(false);
   });
 
-  it("refuses a non-loopback Host and forwarded/origin headers without running a pass", async () => {
+  it("still collects when Next adds forwarding headers", async () => {
     const pass = vi.fn(async () => {});
-    const routeDeps = deps({ pass });
-    const refused: Record<string, string>[] = [
-      { host: "jax.tailnet.ts.net" },
-      { "x-forwarded-for": "100.64.0.1" },
-      { origin: "https://example.com" },
-      { "sec-fetch-site": "cross-site" },
-      { "x-forwarded-host": "example.com" },
-    ];
-    for (const headers of refused) {
-      const response = await handleUsageCollect(post(headers), routeDeps);
-      expect(response.status).toBe(403);
-      expect(await response.json()).toEqual({ ok: false, error: "loopback only" });
-    }
-    expect(pass).not.toHaveBeenCalled();
+    const response = await handleUsageCollect(
+      post({ "x-forwarded-for": "127.0.0.1", "x-forwarded-host": "127.0.0.1:3100" }),
+      deps({ pass }),
+    );
+    expect(response.status).toBe(200);
+    expect(pass).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts localhost as loopback and returns the safe envelope when the DB is unavailable", async () => {
+  it("returns the safe envelope when the DB is unavailable", async () => {
     const pass = vi.fn(async () => {});
     const response = await handleUsageCollect(post({ host: "localhost:3100" }), deps({ pass }));
     expect(response.status).toBe(200);

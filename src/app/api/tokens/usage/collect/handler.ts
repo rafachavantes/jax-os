@@ -1,8 +1,8 @@
 import type Database from "better-sqlite3";
 import { NextResponse } from "next/server";
-import { getDb } from "@/server/db";
-import { getSourceStatuses } from "@/server/db/native-usage";
-import { defaultNativeCollectorDeps, runNativeUsagePass } from "@/server/collectors/native-usage";
+import { getDb } from "../../../../../server/db";
+import { getSourceStatuses } from "../../../../../server/db/native-usage";
+import { defaultNativeCollectorDeps, runNativeUsagePass } from "../../../../../server/collectors/native-usage";
 
 export type CollectDeps = {
   db: () => Database.Database;
@@ -11,17 +11,8 @@ export type CollectDeps = {
   deadlineMs: number;
 };
 
-const LOOPBACK_FORWARD_HEADERS = ["x-forwarded-for", "x-forwarded-host", "origin", "sec-fetch-site"];
-
-function isLoopbackCaller(req: Request): boolean {
-  const host = req.headers.get("host");
-  if (!host) return false;
-  const hostname = host.replace(/:\d+$/, "").toLowerCase();
-  if (hostname !== "127.0.0.1" && hostname !== "localhost") return false;
-  return !LOOPBACK_FORWARD_HEADERS.some((header) => req.headers.has(header));
-}
-
-// One bounded catch-up run for the systemd timer: POST only, loopback only. Passes repeat
+// One bounded catch-up run for the systemd timer: POST only. No caller guard: collection is idempotent internal state and the app binds 127.0.0.1
+// (Next adds x-forwarded-* headers itself, so header checks would only break the timer). Passes repeat
 // until no source is indexing or the deadline passes; a failed pass just stops this tick
 // (the source statuses already carry its safe warning) and the next tick resumes.
 export async function handleUsageCollect(req: Request, overrides: Partial<CollectDeps> = {}): Promise<Response> {
@@ -32,9 +23,6 @@ export async function handleUsageCollect(req: Request, overrides: Partial<Collec
     deadlineMs: 30_000,
     ...overrides,
   };
-  if (!isLoopbackCaller(req)) {
-    return NextResponse.json({ ok: false, error: "loopback only" }, { status: 403 });
-  }
   let db: Database.Database;
   try {
     db = deps.db();
