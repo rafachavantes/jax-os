@@ -8,7 +8,7 @@ export type MosaicGroup = { dir: string; name: string; panes: MissionPane[] };
 
 // Spec §5 Decisions 1/2: cell = one LIVE tmux pane; a card with zero surviving panes gets no
 // group at all (no placeholder cell) — reversing the mockup's own "project without pane" cell,
-// per Rafa's D3. Filtering happens HERE, on MissionPane.live, before mosaicPaneState ever runs —
+// by design. Filtering happens HERE, on MissionPane.live, before mosaicPaneState ever runs —
 // a dead pane's stale attention state never reaches it (round-1 F1).
 export function mosaicGroups(cards: MissionCard[]): MosaicGroup[] {
   const groups: MosaicGroup[] = [];
@@ -32,7 +32,7 @@ export type MosaicSpotlight = { dir: string; pane: MissionPane } | null;
 
 // Spec §8 Decision 16 (round-2 F3): the FIRST pane, in card/pane traversal order (the same order
 // mosaicGroups above preserves from buildMission's own card/pane construction order), whose
-// mosaicPaneState needs Rafa — "the oldest pending question wins", one spotlight app-wide,
+// mosaicPaneState needs the owner — "the oldest pending question wins", one spotlight app-wide,
 // mirroring selectPendingAction's single-pending-interaction-per-card rule generalized across
 // cards (mission.ts round-3 F4).
 export function selectSpotlightPane(groups: MosaicGroup[]): MosaicSpotlight {

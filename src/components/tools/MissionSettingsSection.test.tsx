@@ -57,7 +57,7 @@ describe("postArchiveAfterDays (plan review round 1 F2 — POST call, fetch spy 
   });
 });
 
-describe("forward-types checklist (MOA-487 §5 Decision 6/7)", () => {
+describe("forward-types checklist", () => {
   it("renders exactly six checkboxes, pre-checked per §5 Decision 5 defaults, once the GET resolves", () => {
     harness.archiveQuery = { data: undefined, isError: false };
     harness.afkQuery = { data: { ok: true, data: { enabled: true, forwardTypes: ["question", "attention-needed", "mission-finished"] } }, isError: false };

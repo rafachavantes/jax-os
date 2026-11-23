@@ -110,7 +110,7 @@ describe("OpenCodeProvidersSection", () => {
     expect(button(html, "replaceCredential")).toBe("");
   });
 
-  it("opens the credential dialog with the connection's current binding on the one Edit credential button (MOA-498 D4/12)", () => {
+  it("opens the credential dialog with the connection's current binding on the one Edit credential button", () => {
     const html = render([connection({ id: "acme", credential: { kind: "env", env: "JAX_PROVIDER_ACME_API_KEY" } })]);
     expect(button(html, "editCredential")).toContain("editCredential");
     expect(html).not.toContain("addCredential");

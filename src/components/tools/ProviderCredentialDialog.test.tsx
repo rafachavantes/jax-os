@@ -29,7 +29,7 @@ function source(name: string): string {
   return readFileSync(fileURLToPath(new URL(name, import.meta.url)), "utf8");
 }
 
-describe("ProviderCredentialDialog (MOA-498 D4/12 — native/env only, no BWS flow)", () => {
+describe("ProviderCredentialDialog (native/env only, no BWS flow)", () => {
   it("renders a native/env choice, no create/link/replace fields", () => {
     const html = render({ kind: "native" });
     expect(html).toContain("credentialKind");
@@ -51,7 +51,7 @@ describe("ProviderCredentialDialog (MOA-498 D4/12 — native/env only, no BWS fl
   });
 });
 
-describe("the BWS credential route is never called (MOA-498 D4/12)", () => {
+describe("the BWS credential route is never called", () => {
   it("no credential-facing tool component references the deleted route", () => {
     for (const name of ["ProviderCredentialDialog.tsx", "OpenCodeProvidersSection.tsx", "ProviderConnectionDialog.tsx"]) {
       expect(source(name)).not.toContain("/api/opencode-providers/credentials");

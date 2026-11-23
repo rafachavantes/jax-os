@@ -28,7 +28,7 @@ function fvarAxes(file: string): [string, number, number, number][] {
   });
 }
 
-describe("self-hosted display font (MOA-501 D2)", () => {
+describe("self-hosted display font", () => {
   it("ships exactly the variable Orbitron TTF and its OFL notice", () => {
     expect(readdirSync(FONTS).sort()).toEqual(["OFL.txt", "Orbitron-VariableFont_wght.ttf"]);
   });

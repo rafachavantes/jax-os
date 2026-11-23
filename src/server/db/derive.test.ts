@@ -276,7 +276,7 @@ const RUN = (over: Record<string, unknown> = {}) => ({
   payload: { phase: "B", runtime: "opencode-grok", kind: "plan", target: "/x/p.md",
              caller: "claude", caller_session: "sess-a", caller_pane: "%3",
              model: "grok-4.6", effort: "high", verify: "true",
-             session: "jax-p1-builder-r1", repo: "/home/rafa/repos/jax-os" },
+             session: "jax-p1-builder-r1", repo: "/home/user/repos/jax-os" },
   ...over,
 });
 const FINISH = (run_id: string) => ({
@@ -287,7 +287,7 @@ const FINISH = (run_id: string) => ({
 
 it("F2: rung 2 fires with AFK OFF, where a question is stored delivery:local", () => {
   const db = openDb(":memory:");
-  // No setAfk — AFK defaults off, which is Rafa's normal state. 16 of 20 live questions are
+  // No setAfk — AFK defaults off, which is the normal state. 16 of 20 live questions are
   // `local`; scoping rung 2 to delivered questions made the most important rung nearly dead.
   const q = insertEvent(db, { ...STOP, type: "question", source: "deterministic", emitter: "claude-pretool",
                               payload: { tool_use_id: "t1", questions: [{ question: "q?" }] } });
@@ -333,7 +333,7 @@ it("F4: an ingress-settled abandoned row carries capsule_attempts 0", () => {
 });
 
 // ---------------------------------------------------------------------------
-// MOA-469 F1 (review 8dc843212345): a Codex event's optional pane is NOT
+// A Codex event's optional pane is NOT
 // authority for Claude pane derivation. Each test fails if codex rows are
 // allowed back into a pane-keyed predicate.
 // ---------------------------------------------------------------------------
@@ -383,7 +383,7 @@ it("F1: hasOpenQuestion is not closed by a later codex-stop on the same pane", (
 });
 
 // ---------------------------------------------------------------------------
-// MOA-502 Decision 1: rung 7 reads integrations.classifier live through the
+// rung 7 reads integrations.classifier live through the
 // injected reader (defaults to the real readGeneralSettings).
 // ---------------------------------------------------------------------------
 
@@ -391,7 +391,7 @@ type ReadSettings = typeof readGeneralSettings;
 const classifierOn = () => ({ ok: true, data: { integrations: { classifier: true } } }) as ReturnType<ReadSettings>;
 const classifierOff = () => ({ ok: true, data: { integrations: { classifier: false } } }) as ReturnType<ReadSettings>;
 
-describe("deriveCapsule rung 7 — integrations.classifier gate (spec MOA-502 Decision 1)", () => {
+describe("deriveCapsule rung 7 — integrations.classifier gate", () => {
   it("settles unknown/classifier-off with no queueing when the setting is off", () => {
     const db = openDb(":memory:");
     const result = deriveCapsule(db, tail("still thinking about the approach"), classifierOff);

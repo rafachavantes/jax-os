@@ -110,7 +110,7 @@ describe("KanbanPage retained poll data", () => {
         ok: true,
         data: {
           states: [],
-          issues: [{ id: "i1", identifier: "MOA-1", title: "On board", priority: 0, url: "https://x", stateId: "s1", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", labels: [] }],
+          issues: [{ id: "i1", identifier: "ENG-1", title: "On board", priority: 0, url: "https://x", stateId: "s1", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", labels: [] }],
         },
       },
       isError: false,

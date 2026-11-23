@@ -13,7 +13,7 @@ import { useGeneralSettings, vaultUsable } from "@/lib/settingsQuery";
 export type ScopeChipRow = { value: string; label: string };
 
 // Pure ordering (§9): recents first (valid, deduped), then every repo + "vault" alphabetically,
-// "All repos" always last. `vaultEnabled` (MOA-496) drops the vault row entirely when the
+// "All repos" always last. `vaultEnabled` drops the vault row entirely when the
 // integration is off — the ONE function both ScopeChip and RepoSwitcher build their lists with.
 export function scopeChipRows(repoNames: string[], recentScopes: string[], t: (key: string) => string, vaultEnabled: boolean): ScopeChipRow[] {
   const toValue = (name: string) => (name === "vault" ? "vault" : `repo:${name}`);
@@ -54,7 +54,7 @@ function toScope(value: string): SearchScope {
 }
 
 // Filter field + recents + repo/vault/all list (§9). No dedicated interaction test — this file's
-// JSX is verified by `pnpm build` + Rafa's live check, matching this codebase's existing
+// JSX is verified by `pnpm build` + a live check, matching this codebase's existing
 // convention for QuickOpen/FileSearch (only their pure helpers are unit-tested).
 export function ScopeChip({ scope, onChange }: { scope: SearchScope; onChange: (scope: SearchScope) => void }) {
   const t = useTranslations("files");

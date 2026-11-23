@@ -13,7 +13,7 @@ describe("mutationSummary", () => {
     expect(mutationSummary("release-control", { session: "jax-scratch" })).toBe("jax-scratch");
   });
   it("keys linear kinds off issueId presence (uuid or identifier)", () => {
-    expect(mutationSummary("linear-move", { issueId: "MOA-264", stateId: "s1" })).toBe("MOA-264");
+    expect(mutationSummary("linear-move", { issueId: "ENG-264", stateId: "s1" })).toBe("ENG-264");
     expect(mutationSummary("linear-comment", { issueId: "0c9e8f2a-uuid" })).toBe("0c9e8f2a-uuid");
   });
   it("falls back to the first payload fields and never throws on junk", () => {

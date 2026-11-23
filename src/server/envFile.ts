@@ -8,7 +8,7 @@ function envPath(): string {
   return join(jaxosHome(), ".env");
 }
 
-// MOA-498 D1: the TS mirror of scripts/jev_client.py's env_file_status()/_check_secure —
+// the TS mirror of scripts/jev_client.py's env_file_status()/_check_secure —
 // same lstat-based check (regular file, owned by the running uid, mode 0600), never a
 // second, stricter contract. Never returns a value.
 export function envFileStatus(): { state: EnvFileState } {

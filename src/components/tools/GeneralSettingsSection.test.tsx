@@ -101,7 +101,7 @@ describe("GeneralSettingsSection — settings-malformed", () => {
   });
 });
 
-describe("GeneralSettingsSection — Agents block (MOA-504 D5)", () => {
+describe("GeneralSettingsSection — Agents block", () => {
   it("renders the Agents heading + hint above Integrations, three agent rows, and no subs* rows", () => {
     const html = renderToStaticMarkup(createElement(GeneralSettingsSection));
     expect(html).toContain("general.agentsHeading");

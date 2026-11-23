@@ -7,7 +7,7 @@
 export type AppKey = "claude" | "codex" | "opencode";
 export const APP_KEYS: readonly AppKey[] = ["claude", "codex", "opencode"];
 
-// MOA-504 D10: a rule slot / destination exists only while its agent is on ("global" always does).
+// a rule slot / destination exists only while its agent is on ("global" always does).
 export function slotVisible(slot: "global" | AppKey, agents: Record<AppKey, boolean>): boolean {
   return slot === "global" || agents[slot];
 }

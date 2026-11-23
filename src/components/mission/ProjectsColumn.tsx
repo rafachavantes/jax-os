@@ -34,8 +34,8 @@ type Props = {
 // toggles and the joining " · " between them are Part 2's JSX. `t` is the caller's OWN
 // `useTranslations("mission.projects")` (already scoped, matching this component's existing
 // `t("hiddenBar", ...)` call) — never re-prefixed with "projects." here.
-// MOA-486 follow-up: dropped the autoHidden half's inline name list ("(Patient Insight Journal
-// (PIJ))") — it wrapped badly on the phone. Both halves are now plain ICU-plural counts; names
+// dropped the autoHidden half's inline name list ("(Sample Project Name
+// (SPN))") — it wrapped badly on the phone. Both halves are now plain ICU-plural counts; names
 // only ever show once a segment is expanded (the per-project rows below, unchanged).
 export function hiddenAutoHiddenSummary(
   hiddenCount: number,
@@ -68,7 +68,7 @@ function ProjectVisibilityDisclosure({
           <>
             {autoHiddenText}
             {" · "}
-            {/* MOA-486 follow-up: "gerenciar" (below) only toggles the manually-hidden half
+            {/* "gerenciar" (below) only toggles the manually-hidden half
                 (setShowHidden never touches showAuto/autoHiddenCards) — collapsed cards have no
                 other reveal path, so this stays a separate lowercase toggle rather than folding
                 into gerenciar. */}
@@ -277,7 +277,7 @@ export function ProjectsColumn({ navigation, mission, reposRoot, counts, filter 
     // none match; boardEntries owns both rules.
     const entries = boardEntries(orderedCards, filter);
     body = entries.length > 0 ? (
-      // Rafa 2026-09-20: flex-wrap instead of the 1→2→3→4 column grid — at most 3 cards per row
+      // flex-wrap instead of the 1→2→3→4 column grid — at most 3 cards per row
       // (30% basis + gaps), and a partial row's cards grow to fill the line (2 cards = half each,
       // 1 = full). Tablet 2 per row, phone 1. The expanded card takes a 2-of-3 basis.
       <div className="project-grid">
@@ -369,7 +369,7 @@ export function ProjectsColumn({ navigation, mission, reposRoot, counts, filter 
         ) : model.historicalTruncated ? <span className="text-[11px] text-muted">{t("hubListTruncated")}</span> : null}
       </ProjectLayoutControls>
       <span aria-live="polite" className="sr-only">{announcement}</span>
-      {/* MOA-469 §4 / C4: the two live sources warn independently — a failed tmux collector is a
+      {/* the two live sources warn independently — a failed tmux collector is a
           visible source warning (never a quiet healthy zero-agents board), and a failed Codex
           collector must not hide the (fully known) tmux/projects state. */}
       {model.tmuxSource === "failed" ? (

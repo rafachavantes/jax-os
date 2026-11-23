@@ -304,8 +304,8 @@ describe("OpenCode accounting", () => {
       if (!("item" in out)) throw new Error("expected item");
       return out.item.cwd;
     };
-    expect(cwdOf({ cwd: "/home/rafa/repos/demo" })).toBe("/home/rafa/repos/demo");
-    expect(cwdOf({ projection: "v1", cwd: "/home/rafa/repos/demo-v1" })).toBe("/home/rafa/repos/demo-v1");
+    expect(cwdOf({ cwd: "/home/user/repos/demo" })).toBe("/home/user/repos/demo");
+    expect(cwdOf({ projection: "v1", cwd: "/home/user/repos/demo-v1" })).toBe("/home/user/repos/demo-v1");
     expect(cwdOf({ cwd: 42 })).toBeNull();
     expect(cwdOf({ cwd: "x".repeat(600) })).toBeNull();
     expect(cwdOf({ cwd: "bad\u0000cwd" })).toBeNull();

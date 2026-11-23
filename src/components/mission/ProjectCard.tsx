@@ -665,7 +665,7 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
   const drafts = useAnswerDraftStore();
   const action = pendingUiAction(card, undefined, t);
   const answered = answeredEventId !== null && answeredEventId === actionEventId(action);
-  // MOA-486 round 2: an all-zero heartbeat means nothing has been recorded yet — render no
+  // an all-zero heartbeat means nothing has been recorded yet — render no
   // block at all rather than a near-zero-height sparkline that reads as a dashed line.
   const hasHeartbeat = card.heartbeat.some((n) => n > 0);
   const pillSuffix = statusPillSuffix(card, Date.now());
@@ -686,7 +686,7 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
       {/* header — clicking the expand toggle expands the card in place (§2.3), no navigation.
           F4 (diff review): the toggle is its own <button>, a sibling of the "···" menu's
           buttons — not their ancestor — so no interactive control ever nests inside another.
-          Row 1 (MOA-486 round 2, Rafa's phone review): icon + name (the toggle button, `flex-1`
+          Row 1 icon + name (the toggle button, `flex-1`
           so it grows to fill the row and pushes the following siblings to the right edge) then
           the "···" menu trigger + chevron, all inline. Row 2: stage word + pipeline dots +
           status pill, inline on one line (data-testid="card-stage-row") — no more dedicated
@@ -780,7 +780,7 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
         ) : null}
       </div>
 
-      {/* MOA-486 round 2: no icon-column indent below the header — body rows use the card's
+      {/* no icon-column indent below the header — body rows use the card's
           full width from its own left padding. No heartbeat block at all below `md:` (mobile),
           and nothing at all (not even on desktop) when card.heartbeat has no data. */}
       {hasHeartbeat ? (
@@ -841,7 +841,7 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
         {typeof issues === "number" ? <span>{t("projects.issueCount", { count: issues })}</span> : null}
         <PrSummary pr={card.pr} githubEnabled={githubEnabled} />
       </div>) : card.projectContext ? (
-        // A lone open session (MOA-533): project facts stay reachable as PROJECT context — never
+        // A lone open session: project facts stay reachable as PROJECT context — never
         // as this session's builder/branch. Pin/hide here targets the project (card.dir); the
         // header's own hide targets only this session (cardKey).
         <div data-testid="project-context" className="flex flex-col gap-1.5 border-t border-line-subtle pt-[13px] text-xs text-muted">
@@ -901,7 +901,7 @@ const MENU_ITEM = "rounded px-2 py-1.5 text-left text-[12px] font-medium text-bo
 
 // Item 1 (mobile hide/pin UX): the header's own "···" trigger + dropdown, replacing the old
 // two-icon pair — pure/stateless so its markup has a direct, no-jsdom renderToStaticMarkup
-// test, same split as PendingActionButtons above. MOA-486 round 2 (Rafa's phone review): the
+// test, same split as PendingActionButtons above. the
 // trigger drops its border and shrinks from a bordered 44px box to a plain 32px (h-8/w-8)
 // icon-only square, `text-muted` → `hover:text-ink` — still a comfortable tap target (the box
 // is well past the 16px icon it centers), just visually lighter. Both items always render,
@@ -1026,7 +1026,7 @@ function LastRunLine({ card, run = card.lastRun }: { card: MissionCard; run?: Mi
   if (!lastRun) return null;
   const showReportProblem = lastRun.contractStatus === "missing" || lastRun.contractStatus === "invalid";
   return (
-    // MOA-486 round 2: `gap-x-2` (not `gap-2`, which also adds row-gap on wrap) — outcome ·
+    // `gap-x-2` (not `gap-2`, which also adds row-gap on wrap) — outcome ·
     // model · report link read as one line; wrapping only kicks in on true overflow.
     <div className={`flex flex-wrap items-center gap-x-2 text-xs ${LAST_RUN_TONE_CLASS[lastRun.tone]}`}>
       <span className="font-semibold">{t(`lastRun.${lastRun.labelKey}`)}</span>
@@ -1109,7 +1109,7 @@ function ExpandedCard({
         ) : (
           <>
           {liveSessions(card.sessions).map((s) => {
-            // MOA-469 §4: native Codex rows have no pane — no tmux action, no fabricated pane id.
+            // native Codex rows have no pane — no tmux action, no fabricated pane id.
             // Key tmux groups by the first pane+incarnation, not the display label (mission.ts
             // Finding 2); key native rows by threadId.
             if (s.transport === "codex") {

@@ -264,7 +264,7 @@ describe("opencode-providers route", () => {
     expect(body.data).toMatchObject({ effect: "published" });
   });
 
-  it("GET no longer reads provider-credential mutations (MOA-498 D4 — the async BWS reconciliation this fed is gone)", async () => {
+  it("GET no longer reads provider-credential mutations (the async BWS reconciliation this fed is gone)", async () => {
     // Regression pin: importing the route module must not pull in server/db/provider-operations
     // at all, since that file no longer exists after this task. Path is relative to THIS test
     // file (src/app/api/opencode-providers/route.test.ts) — 3 levels up reaches src/, not 4.
@@ -811,7 +811,7 @@ print(json.dumps(rows))
     expect(fallback.saved_routing).toEqual(routingFallback);
   });
 
-  it("snapshot reports the new env-kind binding for an env-referenced apiKey (MOA-498 D4)", async () => {
+  it("snapshot reports the new env-kind binding for an env-referenced apiKey", async () => {
     const withEnvRef = JSON.parse(SOURCE) as { provider: Record<string, { options?: Record<string, unknown> }> };
     withEnvRef.provider[CONN].options = { apiKey: "{env:JAX_PROVIDER_FIXTURE_API_KEY}" };
     writeFileSync(join(home, ".config", "opencode", "opencode.json"), JSON.stringify(withEnvRef, null, 2));
@@ -833,7 +833,7 @@ print(json.dumps(rows))
     }
   });
 
-  it("bind-credential validates {connection, credential} and reaches deps.apply (MOA-498 D4/12)", async () => {
+  it("bind-credential validates {connection, credential} and reaches deps.apply", async () => {
     const d = deps();
     const res = await handlePost(post({
       action: "bind-credential",
@@ -849,7 +849,7 @@ print(json.dumps(rows))
     expect(await res.json()).toMatchObject({ ok: true });
   });
 
-  it("bind-credential refuses the retired bws-env shape and a malformed connection id (MOA-498 D4/12)", async () => {
+  it("bind-credential refuses the retired bws-env shape and a malformed connection id", async () => {
     const d = deps();
     const res1 = await handlePost(post({
       action: "bind-credential", expected: REV, connection: "acme",
@@ -864,7 +864,7 @@ print(json.dumps(rows))
     expect(d.apply).not.toHaveBeenCalled();
   });
 
-  describe("GET ?credential-env (MOA-498 D4/12 — configured/missing status, never a value)", () => {
+  describe("GET ?credential-env (configured/missing status, never a value)", () => {
     it("refuses an invalid env name before any file read", async () => {
       const res = await GET(new Request("http://127.0.0.1/api/opencode-providers?credential-env=not%20valid"));
       expect(res.headers.get("cache-control")).toBe("no-store");

@@ -39,7 +39,7 @@ import {
 } from "./agent-settings";
 
 describe("TOOLS_TABS", () => {
-  it("TOOLS_TABS puts general first, keeps the other four in their existing order (MOA-496 decision 2)", () => {
+  it("TOOLS_TABS puts general first, keeps the other four in their existing order", () => {
     expect(TOOLS_TABS).toEqual(["general", "agents", "providers", "rules", "inventory"]);
   });
 });
@@ -233,7 +233,7 @@ describe("tools UI derivations", () => {
     expect(nextToolsTab("agents", "End")).toBe("inventory");
   });
 
-  it("hides the providers tab while OpenCode is off and keyboard nav skips it (MOA-504 D10)", () => {
+  it("hides the providers tab while OpenCode is off and keyboard nav skips it", () => {
     const on = visibleToolsTabs({ opencode: true });
     const off = visibleToolsTabs({ opencode: false });
     expect(on).toEqual(TOOLS_TABS);

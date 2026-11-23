@@ -5,14 +5,14 @@ const US = "\x1f";
 
 describe("parseGitLog", () => {
   it("parses \\x1f-delimited lines", () => {
-    const out = `abc123${US}Rafa${US}feat: add thing${US}1751800000\n`;
+    const out = `abc123${US}Alex${US}feat: add thing${US}1751800000\n`;
     expect(parseGitLog("jax-os", out)).toEqual([
-      { repo: "jax-os", hash: "abc123", author: "Rafa", message: "feat: add thing", epoch: 1751800000 },
+      { repo: "jax-os", hash: "abc123", author: "Alex", message: "feat: add thing", epoch: 1751800000 },
     ]);
   });
 
   it("keeps pipes in commit subjects (the reason %x1f is the delimiter)", () => {
-    const out = `abc${US}Rafa${US}fix: a | b || c${US}1${'\n'}`;
+    const out = `abc${US}Alex${US}fix: a | b || c${US}1${'\n'}`;
     expect(parseGitLog("r", out)[0].message).toBe("fix: a | b || c");
   });
 
@@ -35,7 +35,7 @@ describe("mergeActivity", () => {
 
 const LOCAL_OPTS = { encoding: "utf8" as const, timeout: 5_000, maxBuffer: 1024 * 1024 };
 const GIT_LOG = ["-C", "/tmp/repos/r", "log", "-n", "5", "--format=%h%x1f%an%x1f%s%x1f%ct"];
-const PARTIAL_LOG = `abc123\x1fRafa\x1ffeat: leaked\x1f1751800000\n`;
+const PARTIAL_LOG = `abc123\x1fAlex\x1ffeat: leaked\x1f1751800000\n`;
 
 describe("getActivity executor bounds", () => {
   it("treats timeout as source failure, not parsed commits", () => {
@@ -64,7 +64,7 @@ describe("getActivity executor bounds", () => {
   });
 
   it("uses a nested project's location as git cwd but keeps the basename identity", () => {
-    const exec = vi.fn(() => `abc123${US}Rafa${US}feat: nested${US}1751800000\n`);
+    const exec = vi.fn(() => `abc123${US}Alex${US}feat: nested${US}1751800000\n`);
     const commits = getActivity(
       [{ dir: "example-app", path: "example-company/example-app" }], "/tmp/repos", exec);
     expect(exec).toHaveBeenCalledWith("git", [
@@ -74,7 +74,7 @@ describe("getActivity executor bounds", () => {
   });
 
   it("keeps a direct child rooted at reposRoot/dir", () => {
-    const exec = vi.fn(() => `abc123${US}Rafa${US}feat: direct${US}1751800000\n`);
+    const exec = vi.fn(() => `abc123${US}Alex${US}feat: direct${US}1751800000\n`);
     getActivity([{ dir: "r" }], "/tmp/repos", exec);
     expect(exec).toHaveBeenCalledWith("git", GIT_LOG, LOCAL_OPTS);
   });

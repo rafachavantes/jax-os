@@ -19,7 +19,7 @@ const { WebSocketServer } = require("next/dist/compiled/ws") as {
 const UUID = "0191f0aa-0000-7000-8000-000000000001";
 
 function thread(over: Record<string, unknown> = {}) {
-  return { id: UUID, cwd: "/home/rafa/repos/jax-os", source: "cli", status: { type: "idle" }, canAcceptDirectInput: true, ...over };
+  return { id: UUID, cwd: "/home/user/repos/jax-os", source: "cli", status: { type: "idle" }, canAcceptDirectInput: true, ...over };
 }
 
 function fakeConnector(handler: (method: string, params: Record<string, unknown>) => unknown, calls: string[] = []): CodexConnector {
@@ -407,7 +407,7 @@ describe("codexSocketPath", () => {
   });
 });
 
-describe("isCodexCliPresent (spec MOA-502 Decision 3)", () => {
+describe("isCodexCliPresent", () => {
   const dirs: string[] = [];
   function tmpBin(files: Record<string, { mode: number; dir?: boolean }>): string {
     const dir = mkdtempSync(join(tmpdir(), "jax-codex-path-"));
@@ -456,8 +456,8 @@ describe("codexQueueMessage (native-answer-delivery spec D3)", () => {
   it("calls the exact command jaxflow.py's own callback uses for a codex caller", async () => {
     const calls: string[][] = [];
     const run = async (file: string, args: string[]) => { calls.push([file, ...args]); return ""; };
-    await codexQueueMessage(THREAD, "[Jax OS · Rafa] pode", run);
-    expect(calls).toEqual([["codex", "queue", "--thread", THREAD, "--message", "[Jax OS · Rafa] pode"]]);
+    await codexQueueMessage(THREAD, "[Jax OS · Alex] pode", run);
+    expect(calls).toEqual([["codex", "queue", "--thread", THREAD, "--message", "[Jax OS · Alex] pode"]]);
   });
 
   it("classifies a missing CLI binary as cli-missing", async () => {

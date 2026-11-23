@@ -21,7 +21,7 @@ export async function postArchiveAfterDays(days: number): Promise<Envelope<Setti
   }).then((r) => r.json()).catch((e) => ({ ok: false as const, error: String(e) }));
 }
 
-// MOA-487 §5 Decision 6/7 (plan review round 2 F2): mirrors postPrefsPatch's own optimistic-cache
+// Mirrors postPrefsPatch's own optimistic-cache
 // pattern exactly (src/lib/prefsAction.ts) — snapshot the afk query cache, patch forwardTypes
 // optimistically so the checklist re-renders this same tick, POST, invalidate on success, roll
 // back the pre-patch snapshot on failure. Resolves a plain boolean, not the Envelope — the
@@ -83,7 +83,7 @@ export function ForwardTypesFailedCaption({ failed, t }: { failed: boolean; t: (
   return failed ? <span className="text-[11px] text-danger">{t("forwardTypesSaveFailed")}</span> : null;
 }
 
-// MOA-487 §5 Decision 5: label key per forwardable type. FORWARDABLE_EVENT_TYPES stays the single
+// label key per forwardable type. FORWARDABLE_EVENT_TYPES stays the single
 // source of which SIX types exist and their render order — this map only adds the copy key.
 const FORWARD_TYPE_LABEL_KEYS: Partial<Record<EventType, string>> = {
   question: "forwardTypeQuestion",

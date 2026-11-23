@@ -9,16 +9,16 @@ const RUN_STARTED = {
   project: "jax-os", run_id: "r-001", role: "builder", type: "run-started",
   source: "deterministic", emitter: "wrapper",
   payload: {
-    phase: "B", runtime: "opencode-deepseek", kind: "plan", target: "/home/rafa/repos/jax-os/.local/docs/plans/example.md",
+    phase: "B", runtime: "opencode-deepseek", kind: "plan", target: "/home/user/repos/jax-os/.local/docs/plans/example.md",
     caller: "claude", caller_session: "sess-abc123", caller_pane: "%3", model: "grok-4.6", effort: "high",
-    session: "jax-jax-os-builder-r-001", repo: "/home/rafa/repos/jax-os",
+    session: "jax-jax-os-builder-r-001", repo: "/home/user/repos/jax-os",
   },
 };
 const RUN_FINISHED = {
   project: "jax-os", run_id: "r-001", role: "builder", type: "run-finished",
   source: "deterministic", emitter: "wrapper",
   payload: {
-    phase: "B", exit_code: 0, contract_status: "ok", report_path: "/home/rafa/repos/jax-os/.local/reports/r-001.md",
+    phase: "B", exit_code: 0, contract_status: "ok", report_path: "/home/user/repos/jax-os/.local/reports/r-001.md",
     summary: "done", head_sha: "a".repeat(40), result: "success",
   },
 };
@@ -185,7 +185,7 @@ describe("parseIngress — pane and tmux_incarnation (D1, Finding 3)", () => {
   });
 });
 
-describe("parseIngress — native Codex identity (MOA-469 §3)", () => {
+describe("parseIngress — native Codex identity", () => {
   const UUID = "0191f0aa-7777-7000-8000-000000000007";
   const codexStop = (over: Record<string, unknown> = {}) => ({
     project: "p1", role: "lead", type: "turn-stopped", source: "behavioral", emitter: "codex-stop",
@@ -380,7 +380,7 @@ describe("parseIngress — question-answered payload schema (§6 route 5)", () =
 });
 
 describe("parseIngress — PROJECT_LABEL replaces PROJECT_SLUG at ingress (Finding 34)", () => {
-  it.each(["PIJ", "Acme.AI", "CS_standalone", "comenta.ia.br", "EBPMN 2"])("accepts real repo basename %s", (project) => {
+  it.each(["sample-app", "Acme.AI", "Sample_Standalone", "example.com", "Sample App 2"])("accepts real repo basename %s", (project) => {
     expect(parseIngress({
       project, role: "lead", pane: "%1", type: "turn-stopped",
       source: "deterministic", emitter: "claude-stop", payload: { capsule_status: "done", capsule_rule: "tag" },
@@ -432,7 +432,7 @@ describe("parseSessionBody — re-keyed shape + backward-compat (§3.1b, Finding
   });
 
   it("reuses the PROJECT_LABEL fixtures", () => {
-    for (const project of ["PIJ", "Acme.AI", "CS_standalone", "comenta.ia.br", "EBPMN 2"]) {
+    for (const project of ["sample-app", "Acme.AI", "Sample_Standalone", "example.com", "Sample App 2"]) {
       expect(parseSessionBody({ project, session: "s", pane: "%7", role: "lead", tmux_incarnation: "1:2" })).toMatchObject({ ok: true });
     }
   });
@@ -863,7 +863,7 @@ describe("parseIngress — jaxflow run-ledger fields (spec §2.6, §7.2 #28-30, 
   it("accepts runtime claude on run-started (fixes cold review G4)", () => {
     expect(parseIngress({ ...RUN_STARTED, payload: { ...RUN_STARTED.payload, runtime: "claude" } }).ok).toBe(true);
   });
-  it("accepts tail+reason together on a missing/invalid row, rejects either alone (MOA-470 §4.3)", () => {
+  it("accepts tail+reason together on a missing/invalid row, rejects either alone", () => {
     const { result: _drop, ...base } = RUN_FINISHED.payload;
     const missingRow = { ...base, contract_status: "missing", exit_code: 0, tail: "no report written", reason: "no-report" };
     expect(parseIngress({ ...RUN_FINISHED, payload: missingRow }).ok).toBe(true);
@@ -908,7 +908,7 @@ describe("parseIngress — jaxflow run-ledger fields (spec §2.6, §7.2 #28-30, 
     const over4096 = { ...underCap, tail: "😀".repeat(2049) + "x".repeat(2048) };
     expectInvalid({ ...RUN_FINISHED, payload: over4096 }, /tail exceeds 4096/);
   });
-  it("accepts the three MOA-495 2.1 reasons added alongside Jev refinement", () => {
+  it("accepts the three added reasons added alongside Jev refinement", () => {
     const { result: _drop, ...base } = RUN_FINISHED.payload;
     for (const reason of ["hung", "test-failure", "contract-violation"]) {
       const row = { ...base, contract_status: "missing", exit_code: 0, reason, tail: "x" };
@@ -948,10 +948,10 @@ describe("parseIngress — jaxflow run-ledger fields (spec §2.6, §7.2 #28-30, 
   });
 });
 
-// MOA-474 §11.1: contract_status gains "interrupted" (the not-finalized family), and
+// contract_status gains "interrupted" (the not-finalized family), and
 // run-finished gains stage/diagnostic -- optional/additive except on interrupted, where
 // they are mandatory, and cancelled, where they stay forbidden.
-describe("parseIngress — MOA-474 interrupted rows and stage/diagnostic", () => {
+describe("parseIngress — interrupted rows and stage/diagnostic", () => {
   it("run-finished accepts contract_status interrupted with stage/diagnostic", () => {
     const result = parseIngress({
       run_id: "aaaabbbbcccc", project: "demo", role: "builder", type: "run-finished",
@@ -1075,7 +1075,7 @@ describe("parseIngress — MOA-474 interrupted rows and stage/diagnostic", () =>
   });
 });
 
-describe("run-started build command (MOA-454)", () => {
+describe("run-started build command", () => {
   it("accepts a kind:build payload carrying both verify and build", () => {
     const p = { ...RUN_STARTED.payload, kind: "build", verify: "pnpm test", build: "pnpm build" };
     expect(parseIngress({ ...RUN_STARTED, payload: p }).ok).toBe(true);
@@ -1122,12 +1122,12 @@ const prOpenedEvent = (over: Record<string, unknown> = {}) => ({
   source: "deterministic",
   emitter: "wrapper",
   payload: {
-    repo: "acme/route-converter-se",
+    repo: "acme/sample-project",
     branch: "feat/x",
     sha: "a".repeat(40),
     base: "staging",
     pr_number: 7,
-    pr_url: "https://github.com/acme/route-converter-se/pull/7",
+    pr_url: "https://github.com/acme/sample-project/pull/7",
     kind: "feature",
   },
   ...over,
@@ -1254,7 +1254,7 @@ describe("merge-approved", () => {
   it("accepts optional pr_number/pr_url metadata for a PR-preset merge (spec Ledger & card growth)", () => {
     const ev = mergeEvent();
     (ev.payload as Record<string, unknown>).pr_number = 7;
-    (ev.payload as Record<string, unknown>).pr_url = "https://github.com/acme/route-converter-se/pull/7";
+    (ev.payload as Record<string, unknown>).pr_url = "https://github.com/acme/sample-project/pull/7";
     expect(parseIngress(ev).ok).toBe(true);
   });
 
@@ -1271,7 +1271,7 @@ describe("merge-approved", () => {
     expect(parseIngress(mergeEvent()).ok).toBe(true);
   });
 
-  describe("mission_id (MOA-508 audit tie)", () => {
+  describe("mission_id (audit tie)", () => {
     const withPayload = (extra: Record<string, unknown>) => {
       const ev = mergeEvent();
       Object.assign(ev.payload as Record<string, unknown>, extra);
@@ -1293,7 +1293,7 @@ describe("merge-approved", () => {
   });
 });
 
-describe("run-finished — findings (round-3 cold review F1, MOA-480)", () => {
+describe("run-finished — findings (round-3 cold review F1)", () => {
   const { head_sha: _drop, result: _dropResult, ...REVIEWER_BASE } = RUN_FINISHED.payload;
 
   it("accepts findings at the 0 and 999 boundaries on a reviewer ok run", () => {
@@ -1347,7 +1347,7 @@ describe("run-finished — findings (round-3 cold review F1, MOA-480)", () => {
     expect(parseIngress({ ...RUN_FINISHED, role: "reviewer", payload: { ...REVIEWER_BASE, verdict: "approve" } }).ok).toBe(true);
   });
 
-  it("accepts a tally string on a reviewer ok run (MOA-495 2.2)", () => {
+  it("accepts a tally string on a reviewer ok run", () => {
     const r = parseIngress({
       ...RUN_FINISHED, role: "reviewer",
       payload: { ...REVIEWER_BASE, verdict: "approve-with-changes", tally: "tally: 3 findings — 1 repeated (F2≈prev F1 0.89), 2 new" },
@@ -1382,7 +1382,7 @@ describe("run-finished — findings (round-3 cold review F1, MOA-480)", () => {
 describe("gc-removed", () => {
   const GC_REMOVED = {
     project: "demo", role: "lead" as const, type: "gc-removed" as const, source: "deterministic" as const, emitter: "wrapper" as const,
-    payload: { run_id: "aaaabbbbcccc", branch: "feat/x", worktree: "/home/rafa/repos/demo-feat-x", reason: "success", age_days: 12 },
+    payload: { run_id: "aaaabbbbcccc", branch: "feat/x", worktree: "/home/user/repos/demo-feat-x", reason: "success", age_days: 12 },
   };
 
   it("accepts the exact shape, rejects extra/missing keys and a top-level run_id, renders non-empty", () => {
@@ -1401,7 +1401,7 @@ describe("builder-launched", () => {
     source: "deterministic" as const, emitter: "wrapper" as const,
     payload: {
       launched_at: "2026-11-23T12:00:00Z",
-      worktree: "/home/rafa/repos/demo-feat-x",
+      worktree: "/home/user/repos/demo-feat-x",
       runtime_model: "opencode-go/jaxflow-builder-default",
       model: "opencode-go/deepseek-v4.1-flash",
       profile: "default" as const,
@@ -1497,7 +1497,7 @@ describe("Phase 3 — tool-used / subagent-started / subagent-stopped (spec §6,
   });
 });
 
-describe("mission-status-updated / mission-finished payloads (spec §9 — real fields, replacing MOA-487's reserved stub)", () => {
+describe("mission-status-updated / mission-finished payloads (spec §9 — real fields, replacing the earlier reserved stub)", () => {
   const STATUS_PAYLOAD = { missionId: 1, missionName: "Ship it", missionStatusLine: "phase 1 merged", milestonesDone: 1, milestonesTotal: 3 };
   const FINISH_PAYLOAD = { missionId: 1, missionName: "Ship it", outcome: "done" };
 
@@ -1549,13 +1549,13 @@ describe("mission-status-updated / mission-finished payloads (spec §9 — real 
     }
   });
 
-  it("renderMessage still returns a non-empty one-line message for both (MOA-487's own placeholder copy, untouched by this task)", () => {
+  it("renderMessage still returns a non-empty one-line message for both (the earlier placeholder copy, untouched by this task)", () => {
     expect(renderMessage({ type: "mission-status-updated", project: "_mission", role: "lead", payload: STATUS_PAYLOAD }).length).toBeGreaterThan(0);
     expect(renderMessage({ type: "mission-finished", project: "_mission", role: "lead", payload: FINISH_PAYLOAD }).length).toBeGreaterThan(0);
   });
 });
 
-describe("pr-opened (spec MOA-465 Ledger & card)", () => {
+describe("pr-opened", () => {
   it("validates a well-formed feature-PR event", () => {
     expect(parseIngress(prOpenedEvent()).ok).toBe(true);
   });

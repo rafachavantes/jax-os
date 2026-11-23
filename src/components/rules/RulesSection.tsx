@@ -169,7 +169,7 @@ export function captureApplyPreview(data: RulesData, app: AppKey): ApplyPreview 
   };
 }
 
-// MOA-504 D10: an apply preview whose agent was switched off must not stay open (the server guard
+// an apply preview whose agent was switched off must not stay open (the server guard
 // would refuse the write, but the destination and the Apply button would still be on screen).
 export function previewAfterAgents<P extends { app: AppKey }>(p: P | null, agents: Record<AppKey, boolean>): P | null {
   return p && !agents[p.app] ? null : p;
@@ -199,7 +199,7 @@ export function RulesSection() {
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<ApplyPreview | null>(null);
   const [applying, setApplying] = useState(false);
-  // MOA-504 D10: slots and destinations follow the agent switches (fail open while unknown); if the
+  // slots and destinations follow the agent switches (fail open while unknown); if the
   // open slot's agent is switched off, fall back to the global document, and an open apply preview
   // (RuleDiffModal) of that agent is closed so its destination and Apply button disappear too.
   const agents = agentsOf(useGeneralSettings().data);

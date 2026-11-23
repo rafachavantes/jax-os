@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS: GeneralSettings = {
 
 type Integrations = GeneralSettings["integrations"];
 
-// MOA-504 D5: one switch per agent. `credentialKey` is the read-only meter status field of the
+// one switch per agent. `credentialKey` is the read-only meter status field of the
 // settings route (its API field names did not change: the OpenCode GO field is still `opencodeGo`).
 const AGENT_ROWS: { flag: string; labelKey: string; agent: keyof Integrations["agents"]; credentialKey: "claude" | "codex" | "opencodeGo" }[] = [
   { flag: "agentClaude", labelKey: "general.agentClaudeLabel", agent: "claude", credentialKey: "claude" },
@@ -129,7 +129,7 @@ export function GeneralSettingsSection() {
       <div className={`${css.sectionHeading} ${css.sectionHeadingGap}`}><h2>{t("general.notificationsHeading")}</h2></div>
       {/* Spec's Notifications row: the editable integrations.webhook toggle (same as every other
           integration flag below) PLUS a read-only configured/missing status for the two env vars
-          the webhook actually needs. No URL/secret field — those live in .env, owned by MOA-498. */}
+          the webhook actually needs. No URL/secret field — those live in .env, owned by the integrations settings. */}
       <div className={css.integrationRow} data-integration="webhook">
         <span>
           {t("general.webhookLabel")}{" "}

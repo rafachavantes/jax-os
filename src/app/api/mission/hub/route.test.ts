@@ -10,7 +10,7 @@ const NO_CODEX = async () => ({ ok: false as const, ts: "2026-09-10T00:00:00.000
 const THREAD = "0191f0aa-cccc-7000-8000-00000000000c";
 const CODEX_SNAP = async () => ({
   ok: true as const, ts: "2026-09-10T00:00:00.000Z", truncated: false,
-  threads: [{ threadId: THREAD, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+  threads: [{ threadId: THREAD, cwd: "/home/user/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
 });
 const CODEX_EVENT = {
   run_id: null, project: "p1", role: "lead" as const, type: "turn-stopped" as const,
@@ -71,7 +71,7 @@ describe("GET /api/mission/hub (wiring)", () => {
         }),
         collectCodexSnapshot: async () => ({
           ok: true as const, ts: "2026-09-10T00:00:00.000Z", truncated: false, loadedThreadIds: [THREAD],
-          threads: [{ threadId: THREAD, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+          threads: [{ threadId: THREAD, cwd: "/home/user/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
         }),
         isCodexCliPresent: () => true,
         getHubData,
@@ -200,7 +200,7 @@ describe("GET /api/mission/hub (wiring)", () => {
     db.close();
   });
 
-  // MOA-502 Decision 3: a Claude-only install must not warn about an absent codex CLI.
+  // a Claude-only install must not warn about an absent codex CLI.
   it("codexAbsent skips collectCodexSnapshot entirely when the codex CLI is not on PATH", async () => {
     const db = openDb(":memory:");
     const collectCodexSnapshot = vi.fn(async () => {
@@ -331,7 +331,7 @@ describe("GET /api/mission/hub (wiring)", () => {
     db.close();
   });
 
-  it("codexEnabled false skips collectCodexSnapshot and reports absent even when the CLI is on PATH (MOA-504 D11)", async () => {
+  it("codexEnabled false skips collectCodexSnapshot and reports absent even when the CLI is on PATH", async () => {
     const db = openDb(":memory:");
     const collectCodexSnapshot = vi.fn(async () => { throw new Error("must not be called"); });
     const deps: HubRouteDeps = {

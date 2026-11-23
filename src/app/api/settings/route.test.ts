@@ -54,7 +54,7 @@ function putRequest(body: unknown, headers: Record<string, string> = {}) {
 
 const WEBHOOK_ENV_KEYS = ["NOTIFICATION_WEBHOOK_URL", "NOTIFICATION_WEBHOOK_SECRET"] as const;
 let savedWebhookEnv: Record<string, string | undefined>;
-// MOA-498 F2: the route now calls the real envFileStatus(), which resolves $JAXOS_HOME/.env.
+// the route now calls the real envFileStatus(), which resolves $JAXOS_HOME/.env.
 // Point JAXOS_HOME at a fresh empty temp dir per test so no test can ever read the owner's
 // real ~/.jax-os/.env (Global Constraints: tests never touch the real ~/.jax-os).
 let envHomeDir: string;
@@ -118,7 +118,7 @@ describe("GET /api/settings", () => {
     },
   );
 
-  it("envFileState reflects $JAXOS_HOME/.env (MOA-498 F2)", async () => {
+  it("envFileState reflects $JAXOS_HOME/.env", async () => {
     harness.readGeneralSettings.mockReturnValue({ ok: true, data: DEFAULTS });
     const dir = mkdtempSync(join(tmpdir(), "settings-route-envfile-"));
     process.env.JAXOS_HOME = dir;

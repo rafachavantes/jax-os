@@ -11,7 +11,7 @@ vi.mock("next-intl", () => ({
 
 const issue: KanbanIssue = {
   id: "i1",
-  identifier: "MOA-1",
+  identifier: "ENG-1",
   title: "Build the cockpit",
   priority: 2,
   url: "https://x",

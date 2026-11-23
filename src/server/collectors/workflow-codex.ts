@@ -1,4 +1,4 @@
-// Read-only metadata collector for the local Codex App Server (MOA-469 §4).
+// Read-only metadata collector for the local Codex App Server.
 //
 // The collector owns system access; the DB derivation consumes an injected typed snapshot.
 // Query metadata only — no transcript content, no resuming, no subscribing, no starting or
@@ -24,7 +24,7 @@ export const CODEX_LOADED_LIMIT = 100;
 export const CODEX_READ_CONCURRENCY = 4;
 const ADMITTED_SOURCES = new Set(["cli", "vscode", "appServer"]);
 
-// PATH-presence check (MOA-502 D3); the probe itself now lives in cli-presence.ts (MOA-504 D4).
+// PATH-presence check; the probe itself now lives in cli-presence.ts.
 export function isCodexCliPresent(env: NodeJS.ProcessEnv = process.env): boolean {
   return isCliPresent("codex", env);
 }
@@ -245,7 +245,7 @@ const gitProbe: GitProbe = async (args, cwd, signal) => {
   }
 };
 
-// Real resolver: canonical Git owner at the collector boundary (C3), mirroring MOA-467.
+// Real resolver: canonical Git owner at the collector boundary (C3), mirroring the project collector.
 export const resolveProjectOwner: OwnerResolver = (cwd, signal) => ownerProjectName(cwd, gitProbe, signal);
 
 // Resolve every distinct thread cwd against `deadlineAt`, the SAME absolute deadline armed for the

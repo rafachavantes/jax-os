@@ -78,9 +78,9 @@ describe("GET /api/mission/prs (§9 test 15 — gh failure isolation)", () => {
       const run = vi.fn(async (file: string, args: string[]) => {
         if (file === "git") return execFileSync(file, args, { encoding: "utf8" });
         expect(file).toBe("gh");
-        if (args[0] === "api") return "rafa\n";
+        if (args[0] === "api") return "alice\n";
         expect(args).toEqual(expect.arrayContaining(["-R", "acme/remote-repo"]));
-        expect(args).toEqual(expect.arrayContaining(["--author", "rafa"]));
+        expect(args).toEqual(expect.arrayContaining(["--author", "alice"]));
         return JSON.stringify([{ number: 27, title: "Nested PR", isDraft: false,
           url: "https://github.com/acme/remote-repo/pull/27", statusCheckRollup: [],
           updatedAt: "2026-10-29T00:00:00Z" }]);

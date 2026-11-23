@@ -74,7 +74,7 @@ describe("public helper wrappers", () => {
     });
   });
 
-  it("sync-status is no longer a recognized op (MOA-498 D5)", async () => {
+  it("sync-status is no longer a recognized op", async () => {
     await expect(runSettingsHelper("sync-status", {})).rejects.toThrow();
   });
 
@@ -83,13 +83,13 @@ describe("public helper wrappers", () => {
   });
 });
 
-describe("bws.ts is gone (MOA-498 D4)", () => {
+describe("bws.ts is gone", () => {
   it("the module file no longer exists", () => {
     expect(existsSync(new URL("bws.ts", import.meta.url))).toBe(false);
   });
 });
 
-describe("credential binding format (MOA-498 D4)", () => {
+describe("credential binding format", () => {
   let home: string;
   let savedHome: string | undefined;
 
@@ -110,7 +110,7 @@ describe("credential binding format (MOA-498 D4)", () => {
     await expect(readCredential({ kind: "env", env: "JAX_PROVIDER_FIXTURE_API_KEY" })).resolves.toBe("sk-fixture");
   });
 
-  it("readCredential rejects the retired bws-env shape (MOA-498 D4 — a deliberate breaking change)", async () => {
+  it("readCredential rejects the retired bws-env shape (a deliberate breaking change)", async () => {
     await expect(readCredential({ kind: "bws-env", env: "JAX_PROVIDER_FIXTURE_API_KEY", secret_id: "x" } as never))
       .rejects.toMatchObject({ name: "HelperRefusal", code: "agent-settings-malformed" });
   });

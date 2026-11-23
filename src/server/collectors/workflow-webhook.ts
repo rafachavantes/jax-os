@@ -44,7 +44,7 @@ export async function forwardNotification(
       body,
       signal: AbortSignal.timeout(timeoutMs),
     });
-    // MOA-498 D3: any 2xx confirms delivery — a generic receiver may legitimately answer
+    // any 2xx confirms delivery — a generic receiver may legitimately answer
     // 201/202/204, widened from the old Hermes-only exact-200 check.
     return res.status >= 200 && res.status < 300
       ? { ok: true, status: res.status }

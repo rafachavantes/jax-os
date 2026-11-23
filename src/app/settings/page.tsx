@@ -16,7 +16,7 @@ export default function SettingsPage() {
   const t = useTranslations("tools");
   const tTitle = useTranslations("title");
   const [selected, setTab] = useState<ToolsTab>("general");
-  // MOA-504 D10: fail open while the settings are unknown; a selected tab that disappears falls back to General.
+  // fail open while the settings are unknown; a selected tab that disappears falls back to General.
   const tabs = visibleToolsTabs(agentsOf(useGeneralSettings().data));
   const tab = resolveToolsTab(selected, tabs);
   if (tab !== selected) setTab(tab); // reset the stored selection too, so a returning tab does not snap back

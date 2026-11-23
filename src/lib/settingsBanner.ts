@@ -7,7 +7,7 @@ export function bannerLabelKey(result: SettingsResult): "settings.malformed" | "
   return result.error === "settings-malformed" ? "settings.malformed" : "settings.unreadable";
 }
 
-// MOA-504 D7: "none" = no agent on; "no-reviewer" = only OpenCode on (jaxflow review needs claude or
+// "none" = no agent on; "no-reviewer" = only OpenCode on (jaxflow review needs claude or
 // codex; builds still work). Unknown / not ok / no agents -> null (the existing banner covers errors).
 export function agentsBannerKind(
   result: { ok: boolean; data?: { integrations?: { agents?: GeneralSettings["integrations"]["agents"] } } } | undefined,

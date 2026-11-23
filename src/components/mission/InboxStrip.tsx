@@ -206,7 +206,7 @@ function InboxLine({ row, card, onExpand }: { row: InboxRow; card: MissionCard |
     // Cold review round 3, Finding 3: a pane whose last capsule is blocked/needs_input but has no
     // PARSED pending question (the "question" branch above) used to surface only as a needs-you
     // CARD, with nothing in the strip at all — this row is that same signal, at the same place
-    // every other "waiting on you" item lives. MOA-469 §4 adds the native Codex variant: a native
+    // every other "waiting on you" item lives. A native
     // session needing attention has no pane and therefore no tmux action.
     const respondKey = card ? attentionRespondTarget(card, row.capsuleEventId) : null;
     const respond = respondKey !== null ? (
@@ -298,7 +298,7 @@ export function InboxStrip({ mission, onExpand }: Props) {
         ? t("title", { count: needsYouCount })
         : t("titleUnknown");
 
-  // Nothing waits on Rafa and no source warning applies — the confident empty state, the stuck
+  // Nothing waits on the owner and no source warning applies — the confident empty state, the stuck
   // rail and the source/skeleton banner above all have nothing to say, so the strip itself stays
   // out of the layout instead of showing an empty card.
   // Still loading with nothing known yet: stay out of the layout too, instead of flashing an empty skeleton card.

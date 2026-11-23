@@ -22,8 +22,8 @@ describe("signBody", () => {
   });
 });
 
-describe("notificationTargetFromEnv (MOA-498 D3 — integrations.webhook gate)", () => {
-  // Isolates $JAXOS_HOME from the real ~/.jax-os so these tests never touch Rafa's real .env.
+describe("notificationTargetFromEnv (integrations.webhook gate)", () => {
+  // Isolates $JAXOS_HOME from the real ~/.jax-os so these tests never touch the owner's real .env.
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "jax-webhook-"));

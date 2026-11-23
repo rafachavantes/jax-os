@@ -626,10 +626,10 @@ describe("file and tmux mutation lifecycle", () => {
     vi.mocked(createIssue).mockImplementation(async () => {
       expect(rows()).toHaveLength(1);
       expect(JSON.parse(rows()[0].payload)).toMatchObject({ kind: "linear-issue-create", teamId: "t1", title: "New", outcome: "pending" });
-      return { id: "i9", identifier: "MOA-9" };
+      return { id: "i9", identifier: "ENG-9" };
     });
     const res = await issueCreatePost(request({ teamId: "t1", title: "New" }));
-    expect(await res.json()).toEqual({ ok: true, id: "i9", identifier: "MOA-9" });
+    expect(await res.json()).toEqual({ ok: true, id: "i9", identifier: "ENG-9" });
     expect(createIssue).toHaveBeenCalledOnce();
     expect(JSON.parse(rows()[0].payload).outcome).toBe("done");
 
@@ -658,7 +658,7 @@ describe("file and tmux mutation lifecycle", () => {
     testDb.close();
     testDb = openDb(":memory:");
     vi.mocked(createIssue).mockReset();
-    vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "MOA-9" });
+    vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "ENG-9" });
     failUpdate();
     expect(await (await issueCreatePost(request({ teamId: "t1", title: "New" }))).json()).toMatchObject({
       code: "audit-finalization-failed", effect: "applied", audit: "pending",

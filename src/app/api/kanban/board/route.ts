@@ -6,7 +6,7 @@ import { boundedString } from "@/server/inputLimits";
 
 export const dynamic = "force-dynamic";
 
-// MOA-496: gated FIRST, before any input validation or credential read — a disabled integration
+// gated FIRST, before any input validation or credential read — a disabled integration
 // never touches LINEAR_API_KEY (decision 6: disabled is its own distinguishable answer).
 export async function GET(req: Request) {
   if (!linearEnabled()) return NextResponse.json({ ok: false, error: "disabled" });

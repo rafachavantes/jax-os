@@ -271,7 +271,7 @@ describe("resolveSessionAccess — fresh native Codex card binding (M3b)", () =>
   const snapshot = (...rows: SessionAccessRow[]): SessionAccessSnapshot => ({ rows, serverIncarnation: CODEX_INC });
   const codexSnapshot = (over: Partial<Extract<CodexSnapshot, { ok: true }>> = {}): CodexSnapshot => ({
     ok: true, ts: "2026-11-19T14:00:00.000Z", truncated: false, loadedThreadIds: [CODEX_ID],
-    threads: [{ threadId: CODEX_ID, cwd: "/home/rafa/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+    threads: [{ threadId: CODEX_ID, cwd: "/home/user/repos/p1", owner: "p1", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
     ...over,
   });
   const membership = (ids: string[] = [CODEX_ID]): ReturnType<typeof getCodexSessions> => ({
@@ -312,7 +312,7 @@ describe("resolveSessionAccess — fresh native Codex card binding (M3b)", () =>
 
     const foreignOwner = deps(snapshot(codexRow()), [pane()], undefined, codexDeps({
       codexSnapshot: async () => codexSnapshot({
-        threads: [{ threadId: CODEX_ID, cwd: "/home/rafa/repos/p2", owner: "p2", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
+        threads: [{ threadId: CODEX_ID, cwd: "/home/user/repos/p2", owner: "p2", source: "cli", status: "idle", activeFlags: [], canAcceptDirectInput: true }],
       }),
     }));
     await expect(resolveSessionAccess(codexSelector, undefined, foreignOwner)).rejects.toMatchObject({ code: "unavailable" });

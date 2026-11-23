@@ -93,7 +93,7 @@ describe("parseSettings (spec schema table + Object handling + Error behaviour)"
     expect(parseSettings({ vaultPath: null }).ok).toBe(true);
   });
 
-  it("v1 fixture (legacy `subscriptions`) migrates into agents; the parsed result never carries `subscriptions` (MOA-504 D2/D3)", () => {
+  it("v1 fixture (legacy `subscriptions`) migrates into agents; the parsed result never carries `subscriptions`", () => {
     const parsed = parseSettings(JSON.parse(readFileSync(FIXTURE, "utf8")));
     expect(parsed).toEqual({ ok: true, data: EXPECTED });
     expect(JSON.stringify(parsed)).not.toContain("subscriptions");
@@ -247,7 +247,7 @@ describe("writeGeneralSettings — atomic write + mutations audit (spec Write pa
   });
 });
 
-describe("seedAgentsIfFirstRun (MOA-504 D4)", () => {
+describe("seedAgentsIfFirstRun", () => {
   const has = (on: string[]) => (name: string) => on.includes(name);
   const auditRows = (db: ReturnType<typeof openDb>) =>
     db.prepare("SELECT kind FROM mutations WHERE kind = 'general-settings-write'").all();

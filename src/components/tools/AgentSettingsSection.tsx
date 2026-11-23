@@ -408,7 +408,7 @@ function Reviewers({ agents }: { agents: Agents }) {
     <section className={`${css.card} ${css.reviewers}`}>
       {leads.map((lead) => {
         const opposite = lead === "claude" ? "codex" : "claude";
-        // MOA-504 D10: the opposite agent reviews when it is on; otherwise the lead reviews itself ("fallback").
+        // the opposite agent reviews when it is on; otherwise the lead reviews itself ("fallback").
         const reviewer = agents[opposite] ? opposite : lead;
         const fallback = reviewer === lead;
         const leadLabel = lead === "claude" ? "Claude" : "Codex";

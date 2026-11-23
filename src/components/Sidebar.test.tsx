@@ -13,7 +13,7 @@ const OLD_MARK = "rc-" + "mark"; // built so the retired name never appears lite
 const render = (mode: "expanded" | "collapsed") => renderToStaticMarkup(createElement(Sidebar, { mode, onToggle: () => {} }));
 const imgs = (html: string) => html.match(/<img\b/g)?.length ?? 0;
 
-describe("Sidebar brand surfaces (MOA-511)", () => {
+describe("Sidebar brand surfaces", () => {
   it("expanded: full lockup pair in the header, Relay pair in the footer, fixed dimensions, no old chrome", () => {
     const html = render("expanded");
     expect(imgs(html)).toBe(4); // lockup dark+light, mark dark+light

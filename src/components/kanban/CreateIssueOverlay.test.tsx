@@ -20,7 +20,7 @@ import { CreateIssueOverlay } from "./CreateIssueOverlay";
 
 const states = [{ id: "s1", name: "Todo", color: "#e2e2e2", position: 1, type: "unstarted" }];
 const issues = [
-  { id: "i1", identifier: "MOA-1", title: "t", priority: 0, url: "", stateId: "s1",
+  { id: "i1", identifier: "ENG-1", title: "t", priority: 0, url: "", stateId: "s1",
     createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
     project: "Jax OS", projectId: "p1", labels: [] },
 ];

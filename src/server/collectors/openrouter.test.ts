@@ -322,7 +322,7 @@ describe("composeCompare production composition", () => {
     expect(fallback).toEqual({ credential: { token: "sk-native", identity: "native", revision: "absent" } });
   });
 
-  it("keys an env-kind credential by its env name and a SHA-256 of the read value (MOA-498 D4)", async () => {
+  it("keys an env-kind credential by its env name and a SHA-256 of the read value", async () => {
     const { composition, read, compare } = compOf([conn({ credential: { kind: "env", env: "JAX_PROVIDER_CONN_A_API_KEY" } })]);
     read.mockResolvedValue("secret-value-1");
     await composeCompare(composition, "conn-a", "m/1", false);

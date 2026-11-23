@@ -122,7 +122,7 @@ const FAILED_RUN: MissionCard = {
   },
 };
 
-describe("ProjectCard — transport-aware session rows (MOA-469 §4)", () => {
+describe("ProjectCard — transport-aware session rows", () => {
   it("a Claude pane row retains its tmux action", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: PANE_ROW }));
     expect(html).toContain('href="/tmux?kind=card');
@@ -234,7 +234,7 @@ describe("ProjectCard — compact-face SessionLines (round-3 review F1/F2/T3)", 
   // state text is opaque to a renderToStaticMarkup assertion here.
 });
 
-describe("ProjectCard — last-run line and timeline (spec §12.4, MOA-474)", () => {
+describe("ProjectCard — last-run line and timeline (spec §12.4)", () => {
   it("renders the last-run line with its tone class and diagnostic verbatim, only when no run is active", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: FAILED_RUN }));
     expect(html).toContain("lastRun.buildFailed");
@@ -327,7 +327,7 @@ describe("ProjectCard — border state and stage track (Decisions 9/10)", () => 
 
   it("shows no absolute filesystem path anywhere", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: base }));
-    expect(html).not.toContain("/home/rafa/repos");
+    expect(html).not.toContain("/home/user/repos");
   });
 });
 
@@ -804,7 +804,7 @@ describe("Phase 3 — heartbeat, ultima acao, subagentCount, run links, hide/pin
     // reaches the HTML), so the line is asserted by its own key — the same convention every
     // other test in this file uses.
     expect(html).toContain("expanded.lastActionLine");
-    // MOA-486 round 2: no heartbeat sparkline on mobile at all.
+    // no heartbeat sparkline on mobile at all.
     expect(html).toContain("md:flex");
   });
 
@@ -815,10 +815,10 @@ describe("Phase 3 — heartbeat, ultima acao, subagentCount, run links, hide/pin
     expect(html).not.toContain("expanded.lastActionLine");
   });
 
-  // MOA-486 round 2 (Rafa's phone review): a card with no heartbeat data (every minute bucket
+  // a card with no heartbeat data (every minute bucket
   // at 0, e.g. `base`) renders NOTHING for the heartbeat block — no reserved height, no
   // near-zero-height sparkline reading as a dashed line.
-  it("MOA-486: renders no heartbeat block at all when card.heartbeat has no data", () => {
+  it("renders no heartbeat block at all when card.heartbeat has no data", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: base }));
     expect(html).not.toContain('data-testid="heartbeat"');
   });
@@ -902,10 +902,10 @@ describe("Phase 3 — heartbeat, ultima acao, subagentCount, run links, hide/pin
     expect(rels).toContain("proj/.local/docs/specs/x-spec.md");
   });
 
-  // MOA-486 round 2 (Rafa's phone review): outcome · model · report link all sit on one flex
+  // outcome · model · report link all sit on one flex
   // line with gap-x-2 (not gap-2, which also adds row-gap when the line does wrap) — asserts
   // the container class rather than a rendered width, since renderToStaticMarkup has no layout.
-  it("MOA-486: the result line container uses gap-x-2", () => {
+  it("the result line container uses gap-x-2", () => {
     const run = {
       runId: "b1", role: "builder" as const, contractStatus: "ok" as const, stage: null, diagnostic: null,
       finishedAt: null, headSha: null, labelKey: "reviewOk" as const, tone: "success" as const, findings: null,
@@ -921,8 +921,8 @@ describe("Phase 3 — heartbeat, ultima acao, subagentCount, run links, hide/pin
 
   // Item 1 (mobile hide/pin UX): the header's two icon buttons are now one "···" trigger
   // that opens a menu carrying both items, state-dependent labels only.
-  // MOA-486 round 2: the trigger drops its border and shrinks to a 32px icon-only box
-  // (Rafa's phone review) — no more bordered 44px target.
+  // the trigger drops its border and shrinks to a 32px icon-only box
+  // — no more bordered 44px target.
   it("the header renders a single more-options trigger, 32px, no border", () => {
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card: base }));
     expect(html).toContain('aria-label="actions.more"');
@@ -982,12 +982,12 @@ describe("Phase 3 — heartbeat, ultima acao, subagentCount, run links, hide/pin
     expect(prefsButtonIndex).toBeGreaterThanOrEqual(toggleClose);
   });
 
-  // MOA-486 round 2 (Rafa's phone review, replaces the round-1 dedicated status row): the "···"
+  // the "···"
   // menu trigger + chevron move back INTO header row 1 (the toggle's own row), at its right
   // edge; the status pill moves onto row 2, inline with the stage word/dots (data-testid=
   // "card-stage-row"). Assert both containers hold what they should — the pill shares the stage
   // row, the menu trigger stays in the header row.
-  it("MOA-486: the status pill is inline with the stage word/dots; the menu trigger stays in the header row", () => {
+  it("the status pill is inline with the stage word/dots; the menu trigger stays in the header row", () => {
     const card = { ...base, name: "distinctive-project-name" };
     const html = renderToStaticMarkup(createElement(ProjectCard, { expanded: true, onToggle: () => {}, card }));
     const headerRow = sliceBalancedDiv(html, 'data-testid="card-header-row"');
@@ -1389,14 +1389,14 @@ describe("ProjectCard — dispatch form: one row + collapsed extras (spec item 8
 
 
 describe("PrSummary — M2 factual provider fields (spec AC10)", () => {
-  const base = { number: 12, ci: "green" as const, author: "rafa", reviewDecision: "APPROVED", isDraft: false, mergeStateStatus: "CLEAN" };
+  const base = { number: 12, ci: "green" as const, author: "alice", reviewDecision: "APPROVED", isDraft: false, mergeStateStatus: "CLEAN" };
   const render = (newest: Record<string, unknown> | null) => renderToStaticMarkup(createElement(PrSummary, {
     pr: { status: "ok", count: 1, ci: "green" as const, truncated: false, newest: newest as never }, githubEnabled: true,
   }));
 
   it("shows author, review and merge facts for a known PR", () => {
     const html = render(base);
-    expect(html).toContain("@rafa");
+    expect(html).toContain("@alice");
     expect(html).toContain("prFields.reviewApproved");
     expect(html).toContain("prFields.mergeCLEAN");
     expect(html).not.toContain("prFields.draft");

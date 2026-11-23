@@ -51,7 +51,7 @@ describe("UsageRingUnavailable", () => {
   });
 });
 
-// MOA-486 follow-up: one dialog for all three providers — a single tap on any ring
+// one dialog for all three providers — a single tap on any ring
 // shows the full picture (every window of every provider, plus an unavailable row).
 describe("ProviderUsageModal", () => {
   const providers = [

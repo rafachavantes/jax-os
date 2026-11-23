@@ -113,7 +113,7 @@ describe("agent-settings route", () => {
     expect(d.snapshot.mock.calls[0]).toEqual([]);
   });
 
-  it("GET response no longer has a health field (MOA-498 D5)", async () => {
+  it("GET response no longer has a health field", async () => {
     const res = await handleGet(new Request("http://127.0.0.1/api/agent-settings"), deps());
     const json = await res.json();
     expect(json.data).not.toHaveProperty("health");
@@ -269,7 +269,7 @@ describe("agent-settings route", () => {
     expect(JSON.parse(rows()[0].payload)).toMatchObject({ kind: "agent-settings-reconcile", action: "reconcile" });
   });
 
-  it("GET no longer reads provider-credential mutations (MOA-498 D4 — the async BWS reconciliation this fed is gone)", async () => {
+  it("GET no longer reads provider-credential mutations (the async BWS reconciliation this fed is gone)", async () => {
     const mod = await import("node:fs");
     expect(mod.existsSync(new URL("../../../server/db/provider-operations.ts", import.meta.url))).toBe(false);
   });

@@ -241,7 +241,7 @@ describe("bounded status reads", () => {
   });
 });
 
-// ---- MOA-467 Task 4: linked worktrees are filtered out before their status is parsed,
+// linked worktrees are filtered out before their status is parsed,
 // via git's own administrative metadata (gitdir/commondir shape), never folder names ----
 
 function runGit(cwd: string, ...args: string[]): void {
@@ -265,10 +265,10 @@ function addWorktree(root: string, control: string, branch: string, name: string
   return path;
 }
 
-describe("linked worktree metadata parsing (MOA-467 Task 4)", () => {
+describe("linked worktree metadata parsing", () => {
   it("parses the gitdir ref line out of a linked worktree's .git file", () => {
-    expect(parseGitdirRef("gitdir: /home/rafa/repos/demo/.git/worktrees/w1\n"))
-      .toBe("/home/rafa/repos/demo/.git/worktrees/w1");
+    expect(parseGitdirRef("gitdir: /home/user/repos/demo/.git/worktrees/w1\n"))
+      .toBe("/home/user/repos/demo/.git/worktrees/w1");
     expect(parseGitdirRef("gitdir: /path with space/.git/worktrees/w2\r\n"))
       .toBe("/path with space/.git/worktrees/w2");
   });
@@ -281,7 +281,7 @@ describe("linked worktree metadata parsing (MOA-467 Task 4)", () => {
 
   it("parses a commondir path (relative or absolute), ignoring blank lines", () => {
     expect(parseCommondir("../..\n")).toBe("../..");
-    expect(parseCommondir("/home/rafa/repos/demo/.git\n")).toBe("/home/rafa/repos/demo/.git");
+    expect(parseCommondir("/home/user/repos/demo/.git\n")).toBe("/home/user/repos/demo/.git");
     expect(parseCommondir("../../..\r\n")).toBe("../../..");
     expect(parseCommondir("")).toBeNull();
     expect(parseCommondir("\n\n")).toBeNull();
@@ -291,20 +291,20 @@ describe("linked worktree metadata parsing (MOA-467 Task 4)", () => {
     // git's own shapes: the admin dir lives at <common-dir>/worktrees/<name>, and its
     // commondir file (relative to the gitdir itself) resolves back to <common-dir> --
     // for an ordinary control repo AND for one using --separate-git-dir.
-    expect(isLinkedWorktreeGitdir("/home/rafa/repos/demo/.git/worktrees/w1", "../..")).toBe(true);
-    expect(isLinkedWorktreeGitdir("/home/rafa/.cache/git/sep/worktrees/w1", "../..")).toBe(true);
-    expect(isLinkedWorktreeGitdir("/home/rafa/repos/demo/.git/worktrees/w1",
-      "/home/rafa/repos/demo/.git")).toBe(true);
+    expect(isLinkedWorktreeGitdir("/home/user/repos/demo/.git/worktrees/w1", "../..")).toBe(true);
+    expect(isLinkedWorktreeGitdir("/home/user/.cache/git/sep/worktrees/w1", "../..")).toBe(true);
+    expect(isLinkedWorktreeGitdir("/home/user/repos/demo/.git/worktrees/w1",
+      "/home/user/repos/demo/.git")).toBe(true);
     // a lookalike path with no commondir, or one pointing elsewhere, is not linked
-    expect(isLinkedWorktreeGitdir("/home/rafa/repos/demo/.git/worktrees/w1", null)).toBe(false);
-    expect(isLinkedWorktreeGitdir("/home/rafa/repos/demo/.git/worktrees/w1", "../../..")).toBe(false);
+    expect(isLinkedWorktreeGitdir("/home/user/repos/demo/.git/worktrees/w1", null)).toBe(false);
+    expect(isLinkedWorktreeGitdir("/home/user/repos/demo/.git/worktrees/w1", "../../..")).toBe(false);
     // a gitdir that is not inside a `worktrees` admin dir is never linked
-    expect(isLinkedWorktreeGitdir("/home/rafa/repos/demo/.git", "../..")).toBe(false);
-    expect(isLinkedWorktreeGitdir("/home/rafa/.cache/git/separate", "../..")).toBe(false);
+    expect(isLinkedWorktreeGitdir("/home/user/repos/demo/.git", "../..")).toBe(false);
+    expect(isLinkedWorktreeGitdir("/home/user/.cache/git/separate", "../..")).toBe(false);
   });
 });
 
-describe("getProjects excludes linked worktrees (MOA-467 Task 4)", () => {
+describe("getProjects excludes linked worktrees", () => {
   let root: string;
   afterEach(() => {
     if (root) rmSync(root, { recursive: true, force: true });
@@ -671,8 +671,8 @@ describe("nested project discovery", () => {
   });
 });
 
-// ---- MOA-469 C3: canonical owner resolution (mirrors the hook's _git_owner) ----
-describe("canonicalOwner / ownerProjectName (MOA-469 C3)", () => {
+// canonical owner resolution (mirrors the hook's _git_owner) ----
+describe("canonicalOwner / ownerProjectName", () => {
   let root: string;
   afterEach(() => {
     if (root) rmSync(root, { recursive: true, force: true });

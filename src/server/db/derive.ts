@@ -14,7 +14,7 @@ export const paneAgentFilter = (alias = ""): string => `${alias}emitter NOT IN (
 
 /**
  * MOVED VERBATIM from workflows.ts (it was at :49-74). Not rewritten — the delivery decision in
- * insertEvent and rung 2 of the ladder must answer "does Rafa still owe an answer?" identically,
+ * insertEvent and rung 2 of the ladder must answer "does the owner still owe an answer?" identically,
  * and two definitions would eventually disagree. workflows.ts re-exports it, so every existing
  * importer and its tests keep working untouched.
  */
@@ -23,15 +23,15 @@ export function hasPendingQuestion(db: Database.Database, ref: PaneRef): boolean
 }
 
 /**
- * "Does Rafa still owe an answer on this pane?"
+ * "Does the owner still owe an answer on this pane?"
  *
  * `deliveredOnly` is the ONE difference between the two callers, and it is a scope, not a
  * second definition of "unresolved":
  *  - the forwarding/suppression decision (insertEvent) cares only about questions that were
- *    actually SENT to Rafa, so it passes true;
+ *    actually SENT to the owner, so it passes true;
  *  - rung 2 of the ladder cares whether an answer is owed AT ALL. A question asked while AFK
  *    is off is stored `delivery: "local"` and never forwarded, but it is still sitting on
- *    Rafa's screen unanswered. Passing true here would make rung 2 nearly dead in normal use.
+ *    the owner's screen unanswered. Passing true here would make rung 2 nearly dead in normal use.
  */
 export function hasOpenQuestion(db: Database.Database, ref: PaneRef, deliveredOnly: boolean): boolean {
   const key = paneKey(ref.pane, ref.tmuxIncarnation);
@@ -92,7 +92,7 @@ export function deriveCapsule(
     ? paneKey(ev.pane, ev.tmux_incarnation)
     : null;
   if (key) {
-    // Rung 2 — Rafa owes an answer. Same "unresolved" definition the delivery decision uses,
+    // Rung 2 — the owner owes an answer. Same "unresolved" definition the delivery decision uses,
     // WITHOUT its delivery scope: an unanswered question counts whether or not it was forwarded.
     if (hasOpenQuestion(db, { pane: ev.pane!, tmuxIncarnation: ev.tmux_incarnation! }, false)) {
       return det("needs_input", "question_open");
@@ -116,7 +116,7 @@ export function deriveCapsule(
   }
 
   // Rungs 4 and 5 — pair this turn with the jaxflow run its own session dispatched.
-  // Identity proven by Task 0 (MOA-469): codex-stop pairs too, but Codex runs are constrained to
+  // Identity proven by Task 0: codex-stop pairs too, but Codex runs are constrained to
   // caller=codex and the same project — a legacy run with a missing caller is never proof. Claude
   // keeps its legacy pairing (missing caller still counts) but never pairs with a codex-dispatched
   // run: a UUID-shaped harness_session on a Claude emitter must not collide with a Codex identity.
@@ -184,7 +184,7 @@ export function deriveCapsule(
   // Rung 7 — the leftover guess, queued for the poller, UNLESS integrations.classifier is off:
   // a live, uncached read (no consumer here is high-volume enough to need caching) — {ok:false}
   // (missing/malformed settings.json) takes the same off path, the safe no-egress default
-  // (spec MOA-502 Decision 1; the malformed-settings warning itself is MOA-496's own row).
+  // (spec Decision 1; the malformed-settings warning itself is a separate row).
   const settings = readSettings();
   const classifierOn = settings.ok && settings.data.integrations.classifier;
   if (!classifierOn) {

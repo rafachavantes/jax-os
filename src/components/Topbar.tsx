@@ -45,7 +45,7 @@ export function pillReadinessOf(projects: { ok: boolean } | undefined, hub: { ok
   return { kind: "ready" };
 }
 
-// MOA-504 D6: a meter slot exists only for an agent that is on AND has a credential. "disabled" (agent
+// a meter slot exists only for an agent that is on AND has a credential. "disabled" (agent
 // off) and "missing-credentials" omit it; any other failure keeps the placeholder (a credential
 // exists, the meter is just down); no result yet (payload loading) renders nothing.
 export function meterShown(result: ProviderResult | undefined): boolean {
@@ -151,7 +151,7 @@ export function Topbar({
       )}
 
       <div className="ml-auto flex items-center gap-4">
-        {/* MOA-504 D6: only enabled agents with a credential get a slot. */}
+        {/* only enabled agents with a credential get a slot. */}
         {shownProviders.map((p) => {
           const result = payload?.[p.key];
           const w = result?.ok ? highestWindow(result.data, tTokens) : null;

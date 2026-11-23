@@ -2,17 +2,17 @@ import { describe, expect, test } from "vitest";
 import { parseWorktreePorcelain, collectRetainedWorktrees, retainedWorktreeSessions, type LedgerRow } from "./worktrees";
 
 const PORCELAIN =
-  "worktree /home/rafa/repos/demo\nHEAD " + "a".repeat(40) + "\nbranch refs/heads/main\n\n" +
-  "worktree /home/rafa/repos/demo-feat-x\nHEAD " + "b".repeat(40) + "\nbranch refs/heads/feat/x\n\n" +
-  "worktree /home/rafa/repos/demo-detached\nHEAD " + "c".repeat(40) + "\ndetached\n";
+  "worktree /home/user/repos/demo\nHEAD " + "a".repeat(40) + "\nbranch refs/heads/main\n\n" +
+  "worktree /home/user/repos/demo-feat-x\nHEAD " + "b".repeat(40) + "\nbranch refs/heads/feat/x\n\n" +
+  "worktree /home/user/repos/demo-detached\nHEAD " + "c".repeat(40) + "\ndetached\n";
 
 describe("parseWorktreePorcelain", () => {
   test("parses branch, control repo, and detached entries; empty input yields no entries", () => {
     const entries = parseWorktreePorcelain(PORCELAIN);
     expect(entries).toEqual([
-      { path: "/home/rafa/repos/demo", branch: "main", detached: false },
-      { path: "/home/rafa/repos/demo-feat-x", branch: "feat/x", detached: false },
-      { path: "/home/rafa/repos/demo-detached", branch: null, detached: true },
+      { path: "/home/user/repos/demo", branch: "main", detached: false },
+      { path: "/home/user/repos/demo-feat-x", branch: "feat/x", detached: false },
+      { path: "/home/user/repos/demo-detached", branch: null, detached: true },
     ]);
     expect(parseWorktreePorcelain("")).toEqual([]);
   });
@@ -23,7 +23,7 @@ function row(overrides: Partial<LedgerRow>): LedgerRow {
 }
 
 describe("collectRetainedWorktrees", () => {
-  const opts = { now: "2026-09-19T00:00:00Z", thresholdDays: 7, controlRepoPath: "/home/rafa/repos/demo" };
+  const opts = { now: "2026-09-19T00:00:00Z", thresholdDays: 7, controlRepoPath: "/home/user/repos/demo" };
 
   test("counts a registered, finished, old-enough build; excludes control repo, unowned, open, and unregistered branches", () => {
     expect(collectRetainedWorktrees(PORCELAIN, [row({})], opts)).toEqual({ ok: true, count: 1, oldestAgeDays: 18 });
@@ -55,10 +55,10 @@ describe("collectRetainedWorktrees", () => {
 });
 
 describe("retainedWorktreeSessions", () => {
-  const opts = { now: "2026-09-19T00:00:00Z", thresholdDays: 7, controlRepoPath: "/home/rafa/repos/demo" };
-  const TWO = "worktree /home/rafa/repos/demo\nHEAD " + "a".repeat(40) + "\nbranch refs/heads/main\n\n" +
-    "worktree /home/rafa/repos/demo-feat-x\nHEAD " + "b".repeat(40) + "\nbranch refs/heads/feat/x\n\n" +
-    "worktree /home/rafa/repos/demo-feat-y\nHEAD " + "c".repeat(40) + "\nbranch refs/heads/feat/y\n";
+  const opts = { now: "2026-09-19T00:00:00Z", thresholdDays: 7, controlRepoPath: "/home/user/repos/demo" };
+  const TWO = "worktree /home/user/repos/demo\nHEAD " + "a".repeat(40) + "\nbranch refs/heads/main\n\n" +
+    "worktree /home/user/repos/demo-feat-x\nHEAD " + "b".repeat(40) + "\nbranch refs/heads/feat/x\n\n" +
+    "worktree /home/user/repos/demo-feat-y\nHEAD " + "c".repeat(40) + "\nbranch refs/heads/feat/y\n";
   const A = "aaaaaaaa-0000-4000-8000-00000000000a";
 
   test("attributes each retained build to its run's recorded session", () => {

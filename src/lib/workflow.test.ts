@@ -5,7 +5,7 @@ import {
 } from "./workflow";
 
 describe("Phase 2 shared vocabulary", () => {
-  it("CAPSULE_RULES includes classifier-off (spec MOA-502 Decision 1)", () => {
+  it("CAPSULE_RULES includes classifier-off", () => {
     expect(CAPSULE_RULES).toContain("classifier-off");
   });
 
@@ -59,7 +59,7 @@ describe("Phase 2 shared vocabulary", () => {
   });
 });
 
-describe("FORWARDABLE_EVENT_TYPES / DEFAULT_FORWARD_TYPES (MOA-487 §5 Decisions 2/4/5)", () => {
+describe("FORWARDABLE_EVENT_TYPES / DEFAULT_FORWARD_TYPES", () => {
   it("EVENT_TYPES gained the two reserved mission types, each with a forward-policy matrix row", () => {
     expect(EVENT_TYPES).toContain("mission-status-updated");
     expect(EVENT_TYPES).toContain("mission-finished");
@@ -116,7 +116,7 @@ describe("mission field bounds and validators (spec §6a)", () => {
   });
 });
 
-describe("pr-opened hub event type (spec MOA-465 Ledger & card)", () => {
+describe("pr-opened hub event type", () => {
   it("EVENT_TYPES/EVENT_MATRIX gained pr-opened as a forward-policy, non-run-scoped, lead-only event", () => {
     expect(EVENT_TYPES).toContain("pr-opened");
     expect(EVENT_MATRIX["pr-opened"]).toEqual({ emitters: ["wrapper"], roles: ["lead"], runScoped: false, policy: "forward" });
@@ -127,8 +127,8 @@ describe("pr-opened hub event type (spec MOA-465 Ledger & card)", () => {
   });
 
   it("GITHUB_PR_URL_RE matches only a github.com pull URL with a numeric PR number", () => {
-    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/route-converter-se/pull/123")).toBe(true);
-    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/route-converter-se/pull/0")).toBe(false);
+    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/sample-project/pull/123")).toBe(true);
+    expect(GITHUB_PR_URL_RE.test("https://github.com/acme/sample-project/pull/0")).toBe(false);
     expect(GITHUB_PR_URL_RE.test("https://gitlab.com/acme/x/pull/1")).toBe(false);
     expect(GITHUB_PR_URL_RE.test("https://github.com/acme/x/issues/1")).toBe(false);
     expect(GITHUB_PR_URL_RE.test("not a url")).toBe(false);

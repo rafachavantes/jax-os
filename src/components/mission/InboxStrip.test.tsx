@@ -45,7 +45,7 @@ describe("InboxStrip — hidden when nothing waits (mobile AFK-move follow-up)",
   });
 });
 
-describe("InboxStrip — transport-aware attention rows (MOA-469 §4)", () => {
+describe("InboxStrip — transport-aware attention rows", () => {
   it("a native Codex attention row is visible and has no tmux action", () => {
     const html = renderToStaticMarkup(createElement(InboxStrip, {
       mission: missionOf([

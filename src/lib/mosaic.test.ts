@@ -85,7 +85,7 @@ describe("M3b native Codex terminal in generic Mosaic", () => {
 });
 
 describe("selectSpotlightPane (Sessions mosaic spec §8 Decision 16, round-2 F3)", () => {
-  it("returns null when no pane needs Rafa", () => {
+  it("returns null when no pane needs the owner", () => {
     const groups: MosaicGroup[] = [{ dir: "p1", name: "p1", panes: [pane({ state: "working" })] }];
     expect(selectSpotlightPane(groups)).toBeNull();
   });

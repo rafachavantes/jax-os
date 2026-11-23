@@ -10,11 +10,11 @@ const HEX_RE = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})
 const FN_DECL_RE = /function\s+(\w+)\s*\(/;
 
 // Paths this rule does not govern:
-// - styles/ds/**: the token DEFINITIONS themselves (spec MOA-499), not a consumer of them.
+// - styles/ds/**: the token DEFINITIONS themselves, not a consumer of them.
 // - *.test.ts / *.test.tsx: fixture data mimicking an EXTERNAL system's own color field
 //   (Linear issue/label colors) -- never DS-token-governed UI. This is this plan's OWN 4th
 //   exclusion, beyond the spec's literal 3-item list (see Global Constraints) -- flagged for
-//   Rafa, not silently invented.
+//   the owner, not silently invented.
 function isExcludedPath(relPath: string): boolean {
   return relPath.startsWith("styles/ds/") || /\.test\.tsx?$/.test(relPath);
 }
@@ -58,7 +58,7 @@ function findUnscopedHex(root: string): string[] {
   return violations;
 }
 
-describe("no unscoped raw hex in src/ (spec MOA-499 Raw-hex scope)", () => {
+describe("no unscoped raw hex in src/", () => {
   it("the live tree has zero unscoped hex literals today", () => {
     expect(findUnscopedHex(SRC_ROOT)).toEqual([]);
   });

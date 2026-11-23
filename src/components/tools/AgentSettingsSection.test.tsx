@@ -231,7 +231,7 @@ describe("Agent model inputs and reviewer mapping", () => {
   });
 });
 
-describe("Agents tab follows the agent switches (MOA-504 D10)", () => {
+describe("Agents tab follows the agent switches", () => {
   const A = (claude: boolean, codex: boolean, opencode: boolean) => ({ claude, codex, opencode });
 
   it("OpenCode off: the builder section is replaced by one muted line", () => {

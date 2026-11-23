@@ -13,7 +13,7 @@ function ringColor(pct: number): string {
   return pct >= 90 ? "stroke-danger" : pct >= 70 ? "stroke-warning" : "stroke-accent";
 }
 
-// MOA-486 follow-up: the percent moved INSIDE the ring (an absolutely positioned
+// the percent moved INSIDE the ring (an absolutely positioned
 // overlay, not rotated with the svg) so it reads on a phone with no hover, and the
 // ring itself is now the tap target that opens the all-providers details modal.
 // Follow-up (ring labels): a short provider name (`shortName`, brand name, untranslated)
@@ -71,7 +71,7 @@ export function UsageRingUnavailable({ label, shortName, caption, onOpenDetails 
   );
 }
 
-// One dialog for ALL providers (Rafa's spec: a single tap shows the full picture,
+// One dialog for ALL providers (a single tap shows the full picture,
 // not a per-ring modal). Close on backdrop click, Escape and a close button; `title`
 // stays on each ring for desktop hover, this is the tap/click path.
 export function ProviderUsageModal({

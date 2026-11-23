@@ -1,4 +1,4 @@
-// MOA-497 Build A: JAXOS_HOME resolution -- process env, read once per
+// JAXOS_HOME resolution -- process env, read once per
 // language, NOT file-backed config (settings.ts is that). See scripts/jaxflow_env.py for
 // the Python twin; the two MUST agree on every default.
 import { homedir } from "node:os";

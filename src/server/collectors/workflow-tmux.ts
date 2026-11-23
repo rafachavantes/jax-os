@@ -118,7 +118,7 @@ function parseNativeLiveLine(line: string): NativeLiveRow | null {
   return { pane, pid, start, panePid, dead, command, session, title };
 }
 
-// Runtime association for a live pane's CURRENT process (MOA-469 §4): positively-Codex commands are
+// Runtime association for a live pane's CURRENT process: positively-Codex commands are
 // runtime evidence; a generic shell or unknown command is NOT proof of a runtime switch — callers
 // flag uncertainty rather than assigning a different session.
 export function isCodexCommand(cmd: string): boolean {

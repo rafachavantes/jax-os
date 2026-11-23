@@ -370,14 +370,14 @@ describe("legacy mutation input caps", () => {
   describe("kanban/create", () => {
     const valid = { teamId: "t1", title: "New issue" };
     it("creates with only the required fields and audits once", async () => {
-      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "MOA-9" });
+      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "ENG-9" });
       const res = await issueCreatePost(request(valid));
-      expect(await res.json()).toEqual({ ok: true, id: "i9", identifier: "MOA-9" });
+      expect(await res.json()).toEqual({ ok: true, id: "i9", identifier: "ENG-9" });
       expect(createIssue).toHaveBeenCalledWith(valid);
       expect(mutationCount()).toBe(1);
     });
     it("passes every optional field through untouched", async () => {
-      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "MOA-9" });
+      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "ENG-9" });
       const full = { ...valid, description: "d", projectId: "p1", stateId: "s1", priority: 2, assigneeId: "u1", labelIds: ["l1"] };
       await issueCreatePost(request(full));
       expect(createIssue).toHaveBeenCalledWith(full);
@@ -389,7 +389,7 @@ describe("legacy mutation input caps", () => {
     it("rejects an empty title and a 256-char title, accepts 255", async () => {
       await refused(await issueCreatePost(request({ ...valid, title: "" })), createIssue);
       await refused(await issueCreatePost(request({ ...valid, title: "a".repeat(256) })), createIssue);
-      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "MOA-9" });
+      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "ENG-9" });
       expect((await (await issueCreatePost(request({ ...valid, title: "a".repeat(255) }))).json()).ok).toBe(true);
     });
     it("rejects an over-cap description, bad projectId/stateId/assigneeId types, out-of-range priority, and bad labelIds", async () => {
@@ -402,7 +402,7 @@ describe("legacy mutation input caps", () => {
       await refused(await issueCreatePost(request({ ...valid, labelIds: [...Array.from({ length: 100 }, (_, i) => `id${i}`), "x"] })), createIssue);
     });
     it("accepts null projectId/assigneeId (clears, does not reject)", async () => {
-      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "MOA-9" });
+      vi.mocked(createIssue).mockResolvedValue({ id: "i9", identifier: "ENG-9" });
       const res = await issueCreatePost(request({ ...valid, projectId: null, assigneeId: null }));
       expect((await res.json()).ok).toBe(true);
       expect(createIssue).toHaveBeenCalledWith({ ...valid, projectId: null, assigneeId: null });

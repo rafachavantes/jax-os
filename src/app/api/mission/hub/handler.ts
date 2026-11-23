@@ -23,7 +23,7 @@ export type HubRouteDeps = {
   // uses. systemDeps below wires the real, filesystem-backed implementations.
   readChildLogTail?: ChildLogTailReader;
   relToRepos?: RelToRepos;
-  codexEnabled?: () => boolean; // MOA-504 D11: omitted = enabled (existing literals still compile)
+  codexEnabled?: () => boolean; // omitted = enabled (existing literals still compile)
   // Session cards (spec §9): optional, same contract — omitted means "no display names".
   readSessionNames?: () => ReadonlyMap<string, string>;
 };

@@ -83,7 +83,7 @@ describe("GET /api/kanban/issue", () => {
   it("maps a missing issue to the stable not-found envelope", async () => {
     harness.getIssueDetail.mockReset();
     harness.getIssueDetail.mockRejectedValue(new harness.IssueNotFound());
-    const res = await (await GET(req("?id=MOA-99"))).json();
+    const res = await (await GET(req("?id=ENG-99"))).json();
     expect(res.ok).toBe(false);
     expect(res).toEqual({ ok: false, error: "issue-not-found", code: "issue-not-found" });
   });
@@ -91,7 +91,7 @@ describe("GET /api/kanban/issue", () => {
   it("surfaces a source failure as an error envelope without a code, not as not-found", async () => {
     harness.getIssueDetail.mockReset();
     harness.getIssueDetail.mockRejectedValue(new Error("linear graphql error"));
-    const res = await (await GET(req("?id=MOA-1"))).json();
+    const res = await (await GET(req("?id=ENG-1"))).json();
     expect(res.ok).toBe(false);
     expect(res.code).toBeUndefined();
     expect(String(res.error)).toContain("linear");

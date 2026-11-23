@@ -1,4 +1,4 @@
-// MOA-504 D4: PATH-presence probe for an agent CLI, moved out of workflow-codex.ts and generalized.
+// PATH-presence probe for an agent CLI, moved out of workflow-codex.ts and generalized.
 // Collectors boundary: all system access lives here. Requires an executable REGULAR file (a bare
 // accessSync(X_OK) also accepts an executable directory named like the CLI).
 import { accessSync, constants as fsConstants, statSync } from "node:fs";
