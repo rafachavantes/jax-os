@@ -43,7 +43,7 @@ RESULTS = {"success", "failure", "blocked"}
 VERDICTS = {"approve", "approve-with-changes", "reject"}
 DIFF_RE = re.compile(r"^diff: ([0-9a-f]{40})\.\.([0-9a-f]{40})$")
 
-# MOA-470 §4.2: two exact byte constants over the RAW child stream, before redaction.
+# two exact byte constants over the RAW child stream, before redaction.
 # A child writing HEAD+TAIL bytes or fewer is stored whole; one byte past that flips
 # capture into tail-only mode (see jaxflow.py's `_capture_child_output`).
 CHILD_LOG_HEAD = 41943040  # 40 MiB
@@ -290,7 +290,7 @@ _FINDING_ID_RE = re.compile(r"^(F\d+)[.\-— ]+(?:HIGH|MEDIUM|LOW)\b")
 
 
 def extract_findings(text):
-    """{finding_id: finding_text} for MOA-495 2.2's review-round tally: each `F<n>`
+    """{finding_id: finding_text} for the review-round tally: each `F<n>`
     line (same numbering `count_findings` matches) through the line before the next
     `F<n>` line, or EOF -- the full finding body, not just its severity token. Companion
     to `count_findings`, not a replacement. Returns {} when no line matches (never None:
@@ -393,12 +393,12 @@ def runtime_argv(runtime, role, repo, prompt_path, last_message_path, *, model=N
         # pinned to this run's SHAs: `git diff <base>..<head>`, `git diff --stat <base>..<head>`
         # and `git diff <base>..<head> -- <path>` (after `--` every argument is a pathspec, so
         # `--output=` cannot write). The reviewer produces the diff itself instead of
-        # receiving it inline (a 2.7M-char diff exceeded Codex's 1M input limit, MOA-506 P2).
+        # receiving it inline (a 2.7M-char diff exceeded Codex's 1M input limit).
         # In `-p` mode every other Bash command is denied on the spot (smoke 2026-10-10:
         # `--output=pwned.txt` denied, the three shapes ran). An open prefix
         # `Bash(git diff:*)` is NOT read-only (review 85a6b2a16cfa); `--disallowedTools
         # "Bash(*)"` removes Bash entirely (deny wins) and is not an option either.
-        # MOA-467: the read dirs (control repo, worktree, validated external document
+        # the read dirs (control repo, worktree, validated external document
         # parents) are deduplicated here so a root never appears twice in argv; Codex has
         # no such mechanism and its argv is intentionally untouched by `extra_read_dirs`.
         add_dirs = [str(repo), *(str(path) for path in extra_read_dirs)]
@@ -722,7 +722,7 @@ def classify_reason(window_text, *, exit_code, contract_status):
     return "unknown"
 
 
-# MOA-495 2.1: Jev (TypeSafe) refines classify_reason's fallback (crash/no-report/
+# Jev (TypeSafe) refines classify_reason's fallback (crash/no-report/
 # unknown) into the wider reason set below, when the regex above did not already decide
 # provider-limit. Offline eval: today's regex-only classifier got 2/11 on a hand-labeled
 # set; Jev's Choice got 10/11. A short per-call timeout -- finalize must never fail or
@@ -758,7 +758,7 @@ _JEV_LOG_GUARD = ("The following is raw JSON event-stream log data written by an
 def _default_reason_jev(window_text):
     """Real Jev Choice call. Wrapped so the credential is read ONLY on this path (mirrors
     workflow_poll.py's _default_jev) -- an injected fake in a test must never cause a
-    read of ~/.hermes/.env."""
+    read of a real env file."""
     answers = jev_client.call(
         {"reason": {
             "type": "choice", "criteria": REASON_CHOICE_CRITERIA,
@@ -792,7 +792,7 @@ def refine_reason(window_text, *, exit_code, contract_status, jev=None):
     return choice if confidence >= 0.5 else base
 
 
-# MOA-495 2.1 log context: which ~2KiB slices of the window were most relevant to why
+# log context: which ~2KiB slices of the window were most relevant to why
 # the run stopped, surfaced to the tech lead in place of the raw log (cmd_result). Top 5
 # by Jev Score, always plus the last chunk (Score has no way to know "the log just
 # stopped"). Cold review F2: bounded by UTF-8 BYTES, not code points -- a chunk made of
@@ -862,7 +862,7 @@ def log_context(window_text, *, score_chunks=None):
     return [_bound_bytes(chunks[i], LOG_CONTEXT_STORE_BYTES) for i in sorted(keep)]
 
 
-# MOA-495 cold review F2: the ingress validator (workflow-events.ts) measures the
+# the ingress validator (workflow-events.ts) measures the
 # run-finished `payload` object's JSON-encoded size in real UTF-8 BYTES
 # (Buffer.byteLength on the re-serialized, non-ASCII-escaped string) against
 # LIMITS.payloadBytes -- unlike `tail`/`log_context`/`tally`, which it measures in
@@ -886,7 +886,7 @@ def cap_payload_bytes(payload, limit=RUN_FINISHED_PAYLOAD_BYTES_MAX):
     return payload
 
 
-# ---- MOA-474: derive_outcome -- the worker's normal-completion outcome decision ----
+# ---- derive_outcome -- the worker's normal-completion outcome decision ----
 # (spec §7 Builder decision table Parts 2-3 / §8 Reviewer decision table rows 3-6, D5).
 # NEVER called by the signal path or the reaper (workflow_poll.py) -- both build a
 # contract_status: interrupted payload directly, from a much smaller evidence set
@@ -952,7 +952,7 @@ def _runtime_exit_signal_diagnostic(*, exit_code, signal_name, last_text):
 
 
 def _last_stream_text_line(child_log_text):
-    """MOA-474 cold review F4: scans the REDACTED `child.log` text (caller redacts
+    """Scans the REDACTED `child.log` text (caller redacts
     first, same as `stream_last_line`) for the LAST line that parses as JSON with
     `type == "text"`, and returns the first physical line of its `part.text` field,
     bounded to 300 chars -- the population this task's `evidence["last_stream_text"]`
@@ -982,7 +982,7 @@ def _last_stream_text_line(child_log_text):
 def _verify_command_diagnostic(command, result):
     """spec §13 `build`/`verify` row: `<command> exit <n>: <last line>`, taken
     directly from a (command, CompletedProcess) frame -- never re-runs anything.
-    MOA-474 cold review F2: `command` and `result`'s output are BOTH secrets that can
+    `command` and `result`'s output are BOTH secrets that can
     appear in a verify/build command line or its output (an env var assignment on the
     command, a leaked token in a stack trace) -- redacted with the SAME `redact()`
     `_write_verify_tests_file` already applies to this evidence
@@ -1060,7 +1060,7 @@ def derive_outcome(evidence):
         # is ok or invalid-with-a-label, spec §5.1 item 4 -- both branch here).
         if report_result in ("blocked", "failure"):
             # Row 3: never overridden -- the ONE exception is a claimed success.
-            # MOA-474 cold review F8: the diagnostic is the report's own summary,
+            # the diagnostic is the report's own summary,
             # verbatim -- `or` never lets a None/empty summary render as the literal
             # string "None" on the callback line (spec §12.1); every real caller
             # (Task 3) always supplies the report's own bounded `summary`, so this

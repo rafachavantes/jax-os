@@ -1,6 +1,6 @@
-"""Regression guard (spec MOA-502 'Wrapper resolution'): a `bin/*` wrapper symlinked into a
+"""Regression guard: a `bin/*` wrapper symlinked into a
 temp PATH directory from a checkout at an ARBITRARY path (never this repo's own path) resolves
-to and execs THAT checkout's own scripts/*.py — never a hardcoded /home/rafa/... path."""
+to and execs THAT checkout's own scripts/*.py — never a hardcoded /home/user/... path."""
 import os
 import shutil
 import subprocess

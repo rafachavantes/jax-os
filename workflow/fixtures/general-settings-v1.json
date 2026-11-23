@@ -1,10 +1,10 @@
 {
   "ownerName": "Owner",
   "locale": "pt-BR",
-  "reposRoot": "/home/rafa/repos",
-  "vaultPath": "/home/rafa/obsidian-vault",
+  "reposRoot": "/home/user/repos",
+  "vaultPath": "/home/user/vault",
   "monitoredUnits": {
-    "user": ["hermes-gateway.service"],
+    "user": ["example.service"],
     "system": ["tailscaled.service"]
   },
   "integrations": {

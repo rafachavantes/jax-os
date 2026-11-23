@@ -35,7 +35,7 @@ def test_classifier_api_key_delegates_to_jev_client(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_live_reaper_db(monkeypatch, tmp_path):
-    # `main()` now runs the MOA-474 reaper phase, which resolves `jr.DB_PATH` when no
+    # `main()` now runs the reaper phase, which resolves `jr.DB_PATH` when no
     # explicit path is given -- point that at a nonexistent temp file so a test calling
     # `wp.main()` can never open (or close a run in) the real ~/.jax-os/jaxos.db. The
     # reaper tests below always pass their own `db_path` and are unaffected.
@@ -44,7 +44,7 @@ def _no_live_reaper_db(monkeypatch, tmp_path):
 
 @pytest.fixture(autouse=True)
 def _integration_on_by_default(monkeypatch):
-    # MOA-502 Decision 1: `_drain_deferred` now reads integrations.classifier live through
+    # `_drain_deferred` now reads integrations.classifier live through
     # general_settings.read_settings(). Pre-existing tests exercise the real (non-injected)
     # Jev path, so default it ON here; the gate-specific tests below re-patch read_settings
     # with their own off fixture, which wins (their setattr applies after this autouse one).
@@ -198,7 +198,7 @@ def test_malformed_events_are_skipped_and_never_acked_with_a_null_id(monkeypatch
 def test_staleness_runs_when_the_forward_path_raises_an_unexpected_exception(monkeypatch):
     # Finding 12: the two shape/path tests above are handled by _forward_pending's own inner
     # guards, so they pass even with main()'s outer backstop deleted. This one exercises the
-    # backstop itself: an exception from a call NO inner guard wraps. Since MOA-498 the
+    # backstop itself: an exception from a call NO inner guard wraps. Since the
     # credential read in that path is jev_client.api_key, so the throwing fake replaces
     # that read instead.
     def boom(_name):
@@ -273,7 +273,7 @@ def _jev_ok(choice):
 
 
 def test_drain_uses_jev_as_the_primary_classifier():
-    # MOA-493 §1.2: Jev is now primary. Its `choice` posts directly as `capsule_status` --
+    # Jev is now primary. Its `choice` posts directly as `capsule_status` --
     # no confidence threshold, and deepseek never runs when Jev answers.
     posts, shadows = [], []
     def unreachable_classify(_tail):
@@ -316,7 +316,7 @@ def test_jev_call_no_longer_asks_the_merge_ask_question():
 
 
 def test_drain_falls_back_to_deepseek_exactly_as_before_when_jev_raises():
-    # Same three outcomes MOA-493's original indeterminate work established for deepseek --
+    # Same three outcomes the original indeterminate work established for deepseek --
     # unknown settles as indeterminate, any other exception posts failed -- reached only once
     # Jev itself has raised (transport, shape, missing key).
     rows = [{"id": 1, "message_tail": "done deal"},
@@ -392,7 +392,7 @@ def test_drain_settles_every_queued_row_indeterminate_with_zero_jev_calls_when_c
 
 
 def test_drain_settles_every_queued_row_indeterminate_with_zero_jev_calls_when_settings_read_is_malformed(monkeypatch):
-    # A malformed-settings read is MOA-496's own warning row; this test only pins that
+    # A malformed-settings read has its own warning row; this test only pins that
     # off-vs-on is decided by general_settings.read_settings(), not by this module re-deciding
     # what a malformed read means — {ok: false} takes the same safe no-egress off-path as
     # classifier: false, so Jev/OpenRouter must never be called either.
@@ -408,7 +408,7 @@ def test_drain_settles_every_queued_row_indeterminate_with_zero_jev_calls_when_s
     assert posts == [{"id": 1, "indeterminate": True}]
 
 
-# ---- MOA-493 §1.2: Jev primary / deepseek fallback / shadow log -----------------
+# ---- Jev primary / deepseek fallback / shadow log -----------------
 
 def test_jev_criteria_is_v3_done_and_waiting_wording():
     assert "a status report or handoff of finished work" in wp.JEV_CRITERIA["done"]
@@ -496,7 +496,7 @@ def test_parse_jev_rejects_a_choice_outside_the_criteria():
         wp._parse_jev({"answers": {"status": {"choice": "maybe", "confidence": 1.0, "probabilities": {}}}}, 1)
 
 
-# ---- MOA-474 §10.3: the reaper phase -------------------------------------------
+# ---- the reaper phase -------------------------------------------
 
 def _fresh_db(path):
     con = sqlite3.connect(path)

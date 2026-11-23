@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for jaxflow resume checkpoints (MOA-473 Part 1 Task 4)."""
+"""Tests for jaxflow resume checkpoints."""
 import fcntl
 import hashlib
 import json

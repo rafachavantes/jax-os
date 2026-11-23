@@ -713,7 +713,7 @@ def test_remote_on_adopted_history_without_origin_refuses_before_writes(tmp_path
 
 
 def test_remote_refuses_github_integration_disabled_before_any_gh_or_push_call(tmp_path, monkeypatch, capsys):
-    # MOA-502 Decision 2: the setting wins over the flag — --remote was explicitly passed,
+    # the setting wins over the flag — --remote was explicitly passed,
     # but the disabled integration still refuses before any gh/push call. (main() swallows
     # the Refusal into its own REFUSED payload, the existing convention in this file.)
     import general_settings
@@ -735,7 +735,7 @@ import general_settings
 
 @pytest.fixture(autouse=True)
 def _github_on_by_default(monkeypatch):
-    # MOA-502 Decision 2: the --remote gate reads integrations.github live through
+    # the --remote gate reads integrations.github live through
     # general_settings.read_settings(). Pre-existing tests exercise the real (non-injected)
     # gh path, so default it ON here by delegating to the real reader (reposRoot and every
     # other field keep their real values — the reload tests below depend on that); the

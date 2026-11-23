@@ -22,7 +22,7 @@ MANIFEST_CAP = 1 << 20
 
 
 def _require_opencode_on():
-    """MOA-504 D9: every builder profile is OpenCode, so one switch gates build and --resume."""
+    """Every builder profile is OpenCode, so one switch gates build and --resume."""
     if not jc._enabled_agents()["opencode"]:
         raise jc._refuse("agent-disabled: opencode", "hint: turn OpenCode on in /settings -> General")
 
@@ -121,7 +121,7 @@ def _resume_load_prior(repo, resume_id, project, started, finished):
             or started_payload.get("requested_profile") not in ("default", "fallback")
             or prior.get("requested_profile") not in ("default", "fallback")
             or prior.get("requested_profile") != started_payload.get("requested_profile")
-            # MOA-474 §5.1 conflict 2: the explicit cancelled check is dropped -- an
+            # conflict 2: the explicit cancelled check is dropped -- an
             # interrupted row was never excluded by it either way, and a cancelled row
             # stays ineligible on the very next clause (it never carries a `result`).
             or finished_payload.get("result") not in ("failure", "blocked")
@@ -389,7 +389,7 @@ def _build_started_base(*, phase, runtime, branch, caller, caller_session, model
 
 def _validated_build_plan(args, allowlist_root):
     """The canonical plan path of a fresh build, validated BEFORE any reservation: canonical,
-    non-secret, readable file, structurally valid (MOA-471 item 10). No git call needed."""
+    non-secret, readable file, structurally valid. No git call needed."""
     # Canonicalize + secret-check the plan path BEFORE any reservation (fixes cold review
     # F3 -- the first draft never called _is_secret_path at all for `build`).
     plan_path = canonicalize_target(Path(args.plan), allowlist_root)
@@ -397,13 +397,12 @@ def _validated_build_plan(args, allowlist_root):
     if defect == "secret-detected":
         raise Refusal(f"secret-detected: {plan_path}")
     # fixes Part 1 diff-review F1: a directory or unreadable plan path must refuse here,
-    # before any reservation -- not after a worktree/branch already exist (MOA-467: the
-    # original document is read in place later, so there is no copy step to fail in).
+    # before any reservation -- not after a worktree/branch already exist.
     # No git call needed for this check.
     if defect:
         raise Refusal("plan is not a readable file")
 
-    # MOA-471 item 10: plan-structure validation runs BEFORE any reservation below --
+    # plan-structure validation runs BEFORE any reservation below --
     # `os.mkdir(worktree)` (further down this function) is the earliest filesystem/git
     # write this dispatch makes, and no plan defect may ever burn one.
     plan_text = plan_path.read_text(encoding="utf-8")
@@ -668,7 +667,7 @@ def dispatch_build(args, *, run, post, env, now, allowlist_root=ALLOWLIST_ROOT_D
 
         run_id, session, paths = jr._alloc_run(project, "build", worktree, run, run_id=uuid.uuid4().hex[:12])
 
-        # MOA-467: the plan is NOT copied into the worktree anymore -- the manifest stores
+        # the plan is NOT copied into the worktree anymore -- the manifest stores
         # the ORIGINAL canonical plan path and the builder reads it in place from the
         # validated read scope (the old plan-copy step, and the copy it produced, are
         # gone). The AGENTS.md copy below stays the only control-repo file brought into

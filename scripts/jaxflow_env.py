@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """JAXOS_HOME / API base URL resolution -- process env, read once per language, NOT
 file-backed config (general_settings.py is that). See src/server/env.ts for the TS twin;
-the two MUST agree on every default. MOA-497 Build A. Zero local imports on purpose: every
+the two MUST agree on every default. Zero local imports on purpose: every
 consumer in scripts/ imports this module, so it must never import any of them back."""
 from __future__ import annotations
 

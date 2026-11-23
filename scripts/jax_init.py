@@ -74,7 +74,7 @@ def _nearest_existing_ancestor(path):
 
 def _is_empty_for_bootstrap(path):
     # ponytail: spec case A -- a target holding only .local/ and/or .jax-os/
-    # (Rafa's pre-existing briefs under .local/docs/) still counts as empty.
+    # (pre-existing briefs under .local/docs/) still counts as empty.
     return not any(child.name not in RESERVED_TOP_LEVEL for child in path.iterdir())
 
 def _probe(run, argv, cwd, step):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanical checks for the OSS docs (MOA-500).
+"""Mechanical checks for the OSS docs.
 
     python3 scripts/check_oss_docs.py               # check the real tree
     python3 scripts/check_oss_docs.py --self-test   # fixture-driven self-test

@@ -104,7 +104,7 @@ WATCH_DEADLINE_S = 14280  # ponytail: the hook's own 14400s asyncRewake timeout 
 def _git_owner(cwd, run):
     """Canonical repository root (the MAIN checkout) for cwd, or None outside a repository.
 
-    Mirrors jaxflow._control_owner (MOA-467): an ordinary main checkout and a
+    Mirrors jaxflow._control_owner: an ordinary main checkout and a
     `--separate-git-dir` main checkout both have gitdir == common dir and resolve to their own
     toplevel; a linked worktree (gitdir != common) resolves to the MAIN entry of `git worktree
     list` — never a `.git`-parent name guess or the worktree's own directory name. Every failed
@@ -145,7 +145,7 @@ def _git_owner(cwd, run):
 def _project_from_cwd(cwd, run):
     """Project identity = the basename of the session's REPOSITORY ROOT (spec B §7.1c).
 
-    Uses the canonical owner resolution above (MOA-467) so a builder in a linked worktree or a
+    Uses the canonical owner resolution above so a builder in a linked worktree or a
     `--separate-git-dir` checkout still attributes to the main repo, never to the worktree's own
     directory name. Falls back to the basename of cwd outside any repository — today's behaviour,
     unchanged.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Reproducible README screenshots over SYNTHETIC data (MOA-512 D1, D2).
+// Reproducible README screenshots over SYNTHETIC data.
 //   PLAYWRIGHT_PATH=<node_modules dir that contains playwright> [CHROMIUM_PATH=<chrome binary>] \
 //     node scripts/demo-shots.mjs            shoot into docs/screenshots/
 //   node scripts/demo-shots.mjs --self-test  pure checks, no browser, no server

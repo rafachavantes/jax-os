@@ -144,7 +144,7 @@ def test_dispatch_proceeds_when_caller_session_present(monkeypatch):
 
 def test_slugify_project_bounds_and_fallback():
     assert jaxflow_common.slugify_project("Acme.AI") == "acme-ai"
-    assert jaxflow_common.slugify_project("comenta.ia.br") == "comenta-ia-br"
+    assert jaxflow_common.slugify_project("sample.example.org") == "sample-example-org"
     long_name = "a" * 70 + "---"
     slug = jaxflow_common.slugify_project(long_name)
     # 40, not 64 (fixes cold review F2): jax-<slug>-<kind>-<run_id> must stay under the
@@ -609,7 +609,7 @@ def test_status_md_byte_preserves_unmanaged_frontmatter_with_crlf_and_noncanonic
         assert "gate:" not in "".join(lines)
 
 
-# ---- MOA-467 Task 4: the CONTROL repo owns status for every run kind, even when the run
+# ---- the CONTROL repo owns status for every run kind, even when the run
 # originates in a linked worktree; a worktree status sentinel is never touched ----
 
 @pytest.mark.parametrize("kind,target_kw", [
@@ -647,7 +647,7 @@ def test_status_md_linked_worktree_run_updates_only_the_control_repo(kind, targe
     ("merge", {"target": "feat/x"}),
 ])
 def test_status_md_skips_write_when_the_owner_lookup_fails(kind, target_kw):
-    # MOA-467 acceptance: an unresolved owner lookup for a `.git`-FILE checkout must
+    # an unresolved owner lookup for a `.git`-FILE checkout must
     # never redirect the write to the worktree itself -- skip best-effort instead, on a
     # non-zero probe AND on a raising one; the worktree sentinel stays byte-for-byte.
     with TemporaryDirectory() as raw:
@@ -711,7 +711,7 @@ def test_status_md_separate_git_dir_main_repo_owns_its_card(kind, target_kw):
 
 
 def test_control_owner_separate_git_dir_main_and_linked_worktree():
-    # MOA-467 acceptance fixes: the shared relationship resolves a `--separate-git-dir`
+    # the shared relationship resolves a `--separate-git-dir`
     # MAIN to itself (gitdir == common dir); git's worktree list reports the COMMON GITDIR
     # as the main entry for its linked worktree, which fails checkout validation -- the
     # lookup is unresolved, so reads fall back to the worktree and status skips, never
@@ -729,7 +729,7 @@ def test_control_owner_separate_git_dir_main_and_linked_worktree():
 
 
 def test_builder_read_roots_separate_git_dir_main_resolves_to_the_checkout():
-    # MOA-467 acceptance fixes: a `--separate-git-dir` main whose common dir IS named
+    # a `--separate-git-dir` main whose common dir IS named
     # `.git` used to resolve its control repo to the gitdir's parent via the old name
     # check -- the shared relationship now names the checkout itself.
     with TemporaryDirectory() as raw:
@@ -806,7 +806,7 @@ def test_worker_doc_review_from_linked_worktree_writes_control_status_not_the_wo
         assert sentinel.read_text(encoding="utf-8") == before_sentinel
 
 
-# ---- hub rejection vs outage (MOA-507) --------------------------------------------------
+# ---- hub rejection vs outage --------------------------------------------------
 
 
 def _json_opener(status, body):

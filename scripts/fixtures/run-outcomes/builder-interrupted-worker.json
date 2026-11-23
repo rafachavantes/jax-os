@@ -1,6 +1,6 @@
 {
   "runStarted": {
-    "run_id": "aaaabbbbcccc",
+    "run_id": "ddddeeeeffff",
     "project": "demo",
     "role": "builder",
     "type": "run-started",
@@ -15,13 +15,13 @@
       "caller_session": "01234567-89ab-4cde-8f01-23456789abcd",
       "model": "xai/grok-4.6",
       "effort": "n/a",
-      "session": "jax-demo-build-aaaabbbbcccc",
-      "repo": "/home/rafa/repos/demo",
+      "session": "jax-demo-build-ddddeeeeffff",
+      "repo": "/home/user/repos/demo",
       "verify": "true"
     }
   },
   "runFinished": {
-    "run_id": "aaaabbbbcccc",
+    "run_id": "ddddeeeeffff",
     "project": "demo",
     "role": "builder",
     "type": "run-finished",
@@ -29,19 +29,21 @@
     "emitter": "wrapper",
     "payload": {
       "phase": "P1",
-      "exit_code": 0,
-      "contract_status": "ok",
-      "report_path": "/r.md",
-      "summary": "all tasks done",
-      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "result": "success"
+      "exit_code": null,
+      "contract_status": "interrupted",
+      "report_path": null,
+      "stage": "worker",
+      "diagnostic": "worker interrupted by SIGTERM",
+      "summary": "worker interrupted by SIGTERM",
+      "head_sha": null,
+      "result": "failure"
     }
   },
   "expected": {
-    "outcome": "success",
-    "stage": null,
-    "diagnostic": null,
-    "contractStatus": "ok",
-    "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "outcome": "failure",
+    "stage": "worker",
+    "diagnostic": "worker interrupted by SIGTERM",
+    "contractStatus": "interrupted",
+    "headSha": null
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Direct tests for jev_client's env-file reader (MOA-498 D1) — this module previously had
+"""Direct tests for jev_client's env-file reader — this module previously had
 no dedicated test file; test_jaxflow_run.py stubs api_key() wholesale and never exercised
 _check_secure/ENV_PATH directly."""
 import os

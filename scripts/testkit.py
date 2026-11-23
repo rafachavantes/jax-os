@@ -31,12 +31,12 @@ def _agents_setting(monkeypatch, **overrides):
 
 @pytest.fixture(autouse=True)
 def _integration_on_by_default(monkeypatch):
-    # MOA-502 Decisions 1-2: build_review_tally reads integrations.classifier and the gh call
+    # build_review_tally reads integrations.classifier and the gh call
     # sites read integrations.github, both live through general_settings.read_settings().
     # Pre-existing tests exercise the real (non-injected) Jev/gh paths, so default both ON
     # here; the gate-specific tests re-patch read_settings with their own off fixture, which
     # wins (their setattr applies after this autouse one).
-    # MOA-504: and integrations.agents (all on) for the dispatch gates.
+    # and integrations.agents (all on) for the dispatch gates.
     monkeypatch.setattr(general_settings, "read_settings",
                         lambda: {"ok": True, "data": {"integrations": {"classifier": True, "github": True, "agents": _ALL_AGENTS_ON}}})
 
@@ -84,7 +84,7 @@ def _isolate_callbacks(tmp_path, monkeypatch):
                     "hooks": [
                         {
                             "type": "command",
-                            "command": "python3 /home/rafa/repos/jax-os/scripts/jaxflow_hook.py claude-callback",
+                            "command": "python3 /home/user/repos/jax-os/scripts/jaxflow_hook.py claude-callback",
                             "asyncRewake": True,
                             "timeout": 14400,
                         }
@@ -338,7 +338,7 @@ def _review_args(**kw):
 class FakePopen:
     """Stands in for the real LLM subprocess: writes the fixed report text either
     to its own stdout (claude path) or to the --output-last-message file codex was
-    given in argv (codex path) -- mirroring what each real runtime does. MOA-470:
+    given in argv (codex path) -- mirroring what each real runtime does. It
     also exposes `.stdout`/`.stderr` as readable in-memory streams when the caller
     requests `subprocess.PIPE`, so a reader loop has something to drain. Class-level
     `stdout`/`stderr` defaults of `None` are what let every OTHER fake in this file
@@ -590,7 +590,7 @@ def _write_status_md(root, text=_STATUS_TEMPLATE):
 class FakeBuilderPopen:
     """Stands in for the builder LLM subprocess: writes report.md DIRECTLY at the path named
     in its own prompt (mirroring a real builder's own Write-tool behavior), then exits.
-    MOA-470: also exposes `.stdout`/`.stderr` as readable in-memory streams when piped
+    Also exposes `.stdout`/`.stderr` as readable in-memory streams when piped
     (opencode's stdout was never the report channel -- report delivery, above, is
     untouched by this)."""
     stdout = None
@@ -659,7 +659,7 @@ def _init_separate_git_dir_repo(root: Path, gitdir: Path):
     """A main checkout whose git metadata lives elsewhere (`--separate-git-dir`): its
     `.git` is a FILE, git reports gitdir == common dir, and its linked worktrees' admin
     dirs live under `<gitdir>/worktrees/` -- the layout whose common dir is NOT named
-    `.git` (MOA-467 acceptance fixes)."""
+    `.git`."""
     root.mkdir(parents=True, exist_ok=True)
     gitdir.parent.mkdir(parents=True, exist_ok=True)
     _git(root, "init", "-b", "main", f"--separate-git-dir={gitdir}")
@@ -867,7 +867,7 @@ def _merge_happy_script(tmp_path, sha, *, remote=True, target="main"):
         ("git", "branch", "--show-current"): _completed(0, "feat/x\n"),
         ("git", "status", "--porcelain"): _completed(0, ""),
         ("git", "rev-parse", "HEAD"): _completed(0, "c" * 40 + "\n"),
-        # New (MOA-472): every existing happy-path test must keep exercising the FULL
+        # New: every existing happy-path test must keep exercising the FULL
         # checks sequence -- the safe default is "not an ancestor", i.e. not a
         # fast-forward. A dedicated fast-forward test overrides this explicitly.
         ("git", "merge-base", "--is-ancestor"): _completed(1, ""),

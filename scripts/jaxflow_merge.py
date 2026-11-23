@@ -49,7 +49,7 @@ def _refuse_nonterminal_builder(project, repo, branch, db_path=None):
 
 def _merge_checks_reuse(run, repo, project, worktree, branch, sha, checks_cmd, *,
                         allowlist_root, recheck=False, db_path=None):
-    """MOA-510 D1/D2/D3. May `jaxflow merge` skip its own `--checks` run because the branch's
+    """May `jaxflow merge` skip its own `--checks` run because the branch's
     latest diff review already tested `sha`? Returns `(reuse, reason, review_run_id)`.
     Collector-style: `run` is injected. It NEVER raises and NEVER refuses -- every lookup
     failure is "not reusable", and the caller then runs the checks exactly as before.
@@ -169,7 +169,7 @@ _MERGE_DIRECTIVE_VALUE_RE = re.compile(r"^[ \t]*`([A-Za-z][A-Za-z-]*)`[ \t]*$")
 _TARGET_STOP_RE = re.compile(r"^[ \t]*(?:[-*+][ \t]+|#{1,6}[ \t]+|\*\*Preset:)", re.M)
 _TARGET_TOKEN_RE = re.compile(r"`([a-z0-9][a-z0-9/_-]*)`")
 
-# MOA-509: three sets decide behaviour. A call site asks "is this a PR preset", never "is this
+# three sets decide behaviour. A call site asks "is this a PR preset", never "is this
 # <name>". `bubble-buildprint` is unchanged; `release` exists only for `dual-branch-pr`.
 _LOCAL_PRESETS = ("single-branch", "dual-branch", "bubble-buildprint")
 
@@ -331,10 +331,10 @@ def _directive_target(block, phrase):
 
 def _resolve_delivery_target(repo, *, run):
     """Resolves `merge`'s delivery target from the control repo's own Deploy policy (spec
-    §5.2 Step 0 / MOA-465 Config & trust model). `--target` asserts this value; it cannot
+    §5.2 Step 0). `--target` asserts this value; it cannot
     override it. Returns `(target_branch, no_preset_block, preset)`.
 
-    MOA-465: a PR preset RESOLVES like any other preset instead of refusing
+    A PR preset RESOLVES like any other preset instead of refusing
     `preset-unsupported` — its own `Delivery target:` line is the base for a non-`release/*`
     head. A `release/*` head's base comes from `_resolve_production_target` instead
     (`_required_target_for_branch`, decision 5) — this function never reads that line itself.
@@ -359,7 +359,7 @@ def _resolve_delivery_target(repo, *, run):
 
 
 def _resolve_production_target(repo):
-    """MOA-465 decision 5/Config & trust model: the `Production target:` line, next to
+    """the `Production target:` line, next to
     `Delivery target:` in the SAME release-preset block. Refuses `production-target-unconfigured`
     for any preset outside the release set (so always for `single-branch-pr`, even if the line
     is present), a release block missing the line, or no preset block at all — all three mean
@@ -374,7 +374,7 @@ def _resolve_production_target(repo):
 
 
 def _required_target_for_branch(repo, branch, *, run):
-    """MOA-465 decision 5: the Delivery target for a non-`release/*` head, the Production
+    """the Delivery target for a non-`release/*` head, the Production
     target for a `release/*` head — shared by `pr open` (Task 6) and `merge`'s PR path
     (Task 7) so the mutual-exclusion rule can never diverge between the two commands. Returns
     `(required_target, preset)`."""
@@ -771,7 +771,7 @@ def cmd_release(args, *, run=jr.run_command, post=jc._post_event, env=None, now=
 
 def cmd_pr_open(args, *, run=jr.run_command, post=jc._post_event, env=None, now=None,
                  allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    """`jaxflow pr open` (spec Commands > pr open). No Rafa approval gate of its own
+    """`jaxflow pr open` (spec Commands > pr open). No owner approval gate of its own
     (decision 1) -- validation mirrors `cmd_merge`'s own sha/branch/target shape checks
     exactly, since both commands pin the same kind of approval."""
     env = os.environ if env is None else env
@@ -979,7 +979,7 @@ def _validate_merge_inputs(args, *, run, repo):
                     "(emoji count as two) with no leading or trailing whitespace")
 
     # `--target` is the approved destination, asserted against policy — never an override
-    # and never defaulted from current policy (MOA-458). Shape first, then a read-only
+    # and never defaulted from current policy. Shape first, then a read-only
     # `git check-ref-format`; do not trim, normalize, or resolve. SHA/branch/phase above
     # keep their precedence when several inputs are invalid.
     approved_target = getattr(args, "target", None)
@@ -1138,7 +1138,7 @@ def _merge_stage_check_commit(args, *, run, repo, project, worktree, target, sub
         raise jc._refuse("merge-failed", f"hint: could not fingerprint the merged index: {detail}"
                       + _abort_merge(run, repo, method))
 
-    # MOA-510 D4: `fast_forward` keeps its meaning ("the target has no commits the
+    # `fast_forward` keeps its meaning ("the target has no commits the
     # branch lacks": the merged tree is byte-identical to the branch head) but is no
     # longer a skip by itself -- the head must also be the one the latest diff review
     # already tested. A moved target never reaches the lookup; an EQUAL tip stays
@@ -1267,7 +1267,7 @@ def _pr_run_checks(args, *, run, repo, project, allowlist_root):
                 "dirty-tracked-tree",
                 f"hint: git status failed: {jr._bound((status.stderr or status.stdout).strip(), 200)}"
                 if status.returncode != 0 else None)
-        # MOA-510 D7: AFTER the HEAD and clean-tracked-tree guards above; reuse only adds
+        # AFTER the HEAD and clean-tracked-tree guards above; reuse only adds
         # the review/evidence/command conditions and full-porcelain cleanliness.
         if is_release:
             reused, review_id = False, None
@@ -1508,7 +1508,7 @@ def _cmd_merge_pr(args, *, repo, project, caller, target, phase, run, post, env,
 
 def cmd_merge(args, *, run=jr.run_command, post=jc._post_event, get=None, env=None, now=None,
               allowlist_root=ALLOWLIST_ROOT_DEFAULT):
-    """Delivers an approved branch (spec §5). Synchronous and foreground by design: Rafa's
+    """Delivers an approved branch (spec §5). Synchronous and foreground by design: the owner's
     approval already named this phase/branch/sha, and the tech lead is waiting right here
     for a pass/fail — there is nothing to poll later, so `merge` allocates no run id, posts
     no `run-started`/`run-finished`, and owns no tmux session. Its only ledger row is the

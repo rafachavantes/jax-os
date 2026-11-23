@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Managed agent-settings consumer (MOA-473 Part 1)."""
+"""Managed agent-settings consumer."""
 from __future__ import annotations
 
 import contextlib
@@ -22,7 +22,7 @@ _MODEL_DEFAULTS = json.loads(_MODEL_DEFAULTS_PATH.read_text(encoding="utf-8"))
 # Caller-routing logic (opposite runtime), not duplicated data -- stays hand-written, times the
 # fixture's bare reviewer models (spec: "One source of model defaults").
 _OPPOSITE_RUNTIME = {"claude": "codex", "codex": "claude", "jaxos": "codex"}
-# MOA-504 D8: when the opposite reviewer agent is off, review on the OTHER reviewer runtime
+# when the opposite reviewer agent is off, review on the OTHER reviewer runtime
 # (a review is already a fresh sealed session, so the same agent is still a cold reviewer).
 _FALLBACK_RUNTIME = {"claude": "claude", "codex": "codex", "jaxos": "claude"}
 

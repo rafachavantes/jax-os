@@ -24,9 +24,9 @@ const NULL_FIXTURE = join(FIXTURES_DIR, "general-settings-null.json");
 const DEFAULTS = (parseSettings(undefined) as { ok: true; data: GeneralSettings }).data;
 
 const EXPECTED: GeneralSettings = {
-  ownerName: "Owner", locale: "pt-BR", reposRoot: "/home/rafa/repos",
-  vaultPath: "/home/rafa/obsidian-vault",
-  monitoredUnits: { user: ["hermes-gateway.service"], system: ["tailscaled.service"] },
+  ownerName: "Owner", locale: "pt-BR", reposRoot: "/home/user/repos",
+  vaultPath: "/home/user/vault",
+  monitoredUnits: { user: ["example.service"], system: ["tailscaled.service"] },
   integrations: {
     linear: true, ttyd: false, webhook: true,
     agents: { claude: true, codex: false, opencode: false },

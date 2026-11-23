@@ -394,7 +394,7 @@ def _refuse_builder_run(message, *, manifest, run, post, control_repo, worktree,
         owns_reservation = started is None or fresh
     if owns_reservation:
         jc._cleanup_worktree(worktree, branch, run=run, repo=control_repo)
-        # MOA-474 F1: never remove the run dir while a pending spool still lives in it
+        # never remove the run dir while a pending spool still lives in it
         # -- a delivery failure above means the spool is A2's only way to recover this
         # terminal row (reaper/`jaxflow cancel` re-POST it later). Clean up the
         # directory only once the row is confirmed delivered.
@@ -483,8 +483,7 @@ def _validate_run_paths(manifest, *, allowlist_root):
 
 
 def _builder_read_roots(control_repo, worktree, *, run, allowlist_root, documents=()):
-    """The deduplicated read-only scope a builder handoff names (MOA-467 acceptance
-    fixes): the validated control repo and assigned worktree, plus the parent of each
+    """The deduplicated read-only scope a builder handoff names: the validated control repo and assigned worktree, plus the parent of each
     named document (original plan, declared spec) that lives outside both -- its own
     parent only, never the whole allowlist or an unrelated sibling repo. The documents
     are already validated files by the time this runs; this helper only decides which
@@ -553,8 +552,8 @@ def _prepare_builder_launch(manifest, *, run, env, allowlist_root, manifest_path
     except ValueError as exc:
         raise Refusal(jc._map_refusal(str(exc))) from exc
 
-    # Defense-in-depth (fixes cold review round 2 F1; amended by the MOA-467
-    # acceptance fixes): the worker re-validates its own manifest's plan_path with
+    # Defense-in-depth (fixes cold review round 2 F1; amended by later acceptance
+    # fixes): the worker re-validates its own manifest's plan_path with
     # the SAME policy `dispatch_build` applied -- canonicalized, non-secret,
     # readable, inside the allowlist. A directly named plan path IS a read input,
     # so an explicitly named external document (another allowlist repo, a related
@@ -596,7 +595,7 @@ def _prepare_builder_launch(manifest, *, run, env, allowlist_root, manifest_path
         )
 
     # Contract-valid builder handoff, derived from the plan's own text (round-1 cold
-    # review F2 -- MOA-467: the plan is the ORIGINAL document in the validated read
+    # review F2 -- the plan is the ORIGINAL document in the validated read
     # scope, neither copied into the worktree nor re-copied here).
     plan_text = plan_path.read_text(encoding="utf-8")
     spec_dest, spec_refusal = jc._resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
@@ -670,7 +669,7 @@ def _builder_finish_payload(manifest, *, run, paths, run_id, project, phase, wor
         head_sha is not None and isinstance(base_sha, str)
         and jc._is_strict_descendant(run, worktree, base_sha, head_sha)
     )
-    # MOA-474 D5/§7: the last non-empty PHYSICAL line of the redacted child.log --
+    # the last non-empty PHYSICAL line of the redacted child.log --
     # never the whole stream (criterion 2: a recovered mid-stream error is not
     # terminal evidence, only the LAST line can ever be).
     stream_last_line = next(
@@ -682,7 +681,7 @@ def _builder_finish_payload(manifest, *, run, paths, run_id, project, phase, wor
         "stream_last_line": stream_last_line, "exit_code": exit_code, "signal": None,
         "verify_frames": verify_frames, "tests_written": tests_written,
         "head_sha": head_sha, "base_sha": base_sha, "is_descendant": is_descendant,
-        # MOA-474 cold review F4: wires _last_stream_text_line into rows 5/10's
+        # wires _last_stream_text_line into rows 5/10's
         # diagnostic (§13) -- without this, evidence.get("last_stream_text") always
         # defaults to None and the exit/signal diagnostic never has a real cause.
         "last_stream_text": jr._last_stream_text_line(child_log_text),
@@ -695,16 +694,16 @@ def _builder_finish_payload(manifest, *, run, paths, run_id, project, phase, wor
     if outcome["stage"] is not None:
         payload["stage"] = outcome["stage"]
         payload["diagnostic"] = outcome["diagnostic"]
-    # MOA-470 §4.3: both keys travel together, emitted iff contract_status needed a
+    # both keys travel together, emitted iff contract_status needed a
     # diagnosis -- never for "ok" (verify's own result covers that).
     jk._log_diagnosis(payload, child_log_text, exit_code=exit_code, contract_status=contract_status)
     # Cold review F2: last-line-of-defense against the ingress validator's 16 KiB
     # payload byte ceiling -- drops log_context (then tally, N/A on this branch)
     # if the combination still overflows it despite the byte-bounded chunks above.
     jr.cap_payload_bytes(payload)
-    # MOA-455, unaffected by this change: a claimed failure the verify chain did
+    # unaffected by this change: a claimed failure the verify chain did
     # NOT confirm is flagged on the callback line ONLY, never touching the ledger
-    # `result`. Unlike the pre-MOA-474 code, this note is orthogonal to
+    # `result`. Unlike the legacy code, this note is orthogonal to
     # derive_outcome's own veto: it only ever fires when the report claimed
     # failure and jaxflow's own checks disagree (the opposite direction from the
     # veto, which overrides a claimed SUCCESS).
@@ -734,7 +733,7 @@ def _validate_diff_worker_inputs(manifest, *, run, allowlist_root, worktree, bui
     if manifest_tests_path is not None and Path(manifest_tests_path).resolve() != tests_path.resolve():
         return "path-outside-allowlist", None, None, None
 
-    # fixes S2, amended MOA-467 (acceptance fixes): re-validates plan_path/spec_path --
+    # fixes S2, amended (acceptance fixes): re-validates plan_path/spec_path --
     # the build's own handoff inputs -- before any read (defense-in-depth against a
     # hand-edited manifest or a `--run-worker` invocation outside the normal dispatch
     # path). The plan must be a real readable non-secret file inside the allowlist --
@@ -771,7 +770,7 @@ def _validate_diff_worker_inputs(manifest, *, run, allowlist_root, worktree, bui
         derived_spec, spec_refusal = jc._resolve_handoff_spec_path(plan_text, plan_path, worktree, allowlist_root)
         if spec_refusal:
             return spec_refusal, None, None, None
-        # str()-compared, not Path-compared (MOA-471 item 2): `derived_spec` is a plain
+        # str()-compared, not Path-compared: `derived_spec` is a plain
         # str, not a Path, whenever the plan's **Spec:** line carries a resolved
         # `#<heading>` fragment -- comparing Path != str would always be unequal and
         # falsely refuse every fragmented spec even when both sides name the same value.
@@ -799,7 +798,7 @@ def _build_diff_handoff(manifest, *, repo, spec_path, plan_path, tests_path, bas
     parses: one `diff:` line, one `paths:` line, one indented `  test-output:` line).
     The diff itself is NOT embedded: the reviewer runs `git diff base..head` in the
     worktree (its cwd; Codex has a read-only shell, Claude has `Bash(git diff:*)`). A 2.7M
-    character diff exceeded Codex's 1M input limit (MOA-506 P2). Returns the handoff string."""
+    character diff exceeded Codex's 1M input limit. Returns the handoff string."""
     # Grammar `parse_reviewer_handoff` parses: exactly one `diff:` line, exactly one
     # `paths:` line, and exactly one indented `  test-output:` line in the block right
     # after it -- everything else in this text (the framing, the `spec:`/`plan:` lines
@@ -927,7 +926,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
         child_box = {"child": None}
         terminated = {"flag": False}
 
-        # MOA-474 cold review 887b1d3994d4 F1: `_on_signal` above reads `log_path`, so
+        # `_on_signal` above reads `log_path`, so
         # it must be bound BEFORE the handlers are registered -- a signal landing in the
         # window between registration and the old assignment raised NameError inside the
         # handler and exited with no terminal row.
@@ -940,7 +939,7 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
             persist=True,
         )
 
-        # MOA-470 §4.2: OpenCode has no --output-* flag, so its stdout was never the
+        # OpenCode has no --output-* flag, so its stdout was never the
         # report channel -- free to redirect to a pipe. stderr merges into the same pipe
         # (matches how both already appear interleaved in a tmux pane today).
         status, child, child_log_text = jk._spawn_and_drain(
@@ -1034,7 +1033,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
 
     # `codex_cwd=worktree` (fixes cold review F4) roots Codex's OWN -C flag at the real
     # repo for a --diff review; a doc review's own call site (unchanged, below in this
-    # file) never passes this kwarg, so it keeps today's /tmp sandbox exactly. MOA-467:
+    # file) never passes this kwarg, so it keeps today's /tmp sandbox exactly.
     # the extra read dirs grant the canonical control repo (new original-path plans and
     # specs live there) and -- only when the declared spec lives outside every granted
     # root -- that spec's own parent; never an unrelated sibling repo. Codex's argv is
@@ -1052,7 +1051,7 @@ def _run_diff_reviewer_worker(manifest, *, run, post, popen, killpg, env, allowl
     child_box = {"child": None}
     terminated = {"flag": False}
 
-    # MOA-474 cold review 887b1d3994d4 F1: bind `log_path` BEFORE registering the
+    # bind `log_path` BEFORE registering the
     # handlers -- a signal in the old window raised NameError inside the handler and
     # exited with no terminal row.
     log_path = jr.child_log_path(repo, run_id)

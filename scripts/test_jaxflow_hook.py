@@ -66,7 +66,7 @@ def test_jaxflow_oneshot_truthy_falsy_matrix_including_absent():
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "done"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "last_assistant_message": "done"})
     env = {"TMUX": "1", "TMUX_PANE": "%9"}
     for falsy in ("0", "false", "False", "no", "off", "OFF"):
         posts.clear()
@@ -91,7 +91,7 @@ def test_project_is_basename_of_cwd_no_session_name_pattern():
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/Acme.AI", "last_assistant_message": "done"})
+    payload = json.dumps({"cwd": "/home/user/repos/Acme.AI", "last_assistant_message": "done"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(session="probe-session"), post=post)
     events = [p for url, p in posts if url == hook.EVENTS_URL]
@@ -104,7 +104,7 @@ def test_role_derived_from_session_suffix_and_registers_session():
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "done"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "last_assistant_message": "done"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9", "JAXFLOW_NO_CLASSIFY_KICK": "1"}, clear=True):
         hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(session="jax-jax-os-lead"), post=post)
     assert [url for url, _ in posts] == [hook.SESSIONS_URL, hook.EVENTS_URL]
@@ -120,7 +120,7 @@ def test_session_registration_failure_does_not_drop_the_event_post_finding_3():
             raise RuntimeError("session registry unavailable")
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "notification_type": "agent_needs_input"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "notification_type": "agent_needs_input"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         code = hook.main(["claude-notification"], stdin=io.StringIO(payload), run=_run_identity(session="jax-jax-os-lead"), post=post)
     assert code == 0
@@ -133,7 +133,7 @@ def test_adhoc_role_for_a_non_lead_session_name(is_adhoc_event=True):
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "notification_type": "agent_needs_input"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "notification_type": "agent_needs_input"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         hook.main(["claude-notification"], stdin=io.StringIO(payload), run=_run_identity(session="probe-scratch"), post=post)
     assert [url for url, _ in posts] == [hook.EVENTS_URL]  # notification no longer registers a session
@@ -147,7 +147,7 @@ def test_failed_identity_lookup_falls_back_to_adhoc_and_skips_session_post_findi
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "done"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "last_assistant_message": "done"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(ok=False), post=post)
     assert [url for url, _ in posts] == [hook.EVENTS_URL]  # no session POST — identity lookup failed
@@ -158,7 +158,7 @@ def test_failed_identity_lookup_falls_back_to_adhoc_and_skips_session_post_findi
 
 def test_claude_question_and_resolved_mapping():
     raw = json.dumps({
-        "cwd": "/home/rafa/repos/jax-os",
+        "cwd": "/home/user/repos/jax-os",
         "tool_name": "AskUserQuestion", "tool_use_id": "toolu_1",
         "tool_input": {"questions": [{"question": "Merge?", "options": [{"label": "Yes"}]}]},
     })
@@ -196,7 +196,7 @@ def test_codex_permission_is_deterministic_attention_needed_without_tmux():
         posts.append((url, payload))
         return {"ok": True}
     uuid = "0191f0aa-1111-7000-8000-000000000001"
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "session_id": uuid, "tool_name": "shell", "tool_input": {}})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", "session_id": uuid, "tool_name": "shell", "tool_input": {}})
     with patch.dict(os.environ, {}, clear=True):  # no TMUX/TMUX_PANE at all
         hook.main(["codex-permission"], stdin=io.StringIO(raw), post=post)
     assert [url for url, _ in posts] == [hook.EVENTS_URL]  # native: no session registration
@@ -212,9 +212,9 @@ def test_codex_permission_is_deterministic_attention_needed_without_tmux():
 def test_codex_native_start_stop_and_permission_emit_once_without_tmux():
     uuid = "0191f0aa-2222-7000-8000-000000000002"
     for mode, payload, event_type, emitter in (
-        ("codex-userprompt", {"cwd": "/home/rafa/repos/jax-os", "session_id": uuid, "prompt": "hi"}, "turn-started", "codex-userprompt"),
-        ("codex-stop", {"cwd": "/home/rafa/repos/jax-os", "session_id": uuid, "last_assistant_message": "[JAXFLOW: done]"}, "turn-stopped", "codex-stop"),
-        ("codex-permission", {"cwd": "/home/rafa/repos/jax-os", "session_id": uuid}, "attention-needed", "codex-permission"),
+        ("codex-userprompt", {"cwd": "/home/user/repos/jax-os", "session_id": uuid, "prompt": "hi"}, "turn-started", "codex-userprompt"),
+        ("codex-stop", {"cwd": "/home/user/repos/jax-os", "session_id": uuid, "last_assistant_message": "[JAXFLOW: done]"}, "turn-stopped", "codex-stop"),
+        ("codex-permission", {"cwd": "/home/user/repos/jax-os", "session_id": uuid}, "attention-needed", "codex-permission"),
     ):
         posts = []
         def post(url, p, timeout=5):
@@ -237,7 +237,7 @@ def test_codex_native_missing_or_malformed_uuid_is_a_diagnostic_and_no_event():
         def post(url, p, timeout=5):
             posts.append((url, p))
             return {"ok": True}
-        payload = {"cwd": "/home/rafa/repos/jax-os"}
+        payload = {"cwd": "/home/user/repos/jax-os"}
         if bad is not None:
             payload["session_id"] = bad
         with patch.dict(os.environ, {}, clear=True):
@@ -250,7 +250,7 @@ def test_claude_still_requires_its_pane_environment():
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "done"})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", "last_assistant_message": "done"})
     with patch.dict(os.environ, {}, clear=True):  # Claude has no native path
         hook.main(["claude-stop"], stdin=io.StringIO(raw), post=post)
     assert posts == []
@@ -264,7 +264,7 @@ def test_codex_oneshot_suppression_still_checked_first():
     def post(url, payload, timeout=5):
         posts.append((url, payload))
         return {"ok": True}
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "session_id": "0191f0aa-3333-7000-8000-000000000003"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "session_id": "0191f0aa-3333-7000-8000-000000000003"})
     with patch.dict(os.environ, {"JAXFLOW_ONESHOT": "1"}, clear=True):
         hook.main(["codex-stop"], stdin=io.StringIO(payload), post=post)
     assert posts == []
@@ -280,7 +280,7 @@ def test_userprompt_modes_map_to_local_turn_started_never_forwarding_prompt_text
         def post(url, payload, timeout=5):
             posts.append((url, payload))
             return {"ok": True}
-        raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "prompt": "should never leave the process", **extra})
+        raw = json.dumps({"cwd": "/home/user/repos/jax-os", "prompt": "should never leave the process", **extra})
         with patch.dict(os.environ, env, clear=True):
             hook.main([mode], stdin=io.StringIO(raw), run=_run_identity(), post=post)
         event = posts[-1][1]
@@ -307,7 +307,7 @@ def test_codex_stop_and_claude_stop_route_through_the_same_classifier():
         def post(url, payload, timeout=5):
             posts.append((url, payload))
             return {"ok": True}
-        raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "[JAXFLOW: done]", **extra})
+        raw = json.dumps({"cwd": "/home/user/repos/jax-os", "last_assistant_message": "[JAXFLOW: done]", **extra})
         with patch.dict(os.environ, env, clear=True):
             hook.main([mode], stdin=io.StringIO(raw), run=_run_identity(), post=post)
         event = posts[-1][1]
@@ -416,16 +416,16 @@ def test_redaction_covers_all_nine_patterns():
 
 
 def test_credential_is_read_from_one_secure_env_file_only(monkeypatch):
-    """ONE source since 2026-09-07 (BWS is the single origin of shared secrets). The insecure-
+    """ONE source (the owner-filled env file is the single origin of shared secrets). The insecure-
     mode case must degrade to "" rather than fall through to some other credential file: a
-    second source could only ever disagree with BWS. No test may touch a real credential, so
+    second source could only ever disagree with it. No test may touch a real credential, so
     every assertion here runs against a temporary file.
 
-    MOA-498: `_classifier_api_key` now delegates to `jev_client.api_key`, whose precedence
+    `_classifier_api_key` now delegates to `jev_client.api_key`, whose precedence
     is process env > LOCAL_ENV_PATH > ENV_PATH. Patch jev_client's own constants (not
     workflow_poll's deleted ENV_PATH) and neuter the repo's real `.env.local` + process env
     so this test can only ever see the temporary file. The surrounding-quote strip matters:
-    `hermes-env-sync` writes some values quoted."""
+    env-sync tools may write some values quoted."""
     import tempfile
     from pathlib import Path
     monkeypatch.delenv("OPENROUTER_API_KEY_BUILDER", raising=False)
@@ -580,19 +580,19 @@ def test_project_from_relative_linked_worktree():
 
 def test_project_outside_repo_falls_back_to_basename():
     run = _run_git("", ok=False)
-    assert hook._project_from_cwd("/home/rafa/Documents", run) == "Documents"
+    assert hook._project_from_cwd("/home/user/Documents", run) == "Documents"
 
 
 def test_project_from_cwd_rejects_empty():
-    run = _run_git("/home/rafa/repos/jax-os/.git")
+    run = _run_git("/home/user/repos/jax-os/.git")
     assert hook._project_from_cwd(None, run) is None
     assert hook._project_from_cwd("", run) is None
 
 
 def test_project_git_output_whitespace_is_stripped():
     # A git runner that pads its output must still resolve cleanly (the probe strips lines).
-    run = _run_git("  /home/rafa/repos/jax-os  ")
-    assert hook._project_from_cwd("/home/rafa/repos/jax-os", run) == "jax-os"
+    run = _run_git("  /home/user/repos/jax-os  ")
+    assert hook._project_from_cwd("/home/user/repos/jax-os", run) == "jax-os"
 
 
 def test_project_from_cwd_survives_git_oserror_falls_back_to_basename():
@@ -600,7 +600,7 @@ def test_project_from_cwd_survives_git_oserror_falls_back_to_basename():
     # _project_from_cwd — it should fall through to the basename(normpath(cwd)) fallback.
     def run(argv, cwd=None):
         raise FileNotFoundError("git")
-    assert hook._project_from_cwd("/home/rafa/repos/jax-os", run) == "jax-os"
+    assert hook._project_from_cwd("/home/user/repos/jax-os", run) == "jax-os"
 
 
 def test_hook_main_still_posts_event_when_git_raises_oserror():
@@ -613,7 +613,7 @@ def test_hook_main_still_posts_event_when_git_raises_oserror():
         if argv[:2] == ["tmux", "display-message"]:
             return SimpleNamespace(returncode=1, stdout="", stderr="no server")
         raise FileNotFoundError("git")
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "done"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "last_assistant_message": "done"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         code = hook.main(["claude-stop"], stdin=io.StringIO(payload), run=run, post=post)
     assert code == 0
@@ -723,7 +723,7 @@ def test_session_id_is_forwarded_bounded_and_omitted_when_absent():
         with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
             hook.main(["claude-stop"], stdin=io.StringIO(json.dumps(body)),
                       run=_run_identity(session="jax-jax-os-lead"), post=post)
-    base = {"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "done here"}
+    base = {"cwd": "/home/user/repos/jax-os", "last_assistant_message": "done here"}
     run_hook({**base, "session_id": "sess-abc"})
     assert posts[-1][1]["harness_session"] == "sess-abc"
     posts.clear(); run_hook(base)
@@ -1037,14 +1037,14 @@ def test_toolused_modes_post_the_tool_name_only_never_input_response_or_path(tmp
         ("codex-toolused", {}, {"session_id": "0191f0aa-6666-7000-8000-000000000006"}),
     ):
         posts, post = _tool_post()
-        raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "tool_name": "Bash",
-                          "tool_input": {"command": "cat /home/rafa/.env"}, "tool_response": "SECRET=1", **extra})
+        raw = json.dumps({"cwd": "/home/user/repos/jax-os", "tool_name": "Bash",
+                          "tool_input": {"command": "cat /home/user/.env"}, "tool_response": "SECRET=1", **extra})
         with patch.dict(os.environ, env, clear=True):
             assert hook.main([mode], stdin=io.StringIO(raw), run=_run_identity(), post=post) == 0
         event = _events(posts)[-1]
         assert event["type"] == "tool-used" and event["emitter"] == mode and event["source"] == "deterministic"
         assert event["payload"] == {"tool": "Bash"}
-        assert "/home/rafa/.env" not in json.dumps(event) and "SECRET" not in json.dumps(event)
+        assert "/home/user/.env" not in json.dumps(event) and "SECRET" not in json.dumps(event)
 
 
 def test_toolused_tool_name_is_bounded_to_64_chars_and_a_missing_name_posts_nothing(tmp_path, monkeypatch):
@@ -1066,7 +1066,7 @@ def test_subagent_modes_post_agent_identity_only_and_are_never_throttled(tmp_pat
         ("codex-subagentstart", "codex-subagentstop", {}, {"session_id": "0191f0aa-7777-7000-8000-000000000007"}),
     ):
         posts, post = _tool_post()
-        raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "agent_id": "agent-1", "agent_type": "Explore",
+        raw = json.dumps({"cwd": "/home/user/repos/jax-os", "agent_id": "agent-1", "agent_type": "Explore",
                           "prompt": "find the secret", **extra})
         with patch.dict(os.environ, env, clear=True):
             for _ in range(3):  # three starts inside one 10s bucket — none dropped (round 2 F2)
@@ -1084,7 +1084,7 @@ def test_subagent_modes_post_agent_identity_only_and_are_never_throttled(tmp_pat
 def test_toolused_throttle_posts_once_per_bucket_per_identity_and_again_in_the_next_bucket(tmp_path, monkeypatch):
     monkeypatch.setattr(hook, "THROTTLE_ROOT", tmp_path / "throttle")
     posts, post = _tool_post()
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "tool_name": "Bash"})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", "tool_name": "Bash"})
     with patch.object(hook.time, "time", return_value=1_000_000.0):
         with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
             hook.main(["claude-toolused"], stdin=io.StringIO(raw), run=_run_identity(), post=post)
@@ -1102,7 +1102,7 @@ def test_toolused_throttle_posts_once_per_bucket_per_identity_and_again_in_the_n
 def test_toolused_throttle_claim_is_one_exclusive_create_and_a_lost_race_skips_silently(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hook, "THROTTLE_ROOT", tmp_path / "throttle")
     posts, post = _tool_post()
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "tool_name": "Bash"})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", "tool_name": "Bash"})
     calls = []
 
     def fake_open(path, flags, mode=0o777, *args, **kwargs):
@@ -1128,7 +1128,7 @@ def test_toolused_two_concurrent_claims_on_the_same_bucket_post_exactly_once(tmp
         with lock:
             posts.append((url, payload))
         return {"ok": True}
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "tool_name": "Bash"})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", "tool_name": "Bash"})
     barrier = threading.Barrier(2)
 
     def worker():
@@ -1153,7 +1153,7 @@ def test_toolused_sweeps_markers_older_than_six_buckets_and_never_blocks_a_fresh
     (root / "_9-99995").write_text("")   # 5 buckets old — kept
     (root / "junk").write_text("")       # no bucket suffix — ignored
     posts, post = _tool_post()
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "tool_name": "Bash"})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", "tool_name": "Bash"})
     with patch.object(hook.time, "time", return_value=1_000_000.0):
         with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
             hook.main(["claude-toolused"], stdin=io.StringIO(raw), run=_run_identity(), post=post)
@@ -1164,7 +1164,7 @@ def test_toolused_sweeps_markers_older_than_six_buckets_and_never_blocks_a_fresh
 def test_new_modes_keep_the_existing_identity_gates_and_the_oneshot_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(hook, "THROTTLE_ROOT", tmp_path / "throttle")
     posts, post = _tool_post()
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", "tool_name": "Bash", "agent_id": "a", "agent_type": "t"})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", "tool_name": "Bash", "agent_id": "a", "agent_type": "t"})
     for mode in ("claude-toolused", "claude-subagentstart", "claude-subagentstop"):
         with patch.dict(os.environ, {"TMUX": "1"}, clear=True):  # TMUX set, TMUX_PANE absent
             assert hook.main([mode], stdin=io.StringIO(raw), run=_run_identity(), post=post) == 0
@@ -1200,15 +1200,15 @@ def test_claude_stop_arms_and_delivers_an_answer_via_exit_2(tmp_path, monkeypatc
 
     def fake_sleep(seconds):
         session_dir.mkdir(parents=True, exist_ok=True)
-        answer_path.write_text("[Jax OS · Rafa] pode\n", encoding="utf-8")
+        answer_path.write_text("[Jax OS · Owner] pode\n", encoding="utf-8")
 
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "session_id": session_id,
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "session_id": session_id,
                            "last_assistant_message": "posso mergear feat/x em main?"})
     with patch.object(hook.time, "sleep", side_effect=fake_sleep):
         with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
             code = hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(), post=post)
     assert code == 2
-    assert capsys.readouterr().err.strip() == "[Jax OS · Rafa] pode"
+    assert capsys.readouterr().err.strip() == "[Jax OS · Owner] pode"
     assert not (session_dir / "answer-42.armed").exists()
     assert not answer_path.exists()
 
@@ -1219,7 +1219,7 @@ def test_claude_stop_does_not_arm_on_a_waiting_or_done_self_tag(tmp_path, monkey
     def post(url, payload, timeout=5):
         return {"ok": True, "data": {"id": 7, "ts": "t", "delivery": "local"}}
 
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "session_id": _SESSION_A,
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "session_id": _SESSION_A,
                            "last_assistant_message": "[JAXFLOW: done] shipped"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         code = hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(), post=post)
@@ -1233,7 +1233,7 @@ def test_claude_stop_does_not_arm_on_an_empty_redacted_tail(tmp_path, monkeypatc
     def post(url, payload, timeout=5):
         return {"ok": True, "data": {"id": 9, "ts": "t", "delivery": "local"}}
 
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "session_id": _SESSION_A, "last_assistant_message": "   \n  "})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "session_id": _SESSION_A, "last_assistant_message": "   \n  "})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         code = hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(), post=post)
     assert code == 0
@@ -1246,7 +1246,7 @@ def test_claude_stop_does_not_arm_when_post_fails(tmp_path, monkeypatch):
     def post(url, payload, timeout=5):
         raise RuntimeError("hook post failed")
 
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "session_id": _SESSION_A, "last_assistant_message": "posso mergear?"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "session_id": _SESSION_A, "last_assistant_message": "posso mergear?"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         code = hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(), post=post)
     assert code == 0
@@ -1259,7 +1259,7 @@ def test_claude_stop_does_not_arm_on_a_non_canonical_harness_session(tmp_path, m
     def post(url, payload, timeout=5):
         return {"ok": True, "data": {"id": 11, "ts": "t", "delivery": "local"}}
 
-    payload = json.dumps({"cwd": "/home/rafa/repos/jax-os", "session_id": "not-a-uuid", "last_assistant_message": "posso mergear?"})
+    payload = json.dumps({"cwd": "/home/user/repos/jax-os", "session_id": "not-a-uuid", "last_assistant_message": "posso mergear?"})
     with patch.dict(os.environ, {"TMUX": "1", "TMUX_PANE": "%9"}, clear=True):
         code = hook.main(["claude-stop"], stdin=io.StringIO(payload), run=_run_identity(), post=post)
     assert code == 0
@@ -1306,7 +1306,7 @@ def test_answer_watcher_supersession_with_own_answer_present_discards_it_unread(
     own_armed = session_dir / "answer-5.armed"
     own_armed.write_text("", encoding="utf-8")
     own_answer = session_dir / "answer-5.answer"
-    own_answer.write_text("[Jax OS · Rafa] pode\n", encoding="utf-8")
+    own_answer.write_text("[Jax OS · Owner] pode\n", encoding="utf-8")
     (session_dir / "answer-6.armed").write_text("", encoding="utf-8")
 
     code = hook._watch_for_answer(session_dir, 5)
@@ -1328,12 +1328,12 @@ def test_answer_watcher_ignores_an_older_marker(tmp_path, monkeypatch, capsys):
     own_armed.write_text("", encoding="utf-8")
 
     def fake_sleep(seconds):
-        (session_dir / "answer-6.answer").write_text("[Jax OS · Rafa] pode\n", encoding="utf-8")
+        (session_dir / "answer-6.answer").write_text("[Jax OS · Owner] pode\n", encoding="utf-8")
 
     with patch.object(hook.time, "sleep", side_effect=fake_sleep):
         code = hook._watch_for_answer(session_dir, 6)
     assert code == 2
-    assert capsys.readouterr().err.strip() == "[Jax OS · Rafa] pode"
+    assert capsys.readouterr().err.strip() == "[Jax OS · Owner] pode"
     assert not own_armed.exists()
     assert (session_dir / "answer-5.armed").exists()
 
@@ -1344,7 +1344,7 @@ def test_text_stop_kicks_the_classifier_and_a_tagged_stop_does_not(monkeypatch):
     post = lambda url, payload, timeout=5: {"ok": True}
     env = {"TMUX": "1", "TMUX_PANE": "%9"}
     with patch.dict(os.environ, env, clear=True):
-        text = json.dumps({"cwd": "/home/rafa/repos/jax-os", "last_assistant_message": "Posso fazer o merge?"})
+        text = json.dumps({"cwd": "/home/user/repos/jax-os", "last_assistant_message": "Posso fazer o merge?"})
         hook.main(["claude-stop"], stdin=io.StringIO(text), run=_run_identity(ok=False), post=post)
         assert kicks == [1]
         hook.main(["claude-stop"], stdin=io.StringIO("{}"), run=_run_identity(ok=False), post=post)
@@ -1581,7 +1581,7 @@ def _collect_posts(fail_sessions=False):
 
 
 def _drive_claude(mode, payload, post):
-    raw = json.dumps({"cwd": "/home/rafa/repos/jax-os", **payload})
+    raw = json.dumps({"cwd": "/home/user/repos/jax-os", **payload})
     env = {"TMUX": "1", "TMUX_PANE": "%9", "JAXFLOW_NO_CLASSIFY_KICK": "1"}  # no real poller start on stop
     with patch.dict(os.environ, env, clear=True):
         return hook.main([mode], stdin=io.StringIO(raw), run=_run_identity(), post=post)
