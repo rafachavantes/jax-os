@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import jaxflow_run as jr
@@ -143,6 +144,41 @@ def _persist_launch_selection(path, manifest, selection, *, control_repo):
         raise
     finally:
         os.close(parent_fd)
+
+
+def _emit_launch_record(manifest, selection, *, worktree, control_repo, post, now=None):
+    """One silent `builder-launched` event per managed launch (usage attribution). Spools
+    BEFORE posting and deletes the spool only once `post` returned; never raises -- a failed
+    record must never fail a build."""
+    try:
+        if type(selection) is not dict:
+            return
+        moment = now() if now is not None else datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        event = {
+            "run_id": manifest["run_id"], "project": manifest["project"], "role": "builder",
+            "type": "builder-launched", "source": "deterministic", "emitter": "wrapper",
+            "payload": {
+                "launched_at": moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "worktree": str(worktree),
+                "runtime_model": selection["runtime_model"],
+                "model": selection["model"],
+                "profile": selection["profile_name"],
+            },
+        }
+        spool = jc._launch_spool_path(control_repo, manifest["run_id"], time.time_ns())
+        jc._write_spool_at(spool, event)
+        try:
+            post(event)
+        except Exception:
+            return
+        try:
+            spool.unlink()
+        except OSError:
+            pass
+    except Exception:
+        pass
 
 
 def _resolve_managed_launch(manifest, worktree, manifest_path, env, control_repo):
@@ -880,6 +916,12 @@ def _run_builder_worker(manifest, *, run, post, popen, killpg, env, allowlist_ro
             return _refuse_builder_run(
                 message, manifest=manifest, run=run, post=post,
                 control_repo=control_repo, worktree=worktree, branch=branch,
+            )
+
+        if runtime == "opencode-builder":
+            _emit_launch_record(
+                manifest, manifest.get("launch_selection"),
+                worktree=worktree, control_repo=control_repo, post=post,
             )
 
         child_box = {"child": None}

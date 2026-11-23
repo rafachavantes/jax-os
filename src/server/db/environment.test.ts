@@ -95,7 +95,7 @@ describe("own-DB readonly worker (M5 Task 1)", () => {
     });
     expect(snapshot).toMatchObject({
       ok: true,
-      schemaVersion: 15,
+      schemaVersion: 16,
       latestMetricTs: "2026-11-19T00:02:00.000Z",
       paneContext: { project: "jax-os", role: "builder", session: "s1", observedAt: "2026-11-19T00:00:00.000Z" },
     });

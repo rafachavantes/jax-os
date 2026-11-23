@@ -9,6 +9,7 @@ import type Database from "better-sqlite3";
 import {
   addPendingDir,
   applyFileBatch,
+  attributeOpenCodeModels,
   countRegisteredFiles,
   ensureDiscoveryCycle,
   finishDiscoveryCycle,
@@ -74,6 +75,8 @@ export type NativeUsageItem = {
   fileIdentity: string | null;
   turnId: string | null;
   rootTurnId: string | null;
+  cwd?: string | null;
+  rawModel?: string | null;
 };
 
 export type SourceState = "available" | "empty" | "indexing" | "unavailable" | "disabled" | "incompatible";
@@ -302,8 +305,14 @@ export function parseOpenCodeRow(raw: unknown, opts: { now: number }): ParseOutc
     : null;
   const costAmount =
     typeof raw.cost === "number" && Number.isFinite(raw.cost) && raw.cost >= 0 ? raw.cost : null;
-  const model = typeof raw.model_id === "string" && raw.model_id.length > 0 ? raw.model_id : null;
-  const agent = typeof raw.agent === "string" && raw.agent.length > 0 ? raw.agent : "OpenCode";
+  const modelId = typeof raw.model_id === "string" && raw.model_id.length > 0 ? raw.model_id : null;
+  const providerId = typeof raw.provider_id === "string" && raw.provider_id.length > 0 ? raw.provider_id : null;
+  const model = modelId === null ? null : providerId === null ? modelId : `${providerId}/${modelId}`;
+  const cwd =
+    typeof raw.cwd === "string" && raw.cwd.length >= 1 && raw.cwd.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/.test(raw.cwd)
+      ? raw.cwd
+      : null;
   const sessionId = raw.session_id;
 
   return {
@@ -315,8 +324,10 @@ export function parseOpenCodeRow(raw: unknown, opts: { now: number }): ParseOutc
       parentId,
       isChild: parentId !== null,
       provenance: projection,
-      agent,
+      agent: "OpenCode",
       model,
+      rawModel: model,
+      cwd,
       modelConflict: false,
       identityConflict: false,
       ts,
@@ -1740,6 +1751,8 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
   var rows = [];
   function project(projection, meta, data){
     var tokens = null, modelId = null, providerId = null, agent = null, cost = null, created = null;
+    var pathObj = obj(data.path);
+    var cwd = pathObj && typeof pathObj.cwd === "string" ? pathObj.cwd : null;
     if (projection === "v2") {
       var model = obj(data.model); tokens = obj(data.tokens); var time = obj(data.time);
       modelId = model && typeof model.id === "string" ? model.id : null;
@@ -1781,6 +1794,7 @@ export const OPENCODE_HELPER_SOURCE = String.raw`(function(){
       model_id: modelId,
       provider_id: providerId,
       agent: agent,
+      cwd: cwd,
       created: created,
       updated: typeof meta.time_updated === "number" ? meta.time_updated : created,
       cost: cost,
@@ -2320,6 +2334,13 @@ export async function runNativeUsagePass(deps: NativeCollectorDeps): Promise<voi
       return pass;
     }),
   );
+  // Attribution is best-effort and re-evaluated every pass: a launch record that arrived
+  // after its rows were collected corrects them here on the next tick.
+  try {
+    attributeOpenCodeModels(deps.db);
+  } catch {
+    /* never fail a collection pass over a label rewrite */
+  }
 }
 
 type StartupRoots = NativeCollectorDeps["roots"];

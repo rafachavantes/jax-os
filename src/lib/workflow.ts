@@ -8,8 +8,12 @@ export const EVENT_TYPES = [
   "merge-approved", "gc-removed",
   "tool-used", "subagent-started", "subagent-stopped",
   "mission-status-updated", "mission-finished", "pr-opened",
+  "builder-launched",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
+
+// Usage attribution record emitted by jaxflow at every managed OpenCode launch.
+export const LAUNCH_RECORD_TYPE = "builder-launched" as const;
 
 export const EMITTERS = [
   "wrapper", "claude-pretool", "claude-posttool", "claude-notification",
@@ -130,6 +134,9 @@ export const EVENT_MATRIX: Record<EventType, MatrixRow> = {
   "tool-used": { emitters: ["claude-toolused", "codex-toolused"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   "subagent-started": { emitters: ["claude-subagentstart", "codex-subagentstart"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
   "subagent-stopped": { emitters: ["claude-subagentstop", "codex-subagentstop"], roles: ["lead", "adhoc"], runScoped: false, policy: "local" },
+  // Usage attribution: one silent row per managed OpenCode launch. Local only — it must
+  // never reach Telegram, the cards or the project timeline.
+  "builder-launched": { emitters: ["wrapper"], roles: ["builder"], runScoped: true, policy: "local" },
 };
 
 // MOA-487 §5 Decision 2: every forward-policy type, derived from the matrix — never a second

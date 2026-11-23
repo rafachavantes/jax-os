@@ -771,7 +771,8 @@ def test_worker_builder_signal_writes_checkpoint_for_managed_run(tmp_path, monke
         post=lambda e: events.append(e) or {"ok": True},
         popen=popen, killpg=lambda pgid, sig: None, allowlist_root=allow_root,
     )
-    assert [e["payload"]["contract_status"] for e in events] == ["interrupted"]
+    finals = [e for e in events if e["type"] == "run-finished"]
+    assert [e["payload"]["contract_status"] for e in finals] == ["interrupted"]
     checkpoint_path = jaxflow_common._manifest_dir(root, manifest["run_id"]) / "resume-checkpoint.json"
     assert checkpoint_path.exists()
     assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["outcome"] == "failure"
@@ -802,7 +803,8 @@ def test_worker_builder_signal_before_popen_still_posts_interrupted(monkeypatch)
                 post=lambda e: events.append(e) or {"ok": True}, popen=popen,
                 killpg=lambda pgid, sig: None, allowlist_root=root.parent,
             )
-        assert [e["payload"]["contract_status"] for e in events] == ["interrupted"]
+        finals = [e for e in events if e["type"] == "run-finished"]
+        assert [e["payload"]["contract_status"] for e in finals] == ["interrupted"]
         assert events[0]["payload"]["stage"] == "worker"
         assert events[0]["payload"]["diagnostic"] == "worker interrupted by SIGTERM"
 
@@ -1744,7 +1746,7 @@ def test_worker_builder_runs_both_commands_writes_both_frames_and_wires_the_hand
             post=lambda e: events.append(e) or {"ok": True},
             popen=CapturingBuilderPopen, allowlist_root=root.parent,
         )
-        assert events[0]["payload"]["result"] == "success"
+        assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "success"
         text = (worktree / ".local" / "reports" / "bbbbccccdddd.tests.txt").read_text(encoding="utf-8")
         assert text.count("COMMAND: ") == 2
         assert text.count("EXIT: 0") == 2
@@ -1771,7 +1773,7 @@ def test_worker_builder_a_failing_build_command_fails_the_run_and_still_records_
             post=lambda e: events.append(e) or {"ok": True},
             popen=FakeBuilderPopen, allowlist_root=root.parent,
         )
-        assert events[0]["payload"]["result"] == "failure"
+        assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "failure"
         text = (worktree / ".local" / "reports" / "bbbbccccdddd.tests.txt").read_text(encoding="utf-8")
         assert "EXIT: 0\n" in text and "EXIT: 1\n" in text
 
@@ -1794,7 +1796,7 @@ def test_worker_builder_still_runs_the_build_when_the_test_command_failed():
         )
         text = (worktree / ".local" / "reports" / "bbbbccccdddd.tests.txt").read_text(encoding="utf-8")
         assert text.count("COMMAND: ") == 2
-        assert events[0]["payload"]["result"] == "failure"
+        assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "failure"
 
 
 class FailingReportPopen(FakeBuilderPopen):
@@ -2664,6 +2666,95 @@ def test_worker_uses_current_saved_profile_after_dispatch_edit(tmp_path, monkeyp
     blob = manifest_path.read_text(encoding="utf-8") + json.dumps(events) + str(argv)
     assert "secret-value" not in blob
     assert inherited["BWS_ACCESS_TOKEN"] == "machine-token"
+
+
+def test_worker_managed_launch_posts_one_launch_record(tmp_path, monkeypatch):
+    config, _, settings_path = _stub_launch_paths(tmp_path, monkeypatch)
+    allow_root, root, worktree, manifest_path, manifest = _managed_worker_repo(tmp_path, monkeypatch)
+    _rewrite_json(settings_path, lambda data: (
+        data["builders"]["default"].__setitem__("model", "changed-model"),
+    ))
+    config["provider"]["fixture"]["models"]["jaxflow-builder-default"]["id"] = "changed-model"
+    captured, popen = _capture_builder_popen()
+    code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, popen)
+    assert code == 0
+    launches = [e for e in events if e["type"] == "builder-launched"]
+    assert len(launches) == 1
+    payload = launches[0]["payload"]
+    assert set(payload) == {"launched_at", "worktree", "runtime_model", "model", "profile"}
+    assert payload["launched_at"].endswith("Z")
+    assert payload["worktree"] == str(worktree)
+    assert payload["runtime_model"] == "fixture/jaxflow-builder-default"
+    assert payload["model"] == "fixture/changed-model"
+    assert payload["profile"] == "default"
+    assert [e["type"] for e in events] == ["builder-launched", "run-finished"]
+    run_dir = root / ".local" / "runs" / manifest["run_id"]
+    assert list(run_dir.glob("launch-*.json")) == []
+
+
+def test_worker_non_managed_runtime_posts_no_launch_record():
+    with TemporaryDirectory() as raw:
+        root = Path(raw).resolve() / "demo"
+        _init_repo(root)
+        worktree = _init_worktree(root)
+        _write_plan(worktree)
+        manifest_path, manifest = _write_manifest_for_builder_worker(root, worktree)
+        code, events = _run_builder_worker_test(worktree, manifest_path, root.parent, FakeBuilderPopen)
+        assert code == 0
+        assert [e["type"] for e in events] == ["run-finished"]
+
+
+def test_worker_launch_record_spools_when_post_fails_and_build_still_finishes(tmp_path, monkeypatch):
+    _stub_launch_paths(tmp_path, monkeypatch)
+    allow_root, root, worktree, manifest_path, manifest = _managed_worker_repo(tmp_path, monkeypatch)
+    captured, popen = _capture_builder_popen()
+    events = []
+
+    def post(event):
+        if event["type"] == "builder-launched":
+            raise RuntimeError("hub down")
+        events.append(event)
+        return {"ok": True}
+
+    code = jaxflow_worker.run_worker(
+        str(manifest_path), run=_run_with_tmux(FakeTmux(), real_cwd=worktree),
+        post=post, popen=popen, allowlist_root=allow_root,
+    )
+    assert code == 0
+    assert [e["type"] for e in events] == ["run-finished"]
+    spools = list((root / ".local" / "runs" / manifest["run_id"]).glob("launch-*.json"))
+    assert len(spools) == 1
+    spooled = json.loads(spools[0].read_text(encoding="utf-8"))
+    assert spooled["type"] == "builder-launched"
+    assert spooled["payload"]["model"] == "fixture/wire-real-model"
+
+
+def test_two_launches_of_one_run_leave_two_distinct_records(tmp_path, monkeypatch):
+    _stub_launch_paths(tmp_path, monkeypatch)
+    allow_root, root, worktree, manifest_path, manifest = _managed_worker_repo(tmp_path, monkeypatch)
+    attempted = []
+
+    def post(event):
+        attempted.append(event)
+        raise RuntimeError("hub down")
+
+    stamps = iter([111, 222])
+    monkeypatch.setattr(jaxflow_worker.time, "time_ns", lambda: next(stamps))
+    selection = {
+        "profile_name": "default", "settings_revision": "x" * 32,
+        "effort": "high", "credential": {"kind": "env", "env": "KEY"},
+    }
+    for model in ("fixture/model-one", "fixture/model-two"):
+        jaxflow_worker._emit_launch_record(
+            manifest, {**selection, "model": model, "runtime_model": "fixture/jaxflow-builder-default"},
+            worktree=worktree, control_repo=root, post=post,
+        )
+    assert [e["payload"]["model"] for e in attempted] == ["fixture/model-one", "fixture/model-two"]
+    spools = sorted((root / ".local" / "runs" / manifest["run_id"]).glob("launch-*.json"))
+    assert [p.name for p in spools] == ["launch-111.json", "launch-222.json"]
+    assert [json.loads(p.read_text(encoding="utf-8"))["payload"]["model"] for p in spools] == [
+        "fixture/model-one", "fixture/model-two",
+    ]
 
 
 def test_worker_managed_refuses_deleted_or_malformed_settings(tmp_path, monkeypatch):
@@ -3538,7 +3629,7 @@ def test_worker_checkpoint_captures_post_verify_state_and_outcomes(tmp_path, mon
     head_before = _run_real(["git", "rev-parse", "HEAD"], worktree).stdout.strip()
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, FakeBuilderPopen)
     assert code == 0
-    assert events[0]["payload"]["result"] == "success"
+    assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "success"
     data = jresume.read_checkpoint(_checkpoint_path(root))
     assert data["outcome"] == "success"
     assert data["run_id"] == manifest["run_id"]
@@ -3562,7 +3653,7 @@ def test_worker_checkpoint_captures_post_verify_state_and_outcomes(tmp_path, mon
     )
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, BlockedPopen)
     assert code == 0
-    assert events[0]["payload"]["result"] == "blocked"
+    assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "blocked"
     assert jresume.read_checkpoint(_checkpoint_path(root))["outcome"] == "blocked"
 
     allow_root, root, worktree, manifest_path, _ = _managed_worker_repo(
@@ -3570,7 +3661,7 @@ def test_worker_checkpoint_captures_post_verify_state_and_outcomes(tmp_path, mon
     )
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, FailingReportPopen)
     assert code == 0
-    assert events[0]["payload"]["result"] == "failure"
+    assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "failure"
     assert jresume.read_checkpoint(_checkpoint_path(root))["outcome"] == "failure"
 
 
@@ -3588,7 +3679,7 @@ def test_worker_checkpoint_write_failure_or_secret_does_not_change_result(tmp_pa
     monkeypatch.setattr(jresume, "write_checkpoint", boom)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, FakeBuilderPopen)
     assert code == 0
-    assert events[0]["payload"]["result"] == "success"
+    assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "success"
     assert not _checkpoint_path(root).exists()
 
     monkeypatch.setattr(jresume, "write_checkpoint", original)
@@ -3596,7 +3687,7 @@ def test_worker_checkpoint_write_failure_or_secret_does_not_change_result(tmp_pa
     (worktree / ".env").write_text("nope\n", encoding="utf-8")
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, FakeBuilderPopen)
     assert code == 0
-    assert events[0]["payload"]["result"] == "success"
+    assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "success"
     assert not _checkpoint_path(root).exists()
 
 
@@ -3622,7 +3713,7 @@ def test_worker_legacy_and_missing_report_checkpoint_rules(tmp_path, monkeypatch
     )
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, SilentPopen)
     assert code == 0
-    assert events[0]["payload"]["result"] == "failure"
+    assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "failure"
     assert jresume.read_checkpoint(_checkpoint_path(root))["outcome"] == "failure"
 
     allow_root = tmp_path / "legacy-repos"
@@ -3633,7 +3724,7 @@ def test_worker_legacy_and_missing_report_checkpoint_rules(tmp_path, monkeypatch
     manifest_path, _ = _write_manifest_for_builder_worker(root, worktree)
     code, events = _run_builder_worker_test(worktree, manifest_path, allow_root, FakeBuilderPopen)
     assert code == 0
-    assert events[0]["payload"]["result"] == "success"
+    assert next(e for e in events if e["type"] == "run-finished")["payload"]["result"] == "success"
     assert not _checkpoint_path(root).exists()
 
 

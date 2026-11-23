@@ -1,11 +1,14 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { openDb } from "./index";
+import { MIGRATIONS, migrate, openDb } from "./index";
+import { insertEvent } from "./workflows";
 import {
   addPendingDir,
   applyFileBatch,
+  attributeOpenCodeModels,
   ensureDiscoveryCycle,
   finishDiscoveryCycle,
   getFileCheckpoint,
@@ -117,7 +120,172 @@ describe("migration 15 native usage tables", () => {
     const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[])
       .map((i) => i.name);
     expect(indexes).toContain("native_usage_items_context_ref");
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    db.close();
+  });
+});
+
+describe("migration 16 and model attribution", () => {
+  it("adds cwd/raw_model, rewrites the opencode agent once, resets its cursor, and leaves Claude rows alone", () => {
+    const db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    for (let i = 0; i < 15; i += 1) {
+      db.transaction(() => {
+        db.exec(MIGRATIONS[i]);
+        db.pragma(`user_version = ${i + 1}`);
+      })();
+    }
     expect(db.pragma("user_version", { simple: true })).toBe(15);
+    // v15 shape: no cwd/raw_model yet, OpenCode still carrying its internal agent.
+    db.prepare(
+      `INSERT INTO native_usage_items (harness, item_id, session_id, child_id, parent_id, is_child,
+         provenance, agent, model, model_conflict, identity_conflict, ts, updated_ts, day,
+         all_input, all_output, projection)
+       VALUES ('opencode', 'oc-1', 'ses-1', '', NULL, 0, 'test', 'build', 'provider-x/model-x', 0, 0,
+               1000, 1000, '1970-01-01', 1, 1, 'v2')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO native_usage_items (harness, item_id, session_id, child_id, parent_id, is_child,
+         provenance, agent, model, model_conflict, identity_conflict, ts, updated_ts, day,
+         all_input, all_output, projection)
+       VALUES ('claude', 'msg-1', 'ses-1', '', NULL, 0, 'test', 'Claude Code', 'claude-sonnet-5-5', 0, 0,
+               1000, 1000, '1970-01-01', 1, 1, NULL)`,
+    ).run();
+    db.prepare(
+      "INSERT INTO native_usage_sources (source, state, progress, updated_at) VALUES ('opencode', 'available', ?, 1)",
+    ).run(JSON.stringify({
+      v: 1, complete: true,
+      v1: { after: "a", ceiling: null, done: false },
+      v2: { after: "b", ceiling: null, done: false },
+    }));
+
+    migrate(db);
+    expect(db.pragma("user_version", { simple: true })).toBe(16);
+    const cols = (db.prepare("PRAGMA table_info(native_usage_items)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toContain("cwd");
+    expect(cols).toContain("raw_model");
+    expect(db.prepare("SELECT agent, cwd, raw_model FROM native_usage_items WHERE harness = 'opencode'").get())
+      .toEqual({ agent: "OpenCode", cwd: null, raw_model: null });
+    expect(db.prepare("SELECT agent FROM native_usage_items WHERE harness = 'claude'").get())
+      .toEqual({ agent: "Claude Code" });
+    const progress = db.prepare("SELECT progress FROM native_usage_sources WHERE source = 'opencode'").get() as { progress: string };
+    expect(JSON.parse(progress.progress)).toEqual({
+      v: 1, complete: true,
+      v1: { after: null, ceiling: null, done: false },
+      v2: { after: null, ceiling: null, done: false },
+    });
+    // The agent rewrite is idempotent by construction: running it again changes no row.
+    db.prepare("UPDATE native_usage_items SET agent = 'OpenCode' WHERE harness = 'opencode' AND agent <> 'OpenCode'").run();
+    expect(db.prepare("SELECT agent FROM native_usage_items WHERE harness = 'opencode'").get())
+      .toEqual({ agent: "OpenCode" });
+    db.close();
+  });
+
+  function attrItem(
+    itemId: string, ts: number, cwd: string | null, rawModel: string | null, model: string | null,
+  ): NativeUsageItem {
+    return {
+      harness: "opencode", itemId, sessionId: "ses-attr", childId: null, parentId: null, isChild: false,
+      provenance: "test", agent: "OpenCode", model, modelConflict: false, identityConflict: false,
+      ts, updatedTs: ts, day: utcDay(ts), allInput: 1, allOutput: 1,
+      details: { input: 1, output: 1, cacheRead: null, cacheWrite: null, reasoning: null },
+      cost: null, projection: "v2", fileIdentity: null, turnId: null, rootTurnId: null,
+      cwd, rawModel,
+    };
+  }
+
+  function launch(
+    db: Database.Database, atSeconds: number, model: string,
+    worktree = "/w1", runtimeModel = "opencode-go/jaxflow-builder-default",
+  ): void {
+    insertEvent(db, {
+      run_id: `r${atSeconds}`, project: "p1", role: "builder", type: "builder-launched",
+      source: "deterministic", emitter: "wrapper",
+      payload: {
+        launched_at: new Date(atSeconds * 1000).toISOString(),
+        worktree, runtime_model: runtimeModel, model, profile: "default",
+      },
+    }, new Date(atSeconds * 1000));
+  }
+
+  const storedModel = (db: Database.Database, itemId: string): string | null =>
+    (db.prepare("SELECT model FROM native_usage_items WHERE harness = 'opencode' AND item_id = ?")
+      .get(itemId) as { model: string | null }).model;
+
+  it("attributes rows to the latest earlier launch, leaves unmatched rows on the alias, and is idempotent", () => {
+    const db = openDb(":memory:");
+    launch(db, 1000, "opencode-go/deepseek-v4.1-flash");
+    launch(db, 2000, "xai/grok-4.7");
+    for (const item of [
+      attrItem("between", 1500, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default"),
+      attrItem("after", 2500, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default"),
+      attrItem("before", 500, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default"),
+      attrItem("other-cwd", 2500, "/w2", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default"),
+      attrItem("real-model", 2500, "/w1", "xai/grok-4.7", "xai/grok-4.7"),
+    ]) upsertNativeUsageItem(db, item);
+
+    expect(attributeOpenCodeModels(db)).toBe(2);
+    expect(storedModel(db, "between")).toBe("opencode-go/deepseek-v4.1-flash");
+    expect(storedModel(db, "after")).toBe("xai/grok-4.7");
+    expect(storedModel(db, "before")).toBe("opencode-go/jaxflow-builder-default");
+    expect(storedModel(db, "other-cwd")).toBe("opencode-go/jaxflow-builder-default");
+    expect(storedModel(db, "real-model")).toBe("xai/grok-4.7");
+    expect(attributeOpenCodeModels(db)).toBe(0);
+    db.close();
+  });
+
+  it("two launches sharing one run_id both persist and attribute by time", () => {
+    const db = openDb(":memory:");
+    for (const [at, model] of [[1000, "opencode-go/deepseek-v4.1-flash"], [2000, "xai/grok-4.7"]] as const) {
+      insertEvent(db, {
+        run_id: "same-run", project: "p1", role: "builder", type: "builder-launched",
+        source: "deterministic", emitter: "wrapper",
+        payload: {
+          launched_at: new Date(at * 1000).toISOString(),
+          worktree: "/w1", runtime_model: "opencode-go/jaxflow-builder-default", model, profile: "default",
+        },
+      }, new Date(at * 1000));
+    }
+    expect(db.prepare("SELECT COUNT(*) AS n FROM workflow_events WHERE type = 'builder-launched'").get())
+      .toEqual({ n: 2 });
+    for (const [id, ts] of [["first", 1500], ["second", 2500]] as const) {
+      upsertNativeUsageItem(db, attrItem(
+        id, ts, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default",
+      ));
+    }
+    expect(attributeOpenCodeModels(db)).toBe(2);
+    expect(storedModel(db, "first")).toBe("opencode-go/deepseek-v4.1-flash");
+    expect(storedModel(db, "second")).toBe("xai/grok-4.7");
+    db.close();
+  });
+
+  it("a launch record arriving after the rows were collected relabels them on the next pass", () => {
+    const db = openDb(":memory:");
+    upsertNativeUsageItem(db, attrItem(
+      "late", 1500, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default",
+    ));
+    expect(attributeOpenCodeModels(db)).toBe(0);
+    launch(db, 1000, "opencode-go/deepseek-v4.1-flash");
+    expect(attributeOpenCodeModels(db)).toBe(1);
+    expect(storedModel(db, "late")).toBe("opencode-go/deepseek-v4.1-flash");
+    db.close();
+  });
+
+  it("re-upserting a resolved opencode row with the incoming alias keeps the alias and carries cwd", () => {
+    const db = openDb(":memory:");
+    upsertNativeUsageItem(db, attrItem(
+      "re", 1500, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/deepseek-v4.1-flash",
+    ));
+    const incoming = attrItem(
+      "re", 1500, "/w1", "opencode-go/jaxflow-builder-default", "opencode-go/jaxflow-builder-default",
+    );
+    expect(upsertNativeUsageItem(db, incoming)).toBe("updated");
+    expect(db.prepare(
+      "SELECT model, model_conflict, cwd, raw_model FROM native_usage_items WHERE harness = 'opencode' AND item_id = 're'",
+    ).get()).toEqual({
+      model: "opencode-go/jaxflow-builder-default", model_conflict: 0,
+      cwd: "/w1", raw_model: "opencode-go/jaxflow-builder-default",
+    });
     db.close();
   });
 });
@@ -409,13 +577,13 @@ describe("queryNativeUsage", () => {
     upsertNativeUsageItem(db, opencode({}));
     const all = queryNativeUsage(db, { period: 30, now: NOW });
     const claudeOnly = queryNativeUsage(db, { period: 30, agent: "Claude Code", now: NOW });
-    const modelOnly = queryNativeUsage(db, { period: 30, model: "model-x", now: NOW });
+    const modelOnly = queryNativeUsage(db, { period: 30, model: "provider-x/model-x", now: NOW });
     expect(all.totalTokens).toBe(15 + 153);
     expect(claudeOnly.totalTokens).toBe(15);
     expect(claudeOnly.byAgent).toHaveLength(1);
     expect(claudeOnly.sessions).toEqual({ lead: 1, child: 0 });
     expect(modelOnly.totalTokens).toBe(153);
-    expect(modelOnly.filters.agents).toEqual(expect.arrayContaining(["Claude Code", "build"]));
+    expect(modelOnly.filters.agents).toEqual(expect.arrayContaining(["Claude Code", "OpenCode"]));
     expect(modelOnly.totalCacheRead).toBe(11);
     expect(modelOnly.totalCacheWrite).toBe(5);
     expect(modelOnly.totalReasoning).toBe(7);
@@ -957,7 +1125,7 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     }
     const opts = { period: 30 as const, now: NOW };
     const legacy = legacySnapshot(db, opts);
-    expect(legacy.byModel.map((s) => s.name)).toEqual(["alpha", "zeta"]);
+    expect(legacy.byModel.map((s) => s.name)).toEqual(["provider-x/alpha", "provider-x/zeta"]);
     expectMatchesLegacy(queryNativeUsage(db, opts), legacy);
     db.close();
   });
@@ -972,10 +1140,10 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
       { period: 7, now: NOW },
       { period: 90, now: NOW },
       { period: 30, agent: "Claude Code", now: NOW },
-      { period: 30, agent: "build", now: NOW },
-      { period: 30, model: "model-x", now: NOW },
+      { period: 30, agent: "OpenCode", now: NOW },
+      { period: 30, model: "provider-x/model-x", now: NOW },
       { period: 30, model: UNKNOWN_MODEL_FILTER, now: NOW },
-      { period: 90, agent: "build", model: "model-x", now: NOW },
+      { period: 90, agent: "OpenCode", model: "provider-x/model-x", now: NOW },
     ];
     for (const opts of queries) {
       expectMatchesLegacy(queryNativeUsage(db, opts), legacySnapshot(db, opts));
@@ -987,10 +1155,13 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     const db = openDb(":memory:");
     // Seeded reverse-alphabetically: alphabetical group order would invert the ties.
     const tie = (agent: string, model: string | null, input: number, id: string) =>
-      upsertNativeUsageItem(db, opencode({
-        session_id: `tie-${id}`, message_id: `tie-msg-${id}`, agent, model_id: model,
-        input, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, cost: null,
-      }));
+      upsertNativeUsageItem(db, {
+        ...opencode({
+          session_id: `tie-${id}`, message_id: `tie-msg-${id}`, model_id: model,
+          input, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, cost: null,
+        }),
+        agent,
+      });
     tie("Z", "zeta", 10, "z");
     tie("A", "alpha", 10, "a");
     tie("agent-z", "m1", 13, "m1");
@@ -1000,8 +1171,8 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
       { period: 30, now: NOW },
       { period: 30, agent: "Z", now: NOW },
       { period: 30, agent: "A", now: NOW },
-      { period: 30, model: "zeta", now: NOW },
-      { period: 30, model: "alpha", now: NOW },
+      { period: 30, model: "provider-x/zeta", now: NOW },
+      { period: 30, model: "provider-x/alpha", now: NOW },
       { period: 30, model: UNKNOWN_MODEL_FILTER, now: NOW },
     ];
     for (const opts of queries) {
@@ -1013,7 +1184,7 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
       );
     }
     expect(queryNativeUsage(db, { period: 30, now: NOW }).byModel.map((s) => s.name))
-      .toEqual(["m1", "zeta", "alpha", UNKNOWN_MODEL_FILTER, "m2"]);
+      .toEqual(["provider-x/m1", "provider-x/zeta", "provider-x/alpha", UNKNOWN_MODEL_FILTER, "provider-x/m2"]);
     expect(queryNativeUsage(db, { period: 30, now: NOW }).byAgent.map((s) => s.name))
       .toEqual(["agent-z", "Z", "A", "agent-c", "agent-a"]);
     db.close();
@@ -1033,14 +1204,14 @@ describe("scoped projection diagnostics and reduced SQL aggregation", () => {
     expect(snap.mixedProjectionSessions).toBe(1);
 
     upsertNativeUsageItem(db, opencode({ projection: "v1", message_id: "other-session", session_id: "ses-2", input: 2, output: 2 }));
-    upsertNativeUsageItem(db, opencode({ projection: "v2", message_id: "other-v2", session_id: "ses-2", model_id: "model-z", agent: "plan" }));
+    upsertNativeUsageItem(db, { ...opencode({ projection: "v2", message_id: "other-v2", session_id: "ses-2", model_id: "model-z" }), agent: "plan" });
     snap = queryNativeUsage(db, { period: 30, now: NOW });
     expect(snap.excludedV1Items).toBe(2);
     expect(snap.mixedProjectionSessions).toBe(2);
-    expect(queryNativeUsage(db, { period: 30, agent: "build", now: NOW }).excludedV1Items).toBe(2);
+    expect(queryNativeUsage(db, { period: 30, agent: "OpenCode", now: NOW }).excludedV1Items).toBe(2);
     expect(queryNativeUsage(db, { period: 30, agent: "plan", now: NOW }).excludedV1Items).toBe(0);
-    expect(queryNativeUsage(db, { period: 30, model: "model-z", now: NOW }).excludedV1Items).toBe(0);
-    expect(queryNativeUsage(db, { period: 30, model: "model-x", now: NOW }).excludedV1Items).toBe(2);
+    expect(queryNativeUsage(db, { period: 30, model: "provider-x/model-z", now: NOW }).excludedV1Items).toBe(0);
+    expect(queryNativeUsage(db, { period: 30, model: "provider-x/model-x", now: NOW }).excludedV1Items).toBe(2);
     db.close();
   });
 

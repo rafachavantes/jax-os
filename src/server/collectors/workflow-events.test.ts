@@ -1391,6 +1391,38 @@ describe("gc-removed", () => {
   });
 });
 
+describe("builder-launched", () => {
+  const LAUNCH = {
+    project: "demo", run_id: "aaaabbbbcccc", role: "builder" as const, type: "builder-launched" as const,
+    source: "deterministic" as const, emitter: "wrapper" as const,
+    payload: {
+      launched_at: "2026-11-23T12:00:00Z",
+      worktree: "/home/rafa/repos/demo-feat-x",
+      runtime_model: "opencode-go/jaxflow-builder-default",
+      model: "opencode-go/deepseek-v4.1-flash",
+      profile: "default" as const,
+    },
+  };
+
+  it("accepts the exact shape and renders one line", () => {
+    expect(parseIngress(LAUNCH).ok).toBe(true);
+    const msg = renderMessage({ type: "builder-launched", project: "demo", role: "builder", payload: LAUNCH.payload });
+    expect(msg.length).toBeGreaterThan(0);
+    expect(msg).not.toContain("\n");
+  });
+
+  it("rejects missing run_id, wrong role/emitter, an extra key, and bad profile/model/launched_at", () => {
+    const { run_id: _drop, ...noRun } = LAUNCH;
+    expectInvalid(noRun, /run_id required/);
+    expectInvalid({ ...LAUNCH, role: "lead" }, /role lead not allowed/);
+    expectInvalid({ ...LAUNCH, emitter: "claude-stop" }, /emitter claude-stop cannot emit/);
+    expectInvalid({ ...LAUNCH, payload: { ...LAUNCH.payload, extra: 1 } }, /unknown key/);
+    expectInvalid({ ...LAUNCH, payload: { ...LAUNCH.payload, profile: "x" } }, /profile not allowed/);
+    expectInvalid({ ...LAUNCH, payload: { ...LAUNCH.payload, model: "" } }, /model must be a non-empty string/);
+    expectInvalid({ ...LAUNCH, payload: { ...LAUNCH.payload, launched_at: "yesterday" } }, /launched_at/);
+  });
+});
+
 describe("run-started builder_run_id (diff reviews, round 3 F4)", () => {
   const DIFF_STARTED = {
     // F5 (round 2, MEDIUM): run-started is runScoped -- top-level run_id is required.

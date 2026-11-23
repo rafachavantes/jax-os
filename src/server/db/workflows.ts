@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import {
-  CONTRACT_STATUSES, CONTROL_CHARS_RE, DEFAULT_FORWARD_TYPES, EVENT_MATRIX, HOOK_TELEMETRY_RETENTION_MS, HOOK_TELEMETRY_TYPES_SQL, LIMITS, PROJECT_LABEL, RUN_ID_RE, RUN_KINDS, RUNTIMES, STAGES, paneKey, parseIndexedReply,
+  CONTRACT_STATUSES, CONTROL_CHARS_RE, DEFAULT_FORWARD_TYPES, EVENT_MATRIX, HOOK_TELEMETRY_RETENTION_MS, HOOK_TELEMETRY_TYPES_SQL, LAUNCH_RECORD_TYPE, LIMITS, PROJECT_LABEL, RUN_ID_RE, RUN_KINDS, RUNTIMES, STAGES, paneKey, parseIndexedReply,
   type AnswerRequest, type CapsuleStatus, type ContractStatus, type Delivery, type EventType, type Role, type Stage,
   type WorkflowEventInput, type WorkflowEventRow, type WorkflowQuestionAnswer, type WorkflowQuestionShape,
 } from "../../lib/workflow";
@@ -1616,7 +1616,7 @@ export function getProjectTimeline(db: Database.Database, project: string, scope
   const rows = db
     .prepare(
       `SELECT e.id, e.ts, e.type, e.pane, e.role, e.emitter, e.payload
-       FROM workflow_events e WHERE e.project = ? AND e.type NOT IN (${HOOK_TELEMETRY_TYPES_SQL})${own.sql} ORDER BY e.id DESC LIMIT 20`,
+       FROM workflow_events e WHERE e.project = ? AND e.type NOT IN (${HOOK_TELEMETRY_TYPES_SQL}) AND e.type <> '${LAUNCH_RECORD_TYPE}'${own.sql} ORDER BY e.id DESC LIMIT 20`,
     )
     .all(project, ...own.params) as {
     id: number;

@@ -353,6 +353,15 @@ export const MIGRATIONS: readonly string[] = [
     progress    TEXT NOT NULL DEFAULT '{}',
     updated_at  INTEGER NOT NULL
   );`,
+  `-- migration 16: usage model attribution
+  ALTER TABLE native_usage_items ADD COLUMN cwd TEXT;
+  ALTER TABLE native_usage_items ADD COLUMN raw_model TEXT;
+  UPDATE native_usage_items SET agent = 'OpenCode' WHERE harness = 'opencode' AND agent <> 'OpenCode';
+  UPDATE native_usage_sources SET progress = CASE
+    WHEN json_valid(progress) AND json_extract(progress,'$.complete') = 1
+    THEN '{"v":1,"complete":true,"v1":{"after":null,"ceiling":null,"done":false},"v2":{"after":null,"ceiling":null,"done":false}}'
+    ELSE '{}' END
+  WHERE source = 'opencode';`,
 ];
 
 export function migrate(db: Database.Database): void {

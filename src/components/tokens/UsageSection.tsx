@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { SourceWarning } from "@/components/mission/SourceWarning";
 import { RelativeTime } from "@/components/RelativeTime";
 import { useTokensApi } from "@/lib/useTokensApi";
+import { isCollectionStale, isUnresolvedModel } from "@/lib/usage-display";
 import {
   type NativeUsageSnapshot,
   type RangeKey,
@@ -93,7 +94,12 @@ function BreakdownPanel({
       {slices.length === 0 ? <span className="text-xs text-muted">{t("empty")}</span> : null}
       {slices.map((s, i) => {
         const color = `var(${DATA_COLORS[i % DATA_COLORS.length]})`;
-        const name = s.name === UNKNOWN_MODEL_FILTER ? unknownLabel : s.name;
+        const name =
+          s.name === UNKNOWN_MODEL_FILTER
+            ? unknownLabel
+            : isUnresolvedModel(s.name)
+              ? `${s.name} ${t("unresolvedSuffix")}`
+              : s.name;
         return (
           <div key={s.name} className="flex min-w-0 flex-col gap-[7px]">
             <div className="flex min-w-0 items-center gap-2">
@@ -125,15 +131,14 @@ function CoverageRow({ source }: { source: SourceCoverage }) {
       <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${STATE_STYLE[source.state]}`}>
         {t(`state.${source.state}`)}
       </span>
-      {source.state === "indexing" ? (
-        <span className="text-muted">
-          {t("indexing")}
-          {source.progress ? ` · ${source.progress.filesDone}/${source.progress.filesTotal}` : ""}
-        </span>
-      ) : null}
       {source.lastRefresh ? (
         <span className="text-muted">
           {t("lastRefresh")} <RelativeTime epochMs={source.lastRefresh * 1000} />
+        </span>
+      ) : null}
+      {isCollectionStale(source, Date.now() / 1000) ? (
+        <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-warning">
+          {t("staleCollection")}
         </span>
       ) : null}
       {source.warnings.map((warning) => (
@@ -152,9 +157,7 @@ export function UsageSection() {
   const [agent, setAgent] = useState("");
   const [model, setModel] = useState("");
   const path = usagePath(range, agent, model);
-  const { data, isError, dataUpdatedAt } = useTokensApi<NativeUsageSnapshot>(path, (envelope) =>
-    envelope?.data?.history.indexing ? 1_000 : 60_000,
-  );
+  const { data, isError, dataUpdatedAt } = useTokensApi<NativeUsageSnapshot>(path, 60_000);
   const snapshot = data?.ok ? data.data : undefined;
   const sources = snapshot?.sources ?? [];
   const healthySources = sources.some((s) => s.state === "available" || s.state === "empty");
@@ -205,7 +208,11 @@ export function UsageSection() {
             <option value="">{t("allModels")}</option>
             {(snapshot?.filters.models ?? []).map((name) => (
               <option key={name} value={name}>
-                {name === UNKNOWN_MODEL_FILTER ? t("unknownModel") : name}
+                {name === UNKNOWN_MODEL_FILTER
+                  ? t("unknownModel")
+                  : isUnresolvedModel(name)
+                    ? `${name} ${t("unresolvedSuffix")}`
+                    : name}
               </option>
             ))}
           </select>
