@@ -435,7 +435,8 @@ describe("buildMission — M2 genuine attention dataset (plan Task 1)", () => {
   });
 
   it("a bare blocked status gate stays on the card with its status bucket, never in Waiting for You", () => {
-    const { readiness, model } = missionOfProject(mkHubProject(), "blocked");
+    // A live pane keeps the card on the board (no open session collapses it).
+    const { readiness, model } = missionOfProject(mkHubProject({ panes: [mkPane({ pane: "%1" })] }), "blocked");
     expect(model.cards[0].headline).toBe("needs-you");
     expect(model.cards[0].gate).toBe("blocked");
     expect(summarizeBuckets(readiness, boardCards(model.cards))).toEqual({
@@ -1455,7 +1456,9 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
   const scan = (projects: Project[]) => ({ ok: true as const, data: { projects, skipped: 0, reposRoot: "" } });
 
   it("archived-but-fresh (a later AGENT event) is visible; archived-and-stale is excluded", () => {
-    const fresh = buildMission(scan([{ ...projectBase, archived: true }]), hub({ p1: { ...HUB_BASE, freshnessCount: 1, newestEventTs: "2026-09-19T11:00:00.000Z" } }), undefined, NOW5);
+    // The live pane keeps "fresh" on the board; the stale case has none and stays archived.
+    const livePane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: false, capsule: null, pendingQuestion: null, subagentCount: 0, lastEventTs: "2026-09-19T11:00:00.000Z" } as unknown as HubProject["panes"][number];
+    const fresh = buildMission(scan([{ ...projectBase, archived: true }]), hub({ p1: { ...HUB_BASE, panes: [livePane], freshnessCount: 1, newestEventTs: "2026-09-19T11:00:00.000Z" } }), undefined, NOW5);
     expect(fresh.model.cards[0].visibility).toBe("visible");
     const stale = buildMission(scan([{ ...projectBase, archived: true }]), hub({ p1: { ...HUB_BASE } }), undefined, NOW5);
     expect(stale.model.cards[0].visibility).toBe("archived");
@@ -1514,7 +1517,7 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
     expect(m.model.inbox.map((r) => r.kind)).not.toContain("gate");
   });
 
-  it("a project absent from BOTH hubMap and prefs still derives visible via the client-side default", () => {
+  it("a project absent from BOTH hubMap and prefs gets the default prefs; with no open work it collapses", () => {
     // Plan fix: the plan's shared `projectBase.statusMtime` (2026-09-01) is 18 days older than
     // NOW5, so the auto-hide ladder legitimately yields "autoHidden" for it — the fixture, not
     // the ladder, was wrong for this test's own intent (spec §14: absent from both maps must
@@ -1522,7 +1525,7 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
     // join from the separate no-measurable-activity case the F13 test already covers.
     const freshProject = { ...projectBase, statusMtime: "2026-09-19T11:30:00.000Z" };
     const result = buildMission(scan([freshProject]), hub({}), undefined, NOW5);
-    expect(result.model.cards[0].visibility).toBe("visible");
+    expect(result.model.cards[0].visibility).toBe("autoHidden"); // no session, no run: nothing open
     expect(result.model.cards[0].prefs).toEqual({ pinned: false, hiddenAt: null });
   });
 
@@ -1530,9 +1533,36 @@ describe("Phase 3 — visibility derivation (spec §10, Decisions 14/15)", () =>
     const oldProject = { ...projectBase, updated: "2026-09-01T00:00:00-03:00", statusMtime: "2026-09-01T00:00:00.000Z" };
     const autoHidden = buildMission(scan([oldProject]), hub({ p1: { ...HUB_BASE } }), undefined, NOW5);
     expect(autoHidden.model.cards[0].visibility).toBe("autoHidden");
+    // Age alone never hides: with no measurable lastActivity a live pane keeps the card visible.
     const neverMeasured = { ...projectBase, updated: "", statusMtime: "" };
-    const noSignal = buildMission(scan([neverMeasured]), hub({}), undefined, NOW5);
+    const livePane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: false, capsule: null, pendingQuestion: null, subagentCount: 0, lastEventTs: null } as unknown as HubProject["panes"][number];
+    const noSignal = buildMission(scan([neverMeasured]), hub({ p1: { ...HUB_BASE, panes: [livePane] } }), undefined, NOW5);
     expect(noSignal.model.cards[0].visibility).toBe("visible");
+  });
+
+  describe("open-work rule: the board shows only projects with a live session or a run in flight", () => {
+    const fresh = { ...projectBase, statusMtime: "2026-09-19T11:30:00.000Z" };
+    const livePane = { pane: "%1", tmuxIncarnation: "i1", session: "s", role: "lead", live: true, working: false, capsule: null, pendingQuestion: null, subagentCount: 0, lastEventTs: "2026-09-19T11:59:00.000Z" } as unknown as HubProject["panes"][number];
+    const vis = (hp: HubProject, prefs: Record<string, import("../server/db/workflows").ProjectPrefs> = {}, tmuxSource: "ok" | "failed" = "ok") => {
+      const h = hub({ p1: hp }, prefs);
+      return buildMission(scan([fresh]), { ...h, data: { ...h.data, tmuxSource } }, undefined, NOW5).model.cards[0].visibility;
+    };
+    it("recent activity but no session and no run collapses", () => {
+      expect(vis({ ...HUB_BASE, newestEventTs: "2026-09-19T11:00:00.000Z" })).toBe("autoHidden");
+    });
+    it("a live pane keeps it visible", () => {
+      expect(vis({ ...HUB_BASE, panes: [livePane] })).toBe("visible");
+    });
+    it("an active run with no session keeps it visible", () => {
+      const run = { run_id: "r1" } as unknown as NonNullable<HubProject["activeRun"]>;
+      expect(vis({ ...HUB_BASE, activeRun: run, activeRuns: [run as unknown as HubProject["activeRuns"][number]] })).toBe("visible");
+    });
+    it("pinned with no session stays visible", () => {
+      expect(vis({ ...HUB_BASE }, { p1: { pinned: true, hiddenAt: null } })).toBe("visible");
+    });
+    it("a failed tmux source does not collapse the card", () => {
+      expect(vis({ ...HUB_BASE }, {}, "failed")).toBe("visible");
+    });
   });
 
   it("MissionModel carries archiveAfterDays, hiddenCount and autoHiddenCount", () => {

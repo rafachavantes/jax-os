@@ -696,7 +696,8 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
           <button type="button" onClick={onToggle} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-3 text-left">
             <RuntimeAvatar builder={sessionScope.transport === "codex" ? "codex" : sessionScope.runtime} />
             <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">
-              {display!.kind === "name" ? (
+              {/* A lone session card is titled by its project; the session name rides along muted. */}
+              {card.projectContext ? <>{card.name}<span className="ml-1.5 text-[12px] font-normal text-muted">{display!.text ?? t("board.newSession")}</span></> : display!.kind === "name" ? (
                 <>
                   {display!.text}
                   {sessionScope.sessionId ? <span className="ml-1.5 font-mono text-[10.5px] font-normal text-muted" title={sessionScope.sessionId}>{sessionScope.sessionId.slice(0, 8)}</span> : null}
@@ -845,10 +846,6 @@ export function ProjectCard({ card, issues, expanded, onToggle, rootAttrs }: { c
         // header's own hide targets only this session (cardKey).
         <div data-testid="project-context" className="flex flex-col gap-1.5 border-t border-line-subtle pt-[13px] text-xs text-muted">
           <div className="flex flex-wrap items-center gap-4">
-            <span className="flex min-w-0 items-center gap-1">
-              <FolderGit2 className="h-3.5 w-3.5 flex-none" aria-hidden />
-              <span className="truncate font-semibold text-body-ink">{card.name}</span>
-            </span>
             {typeof issues === "number" ? <span>{t("projects.issueCount", { count: issues })}</span> : null}
             <PrSummary pr={card.pr} githubEnabled={githubEnabled} />
             <PrefsButtons dir={card.dir} prefs={card.projectContext.prefs} visibility={card.visibility} />

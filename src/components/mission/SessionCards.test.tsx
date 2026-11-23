@@ -542,11 +542,22 @@ describe("standalone project context and cross-project provenance (MOA-532/533)"
     });
     const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, issues: 7, expanded: false, onToggle: () => {} }));
     expect(html).toContain('data-testid="project-context"');
-    expect(html).toContain("Alpha");
     expect(html).toContain("PR #12");
     expect(html).toContain("projects.issueCount");
     expect(html).toContain("actions.pin");
     expect(html).not.toContain("claude-code");
+  });
+
+  it("a lone session card is titled by the project, the session name rides muted, and the footer does not repeat the project", () => {
+    const c = card({
+      dir: "p", name: "Alpha", scope: { ...sessionScope, name: "my-session" },
+      projectContext: { prefs: { pinned: false, hiddenAt: null }, lastRun: null },
+    });
+    const html = renderToStaticMarkup(createElement(ProjectCard, { card: c, expanded: false, onToggle: () => {} }));
+    const header = html.slice(0, html.indexOf('data-testid="project-context"'));
+    const context = html.slice(html.indexOf('data-testid="project-context"'));
+    expect(header).toMatch(/text-ink">Alpha<span[^>]*text-muted">my-session<\/span>/);
+    expect(context).not.toContain("Alpha");
   });
 
   it("a pinned project shows its own unpin control on the lone session's context", () => {
@@ -569,6 +580,8 @@ describe("standalone project context and cross-project provenance (MOA-532/533)"
     const known = runSummary("r2");
     const m = missionOf({
       Alpha: mkHubProject({
+        // A live pane keeps the project on the board (no open session collapses it).
+        panes: [mkPane({ pane: "%1", tmuxIncarnation: "1:1", harnessSession: A })],
         split: mkSplit({
           seats: [mkSeat({ sessionId: A })],
           unlinked: mkActivity({ activeRuns: [uncertain, known], activeRun: { ...run("r1"), ownershipUnknown: true } }),
@@ -591,6 +604,7 @@ describe("standalone project context and cross-project provenance (MOA-532/533)"
     };
     const m = missionOf({
       Alpha: mkHubProject({
+        panes: [mkPane({ pane: "%1", tmuxIncarnation: "1:1", harnessSession: A }), mkPane({ pane: "%2", tmuxIncarnation: "1:1", harnessSession: B })],
         split: mkSplit({
           seats: [mkSeat({ sessionId: A }), mkSeat({ sessionId: B })],
           unownedLastRun: flaggedFooterRun,
