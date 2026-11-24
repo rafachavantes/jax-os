@@ -3,7 +3,7 @@ import { MutationRejected } from "../../lib/mutationOutcome";
 import { IssueNotFound, cacheGet, cachePut, createComment, createIssue, fetchAllPaginated, getIssueDetail, getTeams, mapBoard, mapIssueDetail, mapLabels, mapMembers, mapProjectCounts, mapTeams, updateIssue } from "./linear";
 
 const TEAMS_JSON = {
-  data: { teams: { nodes: [{ id: "t1", key: "MOA", name: "Acme Digital" }] } },
+  data: { teams: { nodes: [{ id: "t1", key: "ENG", name: "Acme Digital" }] } },
 };
 
 const BOARD_JSON = {
@@ -74,7 +74,7 @@ const BOARD_JSON = {
 
 describe("mapTeams", () => {
   it("maps team nodes", () => {
-    expect(mapTeams(TEAMS_JSON)).toEqual([{ id: "t1", key: "MOA", name: "Acme Digital" }]);
+    expect(mapTeams(TEAMS_JSON)).toEqual([{ id: "t1", key: "ENG", name: "Acme Digital" }]);
   });
 
   it("throws on malformed response", () => {
@@ -315,7 +315,7 @@ describe("getIssueDetail pagination", () => {
           pageInfo: { hasNextPage: c.hasNextPage, endCursor: c.endCursor },
         },
         children: {
-          nodes: Array.from({ length: ch.count }, (_, i) => ({ identifier: `MOA-${i}`, title: "t", state: { name: "Todo", type: "unstarted" }, assignee: null })),
+          nodes: Array.from({ length: ch.count }, (_, i) => ({ identifier: `ENG-${i}`, title: "t", state: { name: "Todo", type: "unstarted" }, assignee: null })),
           pageInfo: { hasNextPage: ch.hasNextPage, endCursor: ch.endCursor },
         },
       } },

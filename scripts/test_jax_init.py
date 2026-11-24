@@ -410,7 +410,6 @@ def test_per_stack_gitignore(tmp_path, capsys):
     cases = {
         "nextjs": ["node_modules/", ".next/"],
         "python": [".venv/", "__pycache__/"],
-        "bubble": [],
         "other": [],
     }
     for stack, expected in cases.items():
@@ -650,7 +649,7 @@ def test_remote_sequencing_pushes_staging_for_the_dual_pair(tmp_path, capsys, pr
         assert fake.cwds[idx] == canonical, fake.cwds[idx]
 
 
-@pytest.mark.parametrize("preset", ["bubble-buildprint", "single-branch", "single-branch-pr"])
+@pytest.mark.parametrize("preset", ["single-branch", "single-branch-pr"])
 def test_remote_sequencing_pushes_no_staging_outside_the_dual_pair(tmp_path, preset):
     root = tmp_path / "repos"
     fake = FakeRun()
@@ -691,7 +690,7 @@ def test_an_old_preset_name_is_rejected_with_the_five_new_names(tmp_path, capsys
         ji.parse_args(_argv(tmp_path / "x", preset="greenfield"))  # old-name-ok
     assert exc.value.code == 2
     err = capsys.readouterr().err
-    for name in ("single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr", "bubble-buildprint"):
+    for name in ("single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr"):
         assert name in err
 
 def test_remote_on_adopted_history_without_origin_refuses_before_writes(tmp_path, capsys):

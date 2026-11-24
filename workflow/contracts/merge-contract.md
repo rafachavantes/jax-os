@@ -87,16 +87,12 @@ official code — treat it as the most restricted action in the workflow.
      approved sha is a strict descendant of the delivery target's pre-merge tip; an
      EQUAL tip is never treated as a fast-forward.
    - `single-branch` — the sequence above into the configured `Delivery target`; `Merge method`
-     may be `merge` (default) or `squash`. Push that target on pass. `dual-branch` and
-     `bubble-buildprint` keep the existing merge-only behavior and reject an explicit
-     `Merge method`.
+     may be `merge` (default) or `squash`. Push that target on pass. `dual-branch` keeps the
+     existing merge-only behavior and rejects an explicit `Merge method`.
    - `dual-branch` — the sequence above into the `Delivery target`; push on pass.
-  - `bubble-buildprint` — the sequence above into the `Delivery target`. If a remote
-    exists, push that exact branch. If no remote exists, stop after the successful local
-    delivery merge and report `no remote delivery configured`. Buildprint deployment to
-    LIVE requires a DISTINCT approval from the owner: a separate question naming the LIVE target,
-    agreed to (production-promotion rule below). DEV/TEST deployment is never a merge
-    action — it exists only as builder verification under `agent-deploy-verify`.
+   - A local-merge preset without a remote stops after the successful local delivery merge
+     and reports `no remote delivery configured`. A DEV/TEST deployment is never a merge
+     action — it exists only as builder verification under `agent-deploy-verify`.
 - Use the project's commit convention (imperative, `feat:` / `fix:` / `docs:`
   prefixes); merge commit message: `feat: <phase title> (merge <approved-branch>)`.
 - A squash delivery uses the same subject convention and approval, checks, audit, push, and
@@ -109,7 +105,7 @@ official code — treat it as the most restricted action in the workflow.
   points at the approved SHA; otherwise it keeps the branch and reports why.
 - `jaxflow merge` writes `.jax-os/status.md` (`stage: ship`) itself, §4.5/§5 of the jaxflow spec — no manual step here.
 - Report the outcome so it reaches the owner: a PR preset ⇒ the PR URL; local-merge preset with
-  a remote ⇒ the merge hash and pushed ref; `bubble-buildprint` without a remote ⇒ the
+  a remote ⇒ the merge hash and pushed ref; local-merge preset without a remote ⇒ the
   local merge hash and `no remote delivery configured` — always plus the checks result
   you observed.
 
@@ -149,7 +145,7 @@ cannot override the preset destination.
 ## OUTPUTS
 
 - The delivery exactly as the preset dictates: a PR preset ⇒ the PR URL; local-merge preset
-  with a remote ⇒ the merge hash and pushed ref; `bubble-buildprint` without a remote ⇒
+  with a remote ⇒ the merge hash and pushed ref; local-merge preset without a remote ⇒
   the local merge hash and `no remote delivery configured`.
 - Updated `.jax-os/status.md`.
 - One confirmation message: outcome + build/test evidence.

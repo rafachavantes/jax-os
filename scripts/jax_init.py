@@ -17,7 +17,7 @@ import general_settings
 
 OK = 0
 REFUSED = 2
-PRESETS = ("single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr", "bubble-buildprint")
+PRESETS = ("single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr")
 STAGING_PRESETS = ("dual-branch", "dual-branch-pr")  # the only presets with a `staging` branch
 _settings_result = general_settings.read_settings()
 ALLOWLIST_ROOT_DEFAULT = (
@@ -28,7 +28,6 @@ GITIGNORE_BASE = [".local/", ".jax-os/", "AGENTS.md", "CLAUDE.md", ".env*"]
 STACK_GITIGNORE = {
     "nextjs": ["node_modules/", ".next/"],
     "python": [".venv/", "__pycache__/"],
-    "bubble": [],
     "other": [],
 }
 BASELINE_DIRS = [
@@ -602,7 +601,7 @@ def parse_args(argv):
     parser.add_argument("--path", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--preset", required=True, choices=list(PRESETS))
-    parser.add_argument("--stack", required=True, choices=["nextjs", "python", "bubble", "other"])
+    parser.add_argument("--stack", required=True, choices=["nextjs", "python", "other"])
     parser.add_argument("--threat-model", required=True, choices=THREAT_MODEL_MODES)
     parser.add_argument("--remote", action="store_true")
     parser.add_argument("--hooks", choices=["auto", "preserve"], default="auto")

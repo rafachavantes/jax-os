@@ -130,20 +130,6 @@ promotions always keep the legacy `--merge` format and generated
   ```
 - Verification deployment target: none.
 
-**Preset: `bubble-buildprint`** — Bubble via Buildprint: Bubble.io app built through Buildprint.
-- Base branch: `main` (default). Delivery target: `main`. Local git REQUIRED (the
-  workflow wrapper refuses non-git repos); private GitHub remote optional (backup). To
-  move the base later, create the new branch from `main` first (policy migration, not
-  bootstrap).
-- Implementation runs use temporary branches following the Implementation branch
-  convention above (default `feat/<phase>`) from the base.
-- Source of truth: local Bubble JSON exports managed by Buildprint.
-- Verification deployment target: `<Bubble DEV/TEST environment>` — a builder may deploy
-  there ONLY under a handoff `verification: agent-deploy-verify: target=…; check=…` line
-  naming this exact target; never as delivery.
-- Deploy-to-LIVE is delivery: NEVER by a builder. Tech lead only, after the owner's gate, per
-  `merge-contract.md`.
-
 ## Threat model  <!-- CHOOSE ONE MODE -->
 mode: internal-single-user
 <!-- internal-single-user: a single user on a VPS behind Tailscale. Only the owner or the
@@ -162,7 +148,7 @@ mode: internal-single-user
   named check and pastes evidence in the report.
 - `agent-deploy-verify: target=<Verification deployment target>; check=<check>` — ONLY
   when the selected preset's Verification deployment target is a concrete, non-`none`
-  DEV/TEST target (e.g. `bubble-buildprint`); `target=none` is invalid and never deploys;
+  DEV/TEST target; `target=none` is invalid and never deploys;
   the builder deploys there for verification only, then runs the named check.
 
 ## Rules (hard)

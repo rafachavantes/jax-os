@@ -1800,7 +1800,7 @@ function activeRunFor(db: Database.Database, project: string, readChildLogTail: 
   return { ...fields, count: rows.length, lastStep: activeRunLastStep(readChildLogTail, row, fields.kind) };
 }
 
-// Every in-flight run as its own line (MOA session-list), not just the newest — the Sessions
+// Every in-flight run as its own line, not just the newest — the Sessions
 // card needs to show several parallel headless runs (e.g. concurrent Codex reviews) at once.
 // Same rows as activeRunFor (unfinished, latest start per run_id), no LIMIT, no child-log read.
 export function activeRunsFor(db: Database.Database, project: string, scope?: RunScope): HubActiveRunSummary[] {

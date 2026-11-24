@@ -81,7 +81,7 @@ def test_delivery_target_reads_the_dual_branch_preset_block(tmp_path):
     assert jaxflow_merge._resolve_delivery_target(repo, run=fake_run) == ("staging", False, "dual-branch")
 
 
-@pytest.mark.parametrize("preset", ["single-branch", "single-branch-pr", "bubble-buildprint"])
+@pytest.mark.parametrize("preset", ["single-branch", "single-branch-pr"])
 def test_delivery_target_reads_the_other_presets(tmp_path, preset):
     repo = _agents(
         tmp_path,
@@ -131,12 +131,12 @@ def test_delivery_target_refuses_with_preset_unknown(tmp_path, agents_text):
     assert exc.value.code == "preset-unknown"
 
 
-_FIVE_PRESETS = ["single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr", "bubble-buildprint"]
+_ALL_PRESETS = ["single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr"]
 
 
 @pytest.mark.parametrize("preset,target", [
     ("single-branch", "main"), ("single-branch-pr", "main"), ("dual-branch", "staging"),
-    ("dual-branch-pr", "staging"), ("bubble-buildprint", "main"),
+    ("dual-branch-pr", "staging"),
 ])
 def test_delivery_target_resolves_each_of_the_five_presets(tmp_path, preset, target):
     repo = _agents(tmp_path, f"**Preset: `{preset}`** — a.\n\n- Delivery target: `{target}`.\n")
@@ -151,12 +151,12 @@ def test_delivery_target_refuses_an_old_preset_name_and_lists_the_five(tmp_path,
     with pytest.raises(ji.Refusal) as exc:
         jaxflow_merge._resolve_delivery_target(repo, run=lambda argv, cwd=None: _completed(1, ""))
     assert exc.value.code == "preset-unknown"
-    assert all(name in exc.value.hint for name in _FIVE_PRESETS)
+    assert all(name in exc.value.hint for name in _ALL_PRESETS)
 
 
 def test_preset_sets_partition_the_five_names():
     local, pr = set(jaxflow_merge._LOCAL_PRESETS), set(jaxflow_merge._PR_PRESETS)
-    assert local | pr == set(_FIVE_PRESETS) and not local & pr
+    assert local | pr == set(_ALL_PRESETS) and not local & pr
     assert set(jaxflow_merge._RELEASE_PRESETS) == {"dual-branch-pr"}
 
 
@@ -337,11 +337,11 @@ _PRODUCTION_REFUSALS = [
     *(pytest.param(
         f"**Preset: `{preset}`** — a.\n\nDelivery target: `main`.\n- Production target: `main`.\n",
         id=f"{preset}-with-a-stray-production-line")
-      for preset in ("single-branch", "single-branch-pr", "dual-branch", "bubble-buildprint")),
+      for preset in ("single-branch", "single-branch-pr", "dual-branch")),
     *(pytest.param(
         f"**Preset: `{preset}`** — a.\n\nDelivery target: `main`.\n",
         id=f"{preset}-without-the-line")
-      for preset in ("dual-branch", "single-branch", "single-branch-pr", "bubble-buildprint")),
+      for preset in ("dual-branch", "single-branch", "single-branch-pr")),
     pytest.param(
         "**Preset: `dual-branch-pr`** — a.\n\nDelivery target: `staging`.\n",
         id="dual-branch-pr-missing-the-line"),
@@ -442,7 +442,6 @@ def test_release_refuses_github_integration_disabled_before_any_gh_call(tmp_path
     ("single-branch-pr", "main", False, True),
     ("dual-branch", "staging", True, True),
     ("dual-branch-pr", "staging", False, False),
-    ("bubble-buildprint", "main", True, True),
 ])
 def test_preset_matrix_pr_open_and_release_refusals(
         tmp_path, monkeypatch, preset, target, pr_refused, release_refused):
@@ -826,7 +825,7 @@ def test_pr_open_rejects_a_blank_title(tmp_path):
 
 
 def test_pr_open_refuses_a_local_preset_before_any_push_or_gh_call(tmp_path, monkeypatch):
-    # cold review e441aa1770e3 F1: pr-open is PR-preset-only -- a single-branch/dual-branch/bubble-buildprint/no-preset repo must refuse before any push or gh call, not silently deliver.
+    # cold review e441aa1770e3 F1: pr-open is PR-preset-only -- a single-branch/dual-branch/no-preset repo must refuse before any push or gh call, not silently deliver.
     monkeypatch.chdir(tmp_path)
     fake_run, calls = _merge_runner(
         tmp_path, agents="**Preset: `dual-branch`** — a.\n\nDelivery target: `staging`.\n", script={
@@ -867,7 +866,6 @@ def test_pr_open_refuses_a_no_preset_repo_before_any_push_or_gh_call(tmp_path, m
 @pytest.mark.parametrize("agents", [
     "**Preset: `single-branch`** — a.\n\nDelivery target: `main`.\n",
     "**Preset: `dual-branch`** — a.\n\nDelivery target: `staging`.\n",
-    "**Preset: `bubble-buildprint`** — a.\n\nDelivery target: `main`.\n",
     "# AGENTS.md\n\nNo deploy policy here.\n",
 ])
 def test_pr_open_refuses_preset_not_pr_for_a_release_head_before_target_resolution(
@@ -4001,7 +3999,7 @@ def _local_policy_agents(extra="", preset="single-branch", target="main"):
 @pytest.mark.parametrize("preset,method,valid", [
     ("single-branch", "merge", True), ("single-branch", "squash", True),
     ("single-branch", "auto", False), ("single-branch", "rebase", False),
-    ("dual-branch", "squash", False), ("bubble-buildprint", "squash", False),
+    ("dual-branch", "squash", False),
 ])
 def test_local_merge_method_configuration(tmp_path, preset, method, valid):
     (tmp_path / "AGENTS.md").write_text(

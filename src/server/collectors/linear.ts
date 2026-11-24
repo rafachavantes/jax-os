@@ -281,7 +281,7 @@ export function cachePut(cache: Map<string, CacheEntry>, key: string, json: unkn
 
 const TEAMS_QUERY = `{ teams { nodes { id key name } } }`;
 
-// ponytail: first 250 covers MOA's 113 issues today with headroom —
+// ponytail: first 250 covers a small team's issues with headroom —
 // paginate when a team outgrows 250. children(first:50) counts sub-issues per
 // card; a parent with >50 sub-issues would undercount (phases have ≤13) — raise then.
 const BOARD_QUERY = `query Board($teamId: String!) {

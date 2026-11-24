@@ -56,7 +56,7 @@ function KanbanPageInner() {
   });
   const teamList = teams.data?.ok ? teams.data.data : null;
   const zeroTeams = teams.data?.ok && teamList !== null && teamList.length === 0;
-  const fallbackTeam = (teamList?.find((tm) => tm.key === "MOA") ?? teamList?.[0])?.id ?? null;
+  const fallbackTeam = teamList?.[0]?.id ?? null;
   const teamId = resolveTeamId(url.team, hydratedTeam, teamList, fallbackTeam);
 
   const board = useQuery({

@@ -148,7 +148,7 @@ def _merge_checks_line(audit, checks_cmd):
     return f"checks: {checks_cmd} exit 0" if audit["mode"] == "run" else None
 
 
-# Spec §5.2 Step 0. The exact shape of the five preset headings in
+# Spec §5.2 Step 0. The exact shape of the preset headings in
 # `workflow/templates/AGENTS-template.md` (e.g.
 # "**Preset: `dual-branch-pr`** — GitLab Flow with PRs: ...").
 _PRESET_LINE_RE = re.compile(r"^\*\*Preset: `([a-z0-9]+(?:-[a-z0-9]+)*)`\*\*", re.M)
@@ -170,8 +170,8 @@ _TARGET_STOP_RE = re.compile(r"^[ \t]*(?:[-*+][ \t]+|#{1,6}[ \t]+|\*\*Preset:)",
 _TARGET_TOKEN_RE = re.compile(r"`([a-z0-9][a-z0-9/_-]*)`")
 
 # three sets decide behaviour. A call site asks "is this a PR preset", never "is this
-# <name>". `bubble-buildprint` is unchanged; `release` exists only for `dual-branch-pr`.
-_LOCAL_PRESETS = ("single-branch", "dual-branch", "bubble-buildprint")
+# <name>". `release` exists only for `dual-branch-pr`.
+_LOCAL_PRESETS = ("single-branch", "dual-branch")
 
 _PR_PRESETS = ("single-branch-pr", "dual-branch-pr")
 
