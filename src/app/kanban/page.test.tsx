@@ -61,10 +61,10 @@ const detailPayload = {
   },
 };
 
-const TEAM_MOA = { id: "t1", key: "MOA", name: "Acme" };
+const TEAM_ENG = { id: "t1", key: "ENG", name: "Acme" };
 const TEAM_X = { id: "t2", key: "MKT", name: "Marketing" };
 
-function teamsOk(teams: Array<typeof TEAM_MOA>) {
+function teamsOk(teams: Array<typeof TEAM_ENG>) {
   return { data: { ok: true, data: teams }, isError: false, dataUpdatedAt: 1, error: undefined };
 }
 function emptyBoard() {
@@ -73,7 +73,7 @@ function emptyBoard() {
 
 describe("KanbanPage retained poll data", () => {
   it("shows last board under a warning", () => {
-    harness.teams = teamsOk([TEAM_MOA]);
+    harness.teams = teamsOk([TEAM_ENG]);
     harness.board = {
       data: { ok: true, data: { states: [], issues: [] } },
       isError: true,
@@ -92,7 +92,7 @@ describe("KanbanPage retained poll data", () => {
   });
 
   it("mounts the issue overlay for an off-board deep link even when the board is unavailable", () => {
-    harness.teams = teamsOk([TEAM_MOA]);
+    harness.teams = teamsOk([TEAM_ENG]);
     harness.board = { data: undefined, isError: true, dataUpdatedAt: 0, error: new Error("down") };
     harness.detail = { data: { ok: true, data: detailPayload }, isLoading: false, isError: false };
     harness.params = new URLSearchParams("issue=i9");
@@ -104,7 +104,7 @@ describe("KanbanPage retained poll data", () => {
   });
 
   it("mounts the issue overlay for an issue missing from the current board", () => {
-    harness.teams = teamsOk([TEAM_MOA]);
+    harness.teams = teamsOk([TEAM_ENG]);
     harness.board = {
       data: {
         ok: true,
@@ -136,17 +136,16 @@ describe("KanbanPage teams selection", () => {
     expect(harness.boardEnabled).toBe(false);
   });
 
-  it("an invalid URL team falls back to MOA when present", () => {
-    harness.teams = teamsOk([TEAM_MOA, TEAM_X]);
+  it("an invalid URL team falls back to the first team", () => {
+    harness.teams = teamsOk([TEAM_X, TEAM_ENG]);
     harness.board = emptyBoard();
     harness.params = new URLSearchParams("team=bogus");
     const html = renderToStaticMarkup(createElement(KanbanPage));
-    // MOA is the active chip (fallbackTeam prefers MOA, not the first team); MKT stays inactive
-    expect(html).toMatch(/bg-brand-soft text-brand">MOA</);
-    expect(html).not.toMatch(/bg-brand-soft text-brand">MKT</);
+    expect(html).toMatch(/bg-brand-soft text-brand">MKT</);
+    expect(html).not.toMatch(/bg-brand-soft text-brand">ENG</);
   });
 
-  it("an invalid URL team falls back to the first team without MOA", () => {
+  it("an invalid URL team falls back to the only team", () => {
     harness.teams = teamsOk([TEAM_X]);
     harness.board = emptyBoard();
     harness.params = new URLSearchParams("team=bogus");
@@ -163,7 +162,7 @@ describe("KanbanPage teams selection", () => {
   });
 
   it("a warm teams cache with no URL team does not enable the board before hydration", () => {
-    harness.teams = teamsOk([TEAM_MOA]);
+    harness.teams = teamsOk([TEAM_ENG]);
     harness.board = emptyBoard();
     harness.params = new URLSearchParams();
     renderToStaticMarkup(createElement(KanbanPage));
@@ -269,8 +268,8 @@ describe("resolveTeamId", () => {
   // router reflection can still be stale for a render right after hydration
   // flips `hydrated` true — the resolved value must win over the fallback.
   it("falls back to the hydrated team when the URL has none yet, still falls back further once absent from a resolved list, and trusts a URL team directly while unresolved", () => {
-    expect(resolveTeamId(null, "t2", [TEAM_MOA, TEAM_X], "t1")).toBe("t2");
-    expect(resolveTeamId("bogus", null, [TEAM_MOA, TEAM_X], "t1")).toBe("t1");
+    expect(resolveTeamId(null, "t2", [TEAM_ENG, TEAM_X], "t1")).toBe("t2");
+    expect(resolveTeamId("bogus", null, [TEAM_ENG, TEAM_X], "t1")).toBe("t1");
     expect(resolveTeamId("t2", null, null, "t1")).toBe("t2");
   });
 
@@ -278,6 +277,6 @@ describe("resolveTeamId", () => {
   // never the hydrated value — the URL team must win once it's present,
   // instead of staying frozen on the stale hydrated one.
   it("lets a URL team win over the hydrated team once the URL has one", () => {
-    expect(resolveTeamId("t2", "t1", [TEAM_MOA, TEAM_X], "t1")).toBe("t2");
+    expect(resolveTeamId("t2", "t1", [TEAM_ENG, TEAM_X], "t1")).toBe("t2");
   });
 });
