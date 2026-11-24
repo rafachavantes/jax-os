@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../../../../server/db";
 import { upsertNativeUsageItem } from "../../../../server/db/native-usage";
 import { parseClaudeLine } from "../../../../server/collectors/native-usage";
@@ -22,6 +22,10 @@ function get(path: string): Request {
 }
 
 describe("handleTokensUsage", () => {
+  // The handler windows on the real clock; pin it so the dated fixtures stay in range.
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(NOW * 1000); });
+  afterEach(() => { vi.useRealTimers(); });
+
   it("returns the persisted snapshot and never collects", async () => {
     const routeDeps = deps();
     expect(Object.keys(routeDeps)).toEqual(["db"]);
