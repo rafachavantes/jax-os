@@ -83,17 +83,16 @@ TEMPLATE = CONTRACTS.parent / "templates" / "AGENTS-template.md"
 _PRESET_HEADING = re.compile(r"^\*\*Preset: `([a-z-]+)`\*\* — (.+)$", re.M)
 
 
-def test_agents_template_has_the_five_presets_with_market_names_and_protection():
+def test_agents_template_has_the_presets_with_market_names_and_protection():
     text = TEMPLATE.read_text(encoding="utf-8")
     headings = _PRESET_HEADING.findall(text)
     assert [name for name, _ in headings] == [
-        "single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr", "bubble-buildprint"]
+        "single-branch", "single-branch-pr", "dual-branch", "dual-branch-pr"]
     market = {
         "single-branch": "trunk-based development",
         "single-branch-pr": "GitHub Flow",
         "dual-branch": "environment branches",
         "dual-branch-pr": "GitLab Flow with PRs",
-        "bubble-buildprint": "Bubble via Buildprint",
     }
     for name, rest in headings:
         assert market[name] in rest, name

@@ -46,15 +46,13 @@ silently adopted. Fixed order:
    - `dual-branch` = environment branches: `staging` + `main`, local merge into `staging` + push.
    - `dual-branch-pr` = GitLab Flow with PRs: `staging` + `main`, feature PR into `staging`,
      `jaxflow release` promotes to `main` under a separate approval.
-   - `bubble-buildprint` = Bubble via Buildprint, no code deploy.
-4. **Stack** -- `nextjs` / `python` / `bubble` / `other`; show these defaults for
+4. **Stack** -- `nextjs` / `python` / `other`; show these defaults for
    confirmation:
 
    | Stack | Install | Test | Build |
    |---|---|---|---|
    | nextjs | `pnpm install` | `pnpm test` | `pnpm build` |
    | python | `pip install -r requirements.txt` | `pytest` | none |
-   | bubble | none | none | none |
    | other | ask the user for all three commands | | |
 
 5. **Commit convention** -- the owner's format and a concrete example. Present the Jax

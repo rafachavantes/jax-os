@@ -59,7 +59,7 @@ obey them, jaxflow does not enforce them, and `--checks` runs arbitrary shell, s
 | Never | Note |
 |---|---|
 | Land anything on a production target (`dual-branch-pr` production `main`, `release/*` heads, `jaxflow release`) | `merge-contract.md` already needs a distinct agreement; autonomy never supplies it. |
-| Deploy | Includes `bubble-buildprint` LIVE. |
+| Deploy | Includes any LIVE/production deployment. |
 | Edit shared config: `~/.jax-os/agent-settings.json`, hooks, `~/.claude/settings.json` | |
 | Change the acceptance criteria of a plan or spec | Rewording a finding's fix is fine; moving the bar is not. |
 | Choose new work outside the milestones | |

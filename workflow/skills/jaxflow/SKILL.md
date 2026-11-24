@@ -426,7 +426,7 @@ review, unreadable manifest, missing build worktree) never refuses: the checks s
 (`resumed`) prints no `checks:` line.
 
 Only `single-branch` may configure local `Merge method: squash`; omitted means `merge`.
-`dual-branch` and `bubble-buildprint` reject this field. Squash stages with `git merge
+`dual-branch` rejects this field. Squash stages with `git merge
 --squash`, then uses the same tree fingerprints and checks as the merge method. A failure
 uses `git reset --merge HEAD` and reports tracked changes that remain; never use
 `reset --hard` or `clean`. The successful commit has one parent (the previous target tip),
